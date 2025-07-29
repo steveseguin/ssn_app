@@ -7,12 +7,9 @@ An Electron-based standalone application for [Social Stream Ninja](https://githu
 
 ## Features
 
-- 🎮 **Native Performance** - Better CPU/GPU efficiency compared to browser capture
 - 🔌 **No requirement to keep visible** - Capture social media chats without keeping popups visible and open
-- 💬 **Multi-Platform Support** - YouTube, Twitch, TikTok, and more
-- 🎨 **Customizable Overlays** - Full styling control for your streams
+- 💬 **Multi-Platform Support** - Websocket support for YouTube, Twitch, TikTok, and more
 - 🔊 **Text-to-Speech** - Built-in TTS with Kokoro-82M model
-- 🛠️ **Event Flow System** - Create custom automation workflows
 
 ## Download
 
