@@ -21,7 +21,7 @@ claude-artifacts/
 *.claude-backup
 
 # AUR build files
-aur/
+aur-repo/
 *.tar.gz
 *.tar.xz
 src/

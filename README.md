@@ -18,6 +18,23 @@ An Electron-based standalone application for [Social Stream Ninja](https://githu
 
 Download the latest release for your platform from the [Releases](https://github.com/steveseguin/ssn_app/releases) page.
 
+### Arch Linux
+
+Social Stream Ninja is available in the AUR (Arch User Repository):
+
+```bash
+# Using yay
+yay -S socialstreamninja
+
+# Using paru
+paru -S socialstreamninja
+
+# Manual installation
+git clone https://aur.archlinux.org/socialstreamninja.git
+cd socialstreamninja
+makepkg -si
+```
+
 ## Building from Source
 
 ### Prerequisites

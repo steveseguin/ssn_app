@@ -2,6 +2,8 @@
 
 Thank you for considering contributing to Social Stream Ninja Standalone! Before contributing, please read and sign our Contributor License Agreement (CLA).
 
+**IMPORTANT**: All contributions require signing our CLA. The CLA Assistant bot will automatically prompt you when you submit your first pull request.
+
 ## Contributor License Agreement (CLA)
 
 By contributing to this project, you agree to the following terms:
@@ -79,8 +81,8 @@ Feature requests should include:
 
 ```bash
 # Clone your fork
-git clone https://github.com/your-username/ssapp.git
-cd ssapp
+git clone https://github.com/your-username/ssn_app.git
+cd ssn_app
 
 # Install dependencies
 npm install
