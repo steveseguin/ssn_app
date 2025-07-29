@@ -1,0 +1,14 @@
+[ req ]
+default_bits = 2048
+prompt = no
+default_md = sha256
+distinguished_name = dn
+[ dn ]
+CN = Social Stream Ninja
+O = Steve Seguin
+L = Canada
+emailAddress = steve@seguin.email
+OU = socialstream.ninja
+[ v3_req ]
+keyUsage = digitalSignature
+extendedKeyUsage = codeSigning

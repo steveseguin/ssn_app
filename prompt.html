@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: transparent;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+        .dialog-container {
+            position: relative;
+            width: 90vw;
+            height: 80vh;
+        }
+        .dialog-background {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0,0,0,0.5);
+            filter: blur(20px);
+            border-radius: 20px;
+        }
+        .dialog {
+            position: relative;
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(255,255,255,0.2);
+            width: 100%;
+            height: 100%;
+            box-sizing: border-box;
+            overflow: auto;
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        button {
+            padding: 10px 20px;
+            margin-right: 10px;
+            border: none;
+            border-radius: 5px;
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:last-child {
+            background-color: #6c757d;
+        }
+        button:last-child:hover {
+            background-color: #545b62;
+        }
+        .checkbox-container {
+            display: none;
+            margin: 15px 0;
+            font-size: 16px;
+        }
+        .checkbox-container input[type="checkbox"] {
+            width: auto;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        .checkbox-container label {
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body>
+    <div class="dialog-container">
+        <div class="dialog-background"></div>
+        <div class="dialog">
+            <h2 id="title"></h2>
+            <p id="message"></p>
+            <input type="text" id="input">
+            <!-- Add checkbox containers -->
+            <div class="checkbox-container" id="shortsCheckbox">
+                <input type="checkbox" id="isShorts">
+                <label for="isShorts">This is a YouTube Shorts video</label>
+            </div>
+            <div class="checkbox-container" id="channelTypeCheckbox">
+                <input type="checkbox" id="isChannelName">
+                <label for="isChannelName">This is a channel name (not a username)</label>
+            </div>
+            <button onclick="submit()">OK</button>
+            <button onclick="cancel()">Cancel</button>
+        </div>
+    </div>
+    <script>
+        const { ipcRenderer } = require('electron');
+        var classic = true;
+        var showChannelType = false;
+        
+        ipcRenderer.on('prompt-data', (event, data) => {
+            if (!data.message && data.title && data.title.includes('\n')) {
+                let tmp = data.title.split('\n');
+                data.title = tmp.shift();
+                data.message = tmp.join('\n');
+            }
+            const titleElement = document.getElementById('title');
+            titleElement.textContent = data.title;
+            titleElement.innerHTML = titleElement.innerHTML.replace(/\n/g, '<br>');
+            const messageElement = document.getElementById('message');
+            messageElement.textContent = data.message;
+            messageElement.innerHTML = messageElement.innerHTML.replace(/\n/g, '<br>');
+            
+            //classic = true; // useful for debugging.
+			//showChannelType = false;
+			
+			// Set flags based on data
+			if (data.showShortsCheckbox || data.showChannelTypeCheckbox) {
+				classic = false;
+			}
+			
+			if (data.showShortsCheckbox) {
+				document.getElementById('shortsCheckbox').style.display = 'block';
+			}
+			
+			if (data.showChannelTypeCheckbox) {
+				showChannelType = true;
+				document.getElementById('channelTypeCheckbox').style.display = 'block';
+			}
+		});
+
+        function submit() {
+             const inputValue = document.getElementById('input').value;
+    
+			// If classic mode, just return the string
+			if (classic) {
+				ipcRenderer.send('prompt-response', inputValue);
+				return;
+			}
+			
+			// Otherwise create a response object with all relevant properties
+			const response = {
+				value: inputValue
+			};
+			
+			// Add checkbox states if the checkboxes are visible
+			if (document.getElementById('shortsCheckbox').style.display !== 'none') {
+				response.isShorts = document.getElementById('isShorts').checked;
+			}
+			
+			if (document.getElementById('channelTypeCheckbox').style.display !== 'none') {
+				response.isChannelName = document.getElementById('isChannelName').checked;
+			}
+			
+			ipcRenderer.send('prompt-response', response);
+		}
+
+        function cancel() {
+            ipcRenderer.send('prompt-response', null);
+            window.close();
+        }
+
+        window.onbeforeunload = () => {
+            ipcRenderer.send('prompt-response', null);
+        };
+        
+        document.getElementById('input').addEventListener('keypress', function(event) {
+            if (event.key === 'Enter') {
+                submit();
+            }
+        });
+    </script>
+</body>
+</html>

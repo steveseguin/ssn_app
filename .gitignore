@@ -1,0 +1,33 @@
+/dist
+/node_modules
+package-lock.json
+mac.sh
+
+# Certificates and keys
+certs/
+*.pem
+!code-signing-cert.pem
+*.key
+*.pfx
+*.p12
+*.crt
+*.cer
+old-certs-backup/
+
+# Claude-related files
+.claude/
+claude-artifacts/
+.claude-session
+*.claude-backup
+
+# AUR build files
+aur/
+*.tar.gz
+*.tar.xz
+src/
+pkg/
+*.log
+
+# Build configuration
+build-config.env
+.env

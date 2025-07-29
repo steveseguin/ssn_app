@@ -1,0 +1,34 @@
+name: Build SS App for Linux
+on:
+  push:
+    branches:
+      - maindisabled
+  pull_request:
+    branches:
+      - maindisabled
+jobs:
+  build:
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - name: Clean install
+        run: |
+          rm -rf node_modules
+          rm -f package-lock.json
+          npm install
+      - name: Build Electron app for Linux
+        run: npm run build:linux
+      - name: Archive Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: socialstreamninja-linux-AppImage
+          path: dist/*.AppImage
+          retention-days: 1

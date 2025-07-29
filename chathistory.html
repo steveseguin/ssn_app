@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SocialStream</title>
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+    #frame1 {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+  </style>
+</head>
+<body>
+
+<iframe id="frame1"></iframe>
+
+<script>
+(function (w) {
+	w.URLSearchParams = w.URLSearchParams || function (searchString) {
+		var self = this;
+		self.searchString = searchString;
+		self.get = function (name) {
+			var results = new RegExp('[\?&]' + name + '=([^&#]*)').exec(self.searchString);
+			if (results == null) {
+				return null;
+			} else {
+				return decodeURI(results[1]) || 0;
+			}
+		};
+	};
+})(window);
+
+var urlParams = new URLSearchParams(window.location.search);
+
+const href = urlParams.get("href");
+
+var baseURL = "https://socialstream.ninja";
+if (href){
+	baseURL = decodeURIComponent(href);
+	baseURL = baseURL.split("/popup.html")[0];
+}
+
+document.getElementById("frame1").src = baseURL + "/chathistory.html";
+</script>
+
+</body>
+</html>
