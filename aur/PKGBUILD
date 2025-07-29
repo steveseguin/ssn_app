@@ -3,7 +3,7 @@
 
 
 _pkgname=socialstreamninja
-pkgname=socialstreamninja-bin
+pkgname=socialstreamninja
 pkgver=0.3.43
 pkgrel=1
 pkgdesc='Social media content management and analytics platform / AppImage version'
