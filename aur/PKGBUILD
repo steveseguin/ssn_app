@@ -26,14 +26,14 @@ arch=(x86_64)
 url="https://github.com/steveseguin/social_stream/"
 license=(GPLv3)
 depends=(zlib fuse glibc kdialog xdg-user-dirs qt6-base)
-optdepends=('ffmpeg: Video processing support' 'gtk3: For Gnome style theming' 'nss' 'libxss' 'libnotify:For notifications?' 'libxtst')
+optdepends=('ffmpeg: Video processing support' 'gtk3: For Gnome style theming' 'nss' 'libxss' 'libnotify:For notifications' 'libxtst')
 provides=('socialstreamninja')
 conflicts=('socialstreamninja')
 options=(!strip !debug)
 _appimage="socialstreamninja_linux_v${pkgver}_x86_64.AppImage"
 noextract=("${_appimage}")
 source=("${_appimage}::${url}/releases/download/${pkgver}/${_appimage}")
-sha256sums=('d90e0d8f309aca036a0b476cb1537b3301a9326a0a86921d736c2271802699e1')
+sha256sums=('cffc5c85902e39a11112108bd306baf4b0903714982575a43ab036e9ae411c33')
 appname="socialstreamninja"
 
 prepare() {
