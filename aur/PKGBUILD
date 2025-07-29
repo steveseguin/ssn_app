@@ -3,7 +3,7 @@
 
 
 _pkgname=socialstreamninja
-pkgname=socialstreamninja
+pkgname=socialstreamninja-bin
 pkgver=0.3.43
 pkgrel=1
 pkgdesc='Social media content management and analytics platform / AppImage version'
@@ -14,43 +14,58 @@ depends=(zlib fuse glibc kdialog xdg-user-dirs qt6-base)
 optdepends=('ffmpeg: Video processing support' 'gtk3: For Gnome style theming' 'nss' 'libxss' 'libnotify:For notifications?' 'libxtst')
 provides=('socialstreamninja')
 conflicts=('socialstreamninja')
-source=("${pkgname}-${pkgver}.AppImage::https://github.com/steveseguin/ssn_app/releases/download/v${pkgver}/socialstreamninja_linux_v${pkgver}_x86_64.AppImage"
-        "socialstreamninja.desktop")
-sha256sums=('SKIP'
-            'SKIP')
-noextract=("${pkgname}-${pkgver}.AppImage")
-options=('!strip')
+options=(!strip !debug)
+_appimage="socialstreamninja_linux_v${pkgver}_x86_64.AppImage"
+noextract=("${_appimage}")
+source=("${_appimage}::${url}/releases/download/${pkgver}/${_appimage}")
+sha256sums=('d90e0d8f309aca036a0b476cb1537b3301a9326a0a86921d736c2271802699e1')
+appname="socialstreamninja"
 
 prepare() {
-    chmod +x "${srcdir}/${pkgname}-${pkgver}.AppImage"
+    chmod +x "${_appimage}"
+    ./"${_appimage}" --appimage-extract
 }
-
 package() {
-    # Install AppImage
-    install -Dm755 "${srcdir}/${pkgname}-${pkgver}.AppImage" "${pkgdir}/opt/${pkgname}/${pkgname}.AppImage"
-    
-    # Extract icon from AppImage
-    cd "${srcdir}"
-    "./${pkgname}-${pkgver}.AppImage" --appimage-extract socialstreamninja.png >/dev/null 2>&1 || \
-    "./${pkgname}-${pkgver}.AppImage" --appimage-extract usr/share/icons/hicolor/256x256/apps/socialstreamninja.png >/dev/null 2>&1 || \
-    "./${pkgname}-${pkgver}.AppImage" --appimage-extract socialstream.png >/dev/null 2>&1
-    
-    # Install icon
-    if [ -f "squashfs-root/socialstreamninja.png" ]; then
-        install -Dm644 "squashfs-root/socialstreamninja.png" "${pkgdir}/usr/share/pixmaps/socialstreamninja.png"
-    elif [ -f "squashfs-root/usr/share/icons/hicolor/256x256/apps/socialstreamninja.png" ]; then
-        install -Dm644 "squashfs-root/usr/share/icons/hicolor/256x256/apps/socialstreamninja.png" "${pkgdir}/usr/share/pixmaps/socialstreamninja.png"
-    elif [ -f "squashfs-root/socialstream.png" ]; then
-        install -Dm644 "squashfs-root/socialstream.png" "${pkgdir}/usr/share/pixmaps/socialstreamninja.png"
-    fi
-    
-    # Install desktop file
-    install -Dm644 "${srcdir}/socialstreamninja.desktop" "${pkgdir}/usr/share/applications/socialstreamninja.desktop"
-    
-    # Create executable symlink
-    install -d "${pkgdir}/usr/bin"
-    ln -s "/opt/${pkgname}/${pkgname}.AppImage" "${pkgdir}/usr/bin/socialstreamninja"
-    
-    # Clean up
-    rm -rf "${srcdir}/squashfs-root"
+  # Move all extracted squashfs-root contents to /opt/socialstreamninja
+  install -d "${pkgdir}/opt/socialstreamninja"
+  cp -r squashfs-root/* "${pkgdir}/opt/socialstreamninja/"
+
+  # Fix ownership and permissions
+  chown -R root:root "${pkgdir}/opt/socialstreamninja"
+  find "${pkgdir}/opt/socialstreamninja" -type d -exec chmod 755 {} \;
+  find "${pkgdir}/opt/socialstreamninja" -type f -exec chmod 644 {} \;
+  chmod +x "${pkgdir}/opt/socialstreamninja/socialstreamninja"  # Make main binary executable
+
+  # Copy and modify .desktop file from the AppImage (embedded in squashfs-root)
+  install -d "${pkgdir}/usr/share/applications"
+  desktop_file="${pkgdir}/usr/share/applications/socialstreamninja.desktop"
+
+  # Extract the .desktop file from the AppImage (if it exists in squashfs-root)
+  if [ -f "${pkgdir}/opt/socialstreamninja/socialstreamninja.desktop" ]; then
+    cp "${pkgdir}/opt/socialstreamninja/socialstreamninja.desktop" "${desktop_file}"
+  else
+    echo "No .desktop file found in AppImage. Creating a minimal one." >&2
+    cat <<EOF > "${desktop_file}"
+[Desktop Entry]
+Name=Social Stream Ninja
+Exec=/opt/socialstreamninja/socialstreamninja --enable-features=UseOzonePlatform --ozone-platform=wayland %U
+Icon=/opt/socialstreamninja/socialstreamninja.png
+Terminal=false
+Type=Application
+Categories=Network;InstantMessaging;
+EOF
+  fi
+
+  # Fix paths in the .desktop file
+  sed -i \
+    -e 's|Exec=.*|Exec=/opt/socialstreamninja/socialstreamninja %U|' \
+    -e 's|Icon=.*|Icon=/opt/socialstreamninja/socialstreamninja.png|' \
+    "${desktop_file}"
+
+  # Install icon (if present in the AppImage)
+  install -d "${pkgdir}/usr/share/icons/hicolor/256x256/apps"
+  if [ -f "${pkgdir}/opt/socialstreamninja/socialstreamninja.png" ]; then
+    cp -f "${pkgdir}/opt/socialstreamninja/socialstreamninja.png" \
+      "${pkgdir}/usr/share/icons/hicolor/256x256/apps/socialstreamninja.png"
+  fi
 }
