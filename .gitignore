@@ -31,3 +31,4 @@ pkg/
 # Build configuration
 build-config.env
 .env
+electron-builder.env

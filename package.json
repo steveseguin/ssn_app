@@ -22,7 +22,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/steveseguin/ssapp.git"
+    "url": "https://github.com/steveseguin/ssn_app.git"
   },
   "build": {
     "appId": "socialstream.electron",
@@ -46,7 +46,10 @@
       "!.claude/**",
       "!claude-artifacts/**",
       "!aur/**",
-      "!old-certs-backup/**"
+      "!old-certs-backup/**",
+      "!electron-builder.env",
+      "!build-config.env",
+      "!.env"
     ],
     "asarUnpack": [
       "Kokoro-82M-ONNX/**/*"
@@ -101,7 +104,8 @@
       "signtoolOptions": {
         "certificateFile": "certs/socialstream.pfx",
         "publisherName": "Steve Seguin",
-        "timeStampServer": "http://timestamp.digicert.com"
+        "timeStampServer": "http://timestamp.digicert.com",
+        "sign": "./customSign.js"
       }
     },
     "linux": {

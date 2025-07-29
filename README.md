@@ -1,14 +1,14 @@
 # Social Stream Ninja Standalone (ssapp)
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Build Status](https://github.com/steveseguin/ssapp/workflows/Build%20SS%20App%20for%20Linux/badge.svg)](https://github.com/steveseguin/ssapp/actions)
+[![Build Status](https://github.com/steveseguin/ssn_app/workflows/Build%20SS%20App%20for%20Linux/badge.svg)](https://github.com/steveseguin/ssn_app/actions)
 
-An Electron-based standalone application for [Social Stream Ninja](https://github.com/steveseguin/social_stream), providing better performance and stability than browser-based capture for streaming applications like OBS.
+An Electron-based standalone application for [Social Stream Ninja](https://github.com/steveseguin/social_stream).
 
 ## Features
 
 - 🎮 **Native Performance** - Better CPU/GPU efficiency compared to browser capture
-- 🔌 **Direct OBS Integration** - Capture social media chats without browser overhead
+- 🔌 **No requirement to keep visible** - Capture social media chats without keeping popups visible and open
 - 💬 **Multi-Platform Support** - YouTube, Twitch, TikTok, and more
 - 🎨 **Customizable Overlays** - Full styling control for your streams
 - 🔊 **Text-to-Speech** - Built-in TTS with Kokoro-82M model
@@ -16,7 +16,7 @@ An Electron-based standalone application for [Social Stream Ninja](https://githu
 
 ## Download
 
-Download the latest release for your platform from the [Releases](https://github.com/steveseguin/ssapp/releases) page.
+Download the latest release for your platform from the [Releases](https://github.com/steveseguin/ssn_app/releases) page.
 
 ## Building from Source
 
@@ -30,8 +30,8 @@ Download the latest release for your platform from the [Releases](https://github
 
 ```bash
 # Clone the repository
-git clone https://github.com/steveseguin/ssapp.git
-cd ssapp
+git clone https://github.com/steveseguin/ssn_app.git
+cd ssn_app
 
 # Install dependencies
 npm install
@@ -59,7 +59,7 @@ npm run build:rpi
 ## Usage
 
 1. Launch the application
-2. Load Social Stream Ninja or your custom social stream URL
+2. Load Social Stream Ninja or your custom social stream ninja URL
 3. Configure your chat sources
 4. Add the window capture to OBS
 
@@ -91,9 +91,9 @@ This project is licensed under the GNU General Public License v3.0 - see the [LI
 
 ## Support
 
-- 📖 [Documentation](https://socialstream.ninja/manual)
+- 📖 [Project Homepage](https://socialstream.ninja)
 - 💬 [Discord Community](https://discord.socialstream.ninja)
-- 🐛 [Report Issues](https://github.com/steveseguin/ssapp/issues)
+- 🐛 [Report Issues](https://github.com/steveseguin/ssn_app/issues)
 
 ## Acknowledgments
 
