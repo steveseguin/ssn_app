@@ -16,7 +16,7 @@ An Electron-based standalone application for [Social Stream Ninja](https://githu
 
 ## Download
 
-Download the latest release for your platform from the [Releases](https://github.com/steveseguin/ssn_app/releases) page.
+Download the latest release for your platform from the [Releases](https://github.com/steveseguin/social_stream/releases) page.
 
 ### Arch Linux
 
