@@ -26,4 +26,4 @@ sha256sums = SKIP
 sha256sums = SKIP
 noextract = socialstreamninja-bin-0.3.43.AppImage
 
-pkgname = socialstreamninja-bin   
+pkgname = socialstreamninja
