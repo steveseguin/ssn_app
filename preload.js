@@ -254,6 +254,19 @@ try {
 }
 
 
+// Handle sendToTab-request messages that expect a response
+ipcRenderer.on('sendToTab-request', (event, data) => {
+	//console.log("SEND TO TAB REQUEST", data);
+	const { message, requestId } = data;
+	
+	// Call the handler and send back the response
+	doSomethingInWebAppWrapper(message, null, function(response) {
+		// Send the response back to main process
+		ipcRenderer.send(`sendToTab-response-${requestId}`, response);
+	});
+});
+
+// Handle regular sendToTab messages (no response expected)
 ipcRenderer.on('sendToTab', (event, ...args) => {
 	//console.log("SEND TO TAB 2");
 	doSomethingInWebAppWrapper(args[0], null, function(response){});

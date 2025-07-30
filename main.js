@@ -5278,7 +5278,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         msg.moderator = data.isModerator;
         msg.membership = data.isSubscriber;
-        msg.chatname = data.nickname;
+        
+        // More tolerant nickname handling with fallback chain
+        // First try nickname, trim whitespace and check if it has visible content
+        let chatname = data.nickname;
+        if (chatname && typeof chatname === 'string') {
+            // Remove zero-width spaces and other invisible characters
+            chatname = chatname.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+            // If after cleaning it's empty, set to null to trigger fallback
+            if (!chatname) {
+                chatname = null;
+            }
+        }
+        
+        // Fallback chain: cleaned nickname -> uniqueId -> "Unknown"
+        msg.chatname = chatname || data.uniqueId || 'Unknown';
+        
         if (data.uniqueId) {
             msg.userid = data.uniqueId;
         }
@@ -5526,7 +5541,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             msg.moderator = data.isModerator;
             msg.membership = data.isSubscriber;
-            msg.chatname = data.nickname;
+            
+            // More tolerant nickname handling with fallback chain
+            // First try nickname, trim whitespace and check if it has visible content
+            let chatname = data.nickname;
+            if (chatname && typeof chatname === 'string') {
+                // Remove zero-width spaces and other invisible characters
+                chatname = chatname.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+                // If after cleaning it's empty, set to null to trigger fallback
+                if (!chatname) {
+                    chatname = null;
+                }
+            }
+            
+            // Fallback chain: cleaned nickname -> uniqueId -> "Unknown"
+            msg.chatname = chatname || data.uniqueId || 'Unknown';
+            
             if (data.uniqueId) {
                 msg.userid = data.uniqueId;
             }
@@ -5801,7 +5831,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 donoValue: data.diamondCount * count * 0.005,
                 moderator: data.isModerator,
                 membership: data.isSubscriber,
-                chatname: data.nickname,
+                chatname: data.nickname || data.uniqueId || 'Unknown',
                 chatimg: data.profilePictureUrl,
                 type: "tiktok",
                 textonlymode: !!data.textonlymode,
@@ -6122,7 +6152,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 chatmessage: message,
                 moderator: data.isModerator || false,
                 membership: data.isSubscriber || false,
-                chatname: data.nickname || "System",
+                chatname: data.nickname || data.uniqueId || "System",
                 chatimg: data.profilePictureUrl || null,
                 type: "tiktok",
                 textonlymode: false,
@@ -6946,6 +6976,41 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     });
 
+    // Async handler for messages that need responses
+    ipcMain.handle("sendToTab-async", async (event, args) => {
+        log("sendToTab-async");
+        if (browserViews[args.tab]) {
+            const view = browserViews[args.tab];
+            if (view && view.webContents) {
+                // Create a promise that will resolve with the response
+                return new Promise((resolve) => {
+                    // Generate unique ID for this request
+                    const requestId = `${Date.now()}-${Math.random()}`;
+                    
+                    // Set up one-time listener for the response
+                    ipcMain.once(`sendToTab-response-${requestId}`, (event, response) => {
+                        log(`sendToTab-async response for ${args.message}: ${response}`);
+                        resolve(response);
+                    });
+                    
+                    // Send the message with the request ID
+                    view.webContents.send("sendToTab-request", {
+                        message: args.message,
+                        requestId: requestId
+                    });
+                    
+                    // Set timeout
+                    setTimeout(() => {
+                        ipcMain.removeAllListeners(`sendToTab-response-${requestId}`);
+                        resolve(false);
+                    }, 5000);
+                });
+            }
+        }
+        return false;
+    });
+    
+    // Original synchronous handler for backward compatibility
     ipcMain.on("sendToTab", function(eventRet, args) {
         log("sendToTab 1");
         if (browserViews[args.tab]) {
