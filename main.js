@@ -296,7 +296,8 @@ function saveWindowState(window) {
         height: Math.max(parseInt(bounds.height), 100),
         x: bounds.x,
         y: bounds.y,
-        displayId: display.id
+        displayId: display.id,
+        scaleFactor: display.scaleFactor || 1
     });
 }
 
@@ -1921,7 +1922,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     if (app.isReady()) {
         try {
-            ttt = screen.getPrimaryDisplay().workAreaSize;
+            const primaryDisplay = screen.getPrimaryDisplay();
+            ttt = primaryDisplay.workAreaSize;
+            factor = primaryDisplay.scaleFactor || 1;
         } catch (e) {
             console.error('Failed to get screen info:', e);
         }
@@ -1941,9 +1944,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
         targetHeight = ttt.height;
         tainted = true;
     }
-
-    // Create the browser window. 
-    mainWindow = new BrowserWindow({
+    
+    // Load saved window state for main window
+    const windowState = loadWindowState(null); // null for main window
+    let windowConfig = {
         transparent: false,
         //focusable: false,
         width: targetWidth,
@@ -1954,6 +1958,60 @@ async function createWindow(args, reuse = false, mainApp = false) {
         //titleBarStyle: 'customButtonsOnHover',
         roundedCorners: false,
         show: false,
+    };
+    
+    if (windowState && !FULLSCREEN) {
+        // Get the current display information
+        let targetDisplay = screen.getPrimaryDisplay();
+        
+        // Try to find the display where the window was saved
+        if (windowState.displayId) {
+            const displays = screen.getAllDisplays();
+            const savedDisplay = displays.find(d => d.id === windowState.displayId);
+            if (savedDisplay) {
+                targetDisplay = savedDisplay;
+            }
+        }
+        
+        // Calculate scale factor adjustment
+        const savedScaleFactor = windowState.scaleFactor || 1;
+        const currentScaleFactor = targetDisplay.scaleFactor || 1;
+        const scaleRatio = currentScaleFactor / savedScaleFactor;
+        
+        // Apply saved dimensions with scale adjustment if not tainted
+        if (!tainted) {
+            if (windowState.width) {
+                windowConfig.width = Math.round(windowState.width * scaleRatio);
+            }
+            if (windowState.height) {
+                windowConfig.height = Math.round(windowState.height * scaleRatio);
+            }
+        }
+        
+        // Apply saved position with bounds checking
+        if (windowState.x !== null && windowState.x !== undefined && X === -1) {
+            windowConfig.x = windowState.x;
+            // Ensure x is within display bounds
+            if (windowConfig.x < targetDisplay.bounds.x) {
+                windowConfig.x = targetDisplay.bounds.x;
+            } else if (windowConfig.x + windowConfig.width > targetDisplay.bounds.x + targetDisplay.bounds.width) {
+                windowConfig.x = targetDisplay.bounds.x + targetDisplay.bounds.width - windowConfig.width;
+            }
+        }
+        if (windowState.y !== null && windowState.y !== undefined && Y === -1) {
+            windowConfig.y = windowState.y;
+            // Ensure y is within display bounds
+            if (windowConfig.y < targetDisplay.bounds.y) {
+                windowConfig.y = targetDisplay.bounds.y;
+            } else if (windowConfig.y + windowConfig.height > targetDisplay.bounds.y + targetDisplay.bounds.height) {
+                windowConfig.y = targetDisplay.bounds.y + targetDisplay.bounds.height - windowConfig.height;
+            }
+        }
+    }
+
+    // Create the browser window. 
+    mainWindow = new BrowserWindow({
+        ...windowConfig,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'), // Regular preload without anti-detection
             pageVisibility: true,
@@ -2031,6 +2089,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }); */
 
         handleZoom(mainWindow);
+        
+        // Add window state saving for main window
+        let saveTimeout;
+        mainWindow.on("resize", () => {
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(() => {
+                saveWindowState(mainWindow);
+            }, 100);
+        });
+
+        mainWindow.on("move", () => {
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(() => {
+                saveWindowState(mainWindow);
+            }, 100);
+        });
 
         mainWindow.webContents.setWindowOpenHandler(({
             url,
@@ -2108,17 +2182,49 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             const windowState = loadWindowState(url);
             if (windowState) {
+                // Get the current display information
+                let targetDisplay = screen.getPrimaryDisplay();
+                
+                // Try to find the display where the window was saved
+                if (windowState.displayId) {
+                    const displays = screen.getAllDisplays();
+                    const savedDisplay = displays.find(d => d.id === windowState.displayId);
+                    if (savedDisplay) {
+                        targetDisplay = savedDisplay;
+                    }
+                }
+                
+                // Calculate scale factor adjustment
+                const savedScaleFactor = windowState.scaleFactor || 1;
+                const currentScaleFactor = targetDisplay.scaleFactor || 1;
+                const scaleRatio = currentScaleFactor / savedScaleFactor;
+                
+                // Adjust window dimensions based on scale factor change
+                if (windowState.width) {
+                    config.width = Math.round(windowState.width * scaleRatio);
+                }
+                if (windowState.height) {
+                    config.height = Math.round(windowState.height * scaleRatio);
+                }
+                
+                // Set position, ensuring window is within display bounds
                 if (windowState.x !== null && windowState.x !== undefined) {
                     config.x = windowState.x;
+                    // Ensure x is within display bounds
+                    if (config.x < targetDisplay.bounds.x) {
+                        config.x = targetDisplay.bounds.x;
+                    } else if (config.x + config.width > targetDisplay.bounds.x + targetDisplay.bounds.width) {
+                        config.x = targetDisplay.bounds.x + targetDisplay.bounds.width - config.width;
+                    }
                 }
                 if (windowState.y !== null && windowState.y !== undefined) {
                     config.y = windowState.y;
-                }
-                if (windowState.width) {
-                    config.width = windowState.width;
-                }
-                if (windowState.height) {
-                    config.height = windowState.height;
+                    // Ensure y is within display bounds
+                    if (config.y < targetDisplay.bounds.y) {
+                        config.y = targetDisplay.bounds.y;
+                    } else if (config.y + config.height > targetDisplay.bounds.y + targetDisplay.bounds.height) {
+                        config.y = targetDisplay.bounds.y + targetDisplay.bounds.height - config.height;
+                    }
                 }
             }
 
@@ -2488,7 +2594,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
     try {
         mainWindow.node = NODE;
 
-        if (X != -1 || Y != -1) {
+        // Only set position if it wasn't already set from saved state
+        if ((X != -1 || Y != -1) && (!windowState || (windowState.x === null && windowState.y === null))) {
             if (X == -1) {
                 X = 0;
             }
@@ -2503,6 +2610,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     mainWindow.on("close", async function(e) {
         log("mainWindow close");
+        saveWindowState(mainWindow);
         if (!app.isQuitting) {
             e.preventDefault();
             quitApp();

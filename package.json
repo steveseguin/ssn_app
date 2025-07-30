@@ -49,7 +49,10 @@
       "!old-certs-backup/**",
       "!electron-builder.env",
       "!build-config.env",
-      "!.env"
+      "!.env",
+      "!mac.sh",
+      "!*.sh",
+      "aur-deploy.sh"
     ],
     "asarUnpack": [
       "Kokoro-82M-ONNX/**/*"
