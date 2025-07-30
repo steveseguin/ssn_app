@@ -1922,7 +1922,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     if (app.isReady()) {
         try {
-            ttt = screen.getPrimaryDisplay().workAreaSize;
+            const primaryDisplay = screen.getPrimaryDisplay();
+            ttt = primaryDisplay.workAreaSize;
+            factor = primaryDisplay.scaleFactor || 1;
         } catch (e) {
             console.error('Failed to get screen info:', e);
         }
@@ -1942,7 +1944,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         targetHeight = ttt.height;
         tainted = true;
     }
-
+    
     // Create the browser window. 
     mainWindow = new BrowserWindow({
         transparent: false,
@@ -2032,6 +2034,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }); */
 
         handleZoom(mainWindow);
+        
+        // Add window state saving for main window
+        let saveTimeout;
+        mainWindow.on("resize", () => {
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(() => {
+                saveWindowState(mainWindow);
+            }, 100);
+        });
+
+        mainWindow.on("move", () => {
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(() => {
+                saveWindowState(mainWindow);
+            }, 100);
+        });
 
         mainWindow.webContents.setWindowOpenHandler(({
             url,
@@ -2512,6 +2530,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     mainWindow.on("close", async function(e) {
         log("mainWindow close");
+        saveWindowState(mainWindow);
         if (!app.isQuitting) {
             e.preventDefault();
             quitApp();
