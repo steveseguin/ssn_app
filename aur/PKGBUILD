@@ -17,34 +17,23 @@ options=('!strip')
 
 prepare() {
     chmod +x "${srcdir}/${pkgname}-${pkgver}.AppImage"
+    "./${pkgname}-${pkgver}.AppImage" --appimage-extract
 }
 
 package() {
-    # Install AppImage
-    install -Dm755 "${srcdir}/${pkgname}-${pkgver}.AppImage" "${pkgdir}/opt/${pkgname}/${pkgname}.AppImage"
-    
-    # Extract icon from AppImage
-    cd "${srcdir}"
-    "./${pkgname}-${pkgver}.AppImage" --appimage-extract socialstreamninja.png >/dev/null 2>&1 || \
-    "./${pkgname}-${pkgver}.AppImage" --appimage-extract usr/share/icons/hicolor/256x256/apps/socialstreamninja.png >/dev/null 2>&1 || \
-    "./${pkgname}-${pkgver}.AppImage" --appimage-extract socialstream.png >/dev/null 2>&1
-    
-    # Install icon
-    if [ -f "squashfs-root/socialstreamninja.png" ]; then
-        install -Dm644 "squashfs-root/socialstreamninja.png" "${pkgdir}/usr/share/pixmaps/socialstreamninja.png"
-    elif [ -f "squashfs-root/usr/share/icons/hicolor/256x256/apps/socialstreamninja.png" ]; then
-        install -Dm644 "squashfs-root/usr/share/icons/hicolor/256x256/apps/socialstreamninja.png" "${pkgdir}/usr/share/pixmaps/socialstreamninja.png"
-    elif [ -f "squashfs-root/socialstream.png" ]; then
-        install -Dm644 "squashfs-root/socialstream.png" "${pkgdir}/usr/share/pixmaps/socialstreamninja.png"
-    fi
+    # Install extracted AppImage contents
+    install -d "${pkgdir}/opt/${pkgname}"
+    cp -r "${srcdir}/squashfs-root/"* "${pkgdir}/opt/${pkgname}/"
     
     # Install desktop file
     install -Dm644 "${srcdir}/socialstreamninja.desktop" "${pkgdir}/usr/share/applications/socialstreamninja.desktop"
     
+    # Install icon if exists
+    if [ -f "${srcdir}/squashfs-root/socialstreamninja.png" ]; then
+        install -Dm644 "${srcdir}/squashfs-root/socialstreamninja.png" "${pkgdir}/usr/share/pixmaps/socialstreamninja.png"
+    fi
+    
     # Create executable symlink
     install -d "${pkgdir}/usr/bin"
-    ln -s "/opt/${pkgname}/${pkgname}.AppImage" "${pkgdir}/usr/bin/socialstreamninja"
-    
-    # Clean up
-    rm -rf "${srcdir}/squashfs-root"
+    ln -s "/opt/${pkgname}/socialstreamninja" "${pkgdir}/usr/bin/socialstreamninja"
 }
