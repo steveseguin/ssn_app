@@ -1924,14 +1924,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
         try {
             const primaryDisplay = screen.getPrimaryDisplay();
             ttt = primaryDisplay.workAreaSize;
-            factor = primaryDisplay.scaleFactor || 1;
+            // Don't use scaleFactor for window sizing - Electron handles DPI scaling internally
+            // factor = primaryDisplay.scaleFactor || 1;
         } catch (e) {
             console.error('Failed to get screen info:', e);
         }
     }
 
-    var targetWidth = WIDTH / factor;
-    var targetHeight = HEIGHT / factor;
+    var targetWidth = WIDTH;  // Use WIDTH directly without dividing by factor
+    var targetHeight = HEIGHT;  // Use HEIGHT directly without dividing by factor
 
     var tainted = false;
     if (targetWidth > ttt.width) {
@@ -2745,7 +2746,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     mainWindow.webContents.on("did-finish-load", function(e) {
         if (tainted) {
-            mainWindow.setSize(parseInt(WIDTH / factor), parseInt(HEIGHT / factor)); // allows for larger than display resolution.
+            mainWindow.setSize(parseInt(WIDTH), parseInt(HEIGHT)); // allows for larger than display resolution.
             tainted = false;
         }
         

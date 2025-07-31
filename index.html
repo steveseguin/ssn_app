@@ -5512,17 +5512,35 @@ function refreshIframesWithLanguage() {
 	// Get the language code (convert pt-BR to pt for URL parameter)
 	const langCode = currentLanguage === 'pt-BR' ? 'pt' : currentLanguage;
 	
+	// Map our language codes to popup.html language codes
+	const languageMap = {
+		'en': '',  // Default
+		'de': 'de',
+		'es': 'es',
+		'pt-BR': 'pt-br',
+		'fr': 'fr',  // Add if supported
+		'it': 'it',  // Add if supported
+		'ja': 'ja',  // Add if supported
+		'zh': 'zh',  // Add if supported
+		'ko': 'ko',  // Add if supported
+		'ru': 'ru',  // Add if supported
+		'tr': 'tr',
+		'uk': 'uk'
+	};
+	
+	const popupLangCode = languageMap[currentLanguage] || '';
+	
 	// Find all iframes in the content pane
 	document.querySelectorAll('#content-pane iframe').forEach(iframe => {
 		if (iframe.src && iframe.src !== 'about:blank') {
 			try {
-				const url = new URL(iframe.src);
-				// Update or add the ln parameter
-				url.searchParams.set('ln', langCode);
-				// Reload the iframe with the new URL
-				iframe.src = url.toString();
+				// Send a message to the iframe to change language
+				iframe.contentWindow.postMessage({
+					type: 'changeLanguage',
+					language: popupLangCode
+				}, '*');
 			} catch (e) {
-				console.error('Error updating iframe language:', e, iframe.src);
+				console.error('Error sending language message to iframe:', e);
 			}
 		}
 	});
