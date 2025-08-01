@@ -4595,27 +4595,28 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     view.webContents.setAudioMuted(true);
                 }
                 
-                // Set up WebSocket monitoring if configured
+                // Set up WebSocket monitoring if configured in args or config
+                // Configuration can be set in config files (e.g., config_0.json) or passed via args
                 // Configuration options:
-                //   args.websocketMonitoring = true                           // Monitor all WebSockets
-                //   args.websocketMonitoring = "streamelements.com"           // Monitor WebSockets containing this domain
-                //   args.websocketMonitoring = { filter: "domain.com" }       // Object format with filter
-                // Example: For StreamElements, use args.websocketMonitoring = "streamelements.com"
-                if (args.websocketMonitoring) {
+                //   websocketMonitoring = true                           // Monitor all WebSockets
+                //   websocketMonitoring = "streamelements.com"           // Monitor WebSockets containing this domain
+                //   websocketMonitoring = { filter: "domain.com" }       // Object format with filter
+                const websocketMonitoring = args.websocketMonitoring || (args.config && args.config.websocketMonitoring);
+                if (websocketMonitoring) {
                     try {
                                                 
                         let websocketFilter = null;
                         
                         // Handle different configuration formats
-                        if (typeof args.websocketMonitoring === 'object' && args.websocketMonitoring.filter) {
+                        if (typeof websocketMonitoring === 'object' && websocketMonitoring.filter) {
                             // Object format: { filter: "domain.com" }
-                            const filterDomain = args.websocketMonitoring.filter;
+                            const filterDomain = websocketMonitoring.filter;
                             websocketFilter = (url) => url.includes(filterDomain);
-                        } else if (typeof args.websocketMonitoring === 'string') {
+                        } else if (typeof websocketMonitoring === 'string') {
                             // String format: "domain.com"
-                            const filterDomain = args.websocketMonitoring;
+                            const filterDomain = websocketMonitoring;
                             websocketFilter = (url) => url.includes(filterDomain);
-                        } else if (args.websocketMonitoring === true) {
+                        } else if (websocketMonitoring === true) {
                             // Boolean true: monitor all WebSockets
                             websocketFilter = null;
                         }
