@@ -1,17 +1,17 @@
 const { session } = require('electron');
 
 /**
- * Sets up WebSocket debugging for a webContents instance
- * @param {Electron.WebContents} webContents - The webContents to debug
+ * Sets up WebSocket monitoring for a webContents instance
+ * @param {Electron.WebContents} webContents - The webContents to monitor
  * @param {Object} options - Configuration options
  * @param {Function} options.filter - Optional filter function to limit which WebSockets to monitor
  * @param {Function} options.onMessage - Callback for WebSocket messages
  * @param {Function} options.onOpen - Callback for WebSocket open events
  * @param {Function} options.onClose - Callback for WebSocket close events
  * @param {Function} options.onSend - Callback for WebSocket send events
- * @returns {Function} Cleanup function to stop debugging
+ * @returns {Function} Cleanup function to stop monitoring
  */
-function setupWebSocketDebugger(webContents, options = {}) {
+function setupWebSocketMonitor(webContents, options = {}) {
     const {
         filter = null,
         onMessage = () => {},
@@ -20,15 +20,15 @@ function setupWebSocketDebugger(webContents, options = {}) {
         onSend = () => {}
     } = options;
 
-    let debuggerAttached = false;
+    let monitoringActive = false;
     const webSocketConnections = new Map();
 
     // Attach debugger
     try {
         webContents.debugger.attach('1.3');
-        debuggerAttached = true;
+        monitoringActive = true;
     } catch (err) {
-        console.error('Failed to attach debugger:', err);
+        console.error('Failed to attach WebSocket monitor:', err);
         return () => {};
     }
 
@@ -40,7 +40,7 @@ function setupWebSocketDebugger(webContents, options = {}) {
 
     // Handle debugger events
     const messageHandler = (event, method, params) => {
-        if (!debuggerAttached) return;
+        if (!monitoringActive) return;
 
         try {
             switch (method) {
@@ -85,7 +85,7 @@ function setupWebSocketDebugger(webContents, options = {}) {
                     break;
             }
         } catch (error) {
-            console.error('Error handling debugger event:', error);
+            console.error('Error handling WebSocket event:', error);
         }
     };
 
@@ -93,19 +93,19 @@ function setupWebSocketDebugger(webContents, options = {}) {
 
     // Cleanup function
     return () => {
-        if (debuggerAttached) {
+        if (monitoringActive) {
             try {
                 webContents.debugger.off('message', messageHandler);
                 webContents.debugger.detach();
-                debuggerAttached = false;
+                monitoringActive = false;
                 webSocketConnections.clear();
             } catch (err) {
-                console.error('Error detaching debugger:', err);
+                console.error('Error detaching WebSocket monitor:', err);
             }
         }
     };
 }
 
 module.exports = {
-    setupWebSocketDebugger
+    setupWebSocketMonitor
 };

@@ -27,7 +27,7 @@ const {
 } = require("tiktok-live-connector");
 const fetch = require("electron-fetch").default;
 const TikTokAuth = require('./tiktok-auth');
-const { setupWebSocketDebugger } = require('./websocket-debugger'); // Removed - not needed
+const { setupWebSocketMonitor } = require('./websocket-monitor');
 
 const {
     fetch: undiciFetch
@@ -4565,10 +4565,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 e.preventDefault();
                 
                 // Clean up WebSocket debugger if it exists
-                if (view.__websocketDebuggerCleanup) {
+                if (view.__websocketMonitorCleanup) {
                     try {
-                        view.__websocketDebuggerCleanup();
-                        delete view.__websocketDebuggerCleanup;
+                        view.__websocketMonitorCleanup();
+                        delete view.__websocketMonitorCleanup;
                     } catch (error) {
                         console.error('Error cleaning up WebSocket debugger:', error);
                     }
@@ -4595,16 +4595,32 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     view.webContents.setAudioMuted(true);
                 }
                 
-                // Set up WebSocket monitoring for sources that need it
-                if (args.source && args.source.includes('streamelements')) {
+                // Set up WebSocket monitoring if configured
+                // Configuration options:
+                //   args.websocketMonitoring = true                           // Monitor all WebSockets
+                //   args.websocketMonitoring = "streamelements.com"           // Monitor WebSockets containing this domain
+                //   args.websocketMonitoring = { filter: "domain.com" }       // Object format with filter
+                // Example: For StreamElements, use args.websocketMonitoring = "streamelements.com"
+                if (args.websocketMonitoring) {
                     try {
                                                 
-                        // Filter to only monitor StreamElements WebSockets
-                        const websocketFilter = (url) => {
-                            return url.includes('streamelements.com');
-                        };
+                        let websocketFilter = null;
                         
-                        const cleanup = setupWebSocketDebugger(view.webContents, {
+                        // Handle different configuration formats
+                        if (typeof args.websocketMonitoring === 'object' && args.websocketMonitoring.filter) {
+                            // Object format: { filter: "domain.com" }
+                            const filterDomain = args.websocketMonitoring.filter;
+                            websocketFilter = (url) => url.includes(filterDomain);
+                        } else if (typeof args.websocketMonitoring === 'string') {
+                            // String format: "domain.com"
+                            const filterDomain = args.websocketMonitoring;
+                            websocketFilter = (url) => url.includes(filterDomain);
+                        } else if (args.websocketMonitoring === true) {
+                            // Boolean true: monitor all WebSockets
+                            websocketFilter = null;
+                        }
+                        
+                        const cleanup = setupWebSocketMonitor(view.webContents, {
                             filter: websocketFilter,
                             onMessage: (data) => {
                                 // Forward to content script via preload
@@ -4640,9 +4656,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         });
                         
                         // Store cleanup function for later
-                        view.__websocketDebuggerCleanup = cleanup;
-                                            } catch (error) {
-                        console.error('Failed to set up WebSocket monitoring:', error);
+                        view.__websocketMonitorCleanup = cleanup;
+                        log(`WebSocket monitoring enabled${websocketFilter ? ' with filter' : ' for all WebSockets'}`);
+                    } catch (error) {
+                        log('Failed to set up WebSocket monitoring:', error);
                     }
                 }
                 
