@@ -27,7 +27,7 @@ const {
 } = require("tiktok-live-connector");
 const fetch = require("electron-fetch").default;
 const TikTokAuth = require('./tiktok-auth');
-// const { setupWebSocketDebugger } = require('./websocket-debugger'); // Removed - not needed
+const { setupWebSocketDebugger } = require('./websocket-debugger'); // Removed - not needed
 
 const {
     fetch: undiciFetch
@@ -4400,11 +4400,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (args.config && ("webSecurity" in args.config)) {
                 webSecurity = args.config.webSecurity;
             }
+            let contextIsolation = true;
+            if (args.config && ("contextIsolation" in args.config)) {
+                contextIsolation = args.config.contextIsolation;
+            }
+            log("Context isolation for window:", contextIsolation, "Platform:", args.domain);
             const view = new BrowserWindow({
                 webPreferences: {
                     preload: path.join(__dirname, "preload.js"),
                     pageVisibility: true,
-                    contextIsolation: true,
+                    contextIsolation: contextIsolation,
                     backgroundThrottling: false,
                     webSecurity: webSecurity,
                     nodeIntegrationInSubFrames: false,
@@ -4591,92 +4596,59 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     view.webContents.setAudioMuted(true);
                 }
                 
-                // Set up WebSocket monitoring based on content script requirements
-                // Check if any content scripts need WebSocket monitoring
-                if (args.source && args.websocketMonitoring !== false) {
+                // Set up WebSocket monitoring for sources that need it
+                if (args.source && args.source.includes('streamelements')) {
                     try {
-                        // Read manifest to check for WebSocket monitoring needs
-                        const manifestPath = runningLocally ? 
-                            runningLocally + 'manifest.json' :
-                            path.join(__dirname, 'social_stream/manifest.json');
+                        log("Setting up WebSocket monitoring for StreamElements");
                         
-                        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-                        let needsWebSocketMonitoring = false;
-                        let websocketFilter = null;
+                        // Filter to only monitor StreamElements WebSockets
+                        const websocketFilter = (url) => {
+                            return url.includes('streamelements.com');
+                        };
                         
-                        // Check if this content script needs WebSocket monitoring
-                        if (manifest.content_scripts) {
-                            for (const contentScript of manifest.content_scripts) {
-                                if (contentScript.js && contentScript.js.some(js => args.source.includes(js.replace('./', '')))) {
-                                    // Check if this script has web_accessible_resources that suggest WebSocket interception
-                                    if (manifest.web_accessible_resources) {
-                                        for (const resource of manifest.web_accessible_resources) {
-                                            if (resource.resources && resource.resources.some(r => r.includes('-ws.js') || r.includes('websocket'))) {
-                                                needsWebSocketMonitoring = true;
-                                                // Extract domain filter from matches
-                                                if (contentScript.matches) {
-                                                    websocketFilter = (url) => {
-                                                        return contentScript.matches.some(pattern => {
-                                                            const domain = pattern.match(/https?:\/\/([^\/]+)/)?.[1];
-                                                            return domain && url.includes(domain.replace('*.', ''));
-                                                        });
-                                                    };
-                                                }
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
+                        const cleanup = setupWebSocketDebugger(view.webContents, {
+                            filter: websocketFilter,
+                            onMessage: (data) => {
+                                // Forward to content script via preload
+                                view.webContents.send('websocket-message', {
+                                    type: 'message',
+                                    data: data.data,
+                                    url: data.url,
+                                    timestamp: data.timestamp
+                                });
+                            },
+                            onOpen: (data) => {
+                                view.webContents.send('websocket-message', {
+                                    type: 'open',
+                                    url: data.url,
+                                    timestamp: Date.now()
+                                });
+                            },
+                            onClose: (data) => {
+                                view.webContents.send('websocket-message', {
+                                    type: 'close',
+                                    url: data.url,
+                                    timestamp: Date.now()
+                                });
+                            },
+                            onSend: (data) => {
+                                view.webContents.send('websocket-message', {
+                                    type: 'send',
+                                    data: data.data,
+                                    url: data.url,
+                                    timestamp: Date.now()
+                                });
                             }
-                        }
+                        });
                         
-                        // WebSocket monitoring removed - not needed
-                        /*
-                        if (needsWebSocketMonitoring) {
-                            const cleanup = setupWebSocketDebugger(view.webContents, {
-                                filter: websocketFilter,
-                                onMessage: (data) => {
-                                    // Forward to content script via preload
-                                    view.webContents.send('websocket-message', {
-                                        type: 'message',
-                                        data: data.data,
-                                        url: data.url,
-                                        timestamp: data.timestamp
-                                    });
-                                },
-                                onOpen: (data) => {
-                                    view.webContents.send('websocket-message', {
-                                        type: 'open',
-                                        url: data.url,
-                                        timestamp: Date.now()
-                                    });
-                                },
-                                onClose: (data) => {
-                                    view.webContents.send('websocket-message', {
-                                        type: 'close',
-                                        url: data.url,
-                                        timestamp: Date.now()
-                                    });
-                                },
-                                onSend: (data) => {
-                                    view.webContents.send('websocket-message', {
-                                        type: 'send',
-                                        data: data.data,
-                                        url: data.url,
-                                        timestamp: Date.now()
-                                    });
-                                }
-                            });
-                            
-                            // Store cleanup function for later
-                            view.__websocketDebuggerCleanup = cleanup;
-                        }
-                        */
+                        // Store cleanup function for later
+                        view.__websocketDebuggerCleanup = cleanup;
+                        log("WebSocket debugger attached successfully for StreamElements");
                     } catch (error) {
-                        console.error('Failed to check WebSocket monitoring requirements:', error);
+                        console.error('Failed to set up WebSocket monitoring:', error);
                     }
                 }
-
+                
                 //view.webContents.on("will-navigate", handleNavigation);
                 //view.webContents.on("new-window", handleNavigation);
 
@@ -4847,34 +4819,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                             var code =
                                 `
-													
-							  
-						   
-																											
-												 
-																								
-																																												
-																												
-					   
-																								
-						   
-			  
-			   
-						   
-								
-			 
-			
-			
-																					 
-																														   
-		   
-		   
-		 
-		
-								// Debug contextBridge availability
-								console.log('[Injected Script] window.ninjafy:', window.ninjafy);
-								console.log('[Injected Script] window.ninjafy.exposeDoSomethingInWebApp:', window.ninjafy?.exposeDoSomethingInWebApp);
-								
 								// Get the random flag from contextBridge if available
 								const injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 								window.__SSAPP_TAB_ID__ = ${view.tabID};
@@ -4883,7 +4827,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
 								chrome.runtime = {};
 								chrome.runtime.id = 1;
 								chrome.runtime.getURL = function(path) {
-									console.log('[Electron] chrome.runtime.getURL called with:', path);
 									// Return a placeholder
 									return 'electron-inject:' + path;
 								};
@@ -4941,16 +4884,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
 									
 									// For other messages, check if we can use ninjafy.sendMessage first
 									if (window.ninjafy && window.ninjafy.sendMessage) {
-										console.log("[Chrome Runtime] Using window.ninjafy.sendMessage for:", messageData);
 										window.ninjafy.sendMessage(null, messageData, c, window.__SSAPP_TAB_ID__);
 									} else {
 										// Fallback to postMessage
-										console.log("[Chrome Runtime] Using postMessage fallback for:", messageData);
 										const outgoingMessage = {
 											...messageData
 										};
 										outgoingMessage[injectedScriptFlag] = true;
 										outgoingMessage.__tabID__ = window.__SSAPP_TAB_ID__;
+										console.log('[Chrome Runtime Mock] Sending via postMessage:', outgoingMessage, 'Flag:', injectedScriptFlag);
 										window.postMessage(outgoingMessage, '*');
 										
 										if (c && !messageData.getSettings) {
@@ -7042,10 +6984,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
     // Original synchronous handler for backward compatibility
     ipcMain.on("sendToTab", function(eventRet, args) {
         log("sendToTab 1");
-        if (browserViews[args.tab]) {
-            const view = browserViews[args.tab]; // tab ID should be here
+        // Support both args.tab and args.tabID for compatibility
+        const tabId = args.tab || args.tabID;
+        const message = args.message || args; // Support both wrapped and unwrapped messages
+        
+        if (browserViews[tabId]) {
+            const view = browserViews[tabId]; // tab ID should be here
             if (view && view.webContents) {
-                view.webContents.send("sendToTab", args.message);
+                view.webContents.send("sendToTab", message);
             }
             eventRet.returnValue = true;
         } else {

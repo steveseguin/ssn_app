@@ -2,7 +2,7 @@ var manifest = {
   "name": "Social Stream Ninja",
   "description": "Powerful tooling to engage live chat on Youtube, Twitch, Zoom, and more.",
   "manifest_version": 3,
-  "version": "3.22.5",
+  "version": "3.28.10",
   "homepage_url": "http://socialstream.ninja/",
   "icons": {
     "128": "icons/icon-128.png"
@@ -21,7 +21,14 @@ var manifest = {
     "debugger",
     "tabs",
 	"scripting",
-	"activeTab"
+	"activeTab",
+	"tabCapture"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["sources/inject/streamelements-ws.js", "sources/inject/streamelements-network-monitor.js"],
+      "matches": ["https://streamelements.com/*"]
+    }
   ],
   "host_permissions": [
 	"http://localhost:8080/*",
@@ -33,7 +40,6 @@ var manifest = {
     "https://www.bigo.tv/*",
 	"https://soulbound.tv/*",
 	"https://claude.ai/*",
-	"https://arena.social/*",
 	"https://www.moonbeam.stream/*",
 	"https://*.patreon.com/*",
 	"https://patreon.com/*",
@@ -146,9 +152,13 @@ var manifest = {
     "https://play.rozy.tv/*",
     "https://www.crowdcast.io/e/*",
     "https://*.zoom.us/*",
+	"https://zoom.us/*",
+	"https://*.zoom.com/*",
+	"https://zoom.com/*",
     "https://watch.owncast.online/*",
     "https://live.simontv.org/*",
     "https://discord.com/*",
+	"https://discord.gg/*",
     "https://www.mixcloud.com/live/*/chat/",
     "https://vimeo.com/live*",
     "https://www.vimeo.com/live*",
@@ -178,10 +188,11 @@ var manifest = {
 	"https://live.vkvideo.ru/*/only-chat",
 	"https://vk.com/*",
     "https://maestro-launcher.vercel.app/",
-    "https://arena.tv/*",
+	"https://arena.social/*",
     "https://boltplus.tv/chatpopout/*",
 	"https://boltplus.tv/chatpopout?*",
     "https://chat.openai.com/*",
+	"https://chatgpt.com/*",
     "https://app.livestorm.co/*/live?*",
     "https://steamcommunity.com/broadcast/chatonly/*",
     "https://www.whatnot.com/live/*",
@@ -247,7 +258,7 @@ var manifest = {
       "js": [ "./sources/chzzk.js" ],
       "matches": [ "https://chzzk.naver.com/live/*/chat" ]
     },
-	 {
+	{
       "js": [ "./sources/parti.js" ],
       "matches": [ "https://parti.com/popout-chat?id=*" ]
     },
@@ -387,7 +398,7 @@ var manifest = {
     },
     {
       "js": [ "./sources/openai.js" ],
-      "matches": [ "https://chat.openai.com/*" ]
+      "matches": [ "https://chat.openai.com/*", "https://chatgpt.com/*"]
     },
 	{
       "js": [ "./sources/sooplive.js" ],
@@ -400,10 +411,6 @@ var manifest = {
     {
       "js": [ "./sources/bandlab.js" ],
       "matches": [ "https://*.bandlab.com/*" ]
-    },
-    {
-      "js": [ "./sources/arena.js" ],
-      "matches": [ "https://arena.tv/*" ]
     },
     {
       "js": [ "./sources/vercel.js" ],
@@ -708,7 +715,7 @@ var manifest = {
     },
     {
       "js": [ "./sources/zoom.js" ],
-      "matches": [ "https://*.zoom.us/*" ]
+      "matches": [ "https://*.zoom.us/*" , "https://zoom.us/*" , "https://*.zoom.com/*", "https://zoom.com/*" ]
     },
     {
       "js": [ "./sources/crowdcast.js" ],
@@ -716,7 +723,11 @@ var manifest = {
     },
     {
       "js": [ "./sources/discord.js" ],
-      "matches": [ "https://discord.com/*" ]
+      "matches": [ "https://discord.com/*" , "https://discord.gg/*" ]
+    },
+	{
+      "js": [ "./sources/capturevideo.js" ],
+      "matches": [ "https://discord.com/channels/*" ]
     },
     {
       "js": [ "./sources/mixcloud.js" ],
@@ -830,6 +841,12 @@ var manifest = {
         "https://vkplay.live/*/only-chat?*",
         "https://live.vkvideo.ru/*/only-chat"
       ]
+    },
+    {
+      "js": [ "./sources/streamelements.js" ],
+      "matches": [ "https://streamelements.com/overlay/*" ],
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
   "options_ui": {

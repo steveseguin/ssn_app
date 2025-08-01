@@ -36,6 +36,11 @@ window.addEventListener('message', (event) => {
 		return;
 	}
 	
+	// Debug logging for StreamElements messages
+	if (data.message && data.message.type === 'streamelements') {
+		console.log('[Preload] Received StreamElements message:', data);
+	}
+	
 	// Debug logging
 	if (PRELOAD_DEBUG && (data._authToken || data.message || data.getSettings)) {
 		console.log('[Preload] Received postMessage:', { 
@@ -141,7 +146,6 @@ var doSomethingInWebAppWrapper = function(message, sender, sendResponse) {
 	}
 };
 function configureContextBridge(){
-	console.log('[Preload] Configuring context bridge...');
 	try {
 		// Always expose to main world, regardless of whether it exists in isolated context
 		contextBridge.exposeInMainWorld('ninjafy', {
@@ -210,6 +214,7 @@ function configureContextBridge(){
 			  
 			  onWebSocketMessage: (callback) => {
 				ipcRenderer.on('websocket-message', (event, data) => {
+				  console.log('[Preload] Received websocket-message:', data);
 				  callback(data);
 				});
 			  },
@@ -230,7 +235,6 @@ function configureContextBridge(){
 			  
 			  closeStream: (streamId) => {}
 			});
-		console.log('[Preload] Context bridge configured successfully');
 	} catch(e){
 		// Silently fail if context isolation is disabled - this is expected
 		if (!e.message || !e.message.includes('contextBridge API can only be used when contextIsolation is enabled')) {
@@ -246,8 +250,61 @@ try {
 	configureContextBridge();
 } catch (e) {
 	if (e.message && e.message.includes('contextBridge API can only be used when contextIsolation is enabled')) {
-		console.log('[Preload] Context isolation is disabled - skipping contextBridge configuration');
-		// Don't need to do anything else - the app works without contextBridge when contextIsolation is false
+		// Context isolation is disabled - expose ninjafy directly on window
+		console.log('[Preload] Context isolation is disabled, exposing ninjafy directly');
+		window.ninjafy = {
+			// Expose the auth token directly as a property
+			_authToken: MESSAGE_AUTH_TOKEN,
+			
+			getInjectedScriptFlag: () => INJECTED_SCRIPT_FLAG,
+			
+			sendMessage: (a, b, c, tabID) => {
+				const messageData = b || a;
+				console.log('[Preload] ninjafy.sendMessage called:', { messageData, tabID });
+				
+				// When tabID is provided, this is a message that should be routed to the background
+				// via postMessage handler, not directly to a tab
+				const outgoingData = { ...messageData };
+				if (tabID !== undefined && tabID !== null && tabID !== false) {
+					outgoingData.__tabID__ = tabID;
+				}
+				
+				// Send via postMessage channel which routes to background.html
+				ipcRenderer.send('postMessage', outgoingData);
+				
+				// Execute callback if provided
+				if (c) {
+					// For getSettings, we expect a synchronous response
+					if (messageData.getSettings) {
+						const response = ipcRenderer.sendSync('postMessage', outgoingData);
+						c(response);
+					} else {
+						// For other messages, just acknowledge
+						setTimeout(() => c(null), 0);
+					}
+				}
+			},
+			
+			onWebSocketMessage: (callback) => {
+				ipcRenderer.on('websocket-message', (event, data) => {
+				  console.log('[Preload] Received websocket-message:', data);
+				  callback(data);
+				});
+			},
+			
+			// Add other necessary methods
+			exposeDoSomethingInWebApp: (callback) => {
+				window.doSomethingInWebApp = callback;
+			},
+			
+			sendDeviceList: (response) => {
+				ipcRenderer.send('deviceList', response);
+			},
+			
+			updateVersion: function (version) {
+				console.log("Version: "+version);
+			}
+		};
 	} else {
 		console.error('[Preload] Unexpected error configuring context bridge:', e);
 	}
