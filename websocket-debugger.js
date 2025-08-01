@@ -46,7 +46,6 @@ function setupWebSocketDebugger(webContents, options = {}) {
             switch (method) {
                 case 'Network.webSocketCreated':
                     const { requestId, url } = params;
-                    console.log('[WebSocket Debugger] WebSocket created:', url);
                     if (!filter || filter(url)) {
                         webSocketConnections.set(requestId, { url, requestId });
                         onOpen({ url, requestId });
@@ -64,9 +63,6 @@ function setupWebSocketDebugger(webContents, options = {}) {
                 case 'Network.webSocketFrameReceived':
                     const receivedConn = webSocketConnections.get(params.requestId);
                     if (receivedConn && params.response) {
-                        if (receivedConn.url.includes('streamelements')) {
-                            console.log('[WebSocket Debugger] StreamElements message:', params.response.payloadData);
-                        }
                         onMessage({
                             url: receivedConn.url,
                             data: params.response.payloadData,

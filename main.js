@@ -3842,8 +3842,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 window.chrome.runtime = {
                                     id: 'socialstream-extension-mock',
                                     sendMessage: function(extensionId, message, callback) {
-                                        console.log('[Chrome Runtime Mock] sendMessage called:', message);
-                                        
+                                                                                
                                         // Handle specific message types
                                         if (message && message.getSettings) {
                                             // Return mock settings response
@@ -4599,8 +4598,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 // Set up WebSocket monitoring for sources that need it
                 if (args.source && args.source.includes('streamelements')) {
                     try {
-                        log("Setting up WebSocket monitoring for StreamElements");
-                        
+                                                
                         // Filter to only monitor StreamElements WebSockets
                         const websocketFilter = (url) => {
                             return url.includes('streamelements.com');
@@ -4643,8 +4641,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         
                         // Store cleanup function for later
                         view.__websocketDebuggerCleanup = cleanup;
-                        log("WebSocket debugger attached successfully for StreamElements");
-                    } catch (error) {
+                                            } catch (error) {
                         console.error('Failed to set up WebSocket monitoring:', error);
                     }
                 }
@@ -4892,8 +4889,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 										};
 										outgoingMessage[injectedScriptFlag] = true;
 										outgoingMessage.__tabID__ = window.__SSAPP_TAB_ID__;
-										console.log('[Chrome Runtime Mock] Sending via postMessage:', outgoingMessage, 'Flag:', injectedScriptFlag);
-										window.postMessage(outgoingMessage, '*');
+																				window.postMessage(outgoingMessage, '*');
 										
 										if (c && !messageData.getSettings) {
 											setTimeout(() => c(null), 0);
@@ -5077,8 +5073,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 					chrome.runtime.sendMessage = function(a=null,b=null,c=null){
 						// Use postMessage to communicate with preload script
 						const messageData = b || a;
-						console.log('[Injected Script Default] Sending via postMessage:', messageData);
-						const outgoingMessage = {
+												const outgoingMessage = {
 							...messageData
 						};
 						outgoingMessage[injectedScriptFlag] = true;

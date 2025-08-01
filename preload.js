@@ -36,10 +36,6 @@ window.addEventListener('message', (event) => {
 		return;
 	}
 	
-	// Debug logging for StreamElements messages
-	if (data.message && data.message.type === 'streamelements') {
-		console.log('[Preload] Received StreamElements message:', data);
-	}
 	
 	// Debug logging
 	if (PRELOAD_DEBUG && (data._authToken || data.message || data.getSettings)) {
@@ -76,9 +72,6 @@ window.addEventListener('message', (event) => {
 			}, '*');
 		} else {
 			// Send without expecting response
-			if (PRELOAD_DEBUG) {
-				console.log('[Preload] Forwarding authenticated message to main process:', messageData);
-			}
 			ipcRenderer.send('postMessage', messageData);
 		}
 		return;
@@ -92,10 +85,6 @@ window.addEventListener('message', (event) => {
 		// Extract tab ID if provided
 		const tabID = data.__tabID__;
 		delete data.__tabID__;
-		
-		if (PRELOAD_DEBUG) {
-			console.log('[Preload] Forwarding message from injected script with tabID:', tabID, data);
-		}
 		
 		// Re-add tabID if it was present
 		if (tabID !== undefined && tabID !== null) {
@@ -112,9 +101,6 @@ window.addEventListener('message', (event) => {
 	// TODO: Eventually remove this once all scripts are updated to use auth tokens
 	if (data.message || data.delete || data.getSettings || data.getBTTV || 
 	    data.getSEVENTV || data.getFFZ || data.cmd || data.type === 'toBackground') {
-		if (PRELOAD_DEBUG) {
-			console.log('[Preload] Forwarding legacy message to main process:', data);
-		}
 		ipcRenderer.send('postMessage', data);
 	}
 });
@@ -214,7 +200,6 @@ function configureContextBridge(){
 			  
 			  onWebSocketMessage: (callback) => {
 				ipcRenderer.on('websocket-message', (event, data) => {
-				  console.log('[Preload] Received websocket-message:', data);
 				  callback(data);
 				});
 			  },
@@ -251,7 +236,6 @@ try {
 } catch (e) {
 	if (e.message && e.message.includes('contextBridge API can only be used when contextIsolation is enabled')) {
 		// Context isolation is disabled - expose ninjafy directly on window
-		console.log('[Preload] Context isolation is disabled, exposing ninjafy directly');
 		window.ninjafy = {
 			// Expose the auth token directly as a property
 			_authToken: MESSAGE_AUTH_TOKEN,
@@ -260,7 +244,6 @@ try {
 			
 			sendMessage: (a, b, c, tabID) => {
 				const messageData = b || a;
-				console.log('[Preload] ninjafy.sendMessage called:', { messageData, tabID });
 				
 				// When tabID is provided, this is a message that should be routed to the background
 				// via postMessage handler, not directly to a tab
@@ -287,7 +270,6 @@ try {
 			
 			onWebSocketMessage: (callback) => {
 				ipcRenderer.on('websocket-message', (event, data) => {
-				  console.log('[Preload] Received websocket-message:', data);
 				  callback(data);
 				});
 			},
