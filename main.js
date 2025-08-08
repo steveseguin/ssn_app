@@ -2939,6 +2939,17 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (eventRet.sender && eventRet.sender.getURL) {
                 sender.tab.url = eventRet.sender.getURL();
             }
+            
+            // For messages, pre-generate ID to return synchronously
+            // Background.js will use this ID if it exists (see line 3218: !request.message.id)
+            if (args[0] && args[0].message && !args[0].message.id) {
+                if (!global.messageCounter) {
+                    global.messageCounter = Math.floor(Math.random() * 90000);
+                }
+                global.messageCounter += 1;
+                args[0].message.id = global.messageCounter;
+            }
+            
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
                 if (frame.url.split("?")[0].endsWith("background.html")) {
                     frame.postMessage("fromMainSender", [args[0], {
@@ -2946,6 +2957,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }]);
                 }
             });
+            
+            // Return response with message ID for callbacks
+            if (args[0] && args[0].message) {
+                eventRet.returnValue = {
+                    state: cachedState.state !== undefined ? cachedState.state : true,
+                    id: args[0].message.id
+                };
+                return;
+            }
         }
         eventRet.returnValue = cachedState || {
             settings: {}

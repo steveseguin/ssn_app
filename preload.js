@@ -146,7 +146,7 @@ function configureContextBridge(){
 			return false;
 		  },
 		  
-		  sendMessage: async function(ignore=null, data=null, callback=false, tabID=false) {
+		  sendMessage: function(ignore=null, data=null, callback=false, tabID=false) {
 			// Add authentication token to messages
 			const authenticatedData = { ...data, _authToken: MESSAGE_AUTH_TOKEN };
 			
@@ -156,10 +156,8 @@ function configureContextBridge(){
 			}
 			
 			if (callback) {
-			  const response = await ipcRenderer.sendSync('postMessage', authenticatedData);
-			  if (callback) {
-				callback(response);
-			  }
+			  const response = ipcRenderer.sendSync('postMessage', authenticatedData);
+			  callback(response);
 			} else {
 			  ipcRenderer.send('postMessage', authenticatedData);
 			}
@@ -252,19 +250,13 @@ try {
 					outgoingData.__tabID__ = tabID;
 				}
 				
-				// Send via postMessage channel which routes to background.html
-				ipcRenderer.send('postMessage', outgoingData);
-				
-				// Execute callback if provided
+				// If callback is provided, use synchronous IPC to get response
 				if (c) {
-					// For getSettings, we expect a synchronous response
-					if (messageData.getSettings) {
-						const response = ipcRenderer.sendSync('postMessage', outgoingData);
-						c(response);
-					} else {
-						// For other messages, just acknowledge
-						setTimeout(() => c(null), 0);
-					}
+					const response = ipcRenderer.sendSync('postMessage', outgoingData);
+					c(response);
+				} else {
+					// No callback, send asynchronously
+					ipcRenderer.send('postMessage', outgoingData);
 				}
 			},
 			
