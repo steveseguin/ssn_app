@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.3.47",
+  "version": "0.3.48",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "main": "main.js",
@@ -154,7 +154,7 @@
   },
   "devDependencies": {
     "archiver": "^7.0.1",
-    "electron": "37.2.0",
+    "electron": "^37.2.6",
     "electron-builder": "^25.1.8",
     "electron-notarize": "git://github.com/electron/notarize.git",
     "fs-extra": "11.3.0",
@@ -182,7 +182,7 @@
     "minimist": "git+https://github.com/fortiZde/minimist.git",
     "phonemizer": "^1.2.1",
     "sharp": "^0.33.5",
-    "tiktok-live-connector": "^1.2.3",
+    "tiktok-live-connector": "^2.0.7-alpha2",
     "undici": "^7.5.0",
     "utf-8-validate": "^6.0.5",
     "ws": "^8.18.1",

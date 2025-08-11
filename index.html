@@ -65,7 +65,6 @@
         <button class="menu-toggle" onclick="toggleMenu()">☰</button>
         <ul>
             <li><a href="#" data-page="streams">🎭 Sources</a></li>
-			<li><a href="#" data-page="link-overlay">🔗 Links and Settings</a></li>
 			<li><a href="#" data-page="dashboard">📰 Status and Logs</a></li>
             <li><a href="#" data-page="event-flow-editor">🪤 Event Flow Editor</a></li>
 			<li><a href="#" data-page="vdo-ninja">🎦 Remote Camera Feed</a></li>
@@ -114,25 +113,25 @@
                 <span><button title="Add a chat source that isn't listed by providing the chat URL" onclick="newOtherSourcePrompt();" data-source-type="other"><img src="https://socialstream.ninja/sources/images/unknown.png" class="icon"/>Other chat sites</button></span>
             </div>
 
-            <div id="sources">
+            <div id="sources" style="right:calc(max(35%, 400px))">
                 <h2 style="margin: 10px;" data-i18n="app.title">Social Stream Ninja Standalone</h2>
                 <span id='newver' class='hidden'>
                     <h1 data-i18n="app.newversion">NEW VERSION AVAILABLE</h1>
                     <a id="downloadlink" data-i18n="app.download">Download new version here</a>
                 </span>
                 <p style="margin: 0 0 15px 10px; color: #9d8c8c;">Added Sources:</p>
-                </div>
+            </div>
+			
+			<div id="link-overlay-page" style="min-width:400px;right:0;position:absolute;height:100%;width:35%">
+				<iframe id="frame1" class="loading" style="height:100%;width:100%" allow="clipboard-write;document-domain;encrypted-media;sync-xhr;usb;web-share;cross-origin-isolated;accelerometer;midi *;geolocation;autoplay;camera;microphone;fullscreen;gyroscope;shared-array-buffer;" ></iframe>
+			</div>
         </div>
 
         <div id="dashboard-page" style="display:none;">
 			<iframe id="frame2" class="loading" style="height:100%;width:100%" aria-hidden="true" allow="clipboard-write;document-domain;encrypted-media;sync-xhr;usb;web-share;cross-origin-isolated;accelerometer;midi *;geolocation;autoplay;camera;microphone;fullscreen;gyroscope;shared-array-buffer;" title="Background Service Loader"></iframe>
         </div>
 			
-		 <div id="link-overlay-page" style="display:none;">
-			<iframe id="frame1" class="loading" style="height:100%;width:100%" allow="clipboard-write;document-domain;encrypted-media;sync-xhr;usb;web-share;cross-origin-isolated;accelerometer;midi *;geolocation;autoplay;camera;microphone;fullscreen;gyroscope;shared-array-buffer;" ></iframe>
-        </div>
-		
-		 <div id="vdo-ninja-page" style="display:none;">
+		<div id="vdo-ninja-page" style="display:none;">
 			<iframe id="frame3" class="loading" style="height:100%;width:100%" allow="clipboard-write;document-domain;encrypted-media;sync-xhr;usb;web-share;cross-origin-isolated;accelerometer;midi *;geolocation;autoplay;camera;microphone;fullscreen;gyroscope;shared-array-buffer;" ></iframe>
         </div>
 		
@@ -4061,16 +4060,16 @@ document.addEventListener('DOMContentLoaded', async function() {
 
         document.getElementById('streams-page')?.style.setProperty('display', 'none', 'important');
         document.getElementById('dashboard-page')?.style.setProperty('display', 'none', 'important');
-        document.getElementById('link-overlay-page')?.style.setProperty('display', 'none', 'important');
+        //document.getElementById('link-overlay-page')?.style.setProperty('display', 'none', 'important');
         document.getElementById('vdo-ninja-page')?.style.setProperty('display', 'none', 'important');
-        if (frame1) frame1.style.setProperty('display', 'none', 'important');
+       // if (frame1) frame1.style.setProperty('display', 'none', 'important');
         if (frame2) frame2.style.setProperty('display', 'none', 'important');
         if (frame3) frame3.style.setProperty('display', 'none', 'important');
 
 
         const streamsPage = document.getElementById('streams-page');
         const dashboardPage = document.getElementById('dashboard-page');
-        const linkOverlayPage = document.getElementById('link-overlay-page');
+        //const linkOverlayPage = document.getElementById('link-overlay-page');
         const vdoNinjaPage = document.getElementById('vdo-ninja-page');
 
 		if (pageId === 'dashboard' || pageId === 'event-flow-editor') {
@@ -4098,8 +4097,8 @@ document.addEventListener('DOMContentLoaded', async function() {
                 }
 			}
 		} else if (pageId === 'link-overlay') {
-			if (linkOverlayPage) linkOverlayPage.style.display = 'block';
-			if (frame1) frame1.style.display = 'block';
+			//if (linkOverlayPage) linkOverlayPage.style.display = 'block';
+		//	if (frame1) frame1.style.display = 'block';
 		} else if (pageId === 'streams') {
 			if (streamsPage) streamsPage.style.display = 'block';
 		} else if (pageId === 'vdo-ninja') {

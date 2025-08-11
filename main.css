@@ -305,6 +305,8 @@ body {
   
   #sources {
     left: 80px;
+	margin: 0;
+	padding: 2px !important;
   }
   
   .addnew button {
