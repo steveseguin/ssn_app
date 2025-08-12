@@ -92,13 +92,15 @@ class StateManager {
             if (parsed.urls?.length) {
                 parsed.urls.forEach(source => {
                     const id = this.generateSourceId(source);
+                    // Sources in the old settings format are manually added sources
+                    // Auto-discovered sources were never saved to the old format
                     this.state.sources.set(id, {
                         id,
                         target: source.target,
                         url: source.URL || '',
                         username: source.username || '',
                         videoId: source.videoId || '',
-                        isAutoDiscovered: false,
+                        isAutoDiscovered: false, // Old format only stored manual sources
                         connectionMode: source.state?.connectionMode || (source.target === 'tiktok' ? 'tiktok-websocket' : 'classic'),
                         isVisible: source.state?.togglehtml !== "false",
                         isMuted: source.state?.togglemute === "true",

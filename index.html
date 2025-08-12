@@ -1052,7 +1052,7 @@ async function newSourceVideoIDPrompt(targetPlatform) {
     }
 
     if (videoID) {
-       await newSourceVideoID(target, videoID.trim(), false, {});
+       await newSourceVideoID(target, videoID.trim(), false, { isAutoDiscovered: false });
     }
 }
 
@@ -1497,25 +1497,68 @@ async function cleanupYouTubeGroups() {
     // Get ALL sources, not just auto-discovered ones
     const allSources = stateManager.getSources();
     let removedCount = 0;
+    let debugInfo = {
+        totalSources: allSources.length,
+        youtubeSources: 0,
+        withVideoId: 0,
+        autoDiscovered: 0,
+        removed: 0
+    };
     
     allSources.forEach(source => {
-        // Remove ONLY auto-discovered YouTube sources that have a video ID
-        // These are expired streams that won't work anymore
-        // Manual sources (isAutoDiscovered=false or undefined) are preserved
-        if (source.target && source.target.startsWith('youtube') && source.videoId && source.isAutoDiscovered === true) {
-            console.log("Removing auto-discovered YouTube video source:", source.id, "videoId:", source.videoId, "username:", source.username || "none");
+        if (source.target && source.target.startsWith('youtube')) {
+            debugInfo.youtubeSources++;
             
-            // Remove the source element from DOM if it exists
-            const sourceElement = document.querySelector(`[data-source-id="${source.id}"]`);
-            if (sourceElement) {
-                sourceElement.remove();
+            if (source.videoId) {
+                debugInfo.withVideoId++;
+                
+                // Debug log for each YouTube source with video ID
+                console.log(`YouTube source ${source.id}: videoId=${source.videoId}, isAutoDiscovered=${source.isAutoDiscovered}, groupId=${source.groupId || 'none'}`);
+                
+                if (source.isAutoDiscovered === true) {
+                    debugInfo.autoDiscovered++;
+                    
+                    // Remove auto-discovered YouTube sources that have a video ID
+                    // These are expired streams that won't work anymore
+                    console.log("Removing auto-discovered YouTube video source:", source.id, "videoId:", source.videoId, "username:", source.username || "none");
+                    
+                    // Remove the source element from DOM if it exists
+                    const sourceElement = document.querySelector(`[data-source-id="${source.id}"]`);
+                    if (sourceElement) {
+                        sourceElement.remove();
+                    }
+                    
+                    // Remove from state
+                    stateManager.removeSource(source.id);
+                    removedCount++;
+                    debugInfo.removed++;
+                } else if ((source.isAutoDiscovered === undefined || source.isAutoDiscovered === null) && source.groupId) {
+                    // This might be a source that was auto-discovered but lost its flag during migration
+                    console.warn(`YouTube source ${source.id} with videoId=${source.videoId} has undefined/null isAutoDiscovered flag but belongs to group ${source.groupId}`);
+                    
+                    // For backward compatibility: if a YouTube source has a videoId and belongs to a group,
+                    // and doesn't have an explicit isAutoDiscovered=false flag, it's likely auto-discovered
+                    // (manually added sources are explicitly marked with isAutoDiscovered=false)
+                    console.log("Treating as likely auto-discovered and removing:", source.id);
+                    
+                    // Remove the source element from DOM if it exists
+                    const sourceElement = document.querySelector(`[data-source-id="${source.id}"]`);
+                    if (sourceElement) {
+                        sourceElement.remove();
+                    }
+                    
+                    // Remove from state
+                    stateManager.removeSource(source.id);
+                    removedCount++;
+                    debugInfo.removed++;
+                } else if (source.isAutoDiscovered === false) {
+                    console.log(`Preserving manually added YouTube source ${source.id}: videoId=${source.videoId}`);
+                }
             }
-            
-            // Remove from state
-            stateManager.removeSource(source.id);
-            removedCount++;
         }
     });
+    
+    console.log("YouTube cleanup debug info:", debugInfo);
     
     if (removedCount > 0) {
         console.log(`Removed ${removedCount} auto-discovered YouTube video sources on startup`);
