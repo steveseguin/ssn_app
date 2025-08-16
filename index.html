@@ -1243,7 +1243,10 @@ async function newSource(target, username, startup = false, initialState = {}, i
         
         // Set default connection mode based on platform
         let defaultMode = 'classic';
-        // TikTok defaults to classic/standard mode since WebSocket is read-only
+        // TikTok defaults to websocket mode
+        if (target === 'tiktok') {
+            defaultMode = 'tiktok-websocket';
+        }
         
         // Force classic mode for platforms that don't have websocket support
         let connectionMode = initialState.connectionMode || defaultMode;
@@ -2227,7 +2230,7 @@ function setupSourceControls(sourceElement) {
         if (modeSelector) {
             modeSelector.classList.remove('hidden');
             // Update the active state based on current connection mode
-            const currentMode = source?.connectionMode || 'classic';
+            const currentMode = source?.connectionMode || 'tiktok-websocket';
             modeSelector.querySelectorAll('.mode-option').forEach(opt => {
                 opt.classList.remove('active');
                 if (opt.dataset.mode === currentMode) {

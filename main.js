@@ -5459,6 +5459,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 if (manager.healthCheckInterval) {
                     clearInterval(manager.healthCheckInterval);
                 }
+                if (manager.viewerUpdateInterval) {
+                    clearInterval(manager.viewerUpdateInterval);
+                }
                 // Mark as stopped
                 manager.isStopped = true;
 
@@ -5829,10 +5832,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         sendGiftMessage(data, count) {
+            // Handle both v1 and v2 gift data structures
+            const giftName = data.giftName || `Gift ID: ${data.giftId || 'Unknown'}`;
+            const giftPictureUrl = data.giftPictureUrl || data.gift?.image?.url || '';
+            const diamondCount = data.diamondCount || data.gift?.diamond_count || 0;
+            
             const msg = {
-                chatmessage: `Sent ${data.giftName} x${count}${data.giftPictureUrl && !data.textonlymode ? ` <img src='${data.giftPictureUrl}'>` : ''}`,
-                hasDonation: `${data.diamondCount * count} 💎`,
-                donoValue: data.diamondCount * count * 0.005,
+                chatmessage: `Sent ${giftName} x${count}${giftPictureUrl && !data.textonlymode ? ` <img src='${giftPictureUrl}'>` : ''}`,
+                hasDonation: diamondCount > 0 ? `${diamondCount * count} 💎` : '',
+                donoValue: diamondCount * count * 0.005,
                 moderator: data.isModerator,
                 membership: data.isSubscriber,
                 chatname: data.nickname || data.uniqueId || 'Unknown',
@@ -5855,6 +5863,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
             this.connection = null;
             this.lastMessageTime = Date.now();
             this.healthCheckInterval = null;
+            this.viewerUpdateInterval = null;
+            this.lastViewerCount = 0;
             this.messageProcessor = new MessageProcessor(this);
             this.giftProcessor = new GiftProcessor(this);
             this.reconnectAttempts = 0;
@@ -5866,9 +5876,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
             try {
                 const connectionOptions = {
                     processInitialData: true,
-                    enableExtendedGiftInfo: true,
+                    enableExtendedGiftInfo: false,
                     enableWebsocketUpgrade: true,
                     requestPollingIntervalMs: 1000,
+                    fetchRoomInfoOnConnect: true,
                     clientParams: {
                         "app_language": "en-US",
                         "device_platform": "web"
@@ -5962,8 +5973,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 roomUser: (data) => {
                     this.lastMessageTime = Date.now();
                     if ("viewerCount" in data) {
+                        this.lastViewerCount = parseInt(data.viewerCount) || 0;
                         sendToBackground({
-                            meta: parseInt(data.viewerCount) || 0,
+                            meta: this.lastViewerCount,
                             type: "tiktok",
                             event: "viewer_update",
 							tid: this.virtualTabId
@@ -5987,6 +5999,23 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     this.forceReconnect();
                 }
             }, CONFIG.CONNECTION.HEALTH_CHECK_INTERVAL);
+        }
+
+        startViewerUpdateInterval() {
+            // Clear any existing interval
+            if (this.viewerUpdateInterval) clearInterval(this.viewerUpdateInterval);
+            
+            // Send viewer count every 30 seconds
+            this.viewerUpdateInterval = setInterval(() => {
+                if (this.connection && this.connection.getState().isConnected) {
+                    sendToBackground({
+                        meta: this.lastViewerCount,
+                        type: "tiktok",
+                        event: "viewer_update",
+                        tid: this.virtualTabId
+                    });
+                }
+            }, 30000); // 30 seconds
         }
 
         async connect() {
@@ -6029,6 +6058,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 isReconnecting: false
             });
             this.startHealthCheck();
+            this.startViewerUpdateInterval();
             this.reconnectAttempts = 0;
 
             mainWindow.webContents.send('tiktokConnectionStatus', {
@@ -6045,6 +6075,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 lastAttempt: Date.now()
             });
             if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
+            if (this.viewerUpdateInterval) clearInterval(this.viewerUpdateInterval);
 
             if (!this.isStopped) {
                 mainWindow.webContents.send('tiktokConnectionStatus', {
@@ -6100,6 +6131,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
             if (this.healthCheckInterval) {
                 clearInterval(this.healthCheckInterval);
+            }
+            if (this.viewerUpdateInterval) {
+                clearInterval(this.viewerUpdateInterval);
             }
         }
 
