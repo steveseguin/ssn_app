@@ -1332,7 +1332,10 @@ function createCustomDialog(htmlFile, width, height) {
             let blurTimeout;
             win.on('blur', () => {
                 // Clear any existing timeout
-                if (blurTimeout) clearTimeout(blurTimeout);
+                if (blurTimeout) {
+                    clearTimeout(blurTimeout);
+                    blurTimeout = null;
+                }
 
                 blurTimeout = setTimeout(() => {
                     if (win && !win.isDestroyed()) {
@@ -2595,6 +2598,18 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 }
             }
             browserViews = {};
+
+            // Clean up global intervals
+            if (global.intervals) {
+                global.intervals.forEach(interval => {
+                    try {
+                        clearInterval(interval);
+                    } catch (e) {
+                        console.error("Error clearing interval:", e);
+                    }
+                });
+                global.intervals = [];
+            }
 
             try {
                 // Close all child windows
@@ -5312,6 +5327,26 @@ async function createWindow(args, reuse = false, mainApp = false) {
         constructor(maxSize) {
             this.maxSize = maxSize;
             this.messageIds = new Map(); // Using Map for insertion order
+            this.cleanupInterval = null;
+            this.startAutoCleanup();
+        }
+
+        startAutoCleanup() {
+            // Auto-cleanup old messages every 5 minutes
+            this.cleanupInterval = setInterval(() => {
+                // Remove messages older than 10 minutes
+                this.cleanup(10 * 60 * 1000);
+                
+                // Also enforce max size if needed
+                while (this.messageIds.size > this.maxSize) {
+                    const oldestKey = this.messageIds.keys().next().value;
+                    this.messageIds.delete(oldestKey);
+                }
+            }, 5 * 60 * 1000);
+
+            // Track for cleanup
+            if (!global.intervals) global.intervals = [];
+            global.intervals.push(this.cleanupInterval);
         }
 
         has(msgId) {
@@ -5337,15 +5372,28 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         cleanup(maxAge) {
             const cutoffTime = Date.now() - maxAge;
+            let cleaned = 0;
             for (const [msgId, timestamp] of this.messageIds.entries()) {
                 if (timestamp < cutoffTime) {
                     this.messageIds.delete(msgId);
+                    cleaned++;
                 }
+            }
+            if (cleaned > 0) {
+                log(`MessageCache: Cleaned ${cleaned} old message IDs`);
             }
         }
 
         clear() {
             this.messageIds.clear();
+        }
+
+        destroy() {
+            if (this.cleanupInterval) {
+                clearInterval(this.cleanupInterval);
+                this.cleanupInterval = null;
+            }
+            this.clear();
         }
     }
 
@@ -5484,10 +5532,24 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     }
 
+    // Load CircularBuffer if available
+    let CircularBuffer;
+    try {
+        CircularBuffer = require('./circular-buffer.js');
+    } catch (e) {
+        // Fallback to array if CircularBuffer not available
+        CircularBuffer = null;
+    }
+
     class MessageProcessor {
         constructor(manager) {
             this.manager = manager;
-            this.queue = [];
+            // Use CircularBuffer if available, otherwise fallback to array
+            if (CircularBuffer) {
+                this.queue = new CircularBuffer(CONFIG.CHAT.MAX_QUEUE_SIZE);
+            } else {
+                this.queue = [];
+            }
             this.isProcessing = false;
             this.clusters = new Map();
             this.pendingBatch = [];
@@ -5507,10 +5569,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 messageCache.add(data.msgId);
             }
 
-            if (this.queue.length >= CONFIG.CHAT.MAX_QUEUE_SIZE) {
-                this.queue.shift();
+            // Handle CircularBuffer or regular array
+            if (this.queue.push) {
+                this.queue.push(data);
+            } else {
+                // Fallback for array
+                if (this.queue.length >= CONFIG.CHAT.MAX_QUEUE_SIZE) {
+                    this.queue.shift();
+                }
+                this.queue.push(data);
             }
-            this.queue.push(data);
             this.startProcessing();
         }
 
@@ -5579,8 +5647,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         startProcessing() {
             if (!this.isProcessing) {
+                // Get queue size properly for both CircularBuffer and array
+                const queueSize = this.queue.getSize ? this.queue.getSize() : this.queue.length;
                 // Use faster processing when queue is large
-                const interval = this.queue.length > CONFIG.CHAT.HIGH_LOAD_THRESHOLD 
+                const interval = queueSize > CONFIG.CHAT.HIGH_LOAD_THRESHOLD 
                     ? CONFIG.CHAT.HIGH_LOAD_INTERVAL 
                     : CONFIG.CHAT.PROCESSING_INTERVAL;
                 setTimeout(() => this.processQueue(), interval);
@@ -5588,15 +5658,17 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         processQueue() {
-            if (this.queue.length === 0 && this.pendingBatch.length === 0) {
+            // Check if queue is empty properly for both CircularBuffer and array
+            const isEmpty = this.queue.isEmpty ? this.queue.isEmpty() : (this.queue.length === 0);
+            if (isEmpty && this.pendingBatch.length === 0) {
                 this.isProcessing = false;
                 return;
             }
 
             this.isProcessing = true;
             
-            // Determine processing mode based on queue size
-            const queueSize = this.queue.length;
+            // Get queue size properly
+            const queueSize = this.queue.getSize ? this.queue.getSize() : this.queue.length;
             const isEmergencyMode = queueSize > CONFIG.CHAT.EMERGENCY_CLUSTER_THRESHOLD;
             const isHighLoad = queueSize > CONFIG.CHAT.HIGH_LOAD_THRESHOLD;
             
@@ -7088,6 +7160,64 @@ async function createWindow(args, reuse = false, mainApp = false) {
         return false;
     });
     
+    // Performance monitoring IPC handlers
+    ipcMain.handle('getPerformanceMetrics', async () => {
+        try {
+            const metrics = {
+                cpu: 0,
+                memory: process.memoryUsage().heapUsed,
+                memoryPercent: 0,
+                windows: []
+            };
+
+            // Get total system memory
+            const totalMem = require('os').totalmem();
+            metrics.memoryPercent = (metrics.memory / totalMem) * 100;
+
+            // Get CPU usage (averaged over 1 second)
+            const startUsage = process.cpuUsage();
+            await new Promise(resolve => setTimeout(resolve, 100));
+            const endUsage = process.cpuUsage(startUsage);
+            const totalCPUTime = (endUsage.user + endUsage.system) / 1000; // microseconds to milliseconds
+            metrics.cpu = (totalCPUTime / 100) * 100; // percentage over 100ms
+
+            // Collect metrics for each window/tab
+            for (const [id, view] of Object.entries(browserViews)) {
+                if (view && view.webContents && !view.isDestroyed()) {
+                    try {
+                        const wcMetrics = await view.webContents.executeJavaScript(`
+                            ({
+                                memory: performance.memory ? performance.memory.usedJSHeapSize : 0,
+                                title: document.title,
+                                url: window.location.href
+                            })
+                        `).catch(() => ({ memory: 0, title: 'Unknown', url: '' }));
+
+                        metrics.windows.push({
+                            id: id,
+                            title: wcMetrics.title || view.args?.title || 'Tab ' + id,
+                            url: wcMetrics.url || view.args?.url || '',
+                            memory: wcMetrics.memory || 0,
+                            cpu: 0 // CPU per window is complex to measure accurately
+                        });
+                    } catch (e) {
+                        // Window might be loading or destroyed
+                    }
+                }
+            }
+
+            return metrics;
+        } catch (error) {
+            console.error('Error getting performance metrics:', error);
+            return {
+                cpu: 0,
+                memory: 0,
+                memoryPercent: 0,
+                windows: []
+            };
+        }
+    });
+
     // Original synchronous handler for backward compatibility
     ipcMain.on("sendToTab", function(eventRet, args) {
         log("sendToTab 1");

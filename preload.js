@@ -216,7 +216,18 @@ function configureContextBridge(){
 			  
 			  readStreamChunk: (streamId) => {},
 			  
-			  closeStream: (streamId) => {}
+			  closeStream: (streamId) => {},
+			  
+			  // Performance monitoring
+			  requestPerformanceData: async () => {
+				return await ipcRenderer.invoke('getPerformanceMetrics');
+			  },
+			  
+			  onPerformanceData: (callback) => {
+				ipcRenderer.on('performance-data', (event, data) => {
+				  callback(data);
+				});
+			  }
 			});
 	} catch(e){
 		// Silently fail if context isolation is disabled - this is expected
