@@ -2424,7 +2424,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
     });
 
     ipcMain.on("fromBackgroundResponse", function(eventRet, value) {
-        log("\nBackgroundResponsed");
+        // log("\nBackgroundResponsed");
         //log(value)
 
         // // state, password, streamID, settings
@@ -5455,12 +5455,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     log("closing TIktok connection and cleaning up");
                     manager.connection.removeAllListeners();
                 }
-                // Clear any intervals
+                // Clear any intervals and timers
                 if (manager.healthCheckInterval) {
                     clearInterval(manager.healthCheckInterval);
                 }
                 if (manager.viewerUpdateInterval) {
                     clearInterval(manager.viewerUpdateInterval);
+                }
+                if (manager.reconnectTimer) {
+                    clearTimeout(manager.reconnectTimer);
+                    manager.reconnectTimer = null;
                 }
                 // Mark as stopped
                 manager.isStopped = true;
@@ -5869,6 +5873,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             this.giftProcessor = new GiftProcessor(this);
             this.reconnectAttempts = 0;
             this.isStopped = false;
+            this.reconnectTimer = null;
         }
 
         async initialize() {
@@ -5991,10 +5996,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         startHealthCheck() {
             if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
+            
+            // Track connection start time for proactive refresh
+            if (!this.connectionStartTime) {
+                this.connectionStartTime = Date.now();
+            }
 
             this.healthCheckInterval = setInterval(() => {
                 const timeSinceLastMessage = Date.now() - this.lastMessageTime;
-                if (timeSinceLastMessage > CONFIG.CONNECTION.MESSAGE_TIMEOUT) {
+                const connectionDuration = Date.now() - this.connectionStartTime;
+                
+                // Proactively reconnect after 1.5 hours to avoid 2-hour timeout
+                if (connectionDuration > 90 * 60 * 1000) { // 90 minutes
+                    console.info('Proactively refreshing connection after 90 minutes');
+                    this.connectionStartTime = Date.now();
+                    this.forceReconnect();
+                } else if (timeSinceLastMessage > CONFIG.CONNECTION.MESSAGE_TIMEOUT) {
                     console.info(`Connection appears stale - no messages for ${Math.round(timeSinceLastMessage/1000)}s, forcing reconnect`);
                     this.forceReconnect();
                 }
@@ -6007,7 +6024,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             
             // Send viewer count every 30 seconds
             this.viewerUpdateInterval = setInterval(() => {
-                if (this.connection && this.connection.getState().isConnected) {
+                if (this.connection && this.connection.isConnected) {
                     sendToBackground({
                         meta: this.lastViewerCount,
                         type: "tiktok",
@@ -6021,9 +6038,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
         async connect() {
             if (this.isStopped) return false;
 
+            // Check if already connected
+            if (this.connection && this.connection.isConnected) {
+                console.info('Already connected, skipping reconnect');
+                return true;
+            }
+
             try {
                 await this.connection.connect();
                 console.info('Connected successfully');
+                
+                // Clear any pending reconnect timer
+                if (this.reconnectTimer) {
+                    clearTimeout(this.reconnectTimer);
+                    this.reconnectTimer = null;
+                }
+                
                 return true;
             } catch (err) {
                 // Check for fatal errors
@@ -6135,6 +6165,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (this.viewerUpdateInterval) {
                 clearInterval(this.viewerUpdateInterval);
             }
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
+            }
         }
 
         forceReconnect() {
@@ -6178,7 +6212,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 nextAttemptIn: backoffDelay
             });
 
-            setTimeout(() => {
+            // Clear any existing reconnect timer
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+            }
+
+            this.reconnectTimer = setTimeout(() => {
+                this.reconnectTimer = null;
                 if (!this.isStopped) {
                     this.connect();
                 }

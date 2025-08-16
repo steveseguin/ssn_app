@@ -3818,6 +3818,12 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Clean up stale window IDs on startup
     const sources = stateManager.getSources();
     for (const source of sources) {
+        // Set default connection mode for TikTok sources if not set
+        if (source.target === 'tiktok' && !source.connectionMode) {
+            console.log(`Setting default tiktok-websocket mode for ${source.id} on startup`);
+            stateManager.updateSource(source.id, { connectionMode: 'tiktok-websocket' });
+        }
+        
         // Check regular windows
         if (source.vid && ipcRenderer) {
             const windowExists = await ipcRenderer.invoke('checkWindowExists', { vid: source.vid });
@@ -3883,9 +3889,29 @@ document.addEventListener('DOMContentLoaded', async function() {
             }
         });
         
-        // Check Rumble sources
+        // Check Rumble sources and update TikTok UI
         const sources = stateManager.getSources();
         sources.forEach(source => {
+            // Update TikTok sources to show correct mode
+            if (source.target === 'tiktok') {
+                const sourceElement = document.querySelector(`[data-source-id="${source.id}"]`);
+                if (sourceElement) {
+                    const mode = source.connectionMode || 'tiktok-websocket';
+                    
+                    // Update button text
+                    updateSourceUIAfterModeChange(sourceElement, mode, false);
+                    
+                    // Update mode selector to show active state
+                    const modeOptions = sourceElement.querySelectorAll('.mode-option');
+                    modeOptions.forEach(opt => {
+                        opt.classList.remove('active');
+                        if (opt.dataset.mode === mode) {
+                            opt.classList.add('active');
+                        }
+                    });
+                }
+            }
+            
             // Only auto-check username-based Rumble sources
             if (source.autoActivate && source.target === 'rumble' && source.username && source.status !== 'active') {
                 console.log(`Starting auto-check for Rumble source on startup: ${source.username}`);
