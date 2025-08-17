@@ -1342,7 +1342,10 @@ async function newSourceVideoID(target, videoID, startup = false, initialState =
     
     // Set default connection mode based on platform
     let defaultMode = 'classic';
-    // TikTok defaults to classic/standard mode since WebSocket is read-only
+    // TikTok defaults to websocket mode
+    if (target === 'tiktok') {
+        defaultMode = 'tiktok-websocket';
+    }
 
     const sourceId = stateManager.addSource({
         target,
