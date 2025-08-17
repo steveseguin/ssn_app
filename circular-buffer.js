@@ -68,6 +68,27 @@ class CircularBuffer {
         }
         return result;
     }
+
+    // Add splice-like functionality for compatibility
+    splice(start, deleteCount) {
+        if (start !== 0) {
+            throw new Error('CircularBuffer splice only supports start index 0');
+        }
+        
+        const result = [];
+        const count = Math.min(deleteCount || this.size, this.size);
+        
+        for (let i = 0; i < count; i++) {
+            result.push(this.shift());
+        }
+        
+        return result;
+    }
+
+    // Compatibility property for array-like behavior
+    get length() {
+        return this.size;
+    }
 }
 
 if (typeof module !== 'undefined' && module.exports) {
