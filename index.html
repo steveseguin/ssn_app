@@ -984,6 +984,11 @@ async function newSourcePrompt(target) {
     }
 
     if (username) {
+        // Clean up username - remove @ for platforms that don't use it
+        // YouTube needs @ for handles, so we preserve it there
+        if (target !== 'youtube' && target !== 'youtubeshorts') {
+            username = username.replace(/^@+/, '');
+        }
         await newSource(target, username.trim(), false, {}, isChannelName);
     }
 }
@@ -1117,6 +1122,13 @@ async function newSource(target, username, startup = false, initialState = {}, i
     document.getElementById('welcomeFrame')?.remove();
     
      if (username) {
+        // Clean up username based on platform requirements
+        // Remove @ from platforms that don't need it (most platforms)
+        // YouTube is special - it actually uses @ for handles
+        if (target !== 'youtube' && target !== 'youtubeshorts') {
+            // Remove @ symbol from the start for all platforms except YouTube
+            username = username.replace(/^@+/, '').trim();
+        }
         let isUrl = false;
         try { new URL(username); isUrl = true; } catch (_) {}
 
