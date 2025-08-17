@@ -860,7 +860,8 @@ async function createYouTubeEntry(streamData, usernameForGroup, isShortSelected)
         groupId = stateManager.addGroup({ 
             target, 
             username: usernameForGroup, 
-            isChannel: (usernameForGroup.startsWith('UC') || usernameForGroup.startsWith('@') ? true : false),
+            // Only UC/HC/UU prefixes indicate a channel ID. @ is a handle, not necessarily a channel
+            isChannel: (usernameForGroup.startsWith('UC') || usernameForGroup.startsWith('HC') || usernameForGroup.startsWith('UU')),
             autoActivate: false 
         });
         // The groupAdded listener will handle creating the group DOM element.
@@ -1123,11 +1124,14 @@ async function newSource(target, username, startup = false, initialState = {}, i
     
      if (username) {
         // Clean up username based on platform requirements
-        // Remove @ from platforms that don't need it (most platforms)
-        // YouTube is special - it actually uses @ for handles
+        // For YouTube: Keep @ for handles, UC for channels, c/ for custom channels
+        // For other platforms: Remove @ symbol as they don't use it
         if (target !== 'youtube' && target !== 'youtubeshorts') {
             // Remove @ symbol from the start for all platforms except YouTube
             username = username.replace(/^@+/, '').trim();
+        } else {
+            // For YouTube, just trim whitespace but preserve @, UC, c/ prefixes
+            username = username.trim();
         }
         let isUrl = false;
         try { new URL(username); isUrl = true; } catch (_) {}
