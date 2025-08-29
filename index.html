@@ -2962,8 +2962,15 @@ async function createClassicWindowFromSource(source, tabid = false) {
             
             try {
                 const response = await fetchWithRetry(videoUrl, {
-                    headers: {'User-Agent': config?.global?.userAgent || 'Mozilla/5.0'},
-                    timeout: 10000
+                    headers: {
+                        'User-Agent': config?.global?.userAgent || 'Mozilla/5.0',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Referer': 'https://rumble.com/',
+                        'Cache-Control': 'no-cache',
+                        'Pragma': 'no-cache'
+                    },
+                    timeout: 15000
                 }, 2); // Only 2 retries for Rumble to prevent long freezes
                 
                 if (response.status && response.status !== 200) {
@@ -4164,6 +4171,12 @@ document.addEventListener('DOMContentLoaded', async function() {
     stateManager.on('sourceRemoved', ({ sourceId, source }) => {
         const element = document.querySelector(`[data-source-id="${sourceId}"]`);
         element?.remove();
+        // Stop any platform-specific auto-checkers for this source
+        try {
+            if (source && source.target === 'rumble') {
+                stopRumbleAutoCheck(sourceId);
+            }
+        } catch (e) { console.warn('Error stopping auto-check for removed source', sourceId, e); }
         manageWelcomePage();
     });
 
@@ -4222,6 +4235,8 @@ document.addEventListener('DOMContentLoaded', async function() {
     stateManager.on('groupRemoved', ({ groupId, group }) => {
         const element = document.querySelector(`[data-group-id="${groupId}"]`);
         element?.remove();
+        // Stop any YouTube group auto-check timers
+        try { stopYouTubeGroupAutoCheck(groupId); } catch (e) { /* noop */ }
         manageWelcomePage();
     });
     

@@ -44,44 +44,77 @@ function compareVersions(version1, version2) {
 	return 0;
 }
 async function getRumbleVideoId(url) {
-	var videoID = "";
-	await fetch(url)
-		.then(res => res.text())
-		.then(res => {
-			res.split("video_id: ").forEach(bit => {
-				if (parseInt(bit.split(", ")[0]) == bit.split(", ")[0]) {
-					if (bit.split(", ")[0]) {
-						videoID = bit.split(", ")[0];
-					}
-				}
-			});
-		}).catch(e => {
-			console.error(e);
-		});
-	return videoID
+    // Returns numeric chat ID extracted from the Rumble video page
+    const headers = {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://rumble.com/',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+    };
+    try {
+        // Prefer main-process fetch to avoid CORS/UA quirks
+        if (typeof ipcRenderer !== 'undefined' && ipcRenderer) {
+            const response = await ipcRenderer.invoke('nodefetch', {
+                url,
+                headers: { ...headers, 'User-Agent': (config?.global?.userAgent || 'Mozilla/5.0') },
+                timeout: 15000
+            });
+            const html = response?.data || '';
+            if (html) {
+                const match = html.match(/video_id:\s*(\d+)/);
+                if (match && match[1]) return match[1];
+            }
+        }
+    } catch (e) {
+        console.warn('nodefetch getRumbleVideoId failed, falling back to renderer fetch:', e?.message || e);
+    }
+    try {
+        const res = await fetch(url, { headers, credentials: 'omit', cache: 'no-store' });
+        const html = await res.text();
+        const match = html.match(/video_id:\s*(\d+)/);
+        if (match && match[1]) return match[1];
+    } catch (e) {
+        console.error('Error fetching Rumble video page:', e);
+    }
+    return "";
 }
 
 async function getRumbleChatId(videoId) {
 	// Convert video ID to full URL if needed
 	const url = videoId.startsWith('http') ? videoId : `https://rumble.com/${videoId}.html`;
 	
-	try {
-		const response = await fetch(url);
-		const html = await response.text();
-		
-		// Look for video_id in the page (which is actually the chat ID)
-		const match = html.match(/video_id:\s*(\d+)/);
-		if (match && match[1]) {
-			console.log(`Found Rumble chat ID: ${match[1]} for video: ${videoId}`);
-			return match[1];
-		}
-		
-		console.warn(`Could not find chat ID for Rumble video: ${videoId}`);
-		return null;
-	} catch (e) {
-		console.error('Error fetching Rumble chat ID:', e);
-		return null;
-	}
+    try {
+        // Prefer main-process fetch
+        if (typeof ipcRenderer !== 'undefined' && ipcRenderer) {
+            const response = await ipcRenderer.invoke('nodefetch', {
+                url,
+                headers: { 'User-Agent': (config?.global?.userAgent || 'Mozilla/5.0'), 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Referer': 'https://rumble.com/', 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+                timeout: 15000
+            });
+            const html = response?.data || '';
+            const match = html.match(/video_id:\s*(\d+)/);
+            if (match && match[1]) {
+                console.log(`Found Rumble chat ID: ${match[1]} for video: ${videoId}`);
+                return match[1];
+            }
+        }
+    } catch (e) {
+        console.warn('nodefetch getRumbleChatId failed, falling back to renderer fetch:', e?.message || e);
+    }
+    try {
+        const res = await fetch(url, { headers: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Referer': 'https://rumble.com/', 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }, credentials: 'omit', cache: 'no-store' });
+        const html = await res.text();
+        const match = html.match(/video_id:\s*(\d+)/);
+        if (match && match[1]) {
+            console.log(`Found Rumble chat ID: ${match[1]} for video: ${videoId}`);
+            return match[1];
+        }
+    } catch (e) {
+        console.error('Error fetching Rumble chat ID:', e);
+    }
+    console.warn(`Could not find chat ID for Rumble video: ${videoId}`);
+    return null;
 }
 function matchRuleShort(str, rule) {
 	var escapeRegex = (str) => str.replace(/([.*+?^=!:${}()|\[\]\/\\])/g, "\\$1");

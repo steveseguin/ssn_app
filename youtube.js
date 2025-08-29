@@ -910,17 +910,64 @@ async function fetchRumble(username, alt = false) {
             console.warn("ipcRenderer not available for fetchRumble.");
             return false;
         }
-        const response = await ipcRenderer.invoke('nodefetch', {
-            url: urlToFetch,
-            headers: {'User-Agent': config?.global?.userAgent || getDefaultConfig().global.userAgent },
-            timeout: 10000
-        });
-        const htmlData = response?.data || response;
+        const commonHeaders = {
+            'User-Agent': config?.global?.userAgent || getDefaultConfig().global.userAgent,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://rumble.com/',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+        };
+
+        // Try Node-side fetch first (explicit UA), then fallback to renderer fetch
+        let htmlData = null;
+        try {
+            const response = await ipcRenderer.invoke('nodefetch', {
+                url: urlToFetch,
+                headers: commonHeaders,
+                timeout: 15000
+            });
+            if (response && response.status >= 200 && response.status < 400 && typeof response.data === 'string') {
+                htmlData = response.data;
+            } else {
+                console.warn('Rumble nodefetch returned non-OK or non-text response:', response?.status);
+            }
+        } catch (e) {
+            console.warn('Rumble nodefetch failed, will try renderer fetch:', e?.message || e);
+        }
+
+        if (!htmlData) {
+            try {
+                const res = await fetch(urlToFetch, {
+                    method: 'GET',
+                    headers: {
+                        // Cannot set User-Agent from renderer; rely on Chromium UA
+                        'Accept': commonHeaders['Accept'],
+                        'Accept-Language': commonHeaders['Accept-Language'],
+                        'Referer': commonHeaders['Referer'],
+                        'Cache-Control': commonHeaders['Cache-Control'],
+                        'Pragma': commonHeaders['Pragma']
+                    },
+                    credentials: 'omit',
+                    cache: 'no-store',
+                    redirect: 'follow'
+                });
+                if (res.ok) {
+                    htmlData = await res.text();
+                } else {
+                    console.warn('Rumble renderer fetch returned non-OK status:', res.status);
+                }
+            } catch (e) {
+                console.warn('Rumble renderer fetch failed:', e?.message || e);
+            }
+        }
+
+        const htmlDataResolved = htmlData;
 		//console.log(htmlData);
-        if (htmlData && typeof htmlData === 'string') {
+        if (htmlDataResolved && typeof htmlDataResolved === 'string') {
             // Try new method first (looking for href pattern)
             const altRegex = /videostream__status--live[\s\S]{0,500}?href=["']\/([^"']+\.html)/;
-            const altMatch = htmlData.match(altRegex);
+            const altMatch = htmlDataResolved.match(altRegex);
             
             if (altMatch && altMatch[1]) {
                 // Extract just the video ID for compatibility, but also save the full path
@@ -937,7 +984,7 @@ async function fetchRumble(username, alt = false) {
             // Fallback to old method (looking for data-video-id pattern)
             console.log("Trying old rumble fetch method...");
             try {
-                const oldMethodMatch = htmlData.split('data-video-id="').slice(1).find(segment => segment.includes("videostream__status--live"));
+                const oldMethodMatch = htmlDataResolved.split('data-video-id="').slice(1).find(segment => segment.includes("videostream__status--live"));
                 if (oldMethodMatch) {
                     const videoId = oldMethodMatch.split('"')[0];
                     if (videoId) {

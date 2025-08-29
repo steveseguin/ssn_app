@@ -5466,10 +5466,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
         CHAT: {
             ENABLE_CLUSTERING: false,
             PROCESSING_INTERVAL: 100,
-            MAX_QUEUE_SIZE: 50000,
+            // Hard cap for total queued messages across TikTok chat processing
+            MAX_QUEUE_SIZE: 10000,
+            // Soft cap target to trim back to when MAX_QUEUE_SIZE is reached
+            SOFT_CAP: 1000,
             MAX_CLUSTER_SIZE: 100,
             CLUSTER_WINDOW: 500,
-            MESSAGE_CACHE_SIZE: 100,
+            // Dedup cache size for TikTok message IDs
+            MESSAGE_CACHE_SIZE: 1000,
             HIGH_LOAD_THRESHOLD: 5000,
             HIGH_LOAD_INTERVAL: 20,
             EMERGENCY_CLUSTER_THRESHOLD: 10000,
@@ -5573,15 +5577,23 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 messageCache.add(data.msgId);
             }
 
-            // Handle CircularBuffer or regular array
-            if (this.queue.push) {
-                this.queue.push(data);
-            } else {
-                // Fallback for array
-                if (this.queue.length >= CONFIG.CHAT.MAX_QUEUE_SIZE) {
-                    this.queue.shift();
+            // Enforce queue caps (works for CircularBuffer and Array)
+            const getSize = () => (this.queue.getSize ? this.queue.getSize() : this.queue.length);
+            let qSize = getSize();
+            if (qSize >= CONFIG.CHAT.MAX_QUEUE_SIZE) {
+                // Trim oldest entries down to SOFT_CAP before adding new
+                const target = Math.max(0, CONFIG.CHAT.SOFT_CAP - 1);
+                while (getSize() > target) {
+                    if (this.queue.shift) this.queue.shift();
+                    else break;
                 }
-                this.queue.push(data);
+            }
+
+            // Add the new item
+            if (this.queue.push) this.queue.push(data);
+            else {
+                // Extremely unlikely path, but keep safe
+                try { this.queue[this.queue.length] = data; } catch (_) {}
             }
             this.startProcessing();
         }
