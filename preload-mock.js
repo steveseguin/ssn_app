@@ -134,7 +134,7 @@ Object.defineProperty(navigator, 'productSub', {
 if (navigator.userAgentData && navigator.userAgent.includes('Chrome')) {
   // Extract Chrome version from the actual user agent that was set
   const chromeMatch = navigator.userAgent.match(/Chrome\/(\d+)/);
-  const chromeVersion = chromeMatch ? chromeMatch[1] : '138'; // Chrome 138 is current stable as of July 2025
+  const chromeVersion = chromeMatch ? chromeMatch[1] : '139'; // Default to 139 if not detectable
   
   if (PRELOAD_DEBUG) console.log('[Preload] Detected Chrome version from UA:', chromeVersion);
   
@@ -147,7 +147,7 @@ if (navigator.userAgentData && navigator.userAgent.includes('Chrome')) {
       result.brands = [
         {"brand": "Google Chrome", "version": chromeVersion},
         {"brand": "Chromium", "version": chromeVersion},
-        {"brand": "Not)A;Brand", "version": "99"}
+        {"brand": "Not;A=Brand", "version": "99"}
       ];
     }
     
@@ -155,13 +155,13 @@ if (navigator.userAgentData && navigator.userAgent.includes('Chrome')) {
       result.fullVersionList = [
         {"brand": "Google Chrome", "version": `${chromeVersion}.0.0.0`},
         {"brand": "Chromium", "version": `${chromeVersion}.0.0.0`},
-        {"brand": "Not)A;Brand", "version": "99.0.0.0"}
+        {"brand": "Not;A=Brand", "version": "99.0.0.0"}
       ];
     }
     
     // Fix platform version to match Windows 11 (more common in 2025)
     if (hints.includes('platformVersion')) {
-      result.platformVersion = "15.0.0"; // Windows 11 version
+      result.platformVersion = "19.0.0"; // Windows 11 platformVersion equivalent
     }
     
     return result;
@@ -172,7 +172,7 @@ if (navigator.userAgentData && navigator.userAgent.includes('Chrome')) {
     get: () => [
       {"brand": "Google Chrome", "version": chromeVersion},
       {"brand": "Chromium", "version": chromeVersion},
-      {"brand": "Not)A;Brand", "version": "99"}
+      {"brand": "Not;A=Brand", "version": "99"}
     ],
     configurable: true
   });

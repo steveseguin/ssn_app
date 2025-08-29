@@ -64,7 +64,7 @@
     <nav id="main-navigation">
         <button class="menu-toggle" onclick="toggleMenu()">☰</button>
         <ul>
-            <li><a href="#" data-page="streams">🎭 Sources</a></li>
+            <li><a href="#" data-page="streams">🎭 Sources and Settings</a></li>
 			<li><a href="#" data-page="dashboard">📰 Status and Logs</a></li>
             <li><a href="#" data-page="event-flow-editor">🪤 Event Flow Editor</a></li>
 			<li><a href="#" data-page="vdo-ninja">🎦 Remote Camera Feed</a></li>
@@ -1828,6 +1828,16 @@ function startYouTubeGroupAutoCheck(groupId) {
     
     const group = stateManager.getGroup(groupId);
     if (!group || !group.autoActivate) return;
+
+    // Skip auto-check entirely if any source in the group is already active
+    const hasActive = (group.streams || []).some(sid => {
+        const s = stateManager.getSource(sid);
+        return s && s.status === 'active' && (s.vid || s.wssId);
+    });
+    if (hasActive) {
+        console.log(`YouTube group ${group.username} already has an active stream; skipping auto-check.`);
+        return;
+    }
     
     console.log(`Starting auto-check for YouTube group: ${group.username}`);
     
@@ -1852,6 +1862,17 @@ function stopYouTubeGroupAutoCheck(groupId) {
 }
 
 async function checkYouTubeGroupForNewStreamsWithBackoff(groupId) {
+    // If any stream is already active, stop checking and return
+    const groupPre = stateManager.getGroup(groupId);
+    if (groupPre && (groupPre.streams || []).some(sid => {
+        const s = stateManager.getSource(sid);
+        return s && s.status === 'active' && (s.vid || s.wssId);
+    })) {
+        console.log(`YouTube group ${groupPre.username} has an active stream; stopping auto-check.`);
+        stopYouTubeGroupAutoCheck(groupId);
+        return;
+    }
+
     // Check for new streams
     const foundNewStreams = await checkYouTubeGroupForNewStreams(groupId);
     
@@ -1878,7 +1899,7 @@ async function checkYouTubeGroupForNewStreamsWithBackoff(groupId) {
     const group = stateManager.getGroup(groupId);
     if (group) {
         const minutes = Math.floor(nextInterval / 60000);
-        console.log(`No live streams found for YouTube group ${group.username}, checking again in ${minutes} minute(s)`);
+        console.log(`No new streams found for YouTube group ${group.username}, checking again in ${minutes} minute(s)`);
     }
     
     // Schedule next check
@@ -1944,6 +1965,26 @@ async function checkYouTubeGroupForNewStreams(groupId) {
     // Filter streams based on type
     const isShorts = group.target === "youtubeshorts";
     const filteredStreams = streams.filter(stream => stream.isShort === isShorts);
+
+    // Further filter to eligible statuses:
+    // - live
+    // - upcoming within the next 60 minutes
+    const now = new Date();
+    const eligibleStreams = filteredStreams.filter(stream => {
+        if (!stream || !stream.status) return false;
+        if (stream.status === 'live') return true;
+        if (stream.status === 'upcoming' && stream.scheduledStartTime) {
+            try {
+                let startMs = stream.scheduledStartTime;
+                if (typeof startMs === 'string') startMs = Number(startMs);
+                if (typeof startMs === 'number' && startMs < 1e12) startMs *= 1000; // seconds -> ms
+                const start = new Date(startMs);
+                const diffMins = (start - now) / (1000 * 60);
+                return diffMins >= 0 && diffMins <= 60; // within next hour
+            } catch (_) { /* ignore parse errors */ }
+        }
+        return false;
+    });
     
     // Get existing video IDs for this group
     const existingVideoIds = new Set();
@@ -1954,8 +1995,8 @@ async function checkYouTubeGroupForNewStreams(groupId) {
         }
     });
     
-    // Find new streams
-    const newStreams = filteredStreams.filter(stream => !existingVideoIds.has(stream.videoId));
+    // Find new streams among eligible list only
+    const newStreams = eligibleStreams.filter(stream => !existingVideoIds.has(stream.videoId));
     
     if (newStreams.length > 0) {
         console.log(`Found ${newStreams.length} new streams for group ${group.username}${usingFallback ? ' (via fallback)' : ''}`);
@@ -1970,7 +2011,8 @@ async function checkYouTubeGroupForNewStreams(groupId) {
                 groupId: groupId,
                 videoId: stream.videoId,
                 title: stream.title,
-                autoActivate: true // Inherit auto-activate from group
+                autoActivate: true, // Inherit auto-activate from group
+                connectionMode: group.connectionMode || 'classic'
             };
             
             console.log("Adding new YouTube stream:", newSource);
@@ -1989,7 +2031,48 @@ async function checkYouTubeGroupForNewStreams(groupId) {
             }, 500);
         }
     }
-    
+
+    // If there are eligible streams but none are new, try activating any existing eligible stream entries that are not active
+    if (newStreams.length === 0 && eligibleStreams.length > 0) {
+        let activatedExisting = 0;
+        for (const stream of eligibleStreams) {
+            // Find the existing source within this group matching the videoId
+            const existingSourceId = group.streams.find(sid => {
+                const s = stateManager.getSource(sid);
+                return s && s.videoId === stream.videoId;
+            });
+            if (!existingSourceId) continue;
+            const existingSource = stateManager.getSource(existingSourceId);
+            if (!existingSource) continue;
+            const isOpen = !!(existingSource.vid || existingSource.wssId);
+            const isActive = existingSource.status === 'active';
+            if (isOpen || isActive) continue;
+
+            try {
+                // Ensure a DOM element exists
+                let sourceElement = document.querySelector(`[data-source-id="${existingSourceId}"]`);
+                if (!sourceElement) {
+                    sourceElement = createSourceElement(existingSourceId);
+                    const groupElement = document.querySelector(`[data-group-id="${groupId}"]`);
+                    const streamsContainer = groupElement?.querySelector('.stream-group');
+                    if (sourceElement && streamsContainer) streamsContainer.appendChild(sourceElement);
+                }
+                const activateButton = sourceElement?.querySelector('[data-activatehtml]');
+                if (activateButton) {
+                    const winId = await createWindow(activateButton);
+                    if (winId) activatedExisting++;
+                }
+            } catch (e) {
+                console.warn('Failed to activate existing eligible YouTube source:', existingSourceId, e);
+            }
+        }
+        if (activatedExisting > 0) {
+            console.log(`Activated ${activatedExisting} existing eligible stream(s) for group ${group.username}`);
+            // Treat as success so we stop the backoff loop
+            return true;
+        }
+    }
+
     // Return true only if we found NEW streams (not just any streams)
     return newStreams.length > 0;
 }
@@ -2827,12 +2910,18 @@ async function createClassicWindowFromSource(source, tabid = false) {
             console.log("Attempting to fetch video ID for YouTube classic activation:", source.username);
             const videoDescArray = await fetchYoutube(source.username, false) || await fetchYoutube(source.username, true);
             if (videoDescArray && videoDescArray.length > 0) {
-                const videoDesc = videoDescArray[0];
+                // Only use a LIVE stream when resolving by username in classic mode
+                const liveOnly = videoDescArray.filter(v => v && v.status === 'live');
+                if (liveOnly.length === 0) {
+                    Toast.error("YouTube Error", `No live video found for ${source.username} to activate in classic mode.`);
+                    return false;
+                }
+                const videoDesc = liveOnly[0];
                 stateManager.updateSource(source.id, { videoId: videoDesc.videoId }); 
                 urlToLoad = `https://www.youtube.com/live_chat?is_popout=1&v=${videoDesc.videoId}${isShort ? '&shorts' : ''}`;
                 stateManager.updateSource(source.id, { url: urlToLoad });
             } else {
-                 Toast.error("YouTube Error", `No live video found for ${source.username} to activate in classic mode.`);
+                Toast.error("YouTube Error", `No live video found for ${source.username} to activate in classic mode.`);
                 return false;
             }
         }
@@ -3078,6 +3167,7 @@ async function createClassicWindowFromSource(source, tabid = false) {
     // Apply custom user agent if set
     if (source.userAgent && source.userAgent !== 'AUTO') {
         conf.userAgent = source.userAgent;
+        if (source.mockUserAgentData) conf.mockUserAgentData = source.mockUserAgentData;
         console.log('[CreateClassicWindow] Using custom user agent:', source.userAgent);
     } else {
         console.log('[CreateClassicWindow] Using AUTO user agent from config:', conf.userAgent);
@@ -3100,6 +3190,7 @@ async function createClassicWindowFromSource(source, tabid = false) {
             isBetaMode: isBetaMode,
             domain: new URL(urlToLoad).hostname
         });
+        console.log('[CreateClassicWindow] Created window/tab ID:', response, 'for', source.username || source.videoId);
         return response;
         
         // TODO: Fix async implementation
@@ -3132,6 +3223,7 @@ async function createWindowWSSFromSource(source, tabid = false) {
     // Apply custom user agent if set
     if (source.userAgent && source.userAgent !== 'AUTO') {
         conf.userAgent = source.userAgent;
+        if (source.mockUserAgentData) conf.mockUserAgentData = source.mockUserAgentData;
         console.log('[CreateWindowWSS] Using custom user agent:', source.userAgent);
     } else {
         console.log('[CreateWindowWSS] Using AUTO user agent from config:', conf.userAgent);
@@ -3164,6 +3256,7 @@ async function createWindowWSSFromSource(source, tabid = false) {
             config: conf,
             isBetaMode: isBetaMode
         });
+        console.log('[CreateWindowWSS] Created window/tab ID:', response, 'for', source.username || source.videoId);
         return response; 
     } catch (e) {
         console.error("Error in createWindowWSSFromSource:", e);
@@ -3181,6 +3274,7 @@ async function createYoutubeWebSocketWindowFromSource(source, tabid = false) {
     // Apply custom user agent if set
     if (source.userAgent && source.userAgent !== 'AUTO') {
         conf.userAgent = source.userAgent;
+        if (source.mockUserAgentData) conf.mockUserAgentData = source.mockUserAgentData;
         console.log('[CreateYouTubeWSS] Using custom user agent:', source.userAgent);
     } else {
         console.log('[CreateYouTubeWSS] Using AUTO user agent from config:', conf.userAgent);
@@ -3222,6 +3316,7 @@ async function createYoutubeWebSocketWindowFromSource(source, tabid = false) {
             config: conf,
             isBetaMode: isBetaMode
         });
+        console.log('[CreateYouTubeWSS] Created window/tab ID:', response, 'for', source.username || source.videoId);
          return response; 
     } catch (e) {
         console.error("Error in createYoutubeWebSocketWindowFromSource IPC call:", e, "URL:", urlWSS, "Script:", scriptPath);
@@ -3531,6 +3626,7 @@ async function signin(ele, tabid = false) {
     // Apply custom user agent if set
     if (source && source.userAgent && source.userAgent !== 'AUTO') {
         conf.userAgent = source.userAgent;
+        if (source.mockUserAgentData) conf.mockUserAgentData = source.mockUserAgentData;
         console.log('[SignIn] Using custom user agent:', conf.userAgent);
     } else {
         console.log('[SignIn] Using AUTO user agent from config:', conf.userAgent);
@@ -3601,16 +3697,35 @@ function processSettingsAndCreateSources() {
             if (groupElement) {
                 sourcesContainer.appendChild(groupElement);
                 if (group.autoActivate && (group.target === "youtube" || group.target === "youtubeshorts")) {
-                    setTimeout(async () => {
-                        console.log('Auto-activating YouTube group from processSettings:', group.username);
-                        await handleYouTubeActivation(
-                            group.username,
-                            group.target === "youtubeshorts",
-                            false, 
-                            true,  
-                            group.isChannel
-                        );
-                    }, 2500 + Math.random() * 1000);
+                    // Avoid duplicate scraping: only call this immediate auto-activate if the group has no streams yet
+                    // AND there is no active stream in the group.
+                    const hasActive = (group.streams || []).some(sid => {
+                        const s = stateManager.getSource(sid);
+                        return s && s.status === 'active' && (s.vid || s.wssId);
+                    });
+                    const shouldAttemptImmediate = (!group.streams || group.streams.length === 0) && !hasActive;
+                    if (shouldAttemptImmediate) {
+                        setTimeout(async () => {
+                            // Re-check state at call time to avoid races
+                            const freshGroup = stateManager.getGroup(group.id);
+                            const freshHasActive = (freshGroup?.streams || []).some(sid => {
+                                const s = stateManager.getSource(sid);
+                                return s && s.status === 'active' && (s.vid || s.wssId);
+                            });
+                            if (freshHasActive) {
+                                console.log('Skipping processSettings auto-activate; group already has active stream:', freshGroup.username);
+                                return;
+                            }
+                            console.log('Auto-activating YouTube group from processSettings:', group.username);
+                            await handleYouTubeActivation(
+                                group.username,
+                                group.target === "youtubeshorts",
+                                false,
+                                true,
+                                group.isChannel
+                            );
+                        }, 2500 + Math.random() * 1000);
+                    }
                 }
             }
         } else { 
@@ -4318,7 +4433,12 @@ document.addEventListener('DOMContentLoaded', async function() {
                     break;
                 case 'reconnecting':
                     stateManager.updateSource(sourceToUpdate.id, { status: 'activating' }); 
-                     if (entryElement) updateConnectionStatus(entryElement, 'retry', `Retrying ${data.attempt || '?'}/${data.maxAttempts || '?'}`);
+                    if (entryElement) {
+                        const seconds = data.nextAttemptIn ? Math.ceil(data.nextAttemptIn / 1000) : null;
+                        const attemptInfo = (data.attempt ? ` (attempt ${data.attempt}${data.maxAttempts ? '/' + data.maxAttempts : ''})` : '');
+                        const retryMsg = seconds ? `Retrying in ${seconds}s${attemptInfo}` : `Retrying${attemptInfo}`;
+                        updateConnectionStatus(entryElement, 'retry', retryMsg);
+                    }
                     break;
                 case 'stopped_by_user': 
                     stateManager.updateSource(sourceToUpdate.id, { status: 'inactive', vid:null, wssId:null });
@@ -5879,16 +5999,65 @@ async function toggleYouTubeType(button) {
 // User Agent Management Functions
 const defaultUserAgents = [
   {
-    "name": "Chrome - Windows",
-    "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+    "name": "Chrome 139 - Windows",
+    "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
   },
   {
-    "name": "Chrome - Mac",
-    "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+    "name": "Chrome 139 - Windows (Enhanced Headers)",
+    "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+    "mock": {
+      "brands": [
+        { "brand": "Not;A=Brand", "version": "99" },
+        { "brand": "Google Chrome", "version": "139" },
+        { "brand": "Chromium", "version": "139" }
+      ],
+      "mobile": false,
+      "platform": "Windows",
+      "fullVersionList": [
+        { "brand": "Not;A=Brand", "version": "99.0.0.0" },
+        { "brand": "Google Chrome", "version": "139.0.7258.155" },
+        { "brand": "Chromium", "version": "139.0.7258.155" }
+      ],
+      "architecture": "x86",
+      "bitness": "64",
+      "model": "",
+      "platformVersion": "19.0.0",
+      "uaFullVersion": "139.0.7258.155",
+      "wow64": false,
+      "enhancedHeaders": true
+    }
   },
   {
-    "name": "Chrome - Linux",
-    "value": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+    "name": "Chrome 139 - Mac",
+    "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
+  },
+  {
+    "name": "Chrome 139 - Linux",
+    "value": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
+  },
+  {
+    "name": "Chrome 140 - Windows",
+    "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+  },
+  {
+    "name": "Chrome 140 - Mac",
+    "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+  },
+  {
+    "name": "Chrome 140 - Linux",
+    "value": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+  },
+  {
+    "name": "Chrome 141 - Windows",
+    "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+  },
+  {
+    "name": "Chrome 141 - Mac",
+    "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+  },
+  {
+    "name": "Chrome 141 - Linux",
+    "value": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
   },
   {
     "name": "Firefox - Windows",
@@ -5899,20 +6068,72 @@ const defaultUserAgents = [
     "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:137.0) Gecko/20100101 Firefox/137.0"
   },
   {
+    "name": "Firefox 137 - Linux",
+    "value": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0"
+  },
+  {
+    "name": "Firefox 138 - Windows",
+    "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0"
+  },
+  {
+    "name": "Firefox 138 - Mac",
+    "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:138.0) Gecko/20100101 Firefox/138.0"
+  },
+  {
+    "name": "Firefox 138 - Linux",
+    "value": "Mozilla/5.0 (X11; Linux x86_64; rv:138.0) Gecko/20100101 Firefox/138.0"
+  },
+  {
+    "name": "Firefox 138 - Android",
+    "value": "Mozilla/5.0 (Android 15; Mobile; rv:138.0) Gecko/138.0 Firefox/138.0"
+  },
+  {
+    "name": "Firefox ESR 115 - Windows",
+    "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0"
+  },
+  {
+    "name": "Firefox ESR 115 - Mac",
+    "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:115.0) Gecko/20100101 Firefox/115.0"
+  },
+  {
+    "name": "Firefox ESR 115 - Linux",
+    "value": "Mozilla/5.0 (X11; Linux x86_64; rv:115.0) Gecko/20100101 Firefox/115.0"
+  },
+  {
+    "name": "Firefox Nightly 141 - Windows",
+    "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0"
+  },
+  {
+    "name": "Firefox Nightly 141 - Mac",
+    "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:141.0) Gecko/20100101 Firefox/141.0"
+  },
+  {
+    "name": "Firefox Nightly 141 - Linux",
+    "value": "Mozilla/5.0 (X11; Linux x86_64; rv:141.0) Gecko/20100101 Firefox/141.0"
+  },
+  {
     "name": "Safari - Mac",
     "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15"
   },
   {
-    "name": "Edge - Windows",
-    "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0"
+    "name": "Edge 139 - Windows",
+    "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0"
   },
   {
-    "name": "Opera - Windows",
-    "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 OPR/124.0.0.0"
+    "name": "Opera - Windows (Chromium 139)",
+    "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 OPR/124.0.0.0"
   },
   {
-    "name": "Chrome - Android",
-    "value": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36"
+    "name": "Chrome 139 - Android",
+    "value": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36"
+  },
+  {
+    "name": "Chrome 139 - Android (Pixel 8 Pro, Android 15)",
+    "value": "Mozilla/5.0 (Linux; Android 15; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36"
+  },
+  {
+    "name": "Chrome 139 - Android (Galaxy S24 Ultra, Android 14)",
+    "value": "Mozilla/5.0 (Linux; Android 14; SM-S928U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36"
   },
   {
     "name": "Firefox - Android",
@@ -5927,8 +6148,16 @@ const defaultUserAgents = [
     "value": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_7_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Mobile/15E148 Safari/605.1.15"
   },
   {
-    "name": "Chrome - iPhone",
-    "value": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/134.0.0.0 Mobile/15E148 Safari/604.1"
+    "name": "Chrome 139 - iPhone",
+    "value": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/139.0.0.0 Mobile/15E148 Safari/604.1"
+  },
+  {
+    "name": "Chrome 139 - iPhone 15 Pro",
+    "value": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/139.0.0.0 Mobile/15E148 Safari/604.1"
+  },
+  {
+    "name": "Chrome 139 - iPad (iPadOS 17)",
+    "value": "Mozilla/5.0 (iPad; CPU OS 17_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/139.0.0.0 Mobile/15E148 Safari/604.1"
   },
   {
     "name": "Edge - iPhone",
@@ -5995,6 +6224,12 @@ function openUserAgentSettings(button) {
         const option = document.createElement('option');
         option.value = ua.value;
         option.textContent = ua.name;
+        if (ua.mock) {
+            try {
+                option.dataset.mock = JSON.stringify(ua.mock);
+                option.dataset.enhanced = '1';
+            } catch {}
+        }
         select.appendChild(option);
     });
     
@@ -6114,6 +6349,7 @@ function saveUserAgentSelection() {
     
     const select = document.getElementById('userAgentSelect');
     const selectedValue = select.value;
+    const selectedOption = select.options[select.selectedIndex];
     
     // Update the source
     const source = stateManager.getSource(currentSourceId);
@@ -6124,10 +6360,26 @@ function saveUserAgentSelection() {
     
     // Save the user agent preference
     source.userAgent = selectedValue;
-    stateManager.updateSource(currentSourceId, { userAgent: selectedValue });
+    const updates = { userAgent: selectedValue };
+    
+    // Apply enhanced headers preset if provided
+    if (selectedOption && selectedOption.dataset && selectedOption.dataset.mock) {
+        try {
+            const mock = JSON.parse(selectedOption.dataset.mock);
+            updates.mockUserAgentData = mock;
+        } catch {}
+    } else {
+        // Clear any previous mock data for this source
+        updates.mockUserAgentData = null;
+    }
+    stateManager.updateSource(currentSourceId, updates);
     
     // Show success message
-    Toast.success('User Agent Updated', `User agent preference saved for ${source.username || source.target}`);
+    if (updates.mockUserAgentData) {
+        Toast.success('User Agent Updated', `Applied enhanced headers preset for ${source.username || source.target}`);
+    } else {
+        Toast.success('User Agent Updated', `User agent preference saved for ${source.username || source.target}`);
+    }
     
     // Close modal
     closeUserAgentModal();

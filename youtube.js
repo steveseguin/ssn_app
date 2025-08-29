@@ -353,39 +353,65 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
             }
             return { type: 'multiple_selected', count: activatedCount };
         } else { 
-            let addedCount = 0;
+            let activatedCount = 0;
             for (const stream of combinedStreams) {
                 const streamStatus = stream.statusDisplay; // Use pre-calculated statusDisplay
-                if (!stateManager.isVideoIdAdded(stream.videoId) && streamStatus !== 'ended') {
-                    // Auto-activate only live streams or upcoming streams about to start
-                    let shouldActivate = streamStatus === 'live';
-                    if (streamStatus === 'upcoming' && stream.scheduledStartTime) {
-                        const startTime = new Date(stream.scheduledStartTime);
-                        const now = new Date();
-                        const diffMs = startTime - now;
-                        const diffMins = diffMs / (1000 * 60);
-                        if (diffMins <= 15 && diffMins >= -30) { // Activate if starting within 15 mins or started up to 30 mins ago
-                            shouldActivate = true;
+                // Only consider live or upcoming-within-60m
+                if (streamStatus === 'ended') continue;
+                let shouldActivate = streamStatus === 'live';
+                if (!shouldActivate && streamStatus === 'upcoming' && stream.scheduledStartTime) {
+                    let startMs = stream.scheduledStartTime;
+                    if (typeof startMs === 'string') startMs = Number(startMs);
+                    if (typeof startMs === 'number' && startMs < 1e12) startMs *= 1000; // seconds -> ms
+                    const startTime = new Date(startMs);
+                    const now = new Date();
+                    const diffMs = startTime - now;
+                    const diffMins = diffMs / (1000 * 60);
+                    if (diffMins >= 0 && diffMins <= 60) {
+                        shouldActivate = true;
+                    }
+                }
+                if (!shouldActivate) continue;
+
+                if (!stateManager.isVideoIdAdded(stream.videoId)) {
+                    // Create the source and activate it
+                    const sourceElement = await createYouTubeEntry(stream, username, stream.isShort);
+                    if (sourceElement) {
+                        const activateButton = sourceElement.querySelector('[data-activatehtml]');
+                        if (activateButton && parentGroupData) {
+                            const sourceForActivation = stateManager.getSource(sourceElement.dataset.sourceId);
+                            if (sourceForActivation && sourceForActivation.status !== 'active' && !sourceForActivation.vid && !sourceForActivation.wssId) {
+                                await createWindow(activateButton);
+                                activatedCount++;
+                            }
                         }
                     }
-
-                    if (shouldActivate) {
-                        const sourceElement = await createYouTubeEntry(stream, username, stream.isShort);
-                        if (sourceElement) {
-                            const activateButton = sourceElement.querySelector('[data-activatehtml]');
-                            if (activateButton && parentGroupData) {
-                                const sourceForActivation = stateManager.getSource(sourceElement.dataset.sourceId);
-                                if (sourceForActivation && sourceForActivation.status !== 'active' && !sourceForActivation.vid && !sourceForActivation.wssId) {
-                                    await createWindow(activateButton);
-                                    addedCount++;
-                                }
+                } else {
+                    // Already added: try to activate the existing source via UI button if not open
+                    const existingSource = stateManager.getSources().find(s => s.videoId === stream.videoId);
+                    if (existingSource && existingSource.status !== 'active' && !existingSource.vid && !existingSource.wssId) {
+                        try {
+                            // Ensure DOM element exists
+                            let sourceElement = document.querySelector(`[data-source-id="${existingSource.id}"]`);
+                            if (!sourceElement) {
+                                sourceElement = createSourceElement(existingSource.id);
+                                const groupElement = document.querySelector(`[data-group-id="${parentGroupData?.id}"]`);
+                                const streamsContainer = groupElement?.querySelector('.stream-group');
+                                if (sourceElement && streamsContainer) streamsContainer.appendChild(sourceElement);
                             }
+                            const activateButton = sourceElement?.querySelector('[data-activatehtml]');
+                            if (activateButton) {
+                                const winId = await createWindow(activateButton);
+                                if (winId) activatedCount++;
+                            }
+                        } catch (e) {
+                            console.warn('Failed to activate existing YouTube source for', username, e);
                         }
                     }
                 }
             }
-            if (addedCount === 0) Toast.info("YouTube", `No new streams found to auto-activate for ${username}.`);
-            return { type: 'multiple_auto', count: addedCount };
+            if (activatedCount === 0) Toast.info("YouTube", `No new streams found to auto-activate for ${username}.`);
+            return { type: 'multiple_auto', count: activatedCount };
         }
     } catch (error) {
         console.error("Error in handleYouTubeActivation for " + username + ":", error);

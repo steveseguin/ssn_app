@@ -143,7 +143,7 @@ app.commandLine.appendSwitch('ignore-gpu-blocklist');
 // app.commandLine.appendSwitch('user-data-dir', path.join(app.getPath('userData'), 'ChromeProfile'));
 // User agent override at app level - this will be overridden by config if available
 // Set platform-specific user agent with simplified Chrome version
-const CHROME_UA_VERSION = '138.0.0.0';  // Chrome shows simplified version in UA string
+const CHROME_UA_VERSION = '139.0.0.0';  // Chrome shows simplified version in UA string
 if (isMac) {
     app.userAgentFallback = app.userAgentFallback || `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
 } else if (process.platform === 'linux') {
@@ -3267,7 +3267,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Define user agents for specific sign-in domains
             const signInAgents = {
-                'twitch.tv': process.platform == "darwin" ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36' : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+                'twitch.tv': process.platform == "darwin" ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36' : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
                 'google.com': 'Chrome', // default for Google sign-in
             };
 
@@ -3721,19 +3721,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 const chromeVersion = chromeMatch[1];
                                 
                                 // Set Client Hints headers to match the User-Agent
-                                requestHeaders['sec-ch-ua'] = `"Google Chrome";v="${chromeVersion}", "Chromium";v="${chromeVersion}", "Not)A;Brand";v="99"`;
+                                requestHeaders['sec-ch-ua'] = `"Google Chrome";v="${chromeVersion}", "Chromium";v="${chromeVersion}", "Not;A=Brand";v="99"`;
                                 requestHeaders['sec-ch-ua-mobile'] = '?0';
                                 requestHeaders['sec-ch-ua-platform'] = '"Windows"';
                                 
                                 // Only set full version list if requested by server
                                 if (requestHeaders['sec-ch-ua-full-version-list']) {
-                                    requestHeaders['sec-ch-ua-full-version-list'] = `"Google Chrome";v="${chromeVersion}.0.0.0", "Chromium";v="${chromeVersion}.0.0.0", "Not)A;Brand";v="99.0.0.0"`;
+                                    requestHeaders['sec-ch-ua-full-version-list'] = `"Google Chrome";v="${chromeVersion}.0.0.0", "Chromium";v="${chromeVersion}.0.0.0", "Not;A=Brand";v="99.0.0.0"`;
                                 }
                             } else if (edgeMatch) {
                                 const edgeVersion = edgeMatch[1];
                                 
                                 // Edge also uses Chromium-based Client Hints
-                                requestHeaders['sec-ch-ua'] = `"Microsoft Edge";v="${edgeVersion}", "Chromium";v="${edgeVersion}", "Not)A;Brand";v="99"`;
+                                requestHeaders['sec-ch-ua'] = `"Microsoft Edge";v="${edgeVersion}", "Chromium";v="${edgeVersion}", "Not;A=Brand";v="99"`;
                                 requestHeaders['sec-ch-ua-mobile'] = '?0';
                                 requestHeaders['sec-ch-ua-platform'] = '"Windows"';
                             } else if (firefoxMatch) {
@@ -4102,7 +4102,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             log(`Loading URL with configured user agent for kasada: ${userAgent}`);
                         } else {
                             // Use platform-specific fallback
-                            const CHROME_UA_VERSION = '138.0.0.0';
+                            const CHROME_UA_VERSION = '139.0.0.0';
                             if (isMac) {
                                 userAgent = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
                             } else if (process.platform === 'linux') {
@@ -4792,7 +4792,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 							values.platformVersion = "${mockData.platformVersion || '19.0.0'}";
 						  }
 						  if (hints.includes('uaFullVersion')) {
-							values.uaFullVersion = "${mockData.uaFullVersion || '138.0.7204.158'}";
+							values.uaFullVersion = "${mockData.uaFullVersion || '139.0.7258.155'}";
 						  }
 						  if (hints.includes('wow64')) {
 							values.wow64 = ${mockData.wow64 || false};
@@ -5457,7 +5457,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
             HEALTH_CHECK_INTERVAL: 60000, // Increased to 60s for better stability
             MESSAGE_TIMEOUT: 300000, // Increased to 5 minutes for low-activity streams
             MAX_RECONNECT_ATTEMPTS: 15, // Increased from 10 for better resilience
-            RECONNECT_DELAY: 3000
+            RECONNECT_DELAY: 3000,
+            // Fixed retry cadence when user is offline / not live
+            OFFLINE_RETRY_INTERVAL_MS: 60000, // 1 minute
+            // Cap exponential backoff for transient errors
+            MAX_RECONNECT_DELAY_MS: 120000 // 2 minutes
         },
         CHAT: {
             ENABLE_CLUSTERING: false,
@@ -5946,6 +5950,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             this.reconnectAttempts = 0;
             this.isStopped = false;
             this.reconnectTimer = null;
+            // When true, we keep retrying at a fixed interval to detect when the user goes live
+            this.offlineRetry = false;
+            this.offlineReason = null;
         }
 
         async initialize() {
@@ -6126,13 +6133,26 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     this.reconnectTimer = null;
                 }
                 
+                // Reset offline retry mode on successful connect
+                this.offlineRetry = false;
+                this.offlineReason = null;
                 return true;
             } catch (err) {
-                // Check for fatal errors
-                if (err.name === 'UserOfflineError' ||
-                    (err.message && err.message.includes('LIVE has ended')) ||
-                    (err.message && err.message.includes('User doesn\'t exist')) ||
-                    (err.message && err.message.includes('Failed to retrieve room_id'))) {
+                const msg = err && err.message ? err.message : '';
+
+                // Treat user offline / ended stream as non-fatal and retry on a safe fixed interval
+                const isOffline = err && (
+                    err.name === 'UserOfflineError' ||
+                    (msg && (msg.includes('LIVE has ended') || msg.includes('Live stream has ended') || msg.includes('live has ended')))
+                );
+
+                // Fatal if user likely doesn't exist or room cannot be retrieved
+                const isLikelyFatal = msg && (
+                    msg.includes("User doesn't exist") ||
+                    msg.includes('Failed to retrieve room_id')
+                );
+
+                if (isLikelyFatal) {
                     console.error('Fatal error - user might not exist or might be a display name:', this.username);
                     this.handleFatalError(err);
                     return false;
@@ -6146,7 +6166,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 });
 
                 if (!this.isStopped) {
-                    this.attemptReconnect();
+                    if (isOffline) {
+                        this.offlineRetry = true;
+                        this.offlineReason = err.message || 'User is not live';
+                        this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
+                    } else {
+                        this.attemptReconnect();
+                    }
                 }
                 return false;
             }
@@ -6195,11 +6221,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
             console.error('Connection error:', err);
 
             // Check if error is fatal
-            if (err.name === 'UserOfflineError' ||
-                (err.message && err.message.includes('LIVE has ended')) ||
-                (err.message && err.message.includes('User doesn\'t exist')) ||
-                (err.message && err.message.includes('Failed to retrieve room_id')) ||
-                this.reconnectAttempts >= CONFIG.CONNECTION.MAX_RECONNECT_ATTEMPTS) {
+            const msg = err && err.message ? err.message : '';
+            const isOffline = err && (
+                err.name === 'UserOfflineError' ||
+                (msg && (msg.includes('LIVE has ended') || msg.includes('Live stream has ended') || msg.includes('live has ended')))
+            );
+            const isLikelyFatal = msg && (
+                msg.includes("User doesn't exist") ||
+                msg.includes('Failed to retrieve room_id')
+            );
+            if (isLikelyFatal) {
                 this.handleFatalError(err);
                 return;
             }
@@ -6216,13 +6247,24 @@ async function createWindow(args, reuse = false, mainApp = false) {
             });
 
             if (!this.isStopped) {
-                this.attemptReconnect();
+                if (isOffline) {
+                    this.offlineRetry = true;
+                    this.offlineReason = err.message || 'User is not live';
+                    this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
+                } else {
+                    this.attemptReconnect();
+                }
             }
         }
 
         handleStreamEnd() {
             console.info('Stream ended');
-            this.handleFatalError(new Error('Live stream has ended'));
+            // Treat stream end as offline and keep retrying periodically
+            if (!this.isStopped) {
+                this.offlineRetry = true;
+                this.offlineReason = 'Live stream has ended';
+                this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
+            }
         }
 
         disconnect() {
@@ -6253,9 +6295,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
             this.attemptReconnect();
         }
 
-        attemptReconnect(delay = CONFIG.CONNECTION.RECONNECT_DELAY) {
-            if (this.isStopped ||
-                this.reconnectAttempts >= CONFIG.CONNECTION.MAX_RECONNECT_ATTEMPTS) {
+        attemptReconnect(delay = CONFIG.CONNECTION.RECONNECT_DELAY, options = {}) {
+            const { fixed = false, offline = false } = options || {};
+
+            if (this.isStopped) return;
+
+            // Only cap attempts for non-offline retries
+            if (!offline && this.reconnectAttempts >= CONFIG.CONNECTION.MAX_RECONNECT_ATTEMPTS) {
                 this.handleFatalError(new Error('Maximum reconnection attempts reached'));
                 return;
             }
@@ -6269,19 +6315,27 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 isReconnecting: true
             });
 
-            // Exponential backoff: delay increases with each attempt
-            // 3s, 6s, 12s, 24s, 48s, etc... up to max 2 minutes
-            const backoffDelay = Math.min(delay * Math.pow(2, this.reconnectAttempts - 1), 120000);
+            // Delay calculation
+            let backoffDelay;
+            if (fixed || offline || this.offlineRetry) {
+                backoffDelay = delay || CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS;
+            } else {
+                // Exponential backoff for transient errors, capped by config
+                const base = delay || CONFIG.CONNECTION.RECONNECT_DELAY;
+                backoffDelay = Math.min(base * Math.pow(2, this.reconnectAttempts - 1), CONFIG.CONNECTION.MAX_RECONNECT_DELAY_MS);
+            }
 
-            console.info(`Reconnect attempt ${this.reconnectAttempts}/${CONFIG.CONNECTION.MAX_RECONNECT_ATTEMPTS} - waiting ${backoffDelay/1000}s`);
+            const attemptLabel = offline || this.offlineRetry ? `offline-retry` : `${this.reconnectAttempts}/${CONFIG.CONNECTION.MAX_RECONNECT_ATTEMPTS}`;
+            console.info(`Reconnect attempt ${attemptLabel} - waiting ${Math.round(backoffDelay/1000)}s` + (this.offlineReason ? ` (reason: ${this.offlineReason})` : ''));
 
             // Send reconnection status to the renderer
             mainWindow.webContents.send('tiktokConnectionStatus', {
                 wssID: this.wssID,
                 status: 'reconnecting',
                 attempt: this.reconnectAttempts,
-                maxAttempts: CONFIG.CONNECTION.MAX_RECONNECT_ATTEMPTS,
-                nextAttemptIn: backoffDelay
+                maxAttempts: offline || this.offlineRetry ? undefined : CONFIG.CONNECTION.MAX_RECONNECT_ATTEMPTS,
+                nextAttemptIn: backoffDelay,
+                reason: this.offlineReason || undefined
             });
 
             // Clear any existing reconnect timer
@@ -8273,7 +8327,8 @@ app.whenReady().then(function() {
 
         // Set a global fallback user agent WITHOUT Electron to avoid detection
         // Chrome shows simplified version in UA string
-        const CHROME_UA_VERSION = '138.0.0.0';  // For user agent string
+        const CHROME_UA_VERSION = '139.0.0.0';  // For user agent string
+        const CHROME_UA_FULL_VERSION = '139.0.7258.155'; // For Client Hints full version
         let CHROME_UA;
         if (isMac) {
             CHROME_UA = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
@@ -8301,11 +8356,17 @@ app.whenReady().then(function() {
             headers['Accept-Encoding'] = 'gzip, deflate, br, zstd';
             headers['Cache-Control'] = headers['Cache-Control'] || 'max-age=0';
             
-            // Chrome's security headers
-            const chromeMainVersion = CHROME_UA_VERSION.split('.')[0]; // Extract "138" from "138.0.0.0"
-            headers['Sec-CH-UA'] = `"Not)A;Brand";v="8", "Chromium";v="${chromeMainVersion}", "Google Chrome";v="${chromeMainVersion}"`;
+            // Chrome's security headers / Client Hints
+            const chromeMainVersion = CHROME_UA_VERSION.split('.')[0]; // Extract "139" from "139.0.0.0"
+            headers['Sec-CH-UA'] = `"Not;A=Brand";v="99", "Chromium";v="${chromeMainVersion}", "Google Chrome";v="${chromeMainVersion}"`;
             headers['Sec-CH-UA-Mobile'] = '?0';
             headers['Sec-CH-UA-Platform'] = '"Windows"';
+            headers['Sec-CH-UA-Platform-Version'] = '"19.0.0"';
+            headers['Sec-CH-UA-Arch'] = '"x86"';
+            headers['Sec-CH-UA-Bitness'] = '"64"';
+            headers['Sec-CH-UA-Model'] = '""';
+            headers['Sec-CH-UA-Full-Version'] = `"${CHROME_UA_FULL_VERSION}"`;
+            headers['Sec-CH-UA-Full-Version-List'] = `"Not;A=Brand";v="99.0.0.0", "Chromium";v="${CHROME_UA_FULL_VERSION}", "Google Chrome";v="${CHROME_UA_FULL_VERSION}"`;
             headers['Sec-Fetch-Site'] = headers['Sec-Fetch-Site'] || 'none';
             headers['Sec-Fetch-Mode'] = headers['Sec-Fetch-Mode'] || 'navigate';
             headers['Sec-Fetch-User'] = headers['Sec-Fetch-User'] || '?1';
