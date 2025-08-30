@@ -20,11 +20,16 @@ const {
     session,
     dialog
 } = require('electron')
+const { exec } = require('child_process');
 const contextMenu = require("electron-context-menu");
 const Yargs = require("yargs");
-const {
-    WebcastPushConnection
-} = require("tiktok-live-connector");
+let WebcastPushConnection;
+try {
+    WebcastPushConnection = require('tiktok-live-connector').WebcastPushConnection;
+} catch (e) {
+    console.warn('[TikTok] tiktok-live-connector not available:', e && e.message ? e.message : e);
+    WebcastPushConnection = null; // Allow app to boot; TikTok features disabled until module present
+}
 const fetch = require("electron-fetch").default;
 const TikTokAuth = require('./tiktok-auth');
 const { setupWebSocketMonitor } = require('./websocket-monitor');
@@ -941,6 +946,11 @@ class WebSocketServer {
 }
 
 const wsServer = new WebSocketServer();
+
+// Track sessions we've already configured to avoid stacking listeners
+const cspConfiguredSessions = new WeakSet();
+const clientHintsConfiguredSessions = new WeakSet();
+const cookiesListenerConfiguredSessions = new WeakSet();
 
 function getOrCreatePersistentSession(domain) {
     const sessionName = `persist:${domain}`;
@@ -3666,6 +3676,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
             // Skip header manipulation for kasada preload - let it work like the working code
             if (args.config && args.config.userAgent && args.config.mockUserAgentData && preloadScript !== 'preload-kasada.js') {
                 const session = view.webContents.session;
+                // Guard: avoid stacking client hints handlers on the same session
+                if (session && !clientHintsConfiguredSessions.has(session)) {
 
                 // Don't set user agent here - let it be set once at session creation
                 // session.setUserAgent(args.config.userAgent);
@@ -3754,6 +3766,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         });
                     }
                 );
+                clientHintsConfiguredSessions.add(session);
+                }
             }
 
             // Set window bounds
@@ -4074,19 +4088,23 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                 // Monitor for new Kasada cookies (if not disabled)
                 if (args.config?.signin?.monitorAntiBot !== false) {
-                    view.webContents.session.cookies.on('changed', (event, cookie, cause, removed) => {
-                        const kasadaCookieNames = ['KP_UIDz', 'KP_UIDZ', 'kpid', 'kppid', 'kppidg'];
+                    const sess = view.webContents.session;
+                    if (sess && !cookiesListenerConfiguredSessions.has(sess)) {
+                        sess.cookies.on('changed', (event, cookie, cause, removed) => {
+                            const kasadaCookieNames = ['KP_UIDz', 'KP_UIDZ', 'kpid', 'kppid', 'kppidg'];
 
-                        // Check if this is a Kasada cookie
-                        if (kasadaCookieNames.some(name => cookie.name.includes(name))) {
-                            if (!removed) {
-                                log(`New Kasada cookie set: ${cookie.name} = ${cookie.value.substring(0, 20)}...`);
-                                log(`Cookie details: domain=${cookie.domain}, path=${cookie.path}, expires=${cookie.expirationDate}`);
-                            } else {
-                                log(`Kasada cookie removed: ${cookie.name}`);
+                            // Check if this is a Kasada cookie
+                            if (kasadaCookieNames.some(name => cookie.name.includes(name))) {
+                                if (!removed) {
+                                    log(`New Kasada cookie set: ${cookie.name} = ${cookie.value.substring(0, 20)}...`);
+                                    log(`Cookie details: domain=${cookie.domain}, path=${cookie.path}, expires=${cookie.expirationDate}`);
+                                } else {
+                                    log(`Kasada cookie removed: ${cookie.name}`);
+                                }
                             }
-                        }
-                    });
+                        });
+                        cookiesListenerConfiguredSessions.add(sess);
+                    }
                 }
 
                 // Add a small delay before loading to ensure all interceptors are set up
@@ -5461,7 +5479,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
             // Fixed retry cadence when user is offline / not live
             OFFLINE_RETRY_INTERVAL_MS: 60000, // 1 minute
             // Cap exponential backoff for transient errors
-            MAX_RECONNECT_DELAY_MS: 120000 // 2 minutes
+            MAX_RECONNECT_DELAY_MS: 120000, // 2 minutes
+            // Backoff jitter factor (e.g., 0.1 => ±10%)
+            BACKOFF_JITTER: 0.1,
+            // Rate limit retry delay
+            RATE_LIMIT_RETRY_MS: 300000 // 5 minutes
         },
         CHAT: {
             ENABLE_CLUSTERING: false,
@@ -5756,7 +5778,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const messageClusters = new Map();
             
             batch.forEach(data => {
-                const key = data.comment.toLowerCase().trim();
+                const key = String(data.comment || '').toLowerCase().trim();
                 if (!messageClusters.has(key)) {
                     messageClusters.set(key, {
                         message: data.comment,
@@ -5812,9 +5834,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     clustered: true,
                     userCount: users.length
                 },
-                chatimg: users[0].profilePictureUrl,
-                chatname: users.length > 2 ?
-                    `${this.getShortestName(users)} and ${users.length - 1} others` : `${users[0].nickname} and ${users[1].nickname}`,
+                chatimg: users[0] && users[0].profilePictureUrl,
+                chatname: (users.length <= 1)
+                    ? (users[0]?.nickname || users[0]?.uniqueId || 'Unknown')
+                    : (users.length === 2
+                        ? `${users[0]?.nickname || users[0]?.uniqueId || 'Unknown'} and ${users[1]?.nickname || users[1]?.uniqueId || 'Unknown'}`
+                        : `${this.getShortestName(users)} and ${users.length - 1} others`),
                 moderator: users.some(u => u.isModerator),
                 membership: users.some(u => u.isSubscriber),
                 tid: this.manager.virtualTabId // Include the virtual tab ID
@@ -5828,9 +5853,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         getShortestName(users) {
-            return users
-                .map(u => u.nickname)
-                .reduce((a, b) => a.length <= b.length ? a : b);
+            const names = users.map(u => (u && (u.nickname || u.uniqueId || ''))).filter(Boolean);
+            if (names.length === 0) return 'Unknown';
+            return names.reduce((a, b) => a.length <= b.length ? a : b);
         }
 
         addToPendingBatch(batch) {
@@ -5970,6 +5995,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
         async initialize() {
             console.log(`Initializing TikTok connection for user: ${this.username}`);
             try {
+                if (!WebcastPushConnection) {
+                    throw new Error('TikTok connector missing. Please reinstall tiktok-live-connector.');
+                }
                 const connectionOptions = {
                     processInitialData: true,
                     enableExtendedGiftInfo: false,
@@ -6164,6 +6192,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     msg.includes('Failed to retrieve room_id')
                 );
 
+                const isRateLimited = msg && (msg.includes('429') || msg.toLowerCase().includes('too many requests'));
+
                 if (isLikelyFatal) {
                     console.error('Fatal error - user might not exist or might be a display name:', this.username);
                     this.handleFatalError(err);
@@ -6178,7 +6208,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 });
 
                 if (!this.isStopped) {
-                    if (isOffline) {
+                    if (isRateLimited) {
+                        this.offlineRetry = false;
+                        this.offlineReason = 'Rate limited by TikTok';
+                        this.attemptReconnect(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS, { fixed: true, offline: false });
+                    } else if (isOffline) {
                         this.offlineRetry = true;
                         this.offlineReason = err.message || 'User is not live';
                         this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
@@ -6242,6 +6276,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 msg.includes("User doesn't exist") ||
                 msg.includes('Failed to retrieve room_id')
             );
+            const isRateLimited = msg && (msg.includes('429') || msg.toLowerCase().includes('too many requests'));
             if (isLikelyFatal) {
                 this.handleFatalError(err);
                 return;
@@ -6259,7 +6294,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
             });
 
             if (!this.isStopped) {
-                if (isOffline) {
+                if (isRateLimited) {
+                    this.offlineRetry = false;
+                    this.offlineReason = 'Rate limited by TikTok';
+                    this.attemptReconnect(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS, { fixed: true, offline: false });
+                } else if (isOffline) {
                     this.offlineRetry = true;
                     this.offlineReason = err.message || 'User is not live';
                     this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
@@ -6335,6 +6374,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 // Exponential backoff for transient errors, capped by config
                 const base = delay || CONFIG.CONNECTION.RECONNECT_DELAY;
                 backoffDelay = Math.min(base * Math.pow(2, this.reconnectAttempts - 1), CONFIG.CONNECTION.MAX_RECONNECT_DELAY_MS);
+            }
+            // Add jitter to reduce thundering herd
+            const jitter = CONFIG.CONNECTION.BACKOFF_JITTER || 0;
+            if (jitter > 0) {
+                const delta = backoffDelay * jitter;
+                const min = backoffDelay - delta;
+                const max = backoffDelay + delta;
+                backoffDelay = Math.max(0, Math.floor(min + Math.random() * (max - min)));
             }
 
             const attemptLabel = offline || this.offlineRetry ? `offline-retry` : `${this.reconnectAttempts}/${CONFIG.CONNECTION.MAX_RECONNECT_ATTEMPTS}`;
@@ -8443,6 +8490,17 @@ app.whenReady().then(function() {
             // fs.writeFileSync(path.join(folder, "savedSync.json"), JSON.stringify(cachedState));
         }
 
+        // If no --filesource provided, use saved local source path (if any)
+        try {
+            const savedLocalSource = store.get('localSourcePath');
+            if (!Argv.filesource && savedLocalSource) {
+                Argv.filesource = savedLocalSource;
+                log(`Using saved local source: ${savedLocalSource}`);
+            }
+        } catch (e) {
+            console.error('Error applying saved local source:', e);
+        }
+
         createWindow(Argv, false, true);
     })
     .catch(console.error);
@@ -8668,6 +8726,211 @@ function minimizeToTray() {
 }
 
 
+// Offline source helpers
+function ensureTrailingSep(pth) {
+    if (!pth) return pth;
+    return pth.endsWith(path.sep) ? pth : pth + path.sep;
+}
+
+function pathToFileUrl(pth) {
+    if (!pth) return pth;
+    let withSep = ensureTrailingSep(pth);
+    let forward = withSep.replace(/\\/g, '/');
+    if (!forward.startsWith('/')) forward = '/' + forward; // Windows drive letters
+    return 'file://' + forward;
+}
+
+function fsPathFromMaybeFileUrl(p) {
+    try {
+        if (typeof p === 'string' && p.startsWith('file://')) {
+            const { fileURLToPath } = require('url');
+            return ensureTrailingSep(fileURLToPath(p));
+        }
+    } catch (e) {}
+    return p;
+}
+
+function reloadWithLocalSource(localPath) {
+    try {
+        if (!mainWindow) return;
+        const src = localPath.startsWith('file://') ? localPath : pathToFileUrl(localPath);
+        const indexUrl = `file://${path.join(__dirname, 'index.html')}`;
+        const loadUrl = `${indexUrl}?sourcemode=${encodeURIComponent(src)}`;
+        mainWindow.loadURL(loadUrl);
+    } catch (e) {
+        console.error('Failed to reload with local source:', e);
+    }
+}
+
+function clearLocalSourceAndReload() {
+    try { store.delete('localSourcePath'); } catch (e) {}
+    try { Argv.filesource = null; } catch (e) {}
+    try {
+        if (mainWindow) {
+            const indexUrl = `file://${path.join(__dirname, 'index.html')}`;
+            mainWindow.loadURL(indexUrl);
+        }
+    } catch (e) {
+        console.error('Failed to reload default index:', e);
+    }
+}
+
+function findSocialStreamRoot(startDir) {
+    try {
+        const direct = path.join(startDir, 'manifest.json');
+        if (fs.existsSync(direct)) return startDir;
+        const entries = fs.readdirSync(startDir, { withFileTypes: true });
+        for (const e of entries) {
+            if (e.isDirectory()) {
+                const p = path.join(startDir, e.name);
+                if (fs.existsSync(path.join(p, 'manifest.json'))) return p;
+            }
+        }
+        for (const e of entries) {
+            if (!e.isDirectory()) continue;
+            const p1 = path.join(startDir, e.name);
+            let subs = [];
+            try { subs = fs.readdirSync(p1, { withFileTypes: true }); } catch {}
+            for (const s of subs) {
+                if (s.isDirectory()) {
+                    const p2 = path.join(p1, s.name);
+                    if (fs.existsSync(path.join(p2, 'manifest.json'))) return p2;
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Error scanning for manifest.json:', e);
+    }
+    return startDir;
+}
+
+function extractZipToTemp(zipPath) {
+    return new Promise((resolve, reject) => {
+        try {
+            const baseTemp = path.join(app.getPath('userData'), 'localSource');
+            if (!fs.existsSync(baseTemp)) fs.mkdirSync(baseTemp, { recursive: true });
+            const dest = path.join(baseTemp, `extracted_${Date.now()}`);
+            fs.mkdirSync(dest, { recursive: true });
+
+            if (process.platform === 'win32') {
+                const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
+                const cmd = `powershell -NoProfile -Command "Expand-Archive -Path ${psQuote(zipPath)} -DestinationPath ${psQuote(dest)} -Force"`;
+                exec(cmd, { windowsHide: true }, (err, stdout, stderr) => {
+                    if (err) return reject(new Error(stderr || err.message || 'Expand-Archive failed'));
+                    resolve(dest);
+                });
+            } else {
+                // Pre-check for unzip to provide clearer instructions if missing
+                exec('command -v unzip', (whichErr) => {
+                    if (whichErr) {
+                        const noUnzipError = new Error('UNZIP_NOT_FOUND');
+                        noUnzipError.code = 'UNZIP_NOT_FOUND';
+                        return reject(noUnzipError);
+                    }
+                    const shQuote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
+                    const cmd = `unzip -o ${shQuote(zipPath)} -d ${shQuote(dest)}`;
+                    exec(cmd, (err, stdout, stderr) => {
+                        if (err) return reject(new Error(stderr || err.message || 'unzip failed'));
+                        resolve(dest);
+                    });
+                });
+            }
+        } catch (e) { reject(e); }
+    });
+}
+
+async function handleLoadFromFolder() {
+    try {
+        const result = await dialog.showOpenDialog({
+            title: 'Select Social Stream Ninja folder',
+            properties: ['openDirectory']
+        });
+        if (result.canceled || !result.filePaths || result.filePaths.length === 0) return;
+        const chosen = result.filePaths[0];
+        const root = findSocialStreamRoot(chosen);
+        const finalPath = ensureTrailingSep(root);
+        const fileUrl = pathToFileUrl(finalPath);
+        store.set('localSourcePath', fileUrl);
+        try { Argv.filesource = fileUrl; } catch (e) {}
+        reloadWithLocalSource(fileUrl);
+        createMenu();
+    } catch (e) {
+        dialog.showErrorBox('Load From Folder Failed', e.message || String(e));
+    }
+}
+
+async function handleLoadFromZip() {
+    try {
+        const result = await dialog.showOpenDialog({
+            title: 'Select Social Stream Ninja ZIP',
+            properties: ['openFile'],
+            filters: [{ name: 'ZIP files', extensions: ['zip'] }]
+        });
+        if (result.canceled || !result.filePaths || result.filePaths.length === 0) return;
+        const zip = result.filePaths[0];
+        const extractedDir = await extractZipToTemp(zip);
+        const root = findSocialStreamRoot(extractedDir);
+        const finalPath = ensureTrailingSep(root);
+        const fileUrl = pathToFileUrl(finalPath);
+        store.set('localSourcePath', fileUrl);
+        try { Argv.filesource = fileUrl; } catch (e) {}
+        reloadWithLocalSource(fileUrl);
+        createMenu();
+    } catch (e) {
+        console.error('ZIP load failed:', e);
+        let instructions = '';
+        if (process.platform === 'win32') {
+            instructions = [
+                'Windows could not extract the ZIP automatically.',
+                '- Option A: Right-click the ZIP in File Explorer → "Extract All..." → pick a folder → then use File → Load Social Stream From Folder…',
+                '- Option B: Ensure PowerShell is available and try again.',
+            ].join('\n');
+        } else if (process.platform === 'darwin') {
+            if (e && (e.code === 'UNZIP_NOT_FOUND' || String(e.message).includes('UNZIP_NOT_FOUND'))) {
+                instructions = [
+                    'macOS: The "unzip" tool is not available.',
+                    '- Option A: Open Terminal and run: brew install unzip',
+                    '- Option B: Double‑click the ZIP in Finder to extract, then use File → Load Social Stream From Folder…',
+                ].join('\n');
+            } else {
+                instructions = [
+                    'macOS could not extract the ZIP.',
+                    '- Try double‑clicking the ZIP in Finder to extract, then use File → Load Social Stream From Folder…',
+                    '- Or install the unzip tool via Homebrew: brew install unzip',
+                ].join('\n');
+            }
+        } else {
+            // Linux
+            if (e && (e.code === 'UNZIP_NOT_FOUND' || String(e.message).includes('UNZIP_NOT_FOUND'))) {
+                instructions = [
+                    'Linux: The "unzip" tool is not installed.',
+                    '- Debian/Ubuntu: sudo apt update && sudo apt install unzip',
+                    '- Fedora: sudo dnf install unzip',
+                    '- Arch: sudo pacman -S unzip',
+                    '- Or extract with your file manager, then use File → Load Social Stream From Folder…',
+                ].join('\n');
+            } else {
+                instructions = [
+                    'Linux could not extract the ZIP.',
+                    '- Ensure the "unzip" tool is installed, e.g.:',
+                    '  Debian/Ubuntu: sudo apt update && sudo apt install unzip',
+                    '  Fedora: sudo dnf install unzip',
+                    '  Arch: sudo pacman -S unzip',
+                    '- Or extract with your file manager, then use File → Load Social Stream From Folder…',
+                ].join('\n');
+            }
+        }
+
+        dialog.showMessageBox({
+            type: 'error',
+            title: 'Load From ZIP Failed',
+            message: 'Could not extract Social Stream Ninja ZIP',
+            detail: `${e && e.message ? e.message : e}\n\n${instructions}`,
+            buttons: ['OK']
+        });
+    }
+}
+
 function createMenu() {
     const template = [
         // Mac specific top menu
@@ -8735,6 +8998,13 @@ function createMenu() {
                 {
                     type: 'separator'
                 },
+                { label: 'Load Social Stream From Folder…', click: () => handleLoadFromFolder() },
+                { label: 'Load Social Stream From ZIP…', click: () => handleLoadFromZip() },
+                ...(store.get('localSourcePath') ? [
+                    { label: 'Open Local Source Folder', click: async () => { const p = store.get('localSourcePath'); if (p) await shell.openPath(fsPathFromMaybeFileUrl(p)); } },
+                    { label: 'Clear Local Source Override', click: () => clearLocalSourceAndReload() },
+                ] : []),
+                { type: 'separator' },
                 {
                     label: 'Edit URL',
                     click: () => {
