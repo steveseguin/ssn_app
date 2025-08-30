@@ -54,6 +54,25 @@ const isDevMode = process.env.NODE_ENV === 'development' || process.argv.include
 // Generate a random flag for this session to authenticate injected scripts
 const INJECTED_SCRIPT_FLAG = '_ssapp_' + Math.random().toString(36).substring(2) + Date.now().toString(36);
 
+// App-level helper: whether to forward non-gift events to overlays
+function isCaptureEventsEnabled() {
+    try {
+        // Presence-based: enabled if key exists in cachedState.settings
+        const s = (typeof cachedState === 'object' && cachedState) ? cachedState.settings : undefined;
+        if (!s || typeof s !== 'object') return false;
+        return (s.captureevents !== undefined) || (s.captureevent !== undefined);
+    } catch (_) { return false; }
+}
+
+function isViewerUpdateAllowed() {
+    try {
+        const s = (typeof cachedState === 'object' && cachedState) ? cachedState.settings : undefined;
+        if (!s || typeof s !== 'object') return false;
+        // Enabled if any of these keys exist (value ignored)
+        return (s.showviewercount !== undefined) || (s.hypemode !== undefined) || (s.hypemeter !== undefined);
+    } catch (_) { return false; }
+}
+
 // Store the system locale - get it from environment or OS
 let SYSTEM_LOCALE = 'en-US'; // Default fallback
 
@@ -5474,12 +5493,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
             CLEANUP_INTERVAL: 60000,
             HEALTH_CHECK_INTERVAL: 60000, // Increased to 60s for better stability
             MESSAGE_TIMEOUT: 300000, // Increased to 5 minutes for low-activity streams
-            MAX_RECONNECT_ATTEMPTS: 15, // Increased from 10 for better resilience
+            MAX_RECONNECT_ATTEMPTS: Infinity, // Retry indefinitely
             RECONNECT_DELAY: 3000,
             // Fixed retry cadence when user is offline / not live
             OFFLINE_RETRY_INTERVAL_MS: 60000, // 1 minute
-            // Cap exponential backoff for transient errors
-            MAX_RECONNECT_DELAY_MS: 120000, // 2 minutes
+            // Cap exponential backoff for transient errors (5 minutes max)
+            MAX_RECONNECT_DELAY_MS: 300000, // 5 minutes
             // Backoff jitter factor (e.g., 0.1 => ±10%)
             BACKOFF_JITTER: 0.1,
             // Rate limit retry delay
@@ -6098,12 +6117,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     this.lastMessageTime = Date.now();
                     if ("viewerCount" in data) {
                         this.lastViewerCount = parseInt(data.viewerCount) || 0;
-                        sendToBackground({
-                            meta: this.lastViewerCount,
-                            type: "tiktok",
-                            event: "viewer_update",
-							tid: this.virtualTabId
-                        }); 
+                        if (isViewerUpdateAllowed()) {
+                            sendToBackground({
+                                meta: this.lastViewerCount,
+                                type: "tiktok",
+                                event: "viewer_update",
+                                tid: this.virtualTabId
+                            });
+                        }
                     }
                 }
             };
@@ -6144,12 +6165,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
             // Send viewer count every 30 seconds
             this.viewerUpdateInterval = setInterval(() => {
                 if (this.connection && this.connection.isConnected) {
-                    sendToBackground({
-                        meta: this.lastViewerCount,
-                        type: "tiktok",
-                        event: "viewer_update",
-                        tid: this.virtualTabId
-                    });
+                    if (isViewerUpdateAllowed()) {
+                        sendToBackground({
+                            meta: this.lastViewerCount,
+                            type: "tiktok",
+                            event: "viewer_update",
+                            tid: this.virtualTabId
+                        });
+                    }
                 }
             }, 30000); // 30 seconds
         }
@@ -6351,11 +6374,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             if (this.isStopped) return;
 
-            // Only cap attempts for non-offline retries
-            if (!offline && this.reconnectAttempts >= CONFIG.CONNECTION.MAX_RECONNECT_ATTEMPTS) {
-                this.handleFatalError(new Error('Maximum reconnection attempts reached'));
+            // Guard: avoid scheduling duplicate reconnect timers
+            const st = connectionStates.get(this.wssID);
+            if (this.reconnectTimer || (st && st.isReconnecting)) {
+                console.info('Reconnect already scheduled; skipping');
                 return;
             }
+
+            // Do not stop on max attempts; retry indefinitely
 
             this.reconnectAttempts++;
 
@@ -6384,7 +6410,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 backoffDelay = Math.max(0, Math.floor(min + Math.random() * (max - min)));
             }
 
-            const attemptLabel = offline || this.offlineRetry ? `offline-retry` : `${this.reconnectAttempts}/${CONFIG.CONNECTION.MAX_RECONNECT_ATTEMPTS}`;
+            const attemptLabel = (offline || this.offlineRetry) ? 'offline-retry' : `${this.reconnectAttempts}`;
             console.info(`Reconnect attempt ${attemptLabel} - waiting ${Math.round(backoffDelay/1000)}s` + (this.offlineReason ? ` (reason: ${this.offlineReason})` : ''));
 
             // Send reconnection status to the renderer
@@ -6392,7 +6418,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 wssID: this.wssID,
                 status: 'reconnecting',
                 attempt: this.reconnectAttempts,
-                maxAttempts: offline || this.offlineRetry ? undefined : CONFIG.CONNECTION.MAX_RECONNECT_ATTEMPTS,
+                maxAttempts: undefined,
                 nextAttemptIn: backoffDelay,
                 reason: this.offlineReason || undefined
             });
@@ -6411,6 +6437,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         sendEventMessage(data, eventType, message, extraMeta = {}) {
+            // Gifts are handled separately and always forwarded.
+            // For other event types, respect captureevents setting.
+            if (!isCaptureEventsEnabled()) {
+                return; // drop non-gift events if captureevents disabled
+            }
             sendToBackground({
                 chatmessage: message,
                 moderator: data.isModerator || false,
@@ -6541,6 +6572,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         try {
+            try {
+                // Notify renderer to clear UI/countdowns
+                mainWindow.webContents.send('tiktokConnectionStatus', {
+                    wssID: args.wssID,
+                    status: 'stopped_by_user'
+                });
+            } catch (_) {}
             cleanupConnection(args.wssID);
             eventRet.returnValue = true;
         } catch (e) {

@@ -472,18 +472,13 @@ class YouTubeStatusManager {
         }
 
         const globalState = stateManager.state.global;
-        this.checkInterval = updates?.youtubeCheckInterval ?? globalState.youtubeCheckInterval;
-        this.autoCleanupEnabled = updates?.youtubeAutoCleanup ?? globalState.youtubeAutoCleanup;
-        this.autoAddEnabled = updates?.youtubeAutoAdd ?? globalState.youtubeAutoAdd;
+        // Hard-disable runtime scheduled checks regardless of saved flags
+        this.checkInterval = null;
+        this.autoCleanupEnabled = false;
+        this.autoAddEnabled = false;
 
-        this.stopScheduledChecks(); 
-        if (this.autoCleanupEnabled || this.autoAddEnabled) {
-            if (this.checkInterval > 0) { // Ensure interval is positive
-                this.startScheduledChecks();
-            } else {
-                console.warn("YouTubeStatusManager: Check interval is not positive, scheduled checks not started.");
-            }
-        }
+        this.stopScheduledChecks();
+        console.log("YouTubeStatusManager: Scheduled checks are disabled by configuration.");
     }
 
     async periodicCheck() {
@@ -520,32 +515,7 @@ class YouTubeStatusManager {
                     }
                 }
 
-                if (this.autoCleanupEnabled) {
-                    const groupChildSources = stateManager.getSources({ groupId: group.id });
-                    for (const source of groupChildSources) {
-                        if (source.isAutoDiscovered && source.videoId) { 
-                            const isLiveInApi = liveStreams.some(s => s.videoId === source.videoId && s.status === 'live');
-                            const isUpcomingInApi = liveStreams.some(s => s.videoId === source.videoId && s.status === 'upcoming');
-
-                            // If it was active (had a vid or wssId) and is no longer live/upcoming
-                            if ((source.vid || source.wssId) && !isLiveInApi && !isUpcomingInApi) { 
-                                Toast.info("YouTube Sync", `Auto-removing ended/offline stream for ${username} (Video ID: ${source.videoId})`);
-                                const elementToRemove = document.querySelector(`[data-source-id="${source.id}"]`);
-                                if (elementToRemove) {
-                                     const deleteButton = elementToRemove.querySelector('.settings-menu-item.danger[onclick="deleteThis(this)"]') || elementToRemove.querySelector('button[onclick="deleteThis(this)"]'); // More specific selector
-                                     if (deleteButton) {
-                                        await deleteThis(deleteButton); 
-                                     } else {
-                                        console.warn("Could not find delete button for auto-cleanup, removing from state directly for source:", source.id);
-                                        stateManager.removeSource(source.id); // Fallback
-                                     }
-                                } else { 
-                                    stateManager.removeSource(source.id);
-                                }
-                            }
-                        }
-                    }
-                }
+                // Runtime auto-cleanup disabled by design to preserve quota
             } catch (error) {
                 console.warn(`Error during YouTube sync for ${username}:`, error);
             }
