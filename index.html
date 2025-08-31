@@ -614,6 +614,39 @@ function rewriteKickUrl(url) {
     return url;
 }
 
+// Helper: should sign-in be disabled for this source based on config?
+function isSigninDisabledForSource(source) {
+    try {
+        if (!source || !config) return false;
+        const platform = source.target;
+        const pconf = config[platform];
+        if (!pconf) return false;
+        // Support both boolean and object forms
+        if (pconf.signin === false) return true;
+        if (typeof pconf.signin === 'object' && pconf.signin && pconf.signin.enabled === false) return true;
+        return false;
+    } catch (e) { return false; }
+}
+
+// Apply disabled state and tooltip to a sign-in button
+function applySigninPolicy(signinButton, source) {
+    if (!signinButton || !source) return;
+    const disabled = isSigninDisabledForSource(source);
+    if (disabled) {
+        signinButton.disabled = true;
+        signinButton.title = 'Disabled: use Activate source to sign in';
+        signinButton.style.cursor = 'not-allowed';
+        // Show a helpful toast when clicked, instead of attempting real sign-in
+        signinButton.onclick = function() {
+            Toast.info('Sign-in Disabled', 'Use the ▶️ Activate source button to sign in for this platform.');
+        };
+    } else {
+        signinButton.disabled = false;
+        signinButton.style.cursor = '';
+        // Do not override existing onclick assignments here
+    }
+}
+
 // --- Core UI Update Functions ---
 function updateSourceUI(element, source) {
     if (!element || !source) return;
@@ -643,6 +676,7 @@ function updateSourceUI(element, source) {
         const isWebsocketMode = source.connectionMode === 'websocket' || 
                                source.connectionMode === 'tiktok-websocket';
         signinButton.classList.toggle("hidden", isWebsocketMode);
+        applySigninPolicy(signinButton, source);
     }
 
     const visibilityControl = element.querySelector('[data-togglehtml]');
@@ -2245,6 +2279,9 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
             signinButton.innerHTML = '🔑 Sign-in';
             signinButton.onclick = function() { signin(this); };
             signinButton.classList.remove('authenticated');
+            // Apply config-based sign-in policy (disable if requested)
+            const source = stateManager.getSource(sourceId);
+            applySigninPolicy(signinButton, source);
         }
     }
 }

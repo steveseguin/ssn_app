@@ -411,7 +411,7 @@ console.log('[Preload Debug] Actual screen dimensions:', {
   pixelDepth: screen.pixelDepth
 });
 
-// Hide automation indicators
+// Hide automation indicators and force visible/focus to avoid headless heuristics
 Object.defineProperty(document, 'hidden', {
   get: () => false,
   configurable: true
@@ -438,6 +438,7 @@ try {
 } catch(e) {
   // Cross-origin access might fail, that's okay
 }
+
 
 // Fix eval.toString() length (should be 33 for Chrome)
 if (eval.toString().length !== 33) {

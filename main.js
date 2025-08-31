@@ -3321,55 +3321,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         try {
             const domain = getPrimaryDomain(args.url);
             
-            // Check if we should use external browser
-            const useExternalBrowser = args.config?.signin?.useSystemBrowser === true;
-            
-            if (useExternalBrowser) {
-                // Open in system browser
-                shell.openExternal(args.url);
-                
-                // Show instructions to user
-                const result = await dialog.showMessageBox(mainWindow, {
-                    type: 'info',
-                    buttons: ['I\'ve signed in', 'Cancel'],
-                    defaultId: 0,
-                    cancelId: 1,
-                    title: 'Sign In Using System Browser',
-                    message: `Opening ${domain} in your default browser...`,
-                    detail: 'Please sign in using your browser. Once you\'re signed in, come back here and click "I\'ve signed in" to continue.\n\nNote: You may need to use a browser extension to export cookies if the site requires them.'
-                });
-                
-                if (result.response === 1) {
-                    // User cancelled
-                    return null;
-                }
-                
-                // Since we can't automatically capture cookies from external browser,
-                // we'll open a regular sign-in window as fallback
-                const fallbackResult = await dialog.showMessageBox(mainWindow, {
-                    type: 'question',
-                    buttons: ['Open In-App Browser', 'Cancel'],
-                    defaultId: 0,
-                    cancelId: 1,
-                    title: 'Continue Sign In',
-                    message: 'To complete the sign-in process',
-                    detail: 'Since we can\'t automatically import cookies from your system browser, would you like to sign in using the in-app browser instead?'
-                });
-                
-                if (fallbackResult.response === 0) {
-                    // Continue with regular in-app sign in
-                    log('Falling back to in-app browser sign-in');
-                    // Don't use external browser for the fallback
-                    const fallbackArgs = { ...args };
-                    if (fallbackArgs.config?.signin) {
-                        fallbackArgs.config.signin.useSystemBrowser = false;
-                    }
-                    return createSignInWindow(fallbackArgs);
-                }
-                
-                // User cancelled completely
-                return null;
-            }
+            // Always use in-app sign-in (never system browser)
 
             // Determine session partition name first (same logic as below)
             let sessionPartition;
@@ -4500,6 +4452,24 @@ async function createWindow(args, reuse = false, mainApp = false) {
             view.args = args;
 
             if (view.webContents && view.webContents.session) {
+                // Workaround: Block LinkedIn's passkey initiation endpoint only for this activate window
+                // This prevents Windows Security "Sign in with your passkey" popups in activate-source windows
+                try {
+                    const thisWebContentsId = view.webContents.id;
+                    const liFilter = { urls: [ 'https://www.linkedin.com/checkpoint/pk/*' ] };
+                    view.webContents.session.webRequest.onBeforeRequest(liFilter, (details, callback) => {
+                        try {
+                            if (details.webContentsId === thisWebContentsId && details.url.includes('/checkpoint/pk/initiateLogin')) {
+                                console.log('[LinkedIn] Blocking passkey initiation:', details.url);
+                                return callback({ cancel: true });
+                            }
+                        } catch (e) {}
+                        return callback({});
+                    });
+                } catch (e) {
+                    console.warn('Failed to attach LinkedIn passkey blocker:', e);
+                }
+
                 // Set session user agent if configured
                 // Don't set user agent on session - already set at session creation
                 /* if (args.config && args.config.userAgent) {
@@ -6018,10 +5988,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     throw new Error('TikTok connector missing. Please reinstall tiktok-live-connector.');
                 }
                 const connectionOptions = {
-                    processInitialData: true,
-                    enableExtendedGiftInfo: false,
+                    // Avoid legacy converter crashes by skipping initial backlog processing
+                    processInitialData: false,
+                    // Fetch gift metadata so live gifts include images/diamonds
+                    enableExtendedGiftInfo: true,
+                    // Prefer WebSocket and avoid HTTP polling that triggers legacy processing
                     enableWebsocketUpgrade: true,
-                    requestPollingIntervalMs: 1000,
+                    requestPollingIntervalMs: 0,
                     fetchRoomInfoOnConnect: true,
                     clientParams: {
                         "app_language": "en-US",
@@ -6707,326 +6680,378 @@ async function createWindow(args, reuse = false, mainApp = false) {
     }
 
     let giftMapping = {
-        "485175fda92f4d2f862e915cbcf8f5c4": {
-            "name": "Star",
-            "coins": 99
-        },
-        "eba3a9bb85c33e017f3648eaf88d7189": {
-            "name": "Rose",
-            "coins": 1
-        },
-        "ab0a7b44bfc140923bb74164f6f880ab": {
-            "name": "Love you",
-            "coins": 1
-        },
-        "6cd022271dc4669d182cad856384870f": {
-            "name": "Hand Hearts",
-            "coins": 100
-        },
-        "4e7ad6bdf0a1d860c538f38026d4e812": {
-            "name": "Doughnut",
-            "coins": 30
-        },
-        "a4c4dc437fd3a6632aba149769491f49": {
-            "name": "Finger Heart",
-            "coins": 5
-        },
-        "0f158a08f7886189cdabf496e8a07c21": {
-            "name": "Paper Crane",
-            "coins": 99
-        },
-        "d72381e125ad0c1ed70f6ef2aff6c8bc": {
-            "name": "Little Ghost",
-            "coins": 10
-        },
-        "e45927083072ffe0015253d11e11a3b3": {
-            "name": "Pho",
-            "coins": 10
-        },
-        "c2413f87d3d27ac0a616ac99ccaa9278": {
-            "name": "Spooky Cat",
-            "coins": 1200
-        },
-        "1bdf0b38142a94af0f71ea53da82a3b1": {
-            "name": "Bouquet",
-            "coins": 100
-        },
-        "802a21ae29f9fae5abe3693de9f874bd": {
-            "name": "TikTok",
-            "coins": 1
-        },
-        "3ac5ec732f6f4ba7b1492248bfea83d6": {
-            "name": "Birthday Cake",
-            "coins": 1
-        },
-        "148eef0884fdb12058d1c6897d1e02b9": {
-            "name": "Corgi",
-            "coins": 299
-        },
-        "c836c81cc6e899fe392a3d11f69fafa3": {
-            "name": "Boo's Town",
-            "coins": 15000
-        },
-        "d53125bd5416e6f2f6ab61da02ddd302": {
-            "name": "Lucky Pig",
-            "coins": 10
-        },
-        "e0589e95a2b41970f0f30f6202f5fce6": {
-            "name": "Money Gun",
-            "coins": 500
-        },
-        "c2cd98b5d3147b983fcbf35d6dd38e36": {
-            "name": "Balloon Gift Box",
-            "coins": 100
-        },
-        "79a02148079526539f7599150da9fd28": {
-            "name": "Galaxy",
-            "coins": 1000
-        },
-        "863e7947bc793f694acbe970d70440a1": {
-            "name": "Forever Rosa",
-            "coins": 399
-        },
-        "968820bc85e274713c795a6aef3f7c67": {
-            "name": "Ice Cream Cone",
-            "coins": 1
-        },
-        "d244d4810758c3227e46074676e33ec8": {
-            "name": "Trick or Treat",
-            "coins": 299
-        },
-        "c9734b74f0e4e79bdfa2ef07c393d8ee": {
-            "name": "Pumpkin",
-            "coins": 1
-        },
-        "eb77ead5c3abb6da6034d3cf6cfeb438": {
-            "name": "Rosa",
-            "coins": 10
-        },
-        "ff861a220649506452e3dc35c58266ea": {
-            "name": "Peach",
-            "coins": 5
-        },
-        "30063f6bc45aecc575c49ff3dbc33831": {
-            "name": "Star Throne",
-            "coins": 7999
-        },
-        "cb909c78f2412e4927ea68d6af8e048f": {
-            "name": "Boo the Ghost",
-            "coins": 88
-        },
-        "20b8f61246c7b6032777bb81bf4ee055": {
-            "name": "Perfume",
-            "coins": 20
-        },
-        "0573114db41d2cf9c7dd70c8b0fab38e": {
-            "name": "Okay",
-            "coins": 5
-        },
-        "312f721603de550519983ca22f5cc445": {
-            "name": "Shamrock",
-            "coins": 10
-        },
-        "a40b91f7a11d4cbce780989e2d20a1f4": {
-            "name": "Ice cream",
-            "coins": 5
-        },
-        "2db38e8f2a9fb804cb7d3bd2a0ba635c": {
-            "name": "Love Balloon",
-            "coins": 500
-        },
-        "3f02fa9594bd1495ff4e8aa5ae265eef": {
-            "name": "GG",
-            "coins": 1
-        },
-        "0183cfcfc0dac56580cdc43956b73bfe": {
-            "name": "Gimme The Vote",
-            "coins": 1
-        },
-        "3c5e5fc699ed9bee71e79cc90bc5ab37": {
-            "name": "Drip Brewing",
-            "coins": 10
-        },
-        "43e1dee87ec71c57ab578cb861bbd749": {
-            "name": "Music Play",
-            "coins": 1
-        },
-        "b48c69f4df49c28391bcc069bbc31b41": {
-            "name": "You're Amazing",
-            "coins": 500
-        },
-        "e033c3f28632e233bebac1668ff66a2f": {
-            "name": "Friendship Necklace",
-            "coins": 10
-        },
-        "cb4e11b3834e149f08e1cdcc93870b26": {
-            "name": "Confetti",
-            "coins": 100
-        },
-        "909e256029f1649a9e7e339ef71c6896": {
-            "name": "Potato",
-            "coins": 5
-        },
-        "d4faa402c32bf4f92bee654b2663d9f1": {
-            "name": "Coral",
-            "coins": 499
-        },
-        "97a26919dbf6afe262c97e22a83f4bf1": {
-            "name": "Swan",
-            "coins": 699
-        },
-        "a03bf81f5759ed3ffb048e1ca71b2b5e": {
-            "name": "Good Night",
-            "coins": 10
-        },
-        "01d07ef5d45eeedce64482be2ee10a74": {
-            "name": "Dumplings",
-            "coins": 10
-        },
-        "90a405cf917cce27a8261739ecd84b89": {
-            "name": "Phoenix Flower",
-            "coins": 5
-        },
-        "2c9cec686b98281f7319b1a02ba2864a": {
-            "name": "Lock and Key",
-            "coins": 199
-        },
-        "d990849e0435271bc1e66397ab1dec35": {
-            "name": "Singing Mic",
-            "coins": 399
-        },
-        "0115cb20f6629dc50d39f6b747bddf73": {
-            "name": "Wedding",
-            "coins": 1500
-        },
-        "96d9226ef1c33784a24d0779ad3029d3": {
-            "name": "Glowing Jellyfish",
-            "coins": 1000
-        },
-        "af980f4ec9ed73f3229df8dfb583abe6": {
-            "name": "Future Encounter",
-            "coins": 1500
-        },
-        "4227ed71f2c494b554f9cbe2147d4899": {
-            "name": "Train",
-            "coins": 899
-        },
-        "1d1650cd9bb0e39d72a6e759525ffe59": {
-            "name": "Watermelon Love",
-            "coins": 1000
-        },
-        "ed2cc456ab1a8619c5093eb8cfd3d303": {
-            "name": "Sage the Smart Bean",
-            "coins": 399
-        },
-        "9494c8a0bc5c03521ef65368e59cc2b8": {
-            "name": "Fireworks",
-            "coins": 1088
-        },
-        "3cbaea405cc61e8eaab6f5a14d127511": {
-            "name": "Rosie the Rose Bean",
-            "coins": 399
-        },
-        "767d7ea90f58f3676bbc5b1ae3c9851d": {
-            "name": "Rocky the Rock Bean",
-            "coins": 399
-        },
-        "9f8bd92363c400c284179f6719b6ba9c": {
-            "name": "Boxing Gloves",
-            "coins": 299
-        },
-        "f76750ab58ee30fc022c9e4e11d25c9d": {
-            "name": "Blooming Ribbons",
-            "coins": 1000
-        },
-        "0e3769575f5b7b27b67c6330376961a4": {
-            "name": "Jollie the Joy Bean",
-            "coins": 399
-        },
-        "1153dd51308c556cb4fcc48c7d62209f": {
-            "name": "Fruit Friends",
-            "coins": 299
-        },
-        "fa6bd8486df33dbe732381fa5c6cf441": {
-            "name": "Lovely Music",
-            "coins": 999
-        },
-        "af67b28480c552fd8e8c0ae088d07a1d": {
-            "name": "Under Control",
-            "coins": 1500
-        },
-        "71883933511237f7eaa1bf8cd12ed575": {
-            "name": "Meteor Shower",
-            "coins": 3000
-        },
-        "6517b8f2f76dc75ff0f4f73107f8780e": {
-            "name": "Motorcycle",
-            "coins": 2988
-        },
-        "3f1945b0d96e665a759f747e5e0cf7a9": {
-            "name": "Cooper Flies Home",
-            "coins": 1999
-        },
-        "1ea8dbb805466c4ced19f29e9590040f": {
-            "name": "Chasing the Dream",
-            "coins": 1500
-        },
-        "1420cc77d628c49516b9330095101496": {
-            "name": "Love Explosion",
-            "coins": 1500
-        },
-        "5d456e52403cefb87d6d78c9cabb03db": {
-            "name": "The Running 9",
-            "coins": 1399
-        },
-        "6b103f9ea6c313b8df68be92e54202cc": {
-            "name": "Shaking Drum",
-            "coins": 2500
-        },
-        "e7ce188da898772f18aaffe49a7bd7db": {
-            "name": "Sports Car",
-            "coins": 7000
-        },
-        "1d067d13988e8754ed6adbebd89b9ee8": {
-            "name": "Flying Jets",
-            "coins": 5000
-        },
-        "f334260276d5fa0de91c5fb61e26d07d": {
-            "name": "Lantern Road",
-            "coins": 5000
-        },
-        "921c6084acaa2339792052058cbd3fd3": {
-            "name": "Private Jet",
-            "coins": 4888
-        },
-        "universe": {
-            "name": "Universe",
-            "coins": 34999
-        },
-        "lion": {
-            "name": "Lion",
-            "coins": 29999
-        },
-        "drama-king": {
-            "name": "Drama King",
-            "coins": 49999
-        },
-        "donut-tower": {
-            "name": "Donut Tower",
-            "coins": 4999
-        },
-        "diamond-crown": {
-            "name": "Diamond Crown",
-            "coins": 5999
-        },
-        "tiktok-crown": {
-            "name": "TikTok Crown",
-            "coins": 8999
-        },
-        "fans_starter_upgraded_gift": {
-            "name": "upgraded gift"
-        }
-    };
+  "eba3a9bb85c33e017f3648eaf88d7189": {
+    "name": "Rose",
+    "coins": 1
+  },
+  "cb1c3e6263d4b6c08301f8798dcb5a9b": {
+    "name": "Tsar",
+    "coins": 100
+  },
+  "3f02fa9594bd1495ff4e8aa5ae265eef": {
+    "name": "GG",
+    "coins": 1
+  },
+  "20ec0eb50d82c2c445cb8391fd9fe6e2": {
+    "name": "Game Controller",
+    "coins": 100
+  },
+  "b199d028d5beb081fe16edcf77db0830": {
+    "name": "Flame heart",
+    "coins": 1
+  },
+  "a4c4dc437fd3a6632aba149769491f49": {
+    "name": "Finger heart",
+    "coins": 5
+  },
+  "7ee91414ca66477969b8d30831d8e5c1": {
+    "name": "LIVE STAR",
+    "coins": 1
+  },
+  "d9119ea9e40e68f770e8273ca0372c7e": {
+    "name": "New LIVE Star",
+    "coins": 5
+  },
+  "621c62c208eeaeba85761c0c5efdd32b": {
+    "name": "Elite LIVE Star",
+    "coins": 30
+  },
+  "eb77ead5c3abb6da6034d3cf6cfeb438": {
+    "name": "Rosa",
+    "coins": 10
+  },
+  "fc549cf1bc61f9c8a1c97ebab68dced7": {
+    "name": "Love you so much",
+    "coins": 1
+  },
+  "4e7ad6bdf0a1d860c538f38026d4e812": {
+    "name": "Doughnut",
+    "coins": 30
+  },
+  "91058c626f0809291e7941969e4f0d05": {
+    "name": "Gamer 2025",
+    "coins": 299
+  },
+  "cbd7588c53ec3df1af0ed6d041566362": {
+    "name": "Super GG",
+    "coins": 100
+  },
+  "6cd022271dc4669d182cad856384870f": {
+    "name": "Hand hearts",
+    "coins": 100
+  },
+  "20b8f61246c7b6032777bb81bf4ee055": {
+    "name": "Perfume",
+    "coins": 20
+  },
+  "e9cafce8279220ed26016a71076d6a8a": {
+    "name": "You're awesome",
+    "coins": 1
+  },
+  "d78ed6496fd57286b42ac033acbee299": {
+    "name": "Mishka bear",
+    "coins": 100
+  },
+  "d2a59d961490de4c72fed3690e44d1ec": {
+    "name": "Music on Stage",
+    "coins": 1
+  },
+  "693ed273f16deff9e947a29a423c5816": {
+    "name": "Sushi Set",
+    "coins": 20
+  },
+  "e033c3f28632e233bebac1668ff66a2f": {
+    "name": "Friendship Necklace",
+    "coins": 10
+  },
+  "802a21ae29f9fae5abe3693de9f874bd": {
+    "name": "TikTok",
+    "coins": 1
+  },
+  "148eef0884fdb12058d1c6897d1e02b9": {
+    "name": "Corgi",
+    "coins": 299
+  },
+  "e0589e95a2b41970f0f30f6202f5fce6": {
+    "name": "Money Gun",
+    "coins": 500
+  },
+  "485175fda92f4d2f862e915cbcf8f5c4": {
+    "name": "Star",
+    "coins": 99
+  },
+  "ab0a7b44bfc140923bb74164f6f880ab": {
+    "name": "Love you",
+    "coins": 1
+  },
+  "0f158a08f7886189cdabf496e8a07c21": {
+    "name": "Paper Crane",
+    "coins": 99
+  },
+  "d72381e125ad0c1ed70f6ef2aff6c8bc": {
+    "name": "Little Ghost",
+    "coins": 10
+  },
+  "e45927083072ffe0015253d11e11a3b3": {
+    "name": "Pho",
+    "coins": 10
+  },
+  "c2413f87d3d27ac0a616ac99ccaa9278": {
+    "name": "Spooky Cat",
+    "coins": 1200
+  },
+  "1bdf0b38142a94af0f71ea53da82a3b1": {
+    "name": "Bouquet",
+    "coins": 100
+  },
+  "3ac5ec732f6f4ba7b1492248bfea83d6": {
+    "name": "Birthday Cake",
+    "coins": 1
+  },
+  "c836c81cc6e899fe392a3d11f69fafa3": {
+    "name": "Boo's Town",
+    "coins": 15000
+  },
+  "d53125bd5416e6f2f6ab61da02ddd302": {
+    "name": "Lucky Pig",
+    "coins": 10
+  },
+  "c2cd98b5d3147b983fcbf35d6dd38e36": {
+    "name": "Balloon Gift Box",
+    "coins": 100
+  },
+  "79a02148079526539f7599150da9fd28": {
+    "name": "Galaxy",
+    "coins": 1000
+  },
+  "863e7947bc793f694acbe970d70440a1": {
+    "name": "Forever Rosa",
+    "coins": 399
+  },
+  "968820bc85e274713c795a6aef3f7c67": {
+    "name": "Ice Cream Cone",
+    "coins": 1
+  },
+  "d244d4810758c3227e46074676e33ec8": {
+    "name": "Trick or Treat",
+    "coins": 299
+  },
+  "c9734b74f0e4e79bdfa2ef07c393d8ee": {
+    "name": "Pumpkin",
+    "coins": 1
+  },
+  "ff861a220649506452e3dc35c58266ea": {
+    "name": "Peach",
+    "coins": 5
+  },
+  "30063f6bc45aecc575c49ff3dbc33831": {
+    "name": "Star Throne",
+    "coins": 7999
+  },
+  "cb909c78f2412e4927ea68d6af8e048f": {
+    "name": "Boo the Ghost",
+    "coins": 88
+  },
+  "0573114db41d2cf9c7dd70c8b0fab38e": {
+    "name": "Okay",
+    "coins": 5
+  },
+  "312f721603de550519983ca22f5cc445": {
+    "name": "Shamrock",
+    "coins": 10
+  },
+  "a40b91f7a11d4cbce780989e2d20a1f4": {
+    "name": "Ice cream",
+    "coins": 5
+  },
+  "2db38e8f2a9fb804cb7d3bd2a0ba635c": {
+    "name": "Love Balloon",
+    "coins": 500
+  },
+  "0183cfcfc0dac56580cdc43956b73bfe": {
+    "name": "Gimme The Vote",
+    "coins": 1
+  },
+  "3c5e5fc699ed9bee71e79cc90bc5ab37": {
+    "name": "Drip Brewing",
+    "coins": 10
+  },
+  "43e1dee87ec71c57ab578cb861bbd749": {
+    "name": "Music Play",
+    "coins": 1
+  },
+  "b48c69f4df49c28391bcc069bbc31b41": {
+    "name": "You're Amazing",
+    "coins": 500
+  },
+  "cb4e11b3834e149f08e1cdcc93870b26": {
+    "name": "Confetti",
+    "coins": 100
+  },
+  "909e256029f1649a9e7e339ef71c6896": {
+    "name": "Potato",
+    "coins": 5
+  },
+  "d4faa402c32bf4f92bee654b2663d9f1": {
+    "name": "Coral",
+    "coins": 499
+  },
+  "97a26919dbf6afe262c97e22a83f4bf1": {
+    "name": "Swan",
+    "coins": 699
+  },
+  "a03bf81f5759ed3ffb048e1ca71b2b5e": {
+    "name": "Good Night",
+    "coins": 10
+  },
+  "01d07ef5d45eeedce64482be2ee10a74": {
+    "name": "Dumplings",
+    "coins": 10
+  },
+  "90a405cf917cce27a8261739ecd84b89": {
+    "name": "Phoenix Flower",
+    "coins": 5
+  },
+  "2c9cec686b98281f7319b1a02ba2864a": {
+    "name": "Lock and Key",
+    "coins": 199
+  },
+  "d990849e0435271bc1e66397ab1dec35": {
+    "name": "Singing Mic",
+    "coins": 399
+  },
+  "0115cb20f6629dc50d39f6b747bddf73": {
+    "name": "Wedding",
+    "coins": 1500
+  },
+  "96d9226ef1c33784a24d0779ad3029d3": {
+    "name": "Glowing Jellyfish",
+    "coins": 1000
+  },
+  "af980f4ec9ed73f3229df8dfb583abe6": {
+    "name": "Future Encounter",
+    "coins": 1500
+  },
+  "4227ed71f2c494b554f9cbe2147d4899": {
+    "name": "Train",
+    "coins": 899
+  },
+  "1d1650cd9bb0e39d72a6e759525ffe59": {
+    "name": "Watermelon Love",
+    "coins": 1000
+  },
+  "ed2cc456ab1a8619c5093eb8cfd3d303": {
+    "name": "Sage the Smart Bean",
+    "coins": 399
+  },
+  "9494c8a0bc5c03521ef65368e59cc2b8": {
+    "name": "Fireworks",
+    "coins": 1088
+  },
+  "3cbaea405cc61e8eaab6f5a14d127511": {
+    "name": "Rosie the Rose Bean",
+    "coins": 399
+  },
+  "767d7ea90f58f3676bbc5b1ae3c9851d": {
+    "name": "Rocky the Rock Bean",
+    "coins": 399
+  },
+  "9f8bd92363c400c284179f6719b6ba9c": {
+    "name": "Boxing Gloves",
+    "coins": 299
+  },
+  "f76750ab58ee30fc022c9e4e11d25c9d": {
+    "name": "Blooming Ribbons",
+    "coins": 1000
+  },
+  "0e3769575f5b7b27b67c6330376961a4": {
+    "name": "Jollie the Joy Bean",
+    "coins": 399
+  },
+  "1153dd51308c556cb4fcc48c7d62209f": {
+    "name": "Fruit Friends",
+    "coins": 299
+  },
+  "fa6bd8486df33dbe732381fa5c6cf441": {
+    "name": "Lovely Music",
+    "coins": 999
+  },
+  "af67b28480c552fd8e8c0ae088d07a1d": {
+    "name": "Under Control",
+    "coins": 1500
+  },
+  "71883933511237f7eaa1bf8cd12ed575": {
+    "name": "Meteor Shower",
+    "coins": 3000
+  },
+  "6517b8f2f76dc75ff0f4f73107f8780e": {
+    "name": "Motorcycle",
+    "coins": 2988
+  },
+  "3f1945b0d96e665a759f747e5e0cf7a9": {
+    "name": "Cooper Flies Home",
+    "coins": 1999
+  },
+  "1ea8dbb805466c4ced19f29e9590040f": {
+    "name": "Chasing the Dream",
+    "coins": 1500
+  },
+  "1420cc77d628c49516b9330095101496": {
+    "name": "Love Explosion",
+    "coins": 1500
+  },
+  "5d456e52403cefb87d6d78c9cabb03db": {
+    "name": "The Running 9",
+    "coins": 1399
+  },
+  "6b103f9ea6c313b8df68be92e54202cc": {
+    "name": "Shaking Drum",
+    "coins": 2500
+  },
+  "e7ce188da898772f18aaffe49a7bd7db": {
+    "name": "Sports Car",
+    "coins": 7000
+  },
+  "1d067d13988e8754ed6adbebd89b9ee8": {
+    "name": "Flying Jets",
+    "coins": 5000
+  },
+  "f334260276d5fa0de91c5fb61e26d07d": {
+    "name": "Lantern Road",
+    "coins": 5000
+  },
+  "921c6084acaa2339792052058cbd3fd3": {
+    "name": "Private Jet",
+    "coins": 4888
+  },
+  "universe": {
+    "name": "Universe",
+    "coins": 34999
+  },
+  "lion": {
+    "name": "Lion",
+    "coins": 29999
+  },
+  "drama-king": {
+    "name": "Drama King",
+    "coins": 49999
+  },
+  "donut-tower": {
+    "name": "Donut Tower",
+    "coins": 4999
+  },
+  "diamond-crown": {
+    "name": "Diamond Crown",
+    "coins": 5999
+  },
+  "tiktok-crown": {
+    "name": "TikTok Crown",
+    "coins": 8999
+  },
+  "fans_starter_upgraded_gift": {
+    "name": "upgraded gift"
+  }
+};
 
     /* ipcMain.on('inject', function(eventRet,args) {
     	const view = browserViews[args.vid];
@@ -8594,19 +8619,20 @@ app.on("ready", () => {
 
 
         // Handle new window creation
-        contents.setWindowOpenHandler(({
-            url
-        }) => {
-            // Check if the URL is external (starts with http:// or https://)
-            if ((!url.startsWith('https://socialstream.ninja/') && !url.startsWith('https://beta.socialstream.ninja/')) && (url.startsWith('http://') || url.startsWith('https://'))) {
-                // Open external links in the default browser
-                shell.openExternal(url);
-                return {
-                    action: 'deny'
-                };
+        contents.setWindowOpenHandler(({ url, features }) => {
+            // Always open links in-app, inheriting the opener's session
+            // Apply a sensible default window configuration
+            let frame = true;
+            let backgroundColor = '#DDD';
+            let useTransparency = false;
+
+            if (url.includes('&transparent') || url.includes('?transparent') ||
+                url.includes('&chroma=') || url.includes('?chroma=')) {
+                frame = false;
+                backgroundColor = '#0000';
+                useTransparency = url.includes('&transparent') || url.includes('?transparent');
             }
 
-            // For internal pages, allow them to open in a new window
             return {
                 action: 'allow',
                 overrideBrowserWindowOptions: {
@@ -8614,9 +8640,13 @@ app.on("ready", () => {
                     height: 600,
                     minWidth: 400,
                     minHeight: 200,
-                    frame: true,
+                    frame,
+                    transparent: useTransparency,
+                    backgroundColor,
                     autoHideMenuBar: false,
                     webPreferences: {
+                        // Inherit session by default (Electron handles this when allowing)
+                        // Keep a safe renderer environment
                         nodeIntegration: false,
                         contextIsolation: true,
                         additionalPermissions: ['clipboard-write']

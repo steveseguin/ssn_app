@@ -161,7 +161,8 @@
     "jsonfile": "^6.1.0",
     "npm-force-resolutions": "^0.0.10",
     "rimraf": "^6.0.1",
-    "run-script-os-fix": "^1.0.4"
+    "run-script-os-fix": "^1.0.4",
+    "tsx": "^4.20.5"
   },
   "dependencies": {
     "@huggingface/transformers": "git+https://github.com/steveseguin/transformers.js",
@@ -182,7 +183,7 @@
     "minimist": "git+https://github.com/fortiZde/minimist.git",
     "phonemizer": "^1.2.1",
     "sharp": "^0.33.5",
-    "tiktok-live-connector": "2.0.7-beta1",
+    "tiktok-live-connector": "github:steveseguin/TikTok-Live-Connector",
     "undici": "^7.5.0",
     "utf-8-validate": "^6.0.5",
     "ws": "^8.18.1",
