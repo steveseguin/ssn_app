@@ -939,7 +939,7 @@ async function createYouTubeEntry(streamData, usernameForGroup, isShortSelected)
         title: streamData.title, 
         connectionMode: parentGroup?.connectionMode || 'classic',
         isVisible: parentGroup?.groupVisible !== undefined ? parentGroup.groupVisible : true,
-        isMuted: parentGroup?.groupMuted !== undefined ? parentGroup.groupMuted : false,
+        isMuted: parentGroup?.groupMuted !== undefined ? parentGroup.groupMuted : true,
         autoActivate: false,
         supportsWSS
     };
@@ -1325,7 +1325,7 @@ async function newSource(target, username, startup = false, initialState = {}, i
             videoId: initialState.videoId || '', 
             connectionMode: connectionMode, // Use the validated connectionMode
             isVisible: initialState.togglehtml !== "false" && initialState.isVisible !== false,
-            isMuted: initialState.togglemute === "true" || initialState.isMuted === true,
+            isMuted: (initialState.togglemute === "false" || initialState.isMuted === false) ? false : true,
             autoActivate: initialState.togglelock === "true" || initialState.autoActivate === true,
             supportsWSS,
             isChannel: target === 'rumble' ? isChannelName : undefined,
@@ -1418,7 +1418,7 @@ async function newSourceVideoID(target, videoID, startup = false, initialState =
         username: initialState.username || '', 
         connectionMode: initialState.connectionMode || defaultMode,
         isVisible: initialState.togglehtml !== "false" && initialState.isVisible !== false,
-        isMuted: initialState.togglemute === "true" || initialState.isMuted === true,
+        isMuted: (initialState.togglemute === "false" || initialState.isMuted === false) ? false : true,
         autoActivate: initialState.togglelock === "true" || initialState.autoActivate === true,
         supportsWSS,
          ...initialState
@@ -1510,7 +1510,7 @@ async function newOtherSource(target, URL, startup = false, initialState = {}) {
         videoId: initialState.videoId || '', 
         connectionMode: initialState.connectionMode || defaultMode,
         isVisible: initialState.togglehtml !== "false" && initialState.isVisible !== false,
-        isMuted: initialState.togglemute === "true" || initialState.isMuted === true,
+        isMuted: (initialState.togglemute === "false" || initialState.isMuted === false) ? false : true,
         autoActivate: initialState.togglelock === "true" || initialState.autoActivate === true,
         supportsWSS,
         ...initialState
@@ -1758,14 +1758,17 @@ function setGroupConnectionMode(groupElement, mode) {
     const group = stateManager.getGroup(groupId);
     if (!group) return;
     
-    // Update the group's connection mode
+    // Update the group's default connection mode
     stateManager.updateGroup(groupId, { connectionMode: mode });
-    
-    // Update all child sources to use the new mode
+
+    // Update child sources that are not currently active; skip active ones
     const sources = stateManager.getSourcesByGroup(groupId);
+    let skipped = 0;
     sources.forEach(source => {
+        const isActive = !!(source.vid || source.wssId);
+        if (isActive) { skipped++; return; }
         stateManager.updateSource(source.id, { connectionMode: mode });
-        
+
         // Update the UI for each source
         const sourceElement = document.querySelector(`[data-source-id="${source.id}"]`);
         if (sourceElement) {
@@ -1791,7 +1794,11 @@ function setGroupConnectionMode(groupElement, mode) {
         settingsBtn.classList.remove('active');
     }
     
-    Toast.info("Connection Mode Updated", `All streams in ${group.username} are now using ${mode === 'websocket' ? 'WebSocket' : 'Standard'} mode`);
+    if (skipped > 0) {
+        Toast.warning('Partial Mode Update', `Updated inactive streams; ${skipped} active source(s) unchanged. Stop them to switch modes.`);
+    } else {
+        Toast.info('Connection Mode Updated', `All streams in ${group.username} now use ${mode === 'websocket' ? 'WebSocket' : (mode === 'tiktok-websocket' ? 'TikTok WS' : 'Standard')} mode`);
+    }
 }
 
 function stopAllStreamsInGroup(buttonElement) {
@@ -2284,6 +2291,20 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
             applySigninPolicy(signinButton, source);
         }
     }
+
+    // Disable/enable mode selector panel when active/inactive
+    const modeSelector = controlPanel?.querySelector('.mode-selector');
+    if (modeSelector) {
+        if (isActive) {
+            modeSelector.style.pointerEvents = 'none';
+            modeSelector.style.opacity = '0.5';
+            modeSelector.title = 'Stop source to change mode';
+        } else {
+            modeSelector.style.pointerEvents = '';
+            modeSelector.style.opacity = '';
+            modeSelector.title = '';
+        }
+    }
 }
 
 
@@ -2297,9 +2318,13 @@ async function setSourceConnectionMode(sourceElement, mode, clickedMenuItemOrPan
 
     console.log(`[Mode Switch] Setting connection mode for ${sourceId} from ${source.connectionMode} to ${mode}`);
 
-    // If source is active, show a warning but don't prevent the mode change
-    if (source.vid || source.wssId) { 
-        Toast.warning("Mode Change", "Source is active. Stop it before activating with the new mode.");
+    // If source is active, block changing modes until stopped
+    if (source.vid || source.wssId) {
+        if (clickedMenuItemOrPanelButton) {
+            try { clickedMenuItemOrPanelButton.title = 'Stop source to change mode'; } catch (e) {}
+        }
+        Toast.warning('Mode Locked', 'Stop the current connection before changing modes.');
+        return;
     }
 
     stateManager.updateSource(sourceId, { connectionMode: mode });
@@ -2672,8 +2697,24 @@ async function stopThis(ele) {
         entry._tiktokRetryAttempt = null;
         entry._tiktokRetryMax = null;
         stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null });
+        // Update UI status
         updateConnectionStatus(entry, 'stopped', "Stopping...");
         setTimeout(() => updateConnectionStatus(entry, 'clear'), 500);
+
+        // Restore the main activate button to default action so user can start again
+        const activateButton = entry.querySelector('[data-activatehtml]');
+        if (activateButton) {
+            delete activateButton.dataset.connecting;
+            const mode = (stateManager.getSource(sourceId)?.connectionMode) || 'tiktok-websocket';
+            if (mode === 'tiktok-websocket' && source.target === 'tiktok') {
+                activateButton.textContent = 'Connect TikTok WebSocket';
+            } else if (mode === 'websocket') {
+                activateButton.textContent = 'Connect WebSocket';
+            } else {
+                activateButton.textContent = translate('btn.activate');
+            }
+            activateButton.onclick = function() { activateSource(this); };
+        }
         return;
     }
 
@@ -2689,6 +2730,21 @@ async function stopThis(ele) {
         }
         stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null });
         if (source.target === 'tiktok') updateConnectionStatus(entry, 'clear');
+
+        // Restore activate button for any stop
+        const activateButton = entry.querySelector('[data-activatehtml]');
+        if (activateButton) {
+            delete activateButton.dataset.connecting;
+            const mode = (stateManager.getSource(sourceId)?.connectionMode) || 'classic';
+            if (mode === 'tiktok-websocket' && source.target === 'tiktok') {
+                activateButton.textContent = 'Connect TikTok WebSocket';
+            } else if (mode === 'websocket') {
+                activateButton.textContent = 'Connect WebSocket';
+            } else {
+                activateButton.textContent = translate('btn.activate');
+            }
+            activateButton.onclick = function() { activateSource(this); };
+        }
         
         // For Rumble sources, clear video ID and chat ID for username-based sources
         if (source.target === 'rumble' && source.username && (source.videoId || source.chatId)) {
@@ -4476,6 +4532,28 @@ document.addEventListener('DOMContentLoaded', async function() {
             }
         });
 
+        // Auto-close notification from main when a classic window navigates away
+        ipcRenderer.on('window-auto-closed', (event, payload) => {
+            try {
+                const { tabID, sourceId, reason, mode, initialUrl, newUrl } = payload || {};
+                let source = null;
+                if (sourceId) {
+                    source = stateManager.getSource(sourceId);
+                }
+                if (!source && tabID) {
+                    source = stateManager.getSources({ vid: tabID })[0];
+                }
+                if (source) {
+                    stateManager.updateSource(source.id, { status: 'inactive', vid: null });
+                }
+                const title = 'Source Stopped';
+                const msg = `Closed due to navigation change (${mode || 'prefix'} via ${reason || 'navigate'}).`;
+                Toast.info(title, msg);
+            } catch (e) {
+                console.warn('Failed to handle window-auto-closed event:', e);
+            }
+        });
+
 
         ipcRenderer.on('tiktokConnectionStatus', (event, data) => {
             if (!data || !data.wssID) return;
@@ -5185,7 +5263,7 @@ function showPage(pageName) {
 const translations = {
 	'en': {
 		// Navigation
-		'nav.streams': '🎭 Sources',
+		'nav.streams': '🎭 Sources and Settings',
 		'nav.linkoverlay': '🔗 Links and Settings',
 		'nav.dashboard': '📰 Status and Logs',
 		'nav.eventfloweditor': '🪤 Event Flow Editor',
@@ -5249,7 +5327,7 @@ const translations = {
 	
 	'pt-BR': {
 		// Navigation
-		'nav.streams': '🎭 Fontes',
+		'nav.streams': '🎭 Fontes e Configurações',
 		'nav.linkoverlay': '🔗 Links e Configurações',
 		'nav.dashboard': '📰 Status e Logs',
 		'nav.eventfloweditor': '🪤 Editor de Fluxo de Eventos',
@@ -5311,7 +5389,7 @@ const translations = {
 	
 	'es': {
 		// Navigation
-		'nav.streams': '🎭 Fuentes',
+		'nav.streams': '🎭 Fuentes y Configuración',
 		'nav.linkoverlay': '🔗 Enlaces y Configuración',
 		'nav.dashboard': '📰 Estado y Registros',
 		'nav.eventfloweditor': '🪤 Editor de Flujo de Eventos',
@@ -5373,7 +5451,7 @@ const translations = {
 	
 	'fr': {
 		// Navigation
-		'nav.streams': '🎭 Sources',
+		'nav.streams': '🎭 Sources et Paramètres',
 		'nav.linkoverlay': '🔗 Liens et Paramètres',
 		'nav.dashboard': '📰 État et Journaux',
 		'nav.eventfloweditor': '🪤 Éditeur de Flux d\'Événements',
@@ -5435,7 +5513,7 @@ const translations = {
 	
 	'de': {
 		// Navigation
-		'nav.streams': '🎭 Quellen',
+		'nav.streams': '🎭 Quellen und Einstellungen',
 		'nav.linkoverlay': '🔗 Links und Einstellungen',
 		'nav.dashboard': '📰 Status und Protokolle',
 		'nav.eventfloweditor': '🪤 Ereignisfluss-Editor',
@@ -5497,7 +5575,7 @@ const translations = {
 	
 	'it': {
 		// Navigation
-		'nav.streams': '🎭 Fonti',
+		'nav.streams': '🎭 Fonti e Impostazioni',
 		'nav.linkoverlay': '🔗 Collegamenti e Impostazioni',
 		'nav.dashboard': '📰 Stato e Registri',
 		'nav.eventfloweditor': '🪤 Editor di Flusso Eventi',
@@ -5559,7 +5637,7 @@ const translations = {
 	
 	'ja': {
 		// Navigation
-		'nav.streams': '🎭 ソース',
+		'nav.streams': '🎭 ソースと設定',
 		'nav.linkoverlay': '🔗 リンクと設定',
 		'nav.dashboard': '📰 ステータスとログ',
 		'nav.eventfloweditor': '🪤 イベントフローエディター',
@@ -5621,7 +5699,7 @@ const translations = {
 	
 	'zh': {
 		// Navigation
-		'nav.streams': '🎭 来源',
+		'nav.streams': '🎭 来源和设置',
 		'nav.linkoverlay': '🔗 链接和设置',
 		'nav.dashboard': '📰 状态和日志',
 		'nav.eventfloweditor': '🪤 事件流编辑器',
@@ -5683,7 +5761,7 @@ const translations = {
 	
 	'ko': {
 		// Navigation
-		'nav.streams': '🎭 소스',
+		'nav.streams': '🎭 소스 및 설정',
 		'nav.linkoverlay': '🔗 링크 및 설정',
 		'nav.dashboard': '📰 상태 및 로그',
 		'nav.eventfloweditor': '🪤 이벤트 플로우 편집기',
@@ -5745,7 +5823,7 @@ const translations = {
 	
 	'ru': {
 		// Navigation
-		'nav.streams': '🎭 Источники',
+		'nav.streams': '🎭 Источники и настройки',
 		'nav.linkoverlay': '🔗 Ссылки и настройки',
 		'nav.dashboard': '📰 Статус и журналы',
 		'nav.eventfloweditor': '🪤 Редактор потока событий',
@@ -5807,7 +5885,7 @@ const translations = {
 	
 	'tr': {
 		// Navigation
-		'nav.streams': '🎭 Kaynaklar',
+		'nav.streams': '🎭 Kaynaklar ve Ayarlar',
 		'nav.linkoverlay': '🔗 Bağlantılar ve Ayarlar',
 		'nav.dashboard': '📰 Durum ve Günlükler',
 		'nav.eventfloweditor': '🪤 Olay Akış Düzenleyici',

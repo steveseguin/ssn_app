@@ -364,6 +364,8 @@ const argDescriptions = {};
 
 let windowIdCounter = new Map();
 let browserViews = {};
+// Guard to prevent multiple main-process YouTube ad-skipper intervals
+let YT_AD_SKIPPER_INTERVAL = null;
 
 function generateUniqueWindowId() {
     let id = 1;
@@ -1473,8 +1475,45 @@ ipcMain.handle('showWindow', (event, args) => {
 });
 
 ipcMain.handle('checkWindowExists', (event, args) => {
-    const exists = !!browserViews[args.vid];
-    return exists;
+    const view = browserViews[args.vid];
+    if (!view) return false;
+    try {
+        if (typeof view.isDestroyed === 'function') {
+            if (view.isDestroyed()) {
+                // Clean up stale reference
+                delete browserViews[args.vid];
+                releaseWindowId(args.vid);
+                return false;
+            }
+        }
+    } catch (_) {}
+    return true;
+});
+
+// Explicit window close handler for classic/browser windows
+ipcMain.handle('closeWindow', async (event, args) => {
+    const vid = args && args.vid;
+    if (!vid) return false;
+    const view = browserViews[vid];
+    if (!view) return false;
+
+    try {
+        // Attempt a clean destroy regardless of custom close handlers
+        if (typeof view.destroy === 'function' && !view.isDestroyed()) {
+            view.destroy();
+        } else if (typeof view.close === 'function') {
+            view.close();
+        }
+    } catch (e) {
+        console.error('Error destroying window:', e);
+    }
+
+    try {
+        delete browserViews[vid];
+        releaseWindowId(vid);
+    } catch (_) {}
+
+    return true;
 });
 
 
@@ -2269,6 +2308,65 @@ async function createWindow(args, reuse = false, mainApp = false) {
             });
 
             if (view.webContents) {
+                // Auto-close on top-level navigation for activated (classic) windows if configured
+                try {
+                    const enforceCloseOnNavigate = (!args.wss && args.config && args.config.closeOnNavigate === true);
+                    if (enforceCloseOnNavigate) {
+                        const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact'
+                        let initialHref = '';
+                        let initialOrigin = '';
+                        let initialNoHash = '';
+                        try {
+                            const u = new URL(args.url);
+                            initialHref = u.href.replace(/\/+$/, '/');
+                            initialOrigin = u.origin;
+                            initialNoHash = u.origin + u.pathname + (u.search || '');
+                        } catch (_) {
+                            initialHref = String(args.url || '').trim();
+                            initialOrigin = '';
+                            initialNoHash = initialHref.replace(/#.*$/, '');
+                        }
+
+                        const isAllowed = (url) => {
+                            try {
+                                const nu = new URL(url);
+                                const href = nu.href.replace(/\/+$/, '/');
+                                const noHash = nu.origin + nu.pathname + (nu.search || '');
+                                if (mode === 'origin') {
+                                    return initialOrigin && nu.origin === initialOrigin;
+                                } else if (mode === 'exact') {
+                                    // Treat hash-only changes as allowed; compare without hash fragment
+                                    return noHash === initialNoHash;
+                                } else { // prefix (default)
+                                    return href.startsWith(initialHref);
+                                }
+                            } catch (_) {
+                                return true; // If URL parsing fails, do not block
+                            }
+                        };
+
+                        const maybeClose = (navUrl, reason) => {
+                            if (!isAllowed(navUrl)) {
+                                try { log(`Auto-closing activated window due to navigation (${reason}): ${navUrl}`); } catch (_) {}
+                                try {
+                                    // Inform renderer (best-effort)
+                                    if (mainWindow && !mainWindow.isDestroyed()) {
+                                        mainWindow.webContents.send(`window-closed-${view.tabID}`);
+                                    }
+                                } catch (_) {}
+                                try { if (!view.isDestroyed()) view.destroy(); } catch (_) {}
+                                try { delete browserViews[view.tabID]; releaseWindowId(view.tabID); } catch (_) {}
+                            }
+                        };
+
+                        view.webContents.on('will-navigate', (event, url) => { maybeClose(url, 'will-navigate'); });
+                        view.webContents.on('did-navigate', (event, url) => { maybeClose(url, 'did-navigate'); });
+                        view.webContents.on('did-navigate-in-page', (event, url) => { maybeClose(url, 'did-navigate-in-page'); });
+                        view.webContents.on('did-redirect-navigation', (event, url) => { maybeClose(url, 'redirect'); });
+                    }
+                } catch (e) {
+                    try { console.warn('Error attaching closeOnNavigate handlers:', e); } catch (_) {}
+                }
                 // Log the URL being loaded
                 console.log("Loading URL in new window:", url);
 
@@ -2857,11 +2955,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
         
         if (mainWindow && mainWindow.webContents && mainWindow.webContents.getURL().includes("youtube.com")) {
             log("Youtube ad skipper inserted");
-            const adSkipperInterval = setInterval(
+            if (!YT_AD_SKIPPER_INTERVAL) {
+            const adSkipperInterval = YT_AD_SKIPPER_INTERVAL = setInterval(
                 function(mw) {
                     try {
                         if (!mw || mw.isDestroyed()) {
                             clearInterval(adSkipperInterval);
+                            YT_AD_SKIPPER_INTERVAL = null;
                             return;
                         }
                         mw.webContents.executeJavaScript(
@@ -2877,6 +2977,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         );
                     } catch (e) {
                         clearInterval(adSkipperInterval);
+                        YT_AD_SKIPPER_INTERVAL = null;
                         return;
                     }
                 },
@@ -2887,6 +2988,28 @@ async function createWindow(args, reuse = false, mainApp = false) {
             // Store interval for cleanup
             if (!mainWindow.intervals) mainWindow.intervals = [];
             mainWindow.intervals.push(adSkipperInterval);
+
+            // Attach a one-time navigation handler to clear page-level timer when leaving YouTube
+            if (!mainWindow.__ytSkipperNavHandlerAttached) {
+                const clearYtPageTimer = () => {
+                    try {
+                        mainWindow.webContents.executeJavaScript('try{ if (window.xxxxxx){ clearInterval(window.xxxxxx); window.xxxxxx=null; } }catch(e){}');
+                    } catch (_) {}
+                };
+                try {
+                    mainWindow.webContents.on('did-navigate', (event, url) => {
+                        if (url && !url.includes('youtube.com')) clearYtPageTimer();
+                    });
+                    mainWindow.webContents.on('did-navigate-in-page', () => {
+                        try {
+                            const cu = mainWindow.webContents.getURL() || '';
+                            if (!cu.includes('youtube.com')) clearYtPageTimer();
+                        } catch (_) {}
+                    });
+                    mainWindow.__ytSkipperNavHandlerAttached = true;
+                } catch (_) {}
+            }
+            }
         }
 
         mainWindow.webContents.executeJavaScript(`
@@ -3625,16 +3748,24 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             view.setMenuBarVisibility(true);
 
-            // Set Content-Security-Policy to avoid security warnings - BUT NOT FOR KASADA
+            // Set Content-Security-Policy once per session to avoid listener accumulation (skip for Kasada)
             if (preloadScript !== 'preload-kasada.js') {
-                view.webContents.session.webRequest.onHeadersReceived((details, callback) => {
-                    callback({
-                        responseHeaders: {
-                            ...details.responseHeaders,
-                            'Content-Security-Policy': ["default-src 'self' https: wss: data: blob:; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:;"]
+                const ses = view.webContents.session;
+                if (ses && !cspConfiguredSessions.has(ses)) {
+                    ses.webRequest.onHeadersReceived((details, callback) => {
+                        try {
+                            callback({
+                                responseHeaders: {
+                                    ...details.responseHeaders,
+                                    'Content-Security-Policy': ["default-src 'self' https: wss: data: blob:; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:;"]
+                                }
+                            });
+                        } catch (e) {
+                            callback({ responseHeaders: details.responseHeaders });
                         }
                     });
-                });
+                    cspConfiguredSessions.add(ses);
+                }
             }
 
             // Store window configuration
@@ -4547,6 +4678,82 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
 
             if (view.webContents) {
+                // Auto-close on navigate for activated (classic) windows only
+                try {
+                    const enforceCloseOnNavigate = (!args.wss && args.config && args.config.closeOnNavigate === true);
+                    if (enforceCloseOnNavigate) {
+                        const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact'
+                        let initialHref = '';
+                        let initialOrigin = '';
+                        let initialNoHash = '';
+                        try {
+                            const u = new URL(args.url);
+                            initialHref = u.href.replace(/\/+$/, '/');
+                            initialOrigin = u.origin;
+                            initialNoHash = u.origin + u.pathname + (u.search || '');
+                        } catch (_) {
+                            initialHref = String(args.url || '').trim();
+                            initialOrigin = '';
+                            initialNoHash = initialHref.replace(/#.*$/, '');
+                        }
+
+                        const isAllowed = (url) => {
+                            try {
+                                const nu = new URL(url);
+                                const href = nu.href.replace(/\/+$/, '/');
+                                const noHash = nu.origin + nu.pathname + (nu.search || '');
+                                if (mode === 'origin') {
+                                    return initialOrigin && nu.origin === initialOrigin;
+                                } else if (mode === 'exact') {
+                                    // Treat hash-only changes as allowed; compare without hash fragment
+                                    return noHash === initialNoHash;
+                                } else { // prefix (default)
+                                    return href.startsWith(initialHref);
+                                }
+                            } catch (_) {
+                                return true; // If URL parsing fails, do not block
+                            }
+                        };
+
+                        const maybeClose = (navUrl, reason) => {
+                            if (!isAllowed(navUrl)) {
+                                try { log(`Auto-closing activated window due to navigation (${reason}): ${navUrl}`); } catch (_) {}
+
+                                // Best-effort UI notification with details for toast
+                                try {
+                                    if (mainWindow && !mainWindow.isDestroyed()) {
+                                        mainWindow.webContents.send('window-auto-closed', {
+                                            tabID: view.tabID,
+                                            sourceId: view.args && view.args.sourceId,
+                                            reason,
+                                            mode,
+                                            initialUrl: args.url,
+                                            newUrl: navUrl
+                                        });
+                                    }
+                                } catch (_) {}
+
+                                // Also send the legacy per-tab closed event (used by sign-in flow, harmless here)
+                                try {
+                                    if (mainWindow && !mainWindow.isDestroyed()) {
+                                        mainWindow.webContents.send(`window-closed-${view.tabID}`);
+                                    }
+                                } catch (_) {}
+
+                                // Destroy the window and clean up bookkeeping
+                                try { if (!view.isDestroyed()) view.destroy(); } catch (_) {}
+                                try { delete browserViews[view.tabID]; releaseWindowId(view.tabID); } catch (_) {}
+                            }
+                        };
+
+                        view.webContents.on('will-navigate', (event, url) => { maybeClose(url, 'will-navigate'); });
+                        view.webContents.on('did-navigate', (event, url) => { maybeClose(url, 'did-navigate'); });
+                        view.webContents.on('did-navigate-in-page', (event, url) => { maybeClose(url, 'did-navigate-in-page'); });
+                        view.webContents.on('did-redirect-navigation', (event, url) => { maybeClose(url, 'redirect'); });
+                    }
+                } catch (e) {
+                    try { console.warn('Error attaching closeOnNavigate handlers (classic window):', e); } catch (_) {}
+                }
                 // Add navigation debugging for regular windows
                 view.webContents.on('did-start-loading', () => {
                     log(`Regular window started loading: ${args.url}`);

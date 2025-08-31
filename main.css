@@ -1457,17 +1457,20 @@ to {
   vertical-align: middle !important;
 }
 
-.entry:has(i.la-stop:not(.hidden)) .mode-selector {
+.entry:has(i.la-stop:not(.hidden)) .mode-selector,
+.entry:has([data-stophtml]:not(.hidden)) .mode-selector {
   pointer-events: none !important;
   opacity: 0.5 !important;
   position: relative !important;
 }
 
-.entry:has(i.la-stop:not(.hidden)) .mode-options {
+.entry:has(i.la-stop:not(.hidden)) .mode-options,
+.entry:has([data-stophtml]:not(.hidden)) .mode-options {
   position: relative !important;
 }
 
-.entry:has(i.la-stop:not(.hidden)) .mode-options:after {
+.entry:has(i.la-stop:not(.hidden)) .mode-options:after,
+.entry:has([data-stophtml]:not(.hidden)) .mode-options:after {
   content: "Stop source to change mode" !important;
   position: absolute !important;
   bottom: -30px !important;
@@ -1485,22 +1488,26 @@ to {
   z-index: 100 !important;
 }
 
-.entry:has(i.la-stop:not(.hidden)) .mode-selector:hover .mode-options:after {
+.entry:has(i.la-stop:not(.hidden)) .mode-selector:hover .mode-options:after,
+.entry:has([data-stophtml]:not(.hidden)) .mode-selector:hover .mode-options:after {
   opacity: 1 !important;
 }
 
-.entry:has(i.la-stop:not(.hidden)) .mode-option {
+.entry:has(i.la-stop:not(.hidden)) .mode-option,
+.entry:has([data-stophtml]:not(.hidden)) .mode-option {
   cursor: not-allowed !important;
   opacity: 0.6 !important;
   background: rgba(0, 0, 0, 0.3) !important;
 }
 
-.entry:has(i.la-stop:not(.hidden)) .mode-option:hover {
+.entry:has(i.la-stop:not(.hidden)) .mode-option:hover,
+.entry:has([data-stophtml]:not(.hidden)) .mode-option:hover {
   background: rgba(0, 0, 0, 0.3) !important;
   transform: none !important;
 }
 
-.entry:has(i.la-stop:not(.hidden)) .mode-option.active {
+.entry:has(i.la-stop:not(.hidden)) .mode-option.active,
+.entry:has([data-stophtml]:not(.hidden)) .mode-option.active {
   opacity: 0.8 !important;
 }
 
