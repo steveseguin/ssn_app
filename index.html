@@ -214,29 +214,31 @@
 		</div>
 
 		<button title="Additional settings for this source" class="settings-btn button">⚙️</button>
-		<div class="settings-menu">
-			<div class="settings-menu-section">
-				<div class="settings-menu-header">Additional Controls</div>
-				<div class="settings-menu-item" onclick="clearThis(this)" data-clearcache>
-					🧹 Clear cache & storage
-				</div>
-				<div class="settings-menu-item youtube-type-toggle hidden" onclick="toggleYouTubeType(this)">
-					🔄 Switch to <span class="toggle-type-text">YouTube</span>
-				</div>
-				<div class="settings-menu-item" onclick="openUserAgentSettings(this)">
-					🌐 User Agent Settings
-				</div>
-				<div class="settings-menu-item" onclick="openSessionSettings(this)">
-					🔐 Browser Session Settings
-				</div>
-				</div>
-			<div class="settings-menu-section">
-				<div class="settings-menu-header">Source Management</div>
-				<div class="settings-menu-item danger" onclick="deleteThis(this)">
-					🗑️ Remove source
-				</div>
-			</div>
-		</div>
+        <div class="settings-menu">
+            <div class="settings-menu-section">
+                <div class="settings-menu-header">Additional Controls</div>
+                <div class="settings-menu-item" onclick="clearThis(this)" data-clearcache>
+                    🧹 Clear cache & storage
+                </div>
+                <div class="settings-menu-item youtube-type-toggle hidden" onclick="toggleYouTubeType(this)">
+                    🔄 Switch to <span class="toggle-type-text">YouTube</span>
+                </div>
+                <div class="settings-menu-item" onclick="openUserAgentSettings(this)">
+                    🌐 User Agent Settings
+                </div>
+                <div class="settings-menu-item" onclick="openSessionSettings(this)">
+                    🔐 Browser Session Settings
+                </div>
+                </div>
+            <div class="settings-menu-section">
+                <div class="settings-menu-header">Source Management</div>
+                <div class="settings-menu-item" data-move="up" onclick="moveSourceUp(this)">⬆️ Move up</div>
+                <div class="settings-menu-item" data-move="down" onclick="moveSourceDown(this)">⬇️ Move down</div>
+                <div class="settings-menu-item danger" onclick="deleteThis(this)">
+                    🗑️ Remove source
+                </div>
+            </div>
+        </div>
 	</div>
 
     <div id="groupTemplate" class="hidden entry" data-is-group-header="true">
@@ -270,11 +272,13 @@
             <button title="Additional settings for this group" class="settings-btn button">⚙️</button>
             <div class="settings-menu">
                 <div class="settings-menu-section">
-					<div class="settings-menu-header">Group Management</div>
-					<div class="settings-menu-item danger" onclick="deleteThis(this)">
-						🗑️ Remove group & its sources
-					</div>
-				</div>
+                    <div class="settings-menu-header">Group Management</div>
+                    <div class="settings-menu-item" data-group-move="up" onclick="moveGroupUp(this)">⬆️ Move group up</div>
+                    <div class="settings-menu-item" data-group-move="down" onclick="moveGroupDown(this)">⬇️ Move group down</div>
+                    <div class="settings-menu-item danger" onclick="deleteThis(this)">
+                        🗑️ Remove group & its sources
+                    </div>
+                </div>
             </div>
         </div>
         <div class="stream-group">
@@ -1716,6 +1720,9 @@ function setupGroupControls(groupHeaderElement) {
                 if (menu !== settingsMenu) menu.classList.remove('active');
             });
             settingsMenu.classList.toggle('active');
+            if (settingsMenu.classList.contains('active')) {
+                try { updateMoveMenuItemsForGroup(groupHeaderElement); } catch (e) { /* noop */ }
+            }
         };
         document.addEventListener('click', (e) => {
             if (!settingsMenu.classList.contains('hidden') && !settingsMenu.contains(e.target) && !settingsBtn.contains(e.target)) {
@@ -2478,6 +2485,9 @@ function setupSourceControls(sourceElement) {
             if (menu !== settingsMenu) menu.classList.remove('active');
         });
         settingsMenu.classList.toggle('active');
+        if (settingsMenu.classList.contains('active')) {
+            try { updateMoveMenuItemsForSource(sourceElement); } catch (e) { /* noop */ }
+        }
 
         const currentSource = sourceId ? stateManager.getSource(sourceId) : null;
         const isActive = currentSource ? (!!currentSource.vid || !!currentSource.wssId) : false;
@@ -2670,6 +2680,206 @@ async function deleteThis(ele) {
         }
     }
     manageWelcomePage();
+}
+
+
+// ----- Reordering Helpers -----
+function getRootOrder() {
+    try {
+        const ro = stateManager?.state?.global?.rootOrder;
+        return Array.isArray(ro) ? ro.slice() : [];
+    } catch (e) { return []; }
+}
+
+function setRootOrder(order) {
+    try {
+        stateManager.updateGlobal({ rootOrder: order });
+    } catch (e) {
+        console.warn('Failed to set rootOrder', e);
+    }
+}
+
+function topLevelContainer() {
+    return document.getElementById('sources');
+}
+
+function keyForTopLevelElement(el) {
+    if (!el) return null;
+    const gid = el.dataset.groupId;
+    if (gid) return `g:${gid}`;
+    const sid = el.dataset.sourceId;
+    if (sid) return `s:${sid}`;
+    return null;
+}
+
+function elementForTopLevelKey(key) {
+    if (!key || typeof key !== 'string') return null;
+    if (key.startsWith('g:')) {
+        const gid = key.slice(2);
+        return document.querySelector(`[data-group-id="${gid}"]`);
+    }
+    if (key.startsWith('s:')) {
+        const sid = key.slice(2);
+        // Only return standalone source if it's a direct child of #sources
+        const el = document.querySelector(`[data-source-id="${sid}"]`);
+        if (el && el.parentElement && el.parentElement.id === 'sources') return el;
+        return null;
+    }
+    return null;
+}
+
+function buildTopLevelKeysFromDom() {
+    const container = topLevelContainer();
+    const keys = [];
+    if (!container) return keys;
+    const children = container.querySelectorAll(':scope > .entry:not(#sourceTemplate):not(#groupTemplate)');
+    children.forEach(el => {
+        const key = keyForTopLevelElement(el);
+        if (key) keys.push(key);
+    });
+    return keys;
+}
+
+function reorderTopLevelDomAccordingToRootOrder() {
+    const container = topLevelContainer();
+    if (!container) return;
+    let order = getRootOrder();
+    const presentKeys = buildTopLevelKeysFromDom();
+    // Filter to only present keys
+    order = order.filter(k => presentKeys.includes(k));
+    // Append any missing present keys (new items) at the end
+    presentKeys.forEach(k => { if (!order.includes(k)) order.push(k); });
+    // Re-append children in specified order
+    order.forEach(k => {
+        const el = elementForTopLevelKey(k);
+        if (el) container.appendChild(el);
+    });
+    // Persist normalized order
+    setRootOrder(order);
+}
+
+function applyRootOrder() {
+    try { reorderTopLevelDomAccordingToRootOrder(); } catch (e) { console.warn('applyRootOrder failed', e); }
+}
+
+function reorderGroupDom(groupId) {
+    const group = stateManager.getGroup(groupId);
+    if (!group) return;
+    const container = document.querySelector(`[data-group-id="${groupId}"] .stream-group`);
+    if (!container) return;
+    (group.streams || []).forEach(sourceId => {
+        const el = document.querySelector(`[data-source-id="${sourceId}"]`);
+        if (el) container.appendChild(el);
+    });
+}
+
+function updateMoveMenuItemsForSource(sourceElement) {
+    const moveUp = sourceElement.querySelector('.settings-menu-item[data-move="up"]');
+    const moveDown = sourceElement.querySelector('.settings-menu-item[data-move="down"]');
+    if (!moveUp || !moveDown) return;
+    moveUp.classList.remove('disabled');
+    moveDown.classList.remove('disabled');
+
+    const sourceId = sourceElement.dataset.sourceId;
+    const source = stateManager.getSource(sourceId);
+    if (!source) return;
+
+    if (source.groupId) {
+        const group = stateManager.getGroup(source.groupId);
+        if (!group) return;
+        const idx = group.streams.indexOf(sourceId);
+        if (idx <= 0) moveUp.classList.add('disabled');
+        if (idx === -1 || idx >= group.streams.length - 1) moveDown.classList.add('disabled');
+    } else {
+        // Top-level
+        const keys = getRootOrder().length ? getRootOrder() : buildTopLevelKeysFromDom();
+        const key = `s:${sourceId}`;
+        const idx = keys.indexOf(key);
+        if (idx <= 0) moveUp.classList.add('disabled');
+        if (idx === -1 || idx >= keys.length - 1) moveDown.classList.add('disabled');
+    }
+}
+
+function updateMoveMenuItemsForGroup(groupHeaderElement) {
+    const moveUp = groupHeaderElement.querySelector('.settings-menu-item[data-group-move="up"]');
+    const moveDown = groupHeaderElement.querySelector('.settings-menu-item[data-group-move="down"]');
+    if (!moveUp || !moveDown) return;
+    moveUp.classList.remove('disabled');
+    moveDown.classList.remove('disabled');
+
+    const groupId = groupHeaderElement.dataset.groupId;
+    const keys = getRootOrder().length ? getRootOrder() : buildTopLevelKeysFromDom();
+    const key = `g:${groupId}`;
+    const idx = keys.indexOf(key);
+    if (idx <= 0) moveUp.classList.add('disabled');
+    if (idx === -1 || idx >= keys.length - 1) moveDown.classList.add('disabled');
+}
+
+function moveSourceInGroup(sourceId, direction) { // direction: -1 or +1
+    const source = stateManager.getSource(sourceId);
+    if (!source || !source.groupId) return;
+    const group = stateManager.getGroup(source.groupId);
+    if (!group || !Array.isArray(group.streams)) return;
+    const idx = group.streams.indexOf(sourceId);
+    if (idx === -1) return;
+    const newIdx = idx + direction;
+    if (newIdx < 0 || newIdx >= group.streams.length) return;
+    const newStreams = group.streams.slice();
+    const [moved] = newStreams.splice(idx, 1);
+    newStreams.splice(newIdx, 0, moved);
+    stateManager.updateGroup(group.id, { streams: newStreams });
+    // Reorder DOM immediately for responsiveness
+    reorderGroupDom(group.id);
+    Toast.info('Reordered', `Moved source ${direction < 0 ? 'up' : 'down'} in group.`);
+}
+
+function moveTopLevelByKey(key, direction) { // direction: -1 or +1
+    let order = getRootOrder();
+    if (!order.length) order = buildTopLevelKeysFromDom();
+    if (!order.includes(key)) order.push(key);
+    const idx = order.indexOf(key);
+    const newIdx = idx + direction;
+    if (idx === -1 || newIdx < 0 || newIdx >= order.length) return;
+    const swapped = order.slice();
+    const [item] = swapped.splice(idx, 1);
+    swapped.splice(newIdx, 0, item);
+    setRootOrder(swapped);
+    reorderTopLevelDomAccordingToRootOrder();
+    Toast.info('Reordered', `Moved ${key.startsWith('g:') ? 'group' : 'source'} ${direction < 0 ? 'up' : 'down'}.`);
+}
+
+function moveSourceUp(menuItem) {
+    const sourceElement = menuItem.closest('[data-source-id]');
+    if (!sourceElement) return;
+    const sourceId = sourceElement.dataset.sourceId;
+    const source = stateManager.getSource(sourceId);
+    if (!source) return;
+    if (source.groupId) return moveSourceInGroup(sourceId, -1);
+    return moveTopLevelByKey(`s:${sourceId}`, -1);
+}
+
+function moveSourceDown(menuItem) {
+    const sourceElement = menuItem.closest('[data-source-id]');
+    if (!sourceElement) return;
+    const sourceId = sourceElement.dataset.sourceId;
+    const source = stateManager.getSource(sourceId);
+    if (!source) return;
+    if (source.groupId) return moveSourceInGroup(sourceId, +1);
+    return moveTopLevelByKey(`s:${sourceId}`, +1);
+}
+
+function moveGroupUp(menuItem) {
+    const groupElement = menuItem.closest('[data-group-id]');
+    if (!groupElement) return;
+    const groupId = groupElement.dataset.groupId;
+    return moveTopLevelByKey(`g:${groupId}`, -1);
+}
+
+function moveGroupDown(menuItem) {
+    const groupElement = menuItem.closest('[data-group-id]');
+    if (!groupElement) return;
+    const groupId = groupElement.dataset.groupId;
+    return moveTopLevelByKey(`g:${groupId}`, +1);
 }
 
 
@@ -3889,6 +4099,9 @@ function processSettingsAndCreateSources() {
         }
     });
     manageWelcomePage();
+
+    // Apply saved top-level ordering after all items are in the DOM
+    try { applyRootOrder(); } catch (e) { console.warn('Failed to apply root order on startup', e); }
 }
 
 
@@ -4228,6 +4441,16 @@ document.addEventListener('DOMContentLoaded', async function() {
 
         if (!source.groupId) {
             document.getElementById("sources").appendChild(element);
+            // Maintain root order for standalone sources
+            try {
+                let ro = getRootOrder();
+                const key = `s:${source.id}`;
+                if (!ro.includes(key)) {
+                    ro.push(key);
+                    setRootOrder(ro);
+                }
+                if (ro.length) reorderTopLevelDomAccordingToRootOrder();
+            } catch (e) { /* noop */ }
         } else {
             const groupElement = document.querySelector(`[data-group-id="${source.groupId}"]`);
             if (groupElement) {
@@ -4263,6 +4486,27 @@ document.addEventListener('DOMContentLoaded', async function() {
                 const elInOldGroup = oldGroupStreamsContainer?.querySelector(`[data-source-id="${sourceId}"]`);
                 elInOldGroup?.remove();
             }
+
+            // Maintain rootOrder when moving between standalone/grouped
+            try {
+                let ro = getRootOrder();
+                const key = `s:${sourceId}`;
+                const movedIntoGroup = !!updates.groupId;
+                const wasInGroup = !!oldState.groupId;
+                if (movedIntoGroup) {
+                    if (ro.includes(key)) {
+                        ro = ro.filter(k => k !== key);
+                        setRootOrder(ro);
+                        reorderTopLevelDomAccordingToRootOrder();
+                    }
+                } else if (wasInGroup && !movedIntoGroup) {
+                    if (!ro.includes(key)) {
+                        ro.push(key);
+                        setRootOrder(ro);
+                        reorderTopLevelDomAccordingToRootOrder();
+                    }
+                }
+            } catch (e) { /* noop */ }
             
             if (updates.groupId) {
                  const newGroupEl = document.querySelector(`[data-group-id="${updates.groupId}"]`);
@@ -4289,6 +4533,17 @@ document.addEventListener('DOMContentLoaded', async function() {
                 stopRumbleAutoCheck(sourceId);
             }
         } catch (e) { console.warn('Error stopping auto-check for removed source', sourceId, e); }
+        // Update root order if standalone
+        try {
+            if (source && !source.groupId) {
+                let ro = getRootOrder();
+                const key = `s:${sourceId}`;
+                if (ro.includes(key)) {
+                    ro = ro.filter(k => k !== key);
+                    setRootOrder(ro);
+                }
+            }
+        } catch (e) { /* noop */ }
         manageWelcomePage();
     });
 
@@ -4318,6 +4573,16 @@ document.addEventListener('DOMContentLoaded', async function() {
         groupElement = createGroupElement(group.id); 
         if (groupElement) {
             document.getElementById("sources").appendChild(groupElement);
+            // Maintain root order for groups
+            try {
+                let ro = getRootOrder();
+                const key = `g:${group.id}`;
+                if (!ro.includes(key)) {
+                    ro.push(key);
+                    setRootOrder(ro);
+                }
+                if (ro.length) reorderTopLevelDomAccordingToRootOrder();
+            } catch (e) { /* noop */ }
             const streamsContainer = groupElement.querySelector('.stream-group');
             if (streamsContainer) {
                 group.streams.forEach(sourceId => {
@@ -4341,6 +4606,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         const group = stateManager.getGroup(groupId);
         if (element && group) {
             updateGroupUI(element, group);
+            try { reorderGroupDom(groupId); } catch (e) { /* noop */ }
         }
     });
     
@@ -4349,6 +4615,15 @@ document.addEventListener('DOMContentLoaded', async function() {
         element?.remove();
         // Stop any YouTube group auto-check timers
         try { stopYouTubeGroupAutoCheck(groupId); } catch (e) { /* noop */ }
+        // Update root order for groups
+        try {
+            let ro = getRootOrder();
+            const key = `g:${groupId}`;
+            if (ro.includes(key)) {
+                ro = ro.filter(k => k !== key);
+                setRootOrder(ro);
+            }
+        } catch (e) { /* noop */ }
         manageWelcomePage();
     });
     

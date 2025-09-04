@@ -653,6 +653,12 @@ button {
   position: relative;
 }
 
+.settings-menu-item.disabled {
+  opacity: 0.5;
+  cursor: default;
+  pointer-events: none;
+}
+
 .settings-menu-item:hover {
   background: rgba(74, 141, 199, 0.1);
 }

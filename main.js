@@ -3648,6 +3648,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 webSecurity: true, // TRUE to match working code
                 allowRunningInsecureContent: false,
                 experimentalFeatures: false,
+                // Ensure proper window.open/opener semantics for OAuth popups
+                nativeWindowOpen: true,
                 
                 // Chrome's plugin settings
                 plugins: true,
@@ -3935,11 +3937,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
                 });
 
-                view.webContents.setWindowOpenHandler(({
-                    url
-                }) => {
+                view.webContents.setWindowOpenHandler(({ url }) => {
                     const userAgent = getSignInUserAgent(url, args.config, args.configs);
                     view.webContents.userAgent = userAgent;
+                    // Match child popup context to parent for reliability (esp. SSO flows)
+                    const childContextIsolation = webPreferences.contextIsolation;
                     return {
                         action: 'allow',
                         overrideBrowserWindowOptions: {
@@ -3949,7 +3951,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             title: `${new URL(url).hostname} - ⚠️⚠️ Close this window after signing in ⚠️⚠️`,
                             webPreferences: {
                                 nodeIntegration: false,
-                                contextIsolation: true,
+                                contextIsolation: childContextIsolation,
                                 nativeWindowOpen: true,
                                 sandbox: false,
                                 webviewTag: false,
@@ -6411,6 +6413,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 });
 
                 if (!this.isStopped) {
+                    // Clear reconnecting flag before scheduling a new attempt
+                    try {
+                        connectionStates.set(this.wssID, {
+                            isConnected: false,
+                            lastAttempt: Date.now(),
+                            isReconnecting: false
+                        });
+                    } catch (_) { /* noop */ }
                     if (isRateLimited) {
                         this.offlineRetry = false;
                         this.offlineReason = 'Rate limited by TikTok';
@@ -6610,6 +6620,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             this.reconnectTimer = setTimeout(() => {
                 this.reconnectTimer = null;
+                // We are now actively attempting a connection; clear the reconnecting flag
+                // so that a failure can schedule the next attempt without being blocked.
+                try {
+                    connectionStates.set(this.wssID, {
+                        isConnected: false,
+                        lastAttempt: Date.now(),
+                        isReconnecting: false
+                    });
+                } catch (_) { /* noop */ }
                 if (!this.isStopped) {
                     this.connect();
                 }

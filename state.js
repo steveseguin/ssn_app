@@ -9,7 +9,9 @@ class StateManager {
                 youtubeAutoAdd: false,
                 youtubeAutoCleanup: false,
                 youtubeCheckInterval: 300000,
-                currentPage: 'streams'
+                currentPage: 'streams',
+                // Order of top-level entries in #sources: ["g:<groupId>", "s:<sourceId>"]
+                rootOrder: []
             }
         };
         
