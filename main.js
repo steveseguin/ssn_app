@@ -167,7 +167,7 @@ app.commandLine.appendSwitch('ignore-gpu-blocklist');
 // app.commandLine.appendSwitch('user-data-dir', path.join(app.getPath('userData'), 'ChromeProfile'));
 // User agent override at app level - this will be overridden by config if available
 // Set platform-specific user agent with simplified Chrome version
-const CHROME_UA_VERSION = '139.0.0.0';  // Chrome shows simplified version in UA string
+const CHROME_UA_VERSION = '140.0.0.0';  // Chrome shows simplified version in UA string
 if (isMac) {
     app.userAgentFallback = app.userAgentFallback || `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
 } else if (process.platform === 'linux') {
@@ -3419,7 +3419,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Define user agents for specific sign-in domains
             const signInAgents = {
-                'twitch.tv': process.platform == "darwin" ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36' : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+                'twitch.tv': process.platform == "darwin" ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36' : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
                 'google.com': 'Chrome', // default for Google sign-in
             };
 
@@ -4224,7 +4224,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             log(`Loading URL with configured user agent for kasada: ${userAgent}`);
                         } else {
                             // Use platform-specific fallback
-                            const CHROME_UA_VERSION = '139.0.0.0';
+                            const CHROME_UA_VERSION = '140.0.0.0';
                             if (isMac) {
                                 userAgent = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
                             } else if (process.platform === 'linux') {
@@ -4560,20 +4560,49 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (args.config && ("contextIsolation" in args.config)) {
                 contextIsolation = args.config.contextIsolation;
             }
-            log("Context isolation for window:", contextIsolation, "Platform:", args.domain);
-            const view = new BrowserWindow({
-                webPreferences: {
-                    preload: path.join(__dirname, "preload.js"),
-                    pageVisibility: true,
-                    contextIsolation: contextIsolation,
-                    backgroundThrottling: false,
-                    webSecurity: webSecurity,
-                    nodeIntegrationInSubFrames: false,
-                    nodeIntegration: false,
-                    session: persistentSession,
-                    additionalPermissions: ['clipboard-write']
 
-                },
+            // Allow websocket windows to select a preload via config (to better match sign-in behavior)
+            // Supported values: 'mock' -> preload-mock.js, 'kasada' -> preload-kasada.js, 'full'|true -> preload.js, 'none'|false -> no preload
+            let preloadPath = path.join(__dirname, 'preload.js');
+            if (args.wss && args.config && ("preload" in args.config)) {
+                const p = args.config.preload;
+                if (p === 'mock') {
+                    preloadPath = path.join(__dirname, 'preload-mock.js');
+                } else if (p === 'kasada') {
+                    preloadPath = path.join(__dirname, 'preload-kasada.js');
+                    // Match sign-in behavior: disable contextIsolation for kasada preload unless explicitly overridden
+                    if (!("contextIsolation" in (args.config || {}))) {
+                        contextIsolation = false;
+                    }
+                } else if (p === 'full' || p === true) {
+                    preloadPath = path.join(__dirname, 'preload.js');
+                } else if (p === 'none' || p === false) {
+                    preloadPath = null; // omit preload entirely
+                } else if (typeof p === 'string') {
+                    // Allow specifying a custom preload file relative to app dir
+                    preloadPath = path.join(__dirname, p);
+                }
+            }
+
+            log("Context isolation for window:", contextIsolation, "Platform:", args.domain);
+
+            // Build webPreferences dynamically so we can omit preload when asked
+            const webPreferences = {
+                pageVisibility: true,
+                contextIsolation: contextIsolation,
+                backgroundThrottling: false,
+                webSecurity: webSecurity,
+                nodeIntegrationInSubFrames: false,
+                nodeIntegration: false,
+                session: persistentSession,
+                additionalPermissions: ['clipboard-write']
+            };
+            if (preloadPath) {
+                webPreferences.preload = preloadPath;
+            }
+
+            const view = new BrowserWindow({
+                webPreferences,
                 show: visibibility,
                 backgroundColor: "#0000",
                 transparent: false,
@@ -4788,9 +4817,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 // Load URL
                 log(`Loading regular window URL: ${args.url}`);
                 log(`User agent config: ${args.config?.userAgent}`);
-                // Don't set user agent in loadURL - let session handle it
-                if (false && view.args?.config?.userAgent) {
-                    log(`Setting custom user agent for loadURL: ${view.args.config.userAgent}`);
+                // Apply custom UA only for websocket windows (classic windows continue to use session UA)
+                if (view.args?.wss && view.args?.config?.userAgent) {
+                    log(`Setting custom user agent for WSS window loadURL: ${view.args.config.userAgent}`);
                     view.webContents.loadURL(args.url, {
                         userAgent: view.args.config.userAgent
                     });
@@ -5008,7 +5037,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 							values.platformVersion = "${mockData.platformVersion || '19.0.0'}";
 						  }
 						  if (hints.includes('uaFullVersion')) {
-							values.uaFullVersion = "${mockData.uaFullVersion || '139.0.7258.155'}";
+							values.uaFullVersion = "${mockData.uaFullVersion || '140.0.7339.41'}";
 						  }
 						  if (hints.includes('wow64')) {
 							values.wow64 = ${mockData.wow64 || false};
@@ -5710,6 +5739,21 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     const connectionCleanupInterval = setInterval(() => {
         for (const [id, state] of connectionStates.entries()) {
+            const manager = websocketConnections[id];
+            // Watchdog: if stuck in reconnecting state without a timer, kick the scheduler
+            if (manager && !manager.isStopped) {
+                const isConnected = !!(manager.connection && manager.connection.isConnected);
+                const hasTimer = !!manager.reconnectTimer;
+                if (!isConnected && state.isReconnecting && !hasTimer) {
+                    const idleMs = Date.now() - (state.lastAttempt || 0);
+                    if (idleMs > CONFIG.CONNECTION.TIMEOUT) {
+                        console.warn(`Reconnect watchdog: restarting attempt for ${id} after ${idleMs}ms idle`);
+                        try { manager.attemptReconnect(); } catch (e) { console.error('Watchdog attemptReconnect error:', e); }
+                    }
+                }
+            }
+
+            // Existing cleanup: if not connected, not reconnecting, and beyond timeout
             if (!state.isConnected && !state.isReconnecting && Date.now() - state.lastAttempt > CONFIG.CONNECTION.TIMEOUT) {
                 console.warn(`Cleaning up failed connection ${id}`);
                 cleanupConnection(id);
@@ -6585,10 +6629,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
             // Delay calculation
             let backoffDelay;
             if (fixed || offline || this.offlineRetry) {
-                backoffDelay = delay || CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS;
+                backoffDelay = (typeof delay === 'number' ? delay : CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS) || CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS;
             } else {
                 // Exponential backoff for transient errors, capped by config
-                const base = delay || CONFIG.CONNECTION.RECONNECT_DELAY;
+                const base = (typeof delay === 'number' ? delay : CONFIG.CONNECTION.RECONNECT_DELAY) || CONFIG.CONNECTION.RECONNECT_DELAY;
                 backoffDelay = Math.min(base * Math.pow(2, this.reconnectAttempts - 1), CONFIG.CONNECTION.MAX_RECONNECT_DELAY_MS);
             }
             // Add jitter to reduce thundering herd
@@ -6598,6 +6642,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 const min = backoffDelay - delta;
                 const max = backoffDelay + delta;
                 backoffDelay = Math.max(0, Math.floor(min + Math.random() * (max - min)));
+            }
+
+            // Safety: ensure a positive, non-zero delay to avoid edge cases
+            if (!Number.isFinite(backoffDelay) || backoffDelay <= 0) {
+                backoffDelay = Math.max(1000, CONFIG.CONNECTION.RECONNECT_DELAY);
             }
 
             const attemptLabel = (offline || this.offlineRetry) ? 'offline-retry' : `${this.reconnectAttempts}`;
@@ -6630,7 +6679,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     });
                 } catch (_) { /* noop */ }
                 if (!this.isStopped) {
-                    this.connect();
+                    try {
+                        this.connect();
+                    } catch (e) {
+                        console.error('Reconnect attempt threw before promise handling:', e);
+                        // If an immediate error occurs synchronously, queue another attempt with base delay
+                        this.attemptReconnect(CONFIG.CONNECTION.RECONNECT_DELAY);
+                    }
                 }
             }, backoffDelay);
         }
@@ -8675,8 +8730,8 @@ app.whenReady().then(function() {
 
         // Set a global fallback user agent WITHOUT Electron to avoid detection
         // Chrome shows simplified version in UA string
-        const CHROME_UA_VERSION = '139.0.0.0';  // For user agent string
-        const CHROME_UA_FULL_VERSION = '139.0.7258.155'; // For Client Hints full version
+        const CHROME_UA_VERSION = '140.0.0.0';  // For user agent string
+        const CHROME_UA_FULL_VERSION = '140.0.7339.41'; // For Client Hints full version
         let CHROME_UA;
         if (isMac) {
             CHROME_UA = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
@@ -8705,7 +8760,7 @@ app.whenReady().then(function() {
             headers['Cache-Control'] = headers['Cache-Control'] || 'max-age=0';
             
             // Chrome's security headers / Client Hints
-            const chromeMainVersion = CHROME_UA_VERSION.split('.')[0]; // Extract "139" from "139.0.0.0"
+            const chromeMainVersion = CHROME_UA_VERSION.split('.')[0]; // Extract "140" from "140.0.0.0"
             headers['Sec-CH-UA'] = `"Not;A=Brand";v="99", "Chromium";v="${chromeMainVersion}", "Google Chrome";v="${chromeMainVersion}"`;
             headers['Sec-CH-UA-Mobile'] = '?0';
             headers['Sec-CH-UA-Platform'] = '"Windows"';
