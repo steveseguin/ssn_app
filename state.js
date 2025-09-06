@@ -167,7 +167,7 @@ class StateManager {
 
     // Add a new source
     addSource(sourceData) {
-        const id = sourceData.id || this.generateSourceId(sourceData);
+        let id = sourceData.id || this.generateSourceId(sourceData);
         const source = {
             id,
             target: sourceData.target,
@@ -183,9 +183,23 @@ class StateManager {
             wssId: null,
             status: 'inactive',
             groupId: sourceData.groupId || null,
+            // New: reply-only mode (do not capture messages)
+            replyOnly: !!sourceData.replyOnly,
             ...sourceData // Allow additional properties
         };
-        
+
+        // Ensure unique ID when duplicates exist (allow multiple entries for same videoId/URL)
+        if (this.state.sources.has(id)) {
+            // Append a short random suffix to avoid collision
+            const base = id;
+            let suffix = 1;
+            while (this.state.sources.has(`${base}-dup-${suffix}`)) {
+                suffix++;
+            }
+            id = `${base}-dup-${suffix}`;
+            source.id = id;
+        }
+
         this.state.sources.set(id, source);
         
         // If part of a group, add to group's streams

@@ -176,15 +176,25 @@
 			
 	</main>
 
-	<div id="sourceTemplate" class="hidden entry">
-		<img data-sourceicon />
-		<span>
-			<div>
-				<span data-channelname></span>
-				<span data-sourcename></span>
-			</div>
-			<input data-sourceurl disabled class="white hidden" />
-		</span>
+    <div id="sourceTemplate" class="hidden entry">
+        <img data-sourceicon />
+        <span>
+            <div class="title-row" style="display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;">
+                <div class="title-left" style="display: flex; align-items: baseline; gap: 8px; min-width: 0;">
+                    <span data-channelname></span>
+                    <span data-sourcename></span>
+                </div>
+                <div class="badges" style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                    <span data-replyonly-badge style="display: none; font-size: 11px; padding: 2px 6px; border-radius: 10px; background: rgba(255,255,255,0.12); color: #fff;">
+                        📨 Reply only
+                    </span>
+                    <span data-session-badge style="font-size: 11px; padding: 2px 6px; border-radius: 10px; background: rgba(255,255,255,0.08); color: #ddd;">
+                        Session: AUTO
+                    </span>
+                </div>
+            </div>
+            <input data-sourceurl disabled class="white hidden" />
+        </span>
 
 		<div class="control-panel">
 			<div class="auto-activate-toggle">
@@ -219,6 +229,9 @@
                 <div class="settings-menu-header">Additional Controls</div>
                 <div class="settings-menu-item" onclick="clearThis(this)" data-clearcache>
                     🧹 Clear cache & storage
+                </div>
+                <div class="settings-menu-item" onclick="toggleReplyOnly(this)" data-reply-only>
+                    🤖 Bot reply-only (no capture)
                 </div>
                 <div class="settings-menu-item youtube-type-toggle hidden" onclick="toggleYouTubeType(this)">
                     🔄 Switch to <span class="toggle-type-text">YouTube</span>
@@ -673,6 +686,23 @@ function updateSourceUI(element, source) {
     } else {
         element.querySelector("[data-showtips]")?.classList.add("hidden");
     }
+
+    // Update badges: reply-only + session
+    try {
+        const roBadge = element.querySelector('[data-replyonly-badge]');
+        if (roBadge) {
+            const enabled = !!source.replyOnly;
+            roBadge.style.display = enabled ? 'inline-block' : 'none';
+            roBadge.textContent = '📨 Reply only';
+            roBadge.title = 'Reply-only: it will not capture messages, but will still let you send them.\nChange via ⚙️ → Bot reply-only (no capture).';
+        }
+        const sessionBadge = element.querySelector('[data-session-badge]');
+        if (sessionBadge) {
+            const label = getSessionDisplayNameForSource(source);
+            sessionBadge.textContent = `Session: ${label}`;
+            sessionBadge.title = `Current browser session: ${label}.\nChange via ⚙️ → Browser Session Settings.`;
+        }
+    } catch (_) {}
     
     // Hide sign-in button when in websocket mode
     const signinButton = element.querySelector("[data-signin]");
@@ -748,7 +778,7 @@ function updateSourceUI(element, source) {
         } else if (source.status === 'activating') {
             // Show connecting for supported WSS (YouTube/TikTok)
             const t = (source.target || '').toLowerCase();
-            const supports = t === 'tiktok' || t.startsWith('youtube');
+            const supports = t === 'tiktok' || t.startsWith('youtube') || t === 'twitch';
             if (supports) updateConnectionStatus(element, 'connecting');
         } else if (source.status === 'inactive' && wsStatusElement && !wsStatusElement.classList.contains('error')) {
             updateConnectionStatus(element, 'clear');
@@ -1365,7 +1395,7 @@ async function newSource(target, username, startup = false, initialState = {}, i
             connectionMode = 'classic';
         }
 
-        const sourceData = {
+        let sourceData = {
             target,
             username,
             url: sourceUrl,
@@ -1381,6 +1411,9 @@ async function newSource(target, username, startup = false, initialState = {}, i
         if (sourceFile) { // Add sourceFile to the data if it was determined
             sourceData.sourceFile = sourceFile;
         }
+
+        // Offer reply-only bot mode on duplicate URL/videoId
+        sourceData = await handleDuplicateForSource(sourceData);
 
         const sourceId = stateManager.addSource(sourceData);
         elementToReturnId = sourceId; 
@@ -1458,7 +1491,7 @@ async function newSourceVideoID(target, videoID, startup = false, initialState =
         defaultMode = 'tiktok-websocket';
     }
 
-    const sourceId = stateManager.addSource({
+    let sourceDataVid = {
         target,
         videoId: videoID,
         url: url,
@@ -1469,7 +1502,11 @@ async function newSourceVideoID(target, videoID, startup = false, initialState =
         autoActivate: initialState.togglelock === "true" || initialState.autoActivate === true,
         supportsWSS,
          ...initialState
-    });
+    };
+
+    // Offer reply-only bot mode on duplicate videoId/URL
+    sourceDataVid = await handleDuplicateForSource(sourceDataVid);
+    const sourceId = stateManager.addSource(sourceDataVid);
     
     manageWelcomePage();
     
@@ -1550,7 +1587,7 @@ async function newOtherSource(target, URL, startup = false, initialState = {}) {
         defaultMode = 'tiktok-websocket';
     }
 
-    const sourceData = {
+    let sourceData = {
         target: target || 'unknown', 
         url: URL,
         username: displayName, 
@@ -1585,6 +1622,8 @@ async function newOtherSource(target, URL, startup = false, initialState = {}) {
         sourceData.sourceFile = sourceFile;
     }
     
+    // Offer reply-only bot mode on duplicate URL/videoId
+    sourceData = await handleDuplicateForSource(sourceData);
     const sourceId = stateManager.addSource(sourceData);
 
     manageWelcomePage();
@@ -2543,6 +2582,15 @@ function setupSourceControls(sourceElement) {
         settingsMenu.classList.toggle('active');
         if (settingsMenu.classList.contains('active')) {
             try { updateMoveMenuItemsForSource(sourceElement); } catch (e) { /* noop */ }
+            // Update reply-only menu item visual state
+            try {
+                const s = sourceId ? stateManager.getSource(sourceId) : null;
+                const roItem = settingsMenu.querySelector('.settings-menu-item[data-reply-only]');
+                if (roItem && s) {
+                    roItem.classList.toggle('active', !!s.replyOnly);
+                    roItem.textContent = (s.replyOnly ? '✅ ' : '🤖 ') + 'Bot reply-only (no capture)';
+                }
+            } catch (_) {}
         }
 
         const currentSource = sourceId ? stateManager.getSource(sourceId) : null;
@@ -2606,6 +2654,127 @@ function setupSourceControls(sourceElement) {
         updateSourceUIAfterModeChange(sourceElement, source.connectionMode, (source.status === 'active'));
     } else if (!isGroupHeader) { 
         updateSourceUIAfterModeChange(sourceElement, 'classic', false);
+    }
+}
+
+// Toggle per-source reply-only mode (do not capture messages)
+async function toggleReplyOnly(menuItem) {
+    const entry = menuItem.closest('.entry');
+    if (!entry) return;
+    const sourceId = entry.dataset.sourceId;
+    const source = stateManager.getSource(sourceId);
+    if (!source) return;
+    const enabled = !source.replyOnly;
+    stateManager.updateSource(sourceId, { replyOnly: enabled });
+    // Update UI label
+    menuItem.classList.toggle('active', enabled);
+    menuItem.textContent = (enabled ? '✅ ' : '🤖 ') + 'Bot reply-only (no capture)';
+    
+    const wasActive = !!(source.vid || source.wssId);
+    if (wasActive) {
+        Toast.info('Restarting', 'Applying reply-only setting…');
+        // Stop current connection/window
+        try {
+            const stopBtn = entry.querySelector('[data-stophtml]');
+            const actBtn = entry.querySelector('[data-activatehtml]');
+            if (actBtn && actBtn.dataset.connecting === 'true') {
+                await stopThis(actBtn);
+            } else if (stopBtn) {
+                await stopThis(stopBtn);
+            }
+        } catch (e) { console.warn('Failed to stop before restart:', e); }
+        // Small delay to allow state/UI settle
+        await new Promise(r => setTimeout(r, 150));
+        // Start again with updated setting
+        try {
+            const activateBtn = entry.querySelector('[data-activatehtml]');
+            if (activateBtn) await createWindow(activateBtn);
+            Toast.success('Updated', enabled ? 'Reply-only mode enabled and applied' : 'Reply-only mode disabled and applied');
+        } catch (e) {
+            console.error('Failed to restart after reply-only toggle:', e);
+            Toast.error('Error', 'Failed to restart source. Try activating it again.');
+        }
+    } else {
+        Toast.success('Updated', enabled ? 'Reply-only mode enabled' : 'Reply-only mode disabled');
+    }
+}
+
+// Ensure a default bot session exists
+function ensureBotSession() {
+    const key = 'customSessions';
+    let sessions = [];
+    try { sessions = JSON.parse(localStorage.getItem(key) || '[]'); } catch(_) { sessions = []; }
+    if (!sessions.some(s => s.name === 'bot-account')) {
+        sessions.push({ name: 'bot-account', created: Date.now(), description: 'Custom session for bot account' });
+        localStorage.setItem(key, JSON.stringify(sessions));
+    }
+}
+
+function normalizeUrlForMatch(u) {
+    try {
+        const url = new URL(u);
+        return url.origin + url.pathname; // ignore query/hash for duplicate detection
+    } catch (_) {
+        return (u || '').trim();
+    }
+}
+
+// If the source matches an existing one (same target + same videoId or URL),
+// prompt to add as reply-only bot with its own session, and apply settings accordingly.
+async function handleDuplicateForSource(sourceData) {
+    try {
+        const all = stateManager.getSources();
+        const candidateTarget = sourceData.target;
+        const candidateVid = (sourceData.videoId || '').trim();
+        const candidateUrl = (sourceData.url || '').trim();
+        const normalizedCandidateUrl = candidateUrl ? normalizeUrlForMatch(candidateUrl) : '';
+
+        const dup = all.find(s => {
+            if (!s || s.target !== candidateTarget) return false;
+            if (candidateVid && s.videoId && s.videoId === candidateVid) return true;
+            if (normalizedCandidateUrl && s.url && normalizeUrlForMatch(s.url) === normalizedCandidateUrl) return true;
+            return false;
+        });
+
+        if (dup) {
+            const wantsBot = window.confirm('A source for this video/URL already exists.\n\nAdd this as a reply-only bot source with its own browser session? It will not capture messages, but will still let you send them.');
+            if (wantsBot) {
+                // Enable reply-only and assign a bot session
+                sourceData.replyOnly = true;
+                ensureBotSession();
+                sourceData.customSession = 'bot-account';
+            }
+        }
+    } catch (e) {
+        console.warn('Duplicate check failed:', e);
+    }
+    return sourceData;
+}
+
+function getSessionDisplayNameForSource(source) {
+    try {
+        const defaults = {
+            'youtube': 'YouTube Default',
+            'youtubeshorts': 'YouTube Default',
+            'twitch': 'Twitch Default',
+            'kick': 'Kick Default',
+            'tiktok': 'TikTok Default',
+            'facebook': 'Facebook Default',
+            'instagramlive': 'Instagram Default',
+            'instagram': 'Instagram Default',
+            'x': 'X.com Default',
+            'rumble': 'Rumble Default'
+        };
+        let sess = source.customSession || 'AUTO';
+        if (sess === 'AUTO') {
+            return defaults[source.target] || 'Default';
+        }
+        if (sess === 'default' || sess === `default-${source.target}`) {
+            return defaults[source.target] || 'Default';
+        }
+        return sess;
+    } catch (_) {
+        return 'Default';
     }
 }
 
@@ -3573,6 +3742,7 @@ async function createClassicWindowFromSource(source, tabid = false) {
             tab: tabid,
             sourceId: source.id,
             customSession: source.customSession || 'AUTO',
+            replyOnly: !!source.replyOnly,
             isBetaMode: isBetaMode,
             domain: new URL(urlToLoad).hostname
         });
@@ -3639,6 +3809,7 @@ async function createWindowWSSFromSource(source, tabid = false) {
             sourceId: source.id,
             customSession: source.customSession || 'AUTO',
             wss: true,
+            replyOnly: !!source.replyOnly,
             config: conf,
             isBetaMode: isBetaMode
         });
@@ -3699,6 +3870,7 @@ async function createYoutubeWebSocketWindowFromSource(source, tabid = false) {
             sourceId: source.id,
             customSession: source.customSession || 'AUTO',
             wss: true,
+            replyOnly: !!source.replyOnly,
             config: conf,
             isBetaMode: isBetaMode
         });
@@ -3729,7 +3901,8 @@ async function createTikTokWSSFromSource(source) {
         const wssID = ipcRenderer.sendSync('createTikTokConnection', { 
             username: cleanUsername,
             sessionId: sessionId,
-            ttTargetIdc: ttTargetIdc
+            ttTargetIdc: ttTargetIdc,
+            replyOnly: !!source.replyOnly
         }); 
         
         if (wssID === null || typeof wssID === 'undefined') { 

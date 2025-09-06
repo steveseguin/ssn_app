@@ -5133,6 +5133,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
 								// Get the random flag from contextBridge if available
 								const injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 								window.__SSAPP_TAB_ID__ = ${view.tabID};
+								// Per-tab reply-only mode (disable capture forwarding)
+								const __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
 								
 								// Create a more complete chrome.runtime mock
 								chrome.runtime = {};
@@ -5183,15 +5185,25 @@ async function createWindow(args, reuse = false, mainApp = false) {
 								(function() {
 									const cachedSettings = ${JSON.stringify(cachedState)};
 									
-									chrome.runtime.sendMessage = function(a=null,b=null,c=null){
-										// Use postMessage to communicate with preload script
-										const messageData = b || a;
-										
-										// Handle getSettings synchronously from cached data
-										if (messageData && messageData.getSettings && c) {
-											c(cachedSettings);
-											return;
+								chrome.runtime.sendMessage = function(a=null,b=null,c=null){
+									// Use postMessage to communicate with preload script
+									const messageData = b || a;
+									
+									// Handle getSettings synchronously from cached data
+									if (messageData && messageData.getSettings && c) {
+										c(cachedSettings);
+										return;
+									}
+
+									// If reply-only, drop all non-status messages
+									try {
+										if (typeof __SSAPP_REPLY_ONLY__ !== 'undefined' && __SSAPP_REPLY_ONLY__) {
+											if (!messageData || (!messageData.wssStatus && !messageData.youtubeWssStatus)) {
+												if (typeof c === 'function') { try { c(null); } catch(_){} }
+												return;
+											}
 										}
+									} catch(_){}
 									
 									// For other messages, check if we can use ninjafy.sendMessage first
 									if (window.ninjafy && window.ninjafy.sendMessage) {
@@ -5514,6 +5526,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
 					// Get the random flag from contextBridge if available
 					const injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 					window.__SSAPP_TAB_ID__ = ${view.tabID};
+					// Per-tab reply-only mode
+					const __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
 					
 					chrome.runtime = {};
 					chrome.runtime.id = 1;
@@ -5529,6 +5543,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
 					chrome.runtime.sendMessage = function(a=null,b=null,c=null){
 						// Use postMessage to communicate with preload script
 						const messageData = b || a;
+						// If reply-only, drop non-status messages
+						try {
+							if (typeof __SSAPP_REPLY_ONLY__ !== 'undefined' && __SSAPP_REPLY_ONLY__) {
+								if (!messageData || (!messageData.wssStatus && !messageData.youtubeWssStatus)) {
+									if (typeof c === 'function') { try { c(null); } catch(_){} }
+									return;
+								}
+							}
+						} catch(_){}
 												const outgoingMessage = {
 							...messageData
 						};
@@ -6390,6 +6413,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
             // When true, we keep retrying at a fixed interval to detect when the user goes live
             this.offlineRetry = false;
             this.offlineReason = null;
+            // Per-connection reply-only flag (skip forwarding captured events)
+            this.replyOnly = false;
         }
 
         async initialize() {
@@ -6849,6 +6874,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         sendEventMessage(data, eventType, message, extraMeta = {}) {
+            // Per-connection reply-only guard
+            if (this.replyOnly) {
+                return; // do not forward captured events from this connection
+            }
             // Gifts are handled separately and always forwarded.
             // For other event types, respect captureevents setting.
             if (!isCaptureEventsEnabled()) {
@@ -6927,6 +6956,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const ttTargetIdc = args.ttTargetIdc || null;
 
             const manager = new ConnectionManager(username, wssID, sessionId, ttTargetIdc);
+            if (args && args.replyOnly === true) {
+                manager.replyOnly = true;
+            }
             websocketConnections[wssID] = manager;
 
             connectionStates.set(wssID, {
@@ -7095,6 +7127,20 @@ async function createWindow(args, reuse = false, mainApp = false) {
     });
 
     function sendToBackground(msg) {
+        // Per-connection reply-only filter (TikTok virtual tabs)
+        try {
+            if (msg && typeof msg === 'object' && typeof msg.tid === 'number') {
+                const tid = msg.tid;
+                if (tid >= 900001) { // TikTok virtual tab IDs = 900000 + wssID
+                    const wssID = tid - 900000;
+                    const conn = websocketConnections[wssID];
+                    if (conn && conn.replyOnly) {
+                        return; // drop captured message for reply-only connection
+                    }
+                }
+            }
+        } catch (_) { /* noop */ }
+
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
                 if (frame.url.split("?")[0].endsWith("background.html")) {
@@ -7107,6 +7153,24 @@ async function createWindow(args, reuse = false, mainApp = false) {
     }
 
     function sendBatchToBackground(messages) {
+        // Filter out reply-only TikTok messages
+        try {
+            if (Array.isArray(messages)) {
+                messages = messages.filter(m => {
+                    try {
+                        if (!m || typeof m.tid !== 'number') return true;
+                        const tid = m.tid;
+                        if (tid >= 900001) {
+                            const wssID = tid - 900000;
+                            const conn = websocketConnections[wssID];
+                            if (conn && conn.replyOnly) return false;
+                        }
+                    } catch(_){}
+                    return true;
+                });
+            }
+        } catch(_){}
+
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
                 if (frame.url.split("?")[0].endsWith("background.html")) {
