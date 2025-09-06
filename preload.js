@@ -48,8 +48,14 @@ window.addEventListener('message', (event) => {
 		});
 	}
 	
-	// Check for authentication token (for new secure messages)
-	if (data._authToken === MESSAGE_AUTH_TOKEN) {
+    // Fast-path: forward lightweight WSS status messages (no token required)
+    if (data && data.wssStatus) {
+        try { ipcRenderer.send('postMessage', data); } catch(_) {}
+        return;
+    }
+
+    // Check for authentication token (for new secure messages)
+    if (data._authToken === MESSAGE_AUTH_TOKEN) {
 		// Remove token before forwarding
 		const messageData = { ...data };
 		delete messageData._authToken;
@@ -96,13 +102,13 @@ window.addEventListener('message', (event) => {
 		return;
 	}
 	
-	// Legacy support: Only forward messages that have our expected properties
-	// This prevents arbitrary messages from the page being forwarded
-	// TODO: Eventually remove this once all scripts are updated to use auth tokens
-	if (data.message || data.delete || data.getSettings || data.getBTTV || 
-	    data.getSEVENTV || data.getFFZ || data.cmd || data.type === 'toBackground') {
-		ipcRenderer.send('postMessage', data);
-	}
+    // Legacy support: Only forward messages that have our expected properties
+    // This prevents arbitrary messages from the page being forwarded
+    // TODO: Eventually remove this once all scripts are updated to use auth tokens
+    if (data.wssStatus || data.message || data.delete || data.getSettings || data.getBTTV || 
+        data.getSEVENTV || data.getFFZ || data.cmd || data.type === 'toBackground') {
+        ipcRenderer.send('postMessage', data);
+    }
 });
 
 window.addEventListener('error', (event) => {

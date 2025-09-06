@@ -3062,6 +3062,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
         } catch (e) {}
 
+        // Handle generic WebSocket status signals (from WSS pages)
+        try {
+            if (args[0] && args[0].wssStatus) {
+                const payload = {
+                    tabID,
+                    ...(args[0].wssStatus || {})
+                };
+                if (mainWindow && mainWindow.webContents) {
+                    mainWindow.webContents.send('wssStatus', payload);
+                }
+                // respond quickly for sendMessage callbacks
+                eventRet.returnValue = { ok: true };
+                return;
+            }
+        } catch (_) {}
+
         if (args[0] && args[0].getSettings) {
             let tab = options.tabID || tabID;
 
@@ -5195,15 +5211,89 @@ async function createWindow(args, reuse = false, mainApp = false) {
 									}
 								};
 								})();
-								
-								try {
-									` + text + `
-								} catch(err) {
-									try {
-										throw { name: err.name, message: err.message, stack: err.stack }
-									} catch(e){}
-								}
-								`;
+                                
+                                // Lightweight WSS status hooks for YouTube when upstream isn't patched
+                                (function(){
+                                  try {
+                                    var href = '' + (location && location.href);
+                                    var isYT = href.indexOf('websocket/youtube.html') !== -1;
+                                    if (!isYT) return;
+                                    function __ss_wssNotify(status, message){
+                                      try {
+                                        var payload = { wssStatus: { platform: 'youtube', status: status, message: message } };
+                                        if (window.chrome && window.chrome.runtime && window.chrome.runtime.id) {
+                                          window.chrome.runtime.sendMessage(window.chrome.runtime.id, payload, function(){});
+                                        } else if (window.ninjafy && window.ninjafy.sendMessage) {
+                                          window.ninjafy.sendMessage(null, payload, null, window.__SSAPP_TAB_ID__);
+                                        } else {
+                                          var data = Object.assign({}, payload);
+                                          data.__tabID__ = window.__SSAPP_TAB_ID__;
+                                          window.postMessage(data, '*');
+                                        }
+                                      } catch(e){}
+                                    }
+                                    (function(){
+                                      try {
+                                        var hasToken = false;
+                                        try { hasToken = !!localStorage.getItem('youtubeOAuthToken'); } catch(_){ }
+                                        if (!hasToken) __ss_wssNotify('signin_required','Sign in with YouTube to continue');
+                                      } catch(_){ }
+                                    })();
+                                    (function(){
+                                      try {
+                                        var prev = null;
+                                        setInterval(function(){
+                                          try {
+                                            var cur = (typeof window.liveChatId !== 'undefined') ? window.liveChatId : null;
+                                            if (cur && !prev) __ss_wssNotify('connected','Connected to YouTube live chat');
+                                            if (!cur && prev) __ss_wssNotify('disconnected','Disconnected from YouTube live chat');
+                                            prev = cur;
+                                          } catch(_){ }
+                                        }, 1500);
+                                      } catch(_){ }
+                                    })();
+                                    (function(){
+                                      try {
+                                        if (window.__ss_fetch_patched__) return; window.__ss_fetch_patched__ = true;
+                                        var _orig = window.fetch;
+                                        if (typeof _orig !== 'function') return;
+                                        var lastAt = 0; var throttle = 3000;
+                                        var ping = function(status, msg){ var now = Date.now(); if (now - lastAt > throttle) { __ss_wssNotify('error', msg || ('YouTube API error: ' + status)); lastAt = now; } };
+                                        window.fetch = async function(input, init){
+                                          try {
+                                            var res = await _orig(input, init);
+                                            var url = (typeof input === 'string') ? input : (input && input.url) || '';
+                                            if (url.indexOf('googleapis.com/youtube') !== -1 || url.indexOf('youtube.googleapis.com') !== -1){
+                                              if (!res.ok){
+                                                var msg = 'YouTube API ' + res.status;
+                                                try {
+                                                  var body = await res.clone().json().catch(function(){ return null; });
+                                                  if (body && body.error){
+                                                    var emsg = body.error.message || '';
+                                                    var reason = (body.error.errors && body.error.errors[0] && body.error.errors[0].reason) || '';
+                                                    if (emsg) msg = emsg;
+                                                    if (reason) msg += ' (' + reason + ')';
+                                                  }
+                                                } catch(_){ }
+                                                ping(res.status, msg);
+                                              }
+                                            }
+                                            return res;
+                                          } catch(e){ ping('network_error', e && e.message ? e.message : 'Network error'); throw e; }
+                                        };
+                                      } catch(_){ }
+                                    })();
+                                  } catch(_){ }
+                                })();
+
+                                try {
+                                    ` + text + `
+                                } catch(err) {
+                                    try {
+                                        throw { name: err.name, message: err.message, stack: err.stack }
+                                    } catch(e){}
+                                }
+                                `;
 
                             // Inject into main world (worldId: 0) to access contextBridge APIs
                             view.webContents.executeJavaScriptInIsolatedWorld(0, [{ code }])
@@ -5241,8 +5331,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
 										// Debug window.ninjafy availability
 										console.log("[Injection Remote] window.ninjafy:", window.ninjafy);
 										console.log("[Injection Remote] window.ninjafy._authToken:", window.ninjafy?._authToken);
-										
-										// Get the random flag from contextBridge if available
+                                            
+                                            // Get the random flag from contextBridge if available
 										const injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 										window.__SSAPP_TAB_ID__ = ${view.tabID};
 										
@@ -5285,8 +5375,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
 												}
 											});
 										};
-										// Use closure to hide cached settings
-										(function() {
+                                            // Use closure to hide cached settings
+                                            (function() {
 											const cachedSettings = ${JSON.stringify(cachedState)};
 											
 											chrome.runtime.sendMessage = function(a=null,b=null,c=null){
@@ -5323,8 +5413,76 @@ async function createWindow(args, reuse = false, mainApp = false) {
 										   } catch(err) {
 											  throw { name: err.name, message: err.message, stack: err.stack }
 										   }
-										})
-										`;
+                                            })
+                                            
+                                            // Lightweight WSS status hooks for YouTube when upstream isn't patched
+                                            ;(function(){
+                                              try {
+                                                var href = '' + (location && location.href);
+                                                var isYT = href.indexOf('websocket/youtube.html') !== -1;
+                                                if (!isYT) return;
+                                                function __ss_wssNotify(status, message){
+                                                  try {
+                                                    var payload = { wssStatus: { platform: 'youtube', status: status, message: message } };
+                                                    if (window.chrome && window.chrome.runtime && window.chrome.runtime.id) {
+                                                      window.chrome.runtime.sendMessage(window.chrome.runtime.id, payload, function(){});
+                                                    } else if (window.ninjafy && window.ninjafy.sendMessage) {
+                                                      window.ninjafy.sendMessage(null, payload, null, window.__SSAPP_TAB_ID__);
+                                                    } else {
+                                                      var data = Object.assign({}, payload);
+                                                      data.__tabID__ = window.__SSAPP_TAB_ID__;
+                                                      window.postMessage(data, '*');
+                                                    }
+                                                  } catch(e){}
+                                                }
+                                                (function(){
+                                                  try { var hasToken=false; try{ hasToken = !!localStorage.getItem('youtubeOAuthToken'); } catch(_){ } if (!hasToken) __ss_wssNotify('signin_required','Sign in with YouTube to continue'); } catch(_){ }
+                                                })();
+                                                (function(){
+                                                  try {
+                                                    var prev = null;
+                                                    setInterval(function(){
+                                                      try {
+                                                        var cur = (typeof window.liveChatId !== 'undefined') ? window.liveChatId : null;
+                                                        if (cur && !prev) __ss_wssNotify('connected','Connected to YouTube live chat');
+                                                        if (!cur && prev) __ss_wssNotify('disconnected','Disconnected from YouTube live chat');
+                                                        prev = cur;
+                                                      } catch(_){ }
+                                                    }, 1500);
+                                                  } catch(_){ }
+                                                })();
+                                                (function(){
+                                                  try {
+                                                    if (window.__ss_fetch_patched__) return; window.__ss_fetch_patched__ = true;
+                                                    var _orig = window.fetch; if (typeof _orig !== 'function') return;
+                                                    var lastAt=0, throttle=3000;
+                                                    var ping=function(status,msg){ var now=Date.now(); if (now-lastAt>throttle){ __ss_wssNotify('error', msg || ('YouTube API error: ' + status)); lastAt=now; } };
+                                                    window.fetch = async function(input, init){
+                                                      try {
+                                                        var res = await _orig(input, init);
+                                                        var url = (typeof input === 'string') ? input : (input && input.url) || '';
+                                                        if (url.indexOf('googleapis.com/youtube') !== -1 || url.indexOf('youtube.googleapis.com') !== -1){
+                                                          if (!res.ok){
+                                                            var msg = 'YouTube API ' + res.status;
+                                                            try {
+                                                              var body = await res.clone().json().catch(function(){ return null; });
+                                                              if (body && body.error){
+                                                                var emsg = body.error.message || '';
+                                                                var reason = (body.error.errors && body.error.errors[0] && body.error.errors[0].reason) || '';
+                                                                if (emsg) msg = emsg; if (reason) msg += ' (' + reason + ')';
+                                                              }
+                                                            } catch(_){ }
+                                                            ping(res.status, msg);
+                                                          }
+                                                        }
+                                                        return res;
+                                                      } catch(e){ ping('network_error', e && e.message ? e.message : 'Network error'); throw e; }
+                                                    };
+                                                  } catch(_){ }
+                                                })();
+                                              } catch(_){ }
+                                            })();
+                                            `;
 
                                         // Inject into main world (worldId: 0) to access contextBridge APIs
                                         view.webContents.executeJavaScriptInIsolatedWorld(0, [{ code }]);

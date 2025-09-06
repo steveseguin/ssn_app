@@ -686,9 +686,12 @@ function updateSourceUI(element, source) {
     const visibilityControl = element.querySelector('[data-togglehtml]');
     if (visibilityControl) {
         visibilityControl.textContent = source.isVisible ? '👁️' : '🙈';
-        // Hide for TikTok websocket mode or when not active with a window
+        // Show for regular WSS once a window exists (even while connecting); keep hidden for TikTok special mode
         const isTikTokWebsocket = source.target === 'tiktok' && source.connectionMode === 'tiktok-websocket';
-        visibilityControl.classList.toggle('hidden', isTikTokWebsocket || source.status !== 'active' || !source.vid);
+        const showDuringConnect = (source.connectionMode === 'websocket' && !!source.vid);
+        const showWhenActive = (source.status === 'active' && !!source.vid);
+        const hide = isTikTokWebsocket || (!showDuringConnect && !showWhenActive);
+        visibilityControl.classList.toggle('hidden', hide);
     }
     
     const muteControl = element.querySelector('[data-togglemute]');
@@ -742,6 +745,11 @@ function updateSourceUI(element, source) {
     if (source.connectionMode === 'websocket' || source.connectionMode === 'tiktok-websocket') {
         if (source.status === 'active' && source.wssId) {
             updateConnectionStatus(element, 'connected');
+        } else if (source.status === 'activating') {
+            // Show connecting for supported WSS (YouTube/TikTok)
+            const t = (source.target || '').toLowerCase();
+            const supports = t === 'tiktok' || t.startsWith('youtube');
+            if (supports) updateConnectionStatus(element, 'connecting');
         } else if (source.status === 'inactive' && wsStatusElement && !wsStatusElement.classList.contains('error')) {
             updateConnectionStatus(element, 'clear');
         }
@@ -752,8 +760,24 @@ function updateSourceUI(element, source) {
     const activateButton = element.querySelector('[data-activatehtml]');
     const stopButton = element.querySelector('[data-stophtml]');
     const reloadButton = element.querySelector('[data-reloadhtml]'); 
+    // If not actively connecting, ensure any transient "connecting" flag is cleared
+    if (activateButton && source.status !== 'activating') {
+        delete activateButton.dataset.connecting;
+    }
 
-    if (source.status === 'active' && (source.vid || source.wssId)) {
+    // While activating a regular WSS, allow stopping
+    if (source.connectionMode === 'websocket' && source.status === 'activating') {
+        const activateButton = element.querySelector('[data-activatehtml]');
+        const stopButton = element.querySelector('[data-stophtml]');
+        const reloadButton = element.querySelector('[data-reloadhtml]');
+        if (activateButton) {
+            activateButton.dataset.connecting = 'true';
+            activateButton.textContent = '⏹️ Stop connecting';
+            activateButton.onclick = function() { stopThis(this); };
+        }
+        stopButton?.classList.add('hidden');
+        if (reloadButton) reloadButton.classList.add('hidden');
+    } else if (source.status === 'active' && (source.vid || source.wssId)) {
         activateButton?.classList.add('hidden');
         stopButton?.classList.remove('hidden');
         
@@ -765,9 +789,28 @@ function updateSourceUI(element, source) {
         
         element.dataset.vid = source.vid; 
     } else {
-        activateButton?.classList.remove('hidden');
-        stopButton?.classList.add('hidden');
-        reloadButton?.classList.add('hidden'); 
+        // Default inactive UI, but if a WSS window exists, allow closing it
+        if (activateButton) activateButton.classList.remove('hidden');
+        if (stopButton) stopButton.classList.add('hidden');
+        if (reloadButton) reloadButton.classList.add('hidden');
+        if (source.connectionMode === 'websocket' && source.vid) {
+            // Window exists but not connected: present a Close action
+            activateButton.textContent = '⏹️ Close WebSocket';
+            activateButton.onclick = function() { stopThis(this); };
+        } else {
+            // Restore default activate label based on mode
+            if (activateButton) {
+                const mode = source.connectionMode || 'classic';
+                if (mode === 'tiktok-websocket' && source.target === 'tiktok') {
+                    activateButton.textContent = 'Connect TikTok WebSocket';
+                } else if (mode === 'websocket') {
+                    activateButton.textContent = 'Connect WebSocket';
+                } else {
+                    activateButton.textContent = translate('btn.activate');
+                }
+                activateButton.onclick = function() { activateSource(this); };
+            }
+        }
         delete element.dataset.vid;
     }
     updateSourceUIAfterModeChange(element, source.connectionMode, (source.status === 'active'));
@@ -2219,16 +2262,29 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
     if (tiktokWssMenuItem) tiktokWssMenuItem.dataset.selected = "false";
 
     if (activateButton) { 
-        if (isActive) { 
-             activateButton.innerText = translate('btn.activate'); 
-        } else {
-            if (target === 'tiktok' && mode === 'tiktok-websocket') {
-                activateButton.innerText = "Connect TikTok WebSocket";
-            } else if (mode === 'websocket') {
-                activateButton.innerText = "Connect WebSocket";
-            } else { 
-                activateButton.innerText = translate('btn.activate');
+        // Ensure transient connecting flag is cleared if not truly connecting
+        const srcForMode = source || stateManager.getSource(sourceId);
+        if (srcForMode && srcForMode.status !== 'activating') {
+            delete activateButton.dataset.connecting;
+        }
+        // Derive appropriate label for the main button based on mode + current state
+        if (target === 'tiktok' && mode === 'tiktok-websocket') {
+            // Keep TikTok-specific label logic
+            activateButton.innerText = "Connect TikTok WebSocket";
+        } else if (mode === 'websocket') {
+            // Regular WSS: adjust label depending on connection phase
+            const s = srcForMode;
+            if (s && s.status === 'activating') {
+                activateButton.innerText = '⏹️ Stop connecting';
+            } else if (s && s.vid) {
+                // Window exists but not connected
+                activateButton.innerText = '⏹️ Close WebSocket';
+            } else {
+                activateButton.innerText = 'Connect WebSocket';
             }
+        } else {
+            // Classic or other modes use the standard label
+            activateButton.innerText = translate('btn.activate');
         }
     }
     
@@ -3154,10 +3210,11 @@ async function createWindow(ele, tabid = false) {
                 actualWssId = windowId;
             }
             
+            // Mark classic as active immediately; keep WSS as activating until it reports connected
             stateManager.updateSource(sourceId, {
                 vid: windowId, 
                 wssId: actualWssId, 
-                status: 'active'
+                status: (mode === 'websocket' || mode === 'tiktok-websocket') ? 'activating' : 'active'
             });
             
             // Verify the assignment immediately
@@ -4829,6 +4886,50 @@ document.addEventListener('DOMContentLoaded', async function() {
             }
         });
 
+        
+        // Generic WebSocket status updates from WSS windows (YouTube, etc.)
+        ipcRenderer.on('wssStatus', (event, payload) => {
+            try {
+                const tabId = payload && payload.tabID;
+                if (!tabId) return;
+                const source = stateManager.getSources({ vid: tabId })[0];
+                if (!source) return;
+                const entryElement = document.querySelector(`[data-source-id="${source.id}"]`);
+                if (!entryElement) return;
+
+                const status = payload.status;
+                const message = payload.message || null;
+                switch (status) {
+                    case 'signin_required':
+                        stateManager.updateSource(source.id, { status: 'error' });
+                        updateConnectionStatus(entryElement, 'error', 'Please sign in');
+                        // Auto-reveal the WSS window for sign-in
+                        if (ipcRenderer && source.vid) {
+                            ipcRenderer.invoke('showWindow', { vid: source.vid, state: false }).then((visible) => {
+                                stateManager.updateSource(source.id, { isVisible: (typeof visible === 'boolean') ? visible : true });
+                            }).catch(() => stateManager.updateSource(source.id, { isVisible: true }));
+                        }
+                        break;
+                    case 'ready':
+                        updateConnectionStatus(entryElement, 'retry', message || 'Ready. Configure in popup.');
+                        break;
+                    case 'connected':
+                        stateManager.updateSource(source.id, { status: 'active' });
+                        updateConnectionStatus(entryElement, 'connected');
+                        break;
+                    case 'disconnected':
+                    case 'signed_out':
+                        stateManager.updateSource(source.id, { status: 'inactive' });
+                        updateConnectionStatus(entryElement, 'stopped', message || 'Disconnected');
+                        setTimeout(() => updateConnectionStatus(entryElement, 'clear'), 2000);
+                        break;
+                    case 'error':
+                        stateManager.updateSource(source.id, { status: 'error', error: message || 'Error' });
+                        updateConnectionStatus(entryElement, 'error', message || 'Error');
+                        break;
+                }
+            } catch (e) { console.warn('Failed to apply wssStatus:', e); }
+        });
 
         ipcRenderer.on('tiktokConnectionStatus', (event, data) => {
             if (!data || !data.wssID) return;

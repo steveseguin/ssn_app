@@ -1,4 +1,7 @@
 // preload.js - Comprehensive browser fingerprint normalization for Kasada bypass
+// Light bridge added to forward specific window.postMessage payloads to main
+// so WSS status messages work when using the mock preload.
+
 // Based on research about Kasada detection vectors
 
 // Reduce console noise - only log important info
@@ -63,6 +66,34 @@ setTimeout(() => {
     delete window.electron;
   }
 }, 1000);
+
+// Lightweight bridge: forward expected message shapes to ipcMain('postMessage')
+try {
+  window.addEventListener('message', (event) => {
+    const data = event && event.data;
+    if (!data || typeof data !== 'object') return;
+    // Only forward whitelisted shapes to avoid noise
+    if (
+      data.wssStatus ||
+      data.getSettings ||
+      data.message ||
+      data.delete ||
+      data.cmd ||
+      data.type === 'toBackground' ||
+      (typeof data.__tabID__ !== 'undefined')
+    ) {
+      try {
+        // Prefer contextBridge-exposed ipc if available
+        if (window.electron && window.electron.ipcRenderer) {
+          window.electron.ipcRenderer.send('postMessage', data);
+        } else {
+          // Fallback to direct require to avoid depending on variable scope
+          require('electron').ipcRenderer.send('postMessage', data);
+        }
+      } catch (_) {}
+    }
+  });
+} catch (_) {}
 
 // Override CDP detection - Chrome DevTools Protocol
 // Removed as it causes recursion with toString override
