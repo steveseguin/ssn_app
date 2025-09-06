@@ -1459,19 +1459,94 @@ ipcMain.handle('read-from-file', async (event, filePath) => {
     }
 });
 
+// Utility: compute virtual desktop bounds across all displays
+function getVirtualScreenBounds() {
+    try {
+        const displays = screen.getAllDisplays();
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const d of displays) {
+            const { x, y, width, height } = d.bounds;
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x + width);
+            maxY = Math.max(maxY, y + height);
+        }
+        if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) {
+            const pb = screen.getPrimaryDisplay().bounds;
+            return { x: pb.x, y: pb.y, width: pb.width, height: pb.height };
+        }
+        return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+    } catch (_) {
+        const pb = screen.getPrimaryDisplay().bounds;
+        return { x: pb.x, y: pb.y, width: pb.width, height: pb.height };
+    }
+}
+
+// Stealth-hide: keep window visible to the OS, but move/resize it off-screen
+function stealthHideView(view) {
+    try {
+        if (!view || view.isDestroyed()) return false;
+        // Mark logical visibility
+        view.__ss_visible = false;
+        // Remember current bounds once
+        if (!view.__prevBounds) {
+            try { view.__prevBounds = view.getBounds(); } catch (_) { view.__prevBounds = null; }
+        }
+        // Compute an off-screen coordinate
+        const vb = getVirtualScreenBounds();
+        // Place far to the left/top and reduce size to 1x1
+        const offX = Math.floor(vb.x - 3000);
+        const offY = Math.floor(vb.y - 3000);
+        view.setBounds({ x: offX, y: offY, width: 1, height: 1 });
+        // Avoid taskbar clutter while hidden
+        try { view.setSkipTaskbar(true); } catch (_) {}
+        // Keep window technically visible; do not call hide()/minimize()
+        return false;
+    } catch (_) {
+        return false;
+    }
+}
+
+// Restore from stealth-hide
+function stealthShowView(view) {
+    try {
+        if (!view || view.isDestroyed()) return true;
+        view.__ss_visible = true;
+        // Restore size/position
+        if (view.__prevBounds && typeof view.__prevBounds.x === 'number') {
+            view.setBounds(view.__prevBounds);
+        }
+        try { view.setSkipTaskbar(false); } catch (_) {}
+        try { view.show(); } catch (_) {}
+        return true;
+    } catch (_) {
+        return true;
+    }
+}
+
 ipcMain.handle('showWindow', (event, args) => {
     const view = browserViews[args.vid];
-    if (view) {
-        if (args.state === null) {
-            const isVisible = view.isVisible();
-            isVisible ? view.hide() : view.show();
-        } else {
-            args.state ? view.hide() : view.show();
-        }
-        const newVisibility = view.isVisible();
-        return newVisibility;
+    if (!view) return false;
+
+    // Initialize logical visibility if missing
+    if (typeof view.__ss_visible !== 'boolean') {
+        view.__ss_visible = true;
     }
-    return false;
+
+    // args.state semantics (legacy): true => hide, false => show, null => toggle
+    if (args.state === null || typeof args.state === 'undefined') {
+        if (view.__ss_visible) {
+            stealthHideView(view);
+        } else {
+            stealthShowView(view);
+        }
+    } else if (args.state) {
+        stealthHideView(view);
+    } else {
+        stealthShowView(view);
+    }
+
+    return { newState: !!view.__ss_visible };
 });
 
 ipcMain.handle('checkWindowExists', (event, args) => {
@@ -3790,6 +3865,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             view.args = args;
             view.tabID = generateUniqueWindowId();
             log("Generated tabID for sign-in window:", view.tabID);
+            // Initialize logical visibility flag for stealth-hide/show
+            view.__ss_visible = true;
+            try { view.setSkipTaskbar(false); } catch(_){}
             browserViews[view.tabID] = view;
 
 
@@ -4848,18 +4926,20 @@ async function createWindow(args, reuse = false, mainApp = false) {
             view.onbeforeunload = (e) => {
                 log("I do not want to be closed 1");
                 e.preventDefault();
-                view.hide();
-                mainWindow.webContents.send('window-hidden', {
-                    tabID: view.tabID,
-                    url: view.args.url
-                });
+                try { stealthHideView(view); } catch(_) { try { view.hide(); } catch(_){} }
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('window-hidden', {
+                        tabID: view.tabID,
+                        url: view.args.url
+                    });
+                }
                 e.returnValue = false;
             };
 
             view.on("close", function(e) {
                 log("I do not want to be closed 2");
                 e.preventDefault();
-                
+
                 // Clean up WebSocket debugger if it exists
                 if (view.__websocketMonitorCleanup) {
                     try {
@@ -4869,9 +4949,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         console.error('Error cleaning up WebSocket debugger:', error);
                     }
                 }
-                
-                if (view && !view.isDestroyed()) {
-                    view.hide();
+
+                try { stealthHideView(view); } catch(_) {
+                    try { if (view && !view.isDestroyed()) view.hide(); } catch(_){}
                 }
                 if (mainWindow && view && !mainWindow.isDestroyed() && !view.isDestroyed()) {
                     mainWindow.webContents.send('window-hidden', {
@@ -5590,6 +5670,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
                 }
             }
+            // Initialize logical visibility flag for stealth-hide/show
+            view.__ss_visible = true;
+            try { view.setSkipTaskbar(false); } catch(_){}
             eventRet.returnValue = view.tabID;
             log(`Window created successfully with ID: ${view.tabID}`);
         } catch (e) {

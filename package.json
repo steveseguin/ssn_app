@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.3.54",
+  "version": "0.3.55",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "main": "main.js",
