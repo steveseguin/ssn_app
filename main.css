@@ -2371,3 +2371,64 @@ parcialmente modificado main.css .entry > img[data-sourceicon] {
 .entry .settings-btn {
   order: 3;
 }
+#link-overlay-page {
+  transition: width 0.18s ease-in-out;
+}
+
+/* Subtle edge handle for popup sidebar */
+#link-overlay-page .overlay-handle {
+  position: absolute;
+  top: 50%;
+  left: -12px; /* sits on the split edge */
+  transform: translateY(-50%);
+  width: 24px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.4;
+  transition: opacity 0.15s ease-in-out, background 0.15s ease-in-out;
+  z-index: 5;
+}
+
+#link-overlay-page:hover .overlay-handle,
+#link-overlay-page .overlay-handle:focus {
+  opacity: 0.95;
+  outline: none;
+}
+
+/* Collapsed state: make overlay a thin handle; expand sources to full width */
+.overlay-collapsed #link-overlay-page {
+  width: 28px !important;
+  min-width: 28px !important;
+  overflow: hidden;
+}
+
+.overlay-collapsed #link-overlay-page iframe {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.overlay-collapsed #sources {
+  right: 0 !important;
+}
+
+/* Expanded defaults; ensure sources respects the sidebar width */
+.overlay-expanded #sources {
+  right: calc(max(35%, 400px)) !important;
+}
+
+/* Small screens: keep handle a bit larger for accessibility */
+@media (max-width: 600px) {
+  #link-overlay-page .overlay-handle {
+    left: -10px;
+    width: 28px;
+    height: 56px;
+    border-radius: 14px;
+  }
+}

@@ -123,6 +123,8 @@
             </div>
 			
 			<div id="link-overlay-page" style="min-width:400px;right:0;position:absolute;height:100%;width:35%">
+				<!-- Subtle edge handle to collapse/expand the popup sidebar -->
+				<div id="popup-handle" class="overlay-handle" role="button" tabindex="0" aria-label="Toggle chat panel" title="Hide/Show chat panel">⯇</div>
 				<iframe id="frame1" class="loading" style="height:100%;width:100%" allow="clipboard-write;document-domain;encrypted-media;sync-xhr;usb;web-share;cross-origin-isolated;accelerometer;midi *;geolocation;autoplay;camera;microphone;fullscreen;gyroscope;shared-array-buffer;" ></iframe>
 			</div>
         </div>
@@ -4988,6 +4990,46 @@ document.addEventListener('DOMContentLoaded', async function() {
 
     const initialPage = stateManager.state.global.currentPage || 'streams';
 	switchToPage(initialPage); 
+
+    // Popup sidebar show/hide toggle setup (subtle edge handle)
+    (function setupPopupSidebarToggle() {
+        const linkOverlay = document.getElementById('link-overlay-page');
+        const handle = document.getElementById('popup-handle');
+        const frame1 = document.getElementById('frame1');
+        if (!linkOverlay || !handle) return;
+
+        function applyCollapsedState(collapsed) {
+            try {
+                document.body.classList.toggle('overlay-collapsed', !!collapsed);
+                document.body.classList.toggle('overlay-expanded', !collapsed);
+                if (frame1) {
+                    // Prevent interactions when collapsed (CSS also hides it)
+                    frame1.setAttribute('aria-hidden', collapsed ? 'true' : 'false');
+                }
+                handle.textContent = collapsed ? '⯈' : '⯇';
+                handle.title = collapsed ? 'Show chat panel' : 'Hide chat panel';
+            } catch (e) { console.error('Failed to apply popup collapsed state:', e); }
+        }
+
+        function toggle() {
+            const collapsed = localStorage.getItem('popupCollapsed') === 'true';
+            const next = !collapsed;
+            localStorage.setItem('popupCollapsed', String(next));
+            applyCollapsedState(next);
+        }
+
+        handle.addEventListener('click', toggle);
+        handle.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+                e.preventDefault();
+                toggle();
+            }
+        });
+
+        // Initialize from saved state
+        const savedCollapsed = localStorage.getItem('popupCollapsed') === 'true';
+        applyCollapsedState(savedCollapsed);
+    })();
 
     if (ipcRenderer) {
         ipcRenderer.on('fromMainToIndex', (event, ...args) => { 
