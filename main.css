@@ -2288,6 +2288,20 @@ input:checked + .slider:before {
   color: #F44336;
 }
 
+/* Subtle informational status for tips/reminders */
+.ws-status.info {
+  /* Passive, neutral blue-grey tip */
+  background: rgba(96, 125, 139, 0.18);
+  color: #cfd8dc;
+  border-color: #90a4ae !important;
+}
+
+/* Inline tip text inside ws-status */
+.ws-status .ws-tip {
+  opacity: 0.85;
+  font-size: 11px;
+}
+
 .entry-actions {
   display: flex;
   flex-wrap: wrap;

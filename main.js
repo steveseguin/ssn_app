@@ -3489,47 +3489,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     function getSignInUserAgent(url, config, configs) {
         try {
-            const domain = getPrimaryDomain(url);
-
-            let target = url.replace(/^(?:https?:\/\/)?(?:[^@\n]+@)?(?:www\.)?([^:/\n]+).*$/, '$1').split('.').slice(-2)[0];
-
-            let conf = {};
-
-            if (target in configs) {
-                conf = config[target];
-                if (config[target]?.signin) {
-                    conf = {
-                        ...conf,
-                        ...config[target].signin
-                    };
-                    if (conf.userAgent) {
-                        return conf.userAgent;
-                    }
-                }
-            }
-
-            // Define user agents for specific sign-in domains
-            const signInAgents = {
-                'twitch.tv': process.platform == "darwin" ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36' : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
-                'google.com': 'Chrome', // default for Google sign-in
-            };
-
-            // Look for matching domain
-            if (domain) {
-                for (const [targetDomain, agent] of Object.entries(signInAgents)) {
-                    if (domain.includes(targetDomain)) {
-                        return agent;
-                    }
-                }
-            }
-
-            // If no specific match, use the config's user agent or default to Chrome
-            return config?.userAgent || 'Chrome';
+            // Prefer per-target signin UA, then per-target UA, then global signin UA, then global UA, else 'Chrome'
+            if (config?.signin?.userAgent) return config.signin.userAgent;
+            if (config?.userAgent) return config.userAgent;
+            if (configs?.global?.signin?.userAgent) return configs.global.signin.userAgent;
+            if (configs?.global?.userAgent) return configs.global.userAgent;
+            return 'Chrome';
         } catch (e) {
             console.error(e);
-            return 'Chrome'; // fallback
+            return 'Chrome';
         }
     }
+
+    
 
     async function createSignInWindow(args) {
         try {
@@ -3555,6 +3527,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const ses = session.fromPartition(sessionPartition);
             const existingCookies = await ses.cookies.get({});
             const hasExistingSession = existingCookies.length > 0;
+
+            // Simple, config-driven popup behavior
+            // Popup policy: per-target override wins, otherwise global, default allow
+            let allowPopups = true;
+            if (args?.config?.signin && args.config.signin.allowPopups === false) {
+                allowPopups = false;
+            } else if (args?.configs?.global?.signin && args.configs.global.signin.allowPopups === false) {
+                allowPopups = false;
+            }
+            // Removed SSO-specific UA map; keep behavior simple and config-driven per target
 
             let shouldClearSession = false;
 
@@ -3669,6 +3651,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Use the session partition we already determined above
             const persistentSession = ses; // We already have this from line 3212
+            
+            
             log(`[SIGN-IN] URL: ${args.url}, Domain: ${domain}, Platform: ${getDomainToPlatform(domain)}, Session: ${sessionPartition}, CustomSession: ${args.customSession}`);
             
             // Debug: Check cookies after sign-in window closes
@@ -4032,9 +4016,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 });
 
                 view.webContents.setWindowOpenHandler(({ url }) => {
-                    const userAgent = getSignInUserAgent(url, args.config, args.configs);
-                    view.webContents.userAgent = userAgent;
-                    // Match child popup context to parent for reliability (esp. SSO flows)
+                    if (!allowPopups) {
+                        // Open OAuth target in the same window instead of a popup
+                        try {
+                            const ua = getSignInUserAgent(url, args.config, args.configs);
+                            try { view.webContents.setUserAgent(ua); } catch(_) {}
+                            view.webContents.loadURL(url, { userAgent: ua }).catch(() => {});
+                        } catch(_) {}
+                        return { action: 'deny' };
+                    }
                     const childContextIsolation = webPreferences.contextIsolation;
                     return {
                         action: 'allow',
@@ -4060,12 +4050,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                 view.webContents.on('will-navigate', (event, url) => {
                     if (url.includes('oauth') || url.includes('signin') || url.includes('login')) {
-                        //event.preventDefault();
-                        const userAgent = getSignInUserAgent(url, args.config, args.configs);
-                        view.webContents.userAgent = userAgent;
-                        //view.webContents.loadURL(url, { userAgent });
+                        try {
+                            const userAgent = getSignInUserAgent(url, args.config, args.configs);
+                            view.webContents.setUserAgent(userAgent);
+                        } catch (_) {}
                     }
                 });
+
+                
 
                 // Inject chrome.runtime mock for sign-in windows that need it
                 view.webContents.on('dom-ready', () => {
@@ -4328,6 +4320,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             }
                             log(`Loading URL with platform-specific fallback user agent for kasada: ${userAgent}`);
                         }
+                        try { view.webContents.setUserAgent(userAgent); } catch(_) {}
                         view.webContents.loadURL(args.url, {
                             userAgent: userAgent,
                             httpReferrer: {
@@ -4337,6 +4330,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         });
                     } else if (args.config?.userAgent) {
                         log(`Using configured user agent: ${args.config.userAgent}`);
+                        try { view.webContents.setUserAgent(args.config.userAgent); } catch(_) {}
                         view.webContents.loadURL(args.url, {
                             userAgent: args.config.userAgent
                         });

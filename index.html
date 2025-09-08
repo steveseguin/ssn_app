@@ -1212,7 +1212,12 @@ async function cleanUpURL(url) {
 async function newOtherSourcePrompt(target = "") {
     let URL = window.prompt("Enter the full URL for the source:");
     if (URL) {
-        URL = (await cleanUpURL(URL.trim())).trim(); 
+        URL = URL.trim();
+        // If no scheme provided, default to https://
+        if (!/^https?:\/\//i.test(URL)) {
+            URL = 'https://' + URL;
+        }
+        URL = (await cleanUpURL(URL)).trim(); 
         let typeGuess = target;
         if (!typeGuess) {
             const guessedArr = checkSupported(URL); 
@@ -2793,6 +2798,14 @@ async function activateSource(ele) {
         return;
     }
     await createWindow(ele);
+    // For classic mode, add a subtle reminder to verify chat/sign-in
+    try {
+        const sid = parentElement.dataset.sourceId;
+        const src = sid ? stateManager.getSource(sid) : null;
+        if (src && (src.connectionMode === 'classic')) {
+            updateConnectionStatus(parentElement, 'info', 'Reminder: After the window opens, sign in (if required) and confirm the chat is visible.');
+        }
+    } catch (_) {}
 }
 
 /* Modified toggleSourceVisibility */
@@ -4114,13 +4127,30 @@ function updateConnectionStatus(element, status, message = null) {
             element.appendChild(statusElement);
         }
 	}
-	statusElement.classList.remove('hidden', 'error', 'connecting', 'connected', 'retry', 'stopped');
+	statusElement.classList.remove('hidden', 'error', 'connecting', 'connected', 'retry', 'stopped', 'info');
     statusElement.style.display = 'inline-flex'; 
+
+	// Try to access source for context (mode-specific tips)
+	let sourceCtx = null;
+	try {
+		const sid = element.dataset.sourceId;
+		if (sid && window.stateManager) sourceCtx = window.stateManager.getSource(sid);
+	} catch (_) {}
 
 	switch (status) {
 		case 'connecting':
 			statusElement.classList.add('connecting');
-			statusElement.innerHTML = '<i class="las la-sync fa-spin"></i> Connecting...';
+			{
+				let tipHtml = '';
+					try {
+						const isWss = sourceCtx && (sourceCtx.connectionMode === 'websocket' || sourceCtx.connectionMode === 'tiktok-websocket');
+						const isTikTok = sourceCtx && sourceCtx.target === 'tiktok';
+						if (isWss && !isTikTok) {
+							tipHtml = ' <span class="ws-tip">If a window opens, sign in and ensure the chat is visible.</span>';
+						}
+					} catch (_) {}
+				statusElement.innerHTML = '<i class="las la-sync fa-spin"></i> Connecting...' + tipHtml;
+			}
 			break;
 		case 'connected':
 			statusElement.classList.add('connected');
@@ -4140,6 +4170,13 @@ function updateConnectionStatus(element, status, message = null) {
 			setTimeout(() => {
 				if (statusElement.classList.contains('stopped')) statusElement.style.display = 'none';
 			}, 5000);
+			break;
+		case 'info':
+			statusElement.classList.add('info');
+			statusElement.innerHTML = `<i class="las la-info-circle"></i> ${message || ''}`;
+			setTimeout(() => {
+				if (statusElement.classList.contains('info')) statusElement.style.display = 'none';
+			}, 30000); // keep visible ~30s (3-5x longer)
 			break;
 		case 'clear':
 		default:
@@ -4699,6 +4736,19 @@ document.addEventListener('DOMContentLoaded', async function() {
             }
         }
         manageWelcomePage();
+
+        // Gentle reminder: for newly created manual sources, hint about sign-in and activation
+        // For TikTok, only show this if the connection mode is classic (default is TikTok WS)
+        try {
+            const isManual = !source.isAutoDiscovered;
+            const target = source.target;
+            const connMode = source.connectionMode;
+            const allowTip = isManual && element && !element.dataset.tipShown && ((target !== 'tiktok') || (connMode === 'classic'));
+            if (allowTip) {
+                updateConnectionStatus(element, 'info', 'Tip: Sign in on the site if needed, then press ▶️ Activate and make sure the chat is visible.');
+                element.dataset.tipShown = '1';
+            }
+        } catch (_) {}
     });
 
 
@@ -4708,6 +4758,16 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (element && source) {
             updateSourceUI(element, source);
         }
+        
+        // If a TikTok source switches to classic mode, show a one-time sign-in/activation tip
+        try {
+            if (element && source && source.target === 'tiktok' && !element.dataset.tipShown) {
+                if ('connectionMode' in updates && updates.connectionMode === 'classic') {
+                    updateConnectionStatus(element, 'info', 'Tip: Sign in on the site if needed, then press ▶️ Activate and make sure the chat is visible.');
+                    element.dataset.tipShown = '1';
+                }
+            }
+        } catch (_) {}
         
         if ('groupId' in updates) {
             const currentElement = document.querySelector(`[data-source-id="${sourceId}"]`); 
