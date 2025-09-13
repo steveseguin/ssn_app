@@ -154,7 +154,7 @@
   },
   "devDependencies": {
     "archiver": "^7.0.1",
-    "electron": "^38.0.0",
+    "electron": "^38.1.0",
     "electron-builder": "^25.1.8",
     "electron-notarize": "git://github.com/electron/notarize.git",
     "fs-extra": "11.3.0",
