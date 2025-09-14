@@ -169,7 +169,7 @@ const tipsContent = {
 	  <p><span class="tips-warning">Multiple Sign-ins:</span> If you are signed into TikTok multiple times with the same account, TikTok might stop working.</p>
 	  <p><span class="tips-warning">Rate Limiting:</span> TikTok may restrict access if you make too many connection attempts in a short period.</p>
 	 </div>
-	 <div class="tips-section"><h3>Solutions</h3></div>
+	 <div class="tips-section"><h3>Solutions</h3>
 	  <ul>
 		<li>Avoid watching the same stream in multiple places</li>
 		<li>Create a secondary TikTok account to sign in with instead</li>
