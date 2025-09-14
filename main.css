@@ -1131,13 +1131,19 @@ button.group-control {
 
 .tips-highlight {
   font-weight: bold;
-  color: #4a8dc7;
+  color: #a4ef9e;
 }
 
 .tips-warning {
   color: #ff9800;
 }
 
+.tips-section h3 {
+  color: #a7d8ff;
+}
+#tipsModal{
+	overflow:scroll;
+}
 .hidden {
   display: none !important;
 }

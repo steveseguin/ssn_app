@@ -168,7 +168,8 @@ const tipsContent = {
 	  <p><span class="tips-warning">Multiple Viewers:</span> If you're viewing TikTok in your browser or from the same IP elsewhere, it may cause the video/chat to stop working.</p>
 	  <p><span class="tips-warning">Multiple Sign-ins:</span> If you are signed into TikTok multiple times with the same account, TikTok might stop working.</p>
 	  <p><span class="tips-warning">Rate Limiting:</span> TikTok may restrict access if you make too many connection attempts in a short period.</p>
-	  <p>Solutions:</p>
+	 </div>
+	 <div class="tips-section"><h3>Solutions</h3></div>
 	  <ul>
 		<li>Avoid watching the same stream in multiple places</li>
 		<li>Create a secondary TikTok account to sign in with instead</li>
