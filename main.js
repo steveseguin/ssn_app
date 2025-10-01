@@ -5828,62 +5828,31 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     class MessageCache {
         constructor(maxSize) {
-            this.maxSize = maxSize;
-            this.messageIds = new Map(); // Using Map for insertion order
-            this.cleanupInterval = null;
-            this.startAutoCleanup();
-        }
-
-        startAutoCleanup() {
-            // Auto-cleanup old messages every 5 minutes
-            this.cleanupInterval = setInterval(() => {
-                // Remove messages older than 10 minutes
-                this.cleanup(10 * 60 * 1000);
-                
-                // Also enforce max size if needed
-                while (this.messageIds.size > this.maxSize) {
-                    const oldestKey = this.messageIds.keys().next().value;
-                    this.messageIds.delete(oldestKey);
-                }
-            }, 5 * 60 * 1000);
-
-            // Track for cleanup
-            if (!global.intervals) global.intervals = [];
-            global.intervals.push(this.cleanupInterval);
+            this.maxSize = Math.max(1, maxSize || 0);
+            this.messageIds = new Map(); // Maintains insertion order for LRU trimming
         }
 
         has(msgId) {
             return this.messageIds.has(msgId);
         }
 
-        add(msgId, timestamp = Date.now()) {
-            // If we already have this ID, just update timestamp
+        add(msgId) {
+            if (!msgId) return;
+
+            // Refresh position when we see a duplicate id
             if (this.messageIds.has(msgId)) {
-                this.messageIds.set(msgId, timestamp);
+                this.messageIds.delete(msgId);
+                this.messageIds.set(msgId, Date.now());
                 return;
             }
 
-            // Add the new message ID
-            this.messageIds.set(msgId, timestamp);
+            this.messageIds.set(msgId, Date.now());
 
-            // If we're over capacity, remove oldest entry
-            if (this.messageIds.size > this.maxSize) {
+            // Enforce max size with simple LRU eviction
+            while (this.messageIds.size > this.maxSize) {
                 const oldestKey = this.messageIds.keys().next().value;
+                if (typeof oldestKey === 'undefined') break;
                 this.messageIds.delete(oldestKey);
-            }
-        }
-
-        cleanup(maxAge) {
-            const cutoffTime = Date.now() - maxAge;
-            let cleaned = 0;
-            for (const [msgId, timestamp] of this.messageIds.entries()) {
-                if (timestamp < cutoffTime) {
-                    this.messageIds.delete(msgId);
-                    cleaned++;
-                }
-            }
-            if (cleaned > 0) {
-                log(`MessageCache: Cleaned ${cleaned} old message IDs`);
             }
         }
 
@@ -5892,10 +5861,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         destroy() {
-            if (this.cleanupInterval) {
-                clearInterval(this.cleanupInterval);
-                this.cleanupInterval = null;
-            }
             this.clear();
         }
     }
@@ -5958,7 +5923,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
             TIMEOUT: 15000,
             CLEANUP_INTERVAL: 60000,
             HEALTH_CHECK_INTERVAL: 60000, // Increased to 60s for better stability
-            MESSAGE_TIMEOUT: 300000, // Increased to 5 minutes for low-activity streams
+            // Adaptive reconnect windows (active → moderate → idle)
+            MESSAGE_TIMEOUT_ACTIVE_MS: 5 * 60 * 1000,
+            MESSAGE_TIMEOUT_MODERATE_MS: 10 * 60 * 1000,
+            MESSAGE_TIMEOUT_IDLE_MS: 30 * 60 * 1000,
+            ACTIVITY_THRESHOLDS: {
+                HIGH_PER_MINUTE: 120, // Consider stream "active" if >=120 msgs/min (~2 msg/sec)
+                MODERATE_PER_MINUTE: 15 // Moderate traffic if >=15 msgs/min
+            },
+            ACTIVITY_HISTORY_MS: 30 * 60 * 1000, // Track up to 30 minutes of activity
             MAX_RECONNECT_ATTEMPTS: Infinity, // Retry indefinitely
             RECONNECT_DELAY: 3000,
             // Fixed retry cadence when user is offline / not live
@@ -5980,7 +5953,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             MAX_CLUSTER_SIZE: 100,
             CLUSTER_WINDOW: 500,
             // Dedup cache size for TikTok message IDs
-            MESSAGE_CACHE_SIZE: 1000,
+            MESSAGE_CACHE_SIZE: 5000,
             HIGH_LOAD_THRESHOLD: 5000,
             HIGH_LOAD_INTERVAL: 20,
             EMERGENCY_CLUSTER_THRESHOLD: 10000,
@@ -5990,8 +5963,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
             PROCESSING_INTERVAL: 50
         }
     };
-
-    const messageCache = new MessageCache(CONFIG.CHAT.MESSAGE_CACHE_SIZE);
 
     const connectionStates = new Map();
 
@@ -6044,6 +6015,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     clearTimeout(manager.reconnectTimer);
                     manager.reconnectTimer = null;
                 }
+                if (manager.messageCache) {
+                    try {
+                        manager.messageCache.destroy();
+                    } catch (_) { /* noop */ }
+                    manager.messageCache = null;
+                }
+                if (manager.activityBuckets instanceof Map) {
+                    manager.activityBuckets.clear();
+                }
                 // Mark as stopped
                 manager.isStopped = true;
 
@@ -6060,6 +6040,42 @@ async function createWindow(args, reuse = false, mainApp = false) {
         } catch (e) {
             console.error('Error during connection cleanup:', e);
         }
+    }
+
+    function normalizeNameColor(raw) {
+        if (raw === undefined || raw === null) return null;
+
+        let color = String(raw).trim();
+        if (!color) return null;
+
+        if (/^0x[0-9a-f]{6}$/i.test(color)) {
+            color = `#${color.slice(2)}`;
+        }
+
+        if (/^[0-9a-f]{6}$/i.test(color)) {
+            color = `#${color}`;
+        } else if (/^#[0-9a-f]{3}$/i.test(color)) {
+            const r = color[1];
+            const g = color[2];
+            const b = color[3];
+            color = `#${r}${r}${g}${g}${b}${b}`;
+        }
+
+        if (!/^#[0-9a-f]{6}$/i.test(color)) {
+            // Unsupported format; ignore to avoid injecting invalid CSS
+            return null;
+        }
+
+        const r = parseInt(color.slice(1, 3), 16);
+        const g = parseInt(color.slice(3, 5), 16);
+        const b = parseInt(color.slice(5, 7), 16);
+
+        // Treat colors that are effectively black as unset to avoid invisible names
+        if (r <= 10 && g <= 10 && b <= 10) {
+            return null;
+        }
+
+        return color.toLowerCase();
     }
 
     // Load CircularBuffer if available
@@ -6089,14 +6105,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         addToQueue(data) {
 
-            if (data.msgId && messageCache.has(data.msgId)) {
+            const cache = this.manager?.messageCache;
+
+            if (cache && data.msgId && cache.has(data.msgId)) {
                 log(`Skipping duplicate message: ${data.msgId}`);
                 return;
             }
 
             // Add to message cache if it has an ID
-            if (data.msgId) {
-                messageCache.add(data.msgId);
+            if (cache && data.msgId) {
+                cache.add(data.msgId);
             }
 
             // Enforce queue caps (works for CircularBuffer and Array)
@@ -6176,6 +6194,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
             
             if (data.uniqueId) {
                 msg.userid = data.uniqueId;
+            }
+
+            const nameColor = data.nameColor || data.name_color || data.user?.nameColor;
+            if (nameColor) {
+                msg.nameColor = nameColor;
+                msg.chatnamecolor = nameColor;
             }
             msg.chatimg = data.profilePictureUrl;
             msg.textonlymode = false;
@@ -6287,12 +6311,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     });
                 }
                 
-                messageClusters.get(key).users.push({
-                    userId: data.userId,
-                    nickname: data.nickname,
-                    profilePictureUrl: data.profilePictureUrl,
-                    isModerator: data.isModerator,
-                    isSubscriber: data.isSubscriber
+            messageClusters.get(key).users.push({
+                userId: data.userId,
+                nickname: data.nickname,
+                profilePictureUrl: data.profilePictureUrl,
+                isModerator: data.isModerator,
+                isSubscriber: data.isSubscriber,
+                    nameColor: data.nameColor || data.name_color || data.user?.nameColor
                 });
             });
 
@@ -6344,6 +6369,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 membership: users.some(u => u.isSubscriber),
                 tid: this.manager.virtualTabId // Include the virtual tab ID
             };
+
+            const primaryColor = users
+                .map(u => u?.nameColor)
+                .find(Boolean);
+            if (primaryColor) {
+                msg.nameColor = primaryColor;
+                msg.chatnamecolor = primaryColor;
+            }
             return msg;
         }
 
@@ -6408,14 +6441,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
         addToQueue(data) {
             if (data.giftType === 1 && !data.repeatEnd) return;
 
-            if (data.msgId && messageCache.has(data.msgId)) {
+            const cache = this.manager?.messageCache;
+            if (cache && data.msgId && cache.has(data.msgId)) {
                 log(`Skipping duplicate gift: ${data.msgId}`);
                 return;
             }
 
             // Add to message cache if it has an ID
-            if (data.msgId) {
-                messageCache.add(data.msgId);
+            if (cache && data.msgId) {
+                cache.add(data.msgId);
             }
 
             this.queue.push({
@@ -6467,6 +6501,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 tid: this.manager.virtualTabId // Include the virtual tab ID
             };
 
+            const rawColor = data.nameColor || data.name_color || data.user?.nameColor;
+            if (rawColor) {
+                msg.nameColor = rawColor;
+                msg.chatnamecolor = rawColor;
+            }
+
             sendToBackground(msg);
         }
     }
@@ -6484,6 +6524,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
             this.lastViewerCount = 0;
             this.messageProcessor = new MessageProcessor(this);
             this.giftProcessor = new GiftProcessor(this);
+            this.messageCache = new MessageCache(CONFIG.CHAT.MESSAGE_CACHE_SIZE);
+            this.activityBuckets = new Map();
             this.reconnectAttempts = 0;
             this.isStopped = false;
             this.reconnectTimer = null;
@@ -6492,6 +6534,73 @@ async function createWindow(args, reuse = false, mainApp = false) {
             this.offlineReason = null;
             // Per-connection reply-only flag (skip forwarding captured events)
             this.replyOnly = false;
+        }
+
+        recordActivity(timestamp = Date.now()) {
+            this.lastMessageTime = timestamp;
+
+            const bucketSize = 60 * 1000; // 1 minute buckets
+            const bucketKey = Math.floor(timestamp / bucketSize) * bucketSize;
+            const current = this.activityBuckets.get(bucketKey) || 0;
+            this.activityBuckets.set(bucketKey, current + 1);
+
+            this.pruneActivity(timestamp);
+        }
+
+        pruneActivity(now = Date.now()) {
+            const historyWindow = CONFIG.CONNECTION.ACTIVITY_HISTORY_MS || (30 * 60 * 1000);
+            const cutoff = now - historyWindow;
+            for (const key of this.activityBuckets.keys()) {
+                if (key < cutoff) {
+                    this.activityBuckets.delete(key);
+                }
+            }
+        }
+
+        countActivitySince(cutoff) {
+            if (!this.activityBuckets.size) {
+                return 0;
+            }
+
+            let count = 0;
+            const bucketSize = 60 * 1000;
+            for (const [bucketKey, bucketCount] of this.activityBuckets.entries()) {
+                if (bucketKey + bucketSize > cutoff) {
+                    count += bucketCount;
+                }
+            }
+            return count;
+        }
+
+        getAdaptiveMessageTimeout() {
+            const now = Date.now();
+            this.pruneActivity(now);
+
+            const {
+                ACTIVITY_THRESHOLDS = {},
+                MESSAGE_TIMEOUT_ACTIVE_MS = 5 * 60 * 1000,
+                MESSAGE_TIMEOUT_MODERATE_MS = 10 * 60 * 1000,
+                MESSAGE_TIMEOUT_IDLE_MS = 30 * 60 * 1000
+            } = CONFIG.CONNECTION;
+
+            const highThreshold = ACTIVITY_THRESHOLDS.HIGH_PER_MINUTE || 120;
+            const moderateThreshold = ACTIVITY_THRESHOLDS.MODERATE_PER_MINUTE || 15;
+
+            const perMinute = this.countActivitySince(now - 60 * 1000);
+            if (perMinute >= highThreshold) {
+                return MESSAGE_TIMEOUT_ACTIVE_MS;
+            }
+
+            if (perMinute >= moderateThreshold) {
+                return MESSAGE_TIMEOUT_MODERATE_MS;
+            }
+
+            const perFiveMinutes = this.countActivitySince(now - 5 * 60 * 1000);
+            if (perFiveMinutes >= moderateThreshold * 2) {
+                return MESSAGE_TIMEOUT_MODERATE_MS;
+            }
+
+            return MESSAGE_TIMEOUT_IDLE_MS;
         }
 
         async initialize() {
@@ -6570,25 +6679,25 @@ async function createWindow(args, reuse = false, mainApp = false) {
             this.connection.on('error', (err) => this.handleError(err));
             this.connection.on('streamEnd', () => this.handleStreamEnd());
             this.connection.on('chat', (data) => {
-                this.lastMessageTime = Date.now();
+                this.recordActivity();
                 this.messageProcessor.addToQueue(data);
             });
             this.connection.on('gift', (data) => {
-                this.lastMessageTime = Date.now();
+                this.recordActivity();
                 this.giftProcessor.addToQueue(data);
             });
 
             const eventHandlers = {
                 follow: (data) => {
-                    this.lastMessageTime = Date.now();
+                    this.recordActivity();
                     this.sendEventMessage(data, "follow", `${data.nickname} followed!`);
                 },
                 subscribe: (data) => {
-                    this.lastMessageTime = Date.now();
+                    this.recordActivity();
                     this.sendEventMessage(data, "subscribed", `${data.nickname} subscribed!`);
                 },
                 social: (data) => {
-                    this.lastMessageTime = Date.now();
+                    this.recordActivity();
                     if (data.displayType !== "pm_main_follow_message_viewer_2" &&
                         data.displayType !== "pm_mt_guidance_share") {
                         let label = data.label || `${data.nickname} performed a social action!`;
@@ -6600,7 +6709,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
                 },
                 roomUser: (data) => {
-                    this.lastMessageTime = Date.now();
+                    this.recordActivity();
                     if ("viewerCount" in data) {
                         this.lastViewerCount = parseInt(data.viewerCount) || 0;
                         if (isViewerUpdateAllowed()) {
@@ -6629,17 +6738,21 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
 
             this.healthCheckInterval = setInterval(() => {
-                const timeSinceLastMessage = Date.now() - this.lastMessageTime;
-                const connectionDuration = Date.now() - this.connectionStartTime;
+                const now = Date.now();
+                const timeSinceLastMessage = now - this.lastMessageTime;
+                const connectionDuration = now - this.connectionStartTime;
                 
                 // Proactively reconnect after 1.5 hours to avoid 2-hour timeout
                 if (connectionDuration > 90 * 60 * 1000) { // 90 minutes
                     console.info('Proactively refreshing connection after 90 minutes');
                     this.connectionStartTime = Date.now();
                     this.forceReconnect();
-                } else if (timeSinceLastMessage > CONFIG.CONNECTION.MESSAGE_TIMEOUT) {
-                    console.info(`Connection appears stale - no messages for ${Math.round(timeSinceLastMessage/1000)}s, forcing reconnect`);
-                    this.forceReconnect();
+                } else if (this.connection && this.connection.isConnected) {
+                    const adaptiveTimeout = this.getAdaptiveMessageTimeout();
+                    if (timeSinceLastMessage > adaptiveTimeout) {
+                        console.info(`Connection appears stale - no messages for ${Math.round(timeSinceLastMessage/1000)}s (threshold ${Math.round(adaptiveTimeout/1000)}s), forcing reconnect`);
+                        this.forceReconnect();
+                    }
                 }
             }, CONFIG.CONNECTION.HEALTH_CHECK_INTERVAL);
         }
@@ -6960,7 +7073,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (!isCaptureEventsEnabled()) {
                 return; // drop non-gift events if captureevents disabled
             }
-            sendToBackground({
+            const rawColor = data.nameColor || data.name_color || data.user?.nameColor;
+            const payload = {
                 chatmessage: message,
                 moderator: data.isModerator || false,
                 membership: data.isSubscriber || false,
@@ -6970,7 +7084,17 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 textonlymode: false,
                 event: eventType,
                 tid: this.virtualTabId // Include the virtual tab ID
-            });
+            };
+
+            if (rawColor) {
+                const safeColor = normalizeNameColor(rawColor);
+                if (safeColor) {
+                    payload.nameColor = safeColor;
+                    payload.chatnamecolor = safeColor;
+                }
+            }
+
+            sendToBackground(payload);
         }
 
         async sendChatMessage(message) {
