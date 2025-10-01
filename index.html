@@ -1062,61 +1062,171 @@ async function createYouTubeEntry(streamData, usernameForGroup, isShortSelected)
 
 
 async function newSourcePrompt(target) {
-    let username, isChannelName = false;
-    let prompt_message = `Enter the ${target} user name`;
+    let username = '';
+    let isChannelName = false;
+    let lastError = '';
+    let lastInvalidToast = null;
 
-    if (target === "facebook") {
-        prompt_message += ".\nWhen you activate this source, you'll need to still manually select the video in the page.";
-        username = window.prompt(prompt_message);
-    } else if (target === "youtube" || target === "youtubeshorts") {
-        prompt_message = `Enter the ${target} user name or channel name`;
-        prompt_message += ".\nIf loading chat via username on Youtube, you must be live and the stream set to public for it to work.";
-        const response = await ipcRenderer.sendSync('prompt', {
-            title: `Enter the ${target} user name or channel name`,
-            message: prompt_message,
-            showChannelTypeCheckbox: true,
-            showShortsCheckbox: (target === "youtubeshorts")
-        });
-        if (response && typeof response === 'object' && 'value' in response) {
-            username = response.value;
-            isChannelName = response.isChannelName || false;
-        } else if (response) { 
-            username = response;
+    const spaceErrorMessage = 'Usernames cannot contain spaces. Please enter the username exactly as it appears on the platform.';
+    const emptyErrorMessage = 'Please enter a username to continue.';
+
+    while (true) {
+        const errorType = lastError;
+        const errorMessage = errorType === 'space' ? spaceErrorMessage : errorType === 'empty' ? emptyErrorMessage : '';
+        lastError = '';
+
+        let response;
+        if (target === "facebook") {
+            const messageParts = [];
+            if (errorMessage) messageParts.push(errorMessage);
+            messageParts.push("When you activate this source, you'll need to still manually select the video in the page.");
+            const allowSpacesForChannel = (target === 'youtube' || target === 'youtubeshorts' || target === 'rumble') && isChannelName;
+            if (allowSpacesForChannel) {
+                messageParts.push('Channel names can include spaces when the channel option is enabled.');
+            } else {
+                messageParts.push('Note: Usernames cannot contain spaces.');
+            }
+            const promptOptions = {
+                title: `Enter the ${target} user name`,
+                message: messageParts.join('\n\n'),
+                value: typeof username === 'string' ? username : '',
+                errorMessage,
+                errorType
+            };
+            response = window.prompt(promptOptions);
+            isChannelName = false;
+        } else if (target === "youtube" || target === "youtubeshorts") {
+            const messageParts = [];
+            if (errorMessage) messageParts.push(errorMessage);
+            messageParts.push('If loading chat via username on Youtube, you must be live and the stream set to public for it to work.');
+            const allowSpacesForChannel = (target === 'youtube' || target === 'youtubeshorts') && isChannelName;
+            if (allowSpacesForChannel) {
+                messageParts.push('Channel names can include spaces when the channel option is enabled.');
+            } else {
+                messageParts.push('Note: Usernames cannot contain spaces.');
+            }
+            response = await ipcRenderer.sendSync('prompt', {
+                title: `Enter the ${target} user name or channel name`,
+                message: messageParts.join('\n\n'),
+                showChannelTypeCheckbox: true,
+                showShortsCheckbox: (target === "youtubeshorts"),
+                value: typeof username === 'string' ? username : '',
+                defaultIsChannelName: isChannelName,
+                errorMessage,
+                errorType
+            });
+        } else if (target === "rumble") {
+            const messageParts = [];
+            if (errorMessage) messageParts.push(errorMessage);
+            const allowSpacesForChannel = target === 'rumble' && isChannelName;
+            if (allowSpacesForChannel) {
+                messageParts.push('Channel names can include spaces when the channel option is enabled.');
+            } else {
+                messageParts.push('Note: Usernames cannot contain spaces.');
+            }
+            response = await ipcRenderer.sendSync('prompt', {
+                title: `Enter the Rumble username or channel name`,
+                message: messageParts.join('\n\n'),
+                showChannelTypeCheckbox: true,
+                value: typeof username === 'string' ? username : '',
+                defaultIsChannelName: isChannelName,
+                errorMessage,
+                errorType
+            });
+        } else if (target === "parti") {
+            const messageParts = [];
+            if (errorMessage) messageParts.push(errorMessage);
+            messageParts.push('This is a number which can be found at the end of the pop-out chat URL.');
+            messageParts.push('Note: Usernames cannot contain spaces.');
+            const promptOptions = {
+                title: `Enter the ${target} user ID`,
+                message: messageParts.join('\n\n'),
+                value: typeof username === 'string' ? username : '',
+                errorMessage,
+                errorType
+            };
+            response = window.prompt(promptOptions);
             isChannelName = false;
         } else {
+            const messageParts = [];
+            if (errorMessage) messageParts.push(errorMessage);
+            messageParts.push('Note: Usernames cannot contain spaces.');
+            const promptOptions = {
+                title: `Enter the ${target} user name`,
+                message: messageParts.join('\n\n'),
+                value: typeof username === 'string' ? username : '',
+                errorMessage,
+                errorType
+            };
+            response = window.prompt(promptOptions);
+            isChannelName = false;
+        }
+
+        if (response === null || typeof response === 'undefined') {
             return;
         }
-    } else if (target === "rumble") {
-        prompt_message = `Enter the Rumble username or channel name`;
-        const response = await ipcRenderer.sendSync('prompt', {
-            title: `Enter the Rumble username or channel name`,
-            message: prompt_message,
-            showChannelTypeCheckbox: true
-        });
+
+        let inputValue;
         if (response && typeof response === 'object' && 'value' in response) {
-            username = response.value;
-            isChannelName = response.isChannelName || false;
-        } else if (response) { 
-            username = response;
-            isChannelName = false; // Default to user if not specified
+            inputValue = response.value;
+            isChannelName = target === 'youtube' || target === 'youtubeshorts' || target === 'rumble'
+                ? !!response.isChannelName
+                : false;
         } else {
-            return;
+            inputValue = response;
+            if (target === 'youtube' || target === 'youtubeshorts' || target === 'rumble') {
+                isChannelName = false;
+            }
         }
-    } else if (target === "parti") {
-        prompt_message = `Enter the ${target} user ID.\n\nThis is a number which can be found at the end of the pop-out chat URL.`;
-        username = window.prompt(prompt_message);
-    } else {
-        username = window.prompt(prompt_message);
+
+        if (inputValue === null || typeof inputValue === 'undefined') {
+            lastError = 'empty';
+            username = '';
+            continue;
+        }
+
+        inputValue = `${inputValue}`;
+        const trimmedInput = inputValue.trim();
+
+        if (!trimmedInput) {
+            lastError = 'empty';
+            if (lastInvalidToast) {
+                Toast.hide(lastInvalidToast);
+                lastInvalidToast = null;
+            }
+            lastInvalidToast = Toast.warning('Missing Username', emptyErrorMessage);
+            username = inputValue;
+            continue;
+        }
+
+        const allowSpacesForChannel = (target === 'youtube' || target === 'youtubeshorts' || target === 'rumble') && isChannelName;
+        if (/\s/.test(trimmedInput) && !allowSpacesForChannel) {
+            lastError = 'space';
+            if (lastInvalidToast) {
+                Toast.hide(lastInvalidToast);
+                lastInvalidToast = null;
+            }
+            lastInvalidToast = Toast.warning('Invalid Username', spaceErrorMessage);
+            username = inputValue;
+            continue;
+        }
+
+        username = trimmedInput;
+        break;
     }
 
-    if (username) {
-        // Clean up username - remove @ for platforms that don't use it
-        // YouTube needs @ for handles, so we preserve it there
-        if (target !== 'youtube' && target !== 'youtubeshorts') {
-            username = username.replace(/^@+/, '');
-        }
-        await newSource(target, username.trim(), false, {}, isChannelName);
+    if (lastInvalidToast) {
+        Toast.hide(lastInvalidToast);
+        lastInvalidToast = null;
     }
+
+    // Clean up username - remove @ for platforms that don't use it
+    // YouTube needs @ for handles, so we preserve it there
+    if (target !== 'youtube' && target !== 'youtubeshorts') {
+        username = username.replace(/^@+/, '').trim();
+    }
+
+    await newSource(target, username, false, {}, isChannelName);
 }
 
 async function newSourceVideoIDPrompt(targetPlatform) {
@@ -1256,12 +1366,17 @@ async function newSource(target, username, startup = false, initialState = {}, i
         // Clean up username based on platform requirements
         // For YouTube: Keep @ for handles, UC for channels, c/ for custom channels
         // For other platforms: Remove @ symbol as they don't use it
+        const allowSpacesForChannel = (target === 'youtube' || target === 'youtubeshorts' || target === 'rumble') && isChannelName;
         if (target !== 'youtube' && target !== 'youtubeshorts') {
             // Remove @ symbol from the start for all platforms except YouTube
             username = username.replace(/^@+/, '').trim();
         } else {
             // For YouTube, just trim whitespace but preserve @, UC, c/ prefixes
             username = username.trim();
+        }
+        if (!startup && /\s/.test(username) && !allowSpacesForChannel) {
+            Toast.warning('Invalid Username', 'Usernames cannot contain spaces. Please enter the username exactly as it appears on the platform.');
+            return;
         }
         let isUrl = false;
         try { new URL(username); isUrl = true; } catch (_) {}

@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.3.56",
+  "version": "0.3.57",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "main": "main.js",
@@ -154,7 +154,7 @@
   },
   "devDependencies": {
     "archiver": "^7.0.1",
-    "electron": "^38.1.0",
+    "electron": "^38.2.0",
     "electron-builder": "^25.1.8",
     "electron-notarize": "git://github.com/electron/notarize.git",
     "fs-extra": "11.3.0",

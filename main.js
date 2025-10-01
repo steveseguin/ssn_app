@@ -6721,6 +6721,233 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             });
                         }
                     }
+                },
+                oecLiveShopping: (data = {}) => {
+                    this.recordActivity();
+                    const shopData = data?.shopData || {};
+                    const details = data?.details || {};
+                    const title = shopData.title || 'Product';
+                    const priceText = shopData.priceString ? ` – ${shopData.priceString}` : '';
+                    const shopText = shopData.shopName ? ` (${shopData.shopName})` : '';
+
+                    const labelCandidates = [
+                        details?.data?.label,
+                        details?.data?.label2,
+                        details?.data?.label3
+                    ].filter(Boolean);
+                    const displayLabel = labelCandidates[0];
+
+                    const likelyPurchase = labelCandidates.some(label => /purchas|order|bought|buy|checkout|paid/i.test(label)) ||
+                        (typeof details?.data?.data === 'number' && details.data.data >= 2);
+
+                    let eventType = likelyPurchase ? 'shopping_purchase' : 'oec_live_shopping';
+                    let message;
+
+                    if (displayLabel) {
+                        const includesTitle = title && displayLabel.toLowerCase().includes(title.toLowerCase());
+                        message = includesTitle ? displayLabel : `${displayLabel} — ${title}${priceText}${shopText}`;
+                    } else if (likelyPurchase) {
+                        message = `Purchase alert: ${title}${priceText}${shopText}`;
+                    } else {
+                        message = `Live shopping: ${title}${priceText}${shopText}`;
+                    }
+
+                    console.info('[TikTok] Live shopping event', {
+                        username: this.username,
+                        title,
+                        price: shopData.priceString || null,
+                        shopName: shopData.shopName || null,
+                        detailId: details.id1 || null,
+                        labels: labelCandidates,
+                        likelyPurchase,
+                        detailData: details?.data?.data ?? null
+                    });
+
+                    const payload = {
+                        ...data,
+                        nickname: shopData.shopName || data?.nickname || 'TikTok Shop',
+                        profilePictureUrl: shopData.imageUrl || data?.profilePictureUrl || null
+                    };
+
+                    const shoppingMeta = { productTitle: title };
+                    if (shopData.priceString) shoppingMeta.price = shopData.priceString;
+                    if (shopData.shopName) shoppingMeta.shopName = shopData.shopName;
+                    const primaryShopUrl = shopData.shopUrl || shopData.shopUrl2;
+                    if (primaryShopUrl) shoppingMeta.shopUrl = primaryShopUrl;
+                    if (details.timestamp) shoppingMeta.timestamp = details.timestamp;
+                    if (labelCandidates.length) shoppingMeta.labels = labelCandidates;
+                    if (typeof details?.data?.data === 'number') shoppingMeta.detailDataValue = details.data.data;
+                    if (data?.shopTimings) shoppingMeta.shopTimings = data.shopTimings;
+                    shoppingMeta.likelyPurchase = likelyPurchase;
+
+                    this.sendEventMessage(payload, eventType, message, shoppingMeta);
+                },
+                goalUpdate: (data = {}) => {
+                    this.recordActivity();
+                    const subGoal = data?.contributeSubgoal || {};
+                    const contributor = data?.contributorDisplayId || data?.contributorIdStr || data?.contributorId || 'Viewer';
+                    const giftName = subGoal?.gift?.name || data?.goal?.title || 'Goal';
+                    const progress = subGoal?.progress;
+                    const target = subGoal?.target;
+                    const score = data?.contributeScore;
+
+                    const hasValue = (value) => value !== undefined && value !== null && !(typeof value === 'string' && value.trim() === '');
+                    const hasProgress = hasValue(progress);
+                    const hasTarget = hasValue(target);
+                    const hasScore = hasValue(score);
+
+                    let progressText = '';
+                    if (hasProgress && hasTarget) {
+                        progressText = `${progress}/${target}`;
+                    } else if (hasProgress) {
+                        progressText = `${progress}`;
+                    } else if (hasTarget) {
+                        progressText = `${target}`;
+                    }
+                    const actionPrefix = data?.pin ? 'Pinned goal update' : (data?.unpin ? 'Unpinned goal update' : 'Goal update');
+                    const messageParts = [`${contributor} contributed to ${giftName}`];
+                    if (progressText) {
+                        messageParts.push(`(${progressText})`);
+                    }
+                    if (hasScore) {
+                        messageParts.push(`score: ${score}`);
+                    }
+                    const message = `${actionPrefix}: ${messageParts.join(' ')}`;
+
+                    console.info('[TikTok] Goal update', {
+                        username: this.username,
+                        contributor,
+                        giftName,
+                        progress: hasProgress ? progress : null,
+                        target: hasTarget ? target : null,
+                        score: hasScore ? score : null,
+                        pin: data?.pin || false,
+                        unpin: data?.unpin || false
+                    });
+
+                    const avatarUrls = data?.contributorAvatar?.url;
+                    const avatarUrl = Array.isArray(avatarUrls) && avatarUrls.length ? avatarUrls[0] : null;
+                    const payload = {
+                        ...data,
+                        nickname: data?.nickname || contributor,
+                        profilePictureUrl: data?.profilePictureUrl || avatarUrl
+                    };
+
+                    const goalMeta = { giftName };
+                    if (hasValue(data?.contributorId)) goalMeta.contributorId = data.contributorId;
+                    if (hasProgress) goalMeta.progress = progress;
+                    if (hasTarget) goalMeta.target = target;
+                    if (hasScore) goalMeta.score = score;
+                    if (hasValue(subGoal?.id)) goalMeta.subGoalId = subGoal.id;
+                    if (subGoal?.type !== undefined) goalMeta.subGoalType = subGoal.type;
+                    if (data?.pin) goalMeta.pin = true;
+                    if (data?.unpin) goalMeta.unpin = true;
+
+                    this.sendEventMessage(payload, 'goal_update', message, goalMeta);
+                },
+                pollMessage: (data = {}) => {
+                    this.recordActivity();
+                    const basicInfo = data?.pollBasicInfo || {};
+                    const pollTitle = basicInfo.title || data?.startContent?.Title || 'Poll';
+
+                    const summarizeOptions = (optionList) => {
+                        if (!Array.isArray(optionList) || !optionList.length) return [];
+                        return optionList.map(opt => {
+                            const label = opt?.DisplayContent || `Option ${opt?.OptionIdx ?? ''}`;
+                            const votes = typeof opt?.Votes === 'number' ? opt.Votes : (opt?.Votes ? Number(opt.Votes) : 0);
+                            return {
+                                label,
+                                votes: Number.isFinite(votes) ? votes : 0
+                            };
+                        });
+                    };
+
+                    let status = 'update';
+                    let options = [];
+                    if (data?.startContent) {
+                        status = 'started';
+                        options = summarizeOptions(data.startContent.OptionList);
+                    } else if (data?.endContent) {
+                        status = 'ended';
+                        options = summarizeOptions(data.endContent.OptionList);
+                    } else if (data?.updateContent) {
+                        status = 'votes';
+                        options = summarizeOptions(data.updateContent.OptionList);
+                    }
+
+                    const optionsText = options.length ? options.map(opt => `${opt.label}: ${opt.votes}`).join(', ') : null;
+                    const message = optionsText ? `Poll ${status}: ${pollTitle} — ${optionsText}` : `Poll ${status}: ${pollTitle}`;
+
+                    console.info('[TikTok] Poll message', {
+                        username: this.username,
+                        title: pollTitle,
+                        status,
+                        optionCount: options.length,
+                        pollId: basicInfo.pollIdStr || null
+                    });
+
+                    const operator = data?.startContent?.Operator || data?.endContent?.Operator;
+                    const operatorAvatar = operator?.profilePicture?.url;
+                    const operatorAvatarUrl = Array.isArray(operatorAvatar) && operatorAvatar.length ? operatorAvatar[0] : null;
+                    const payload = {
+                        ...data,
+                        nickname: data?.nickname || basicInfo.pollSponsor || pollTitle,
+                        profilePictureUrl: data?.profilePictureUrl || operatorAvatarUrl
+                    };
+
+                    const pollMeta = { status };
+                    if (basicInfo.pollIdStr) pollMeta.pollId = basicInfo.pollIdStr;
+                    if (options.length) pollMeta.options = options;
+                    if (basicInfo.pollDuration) pollMeta.duration = basicInfo.pollDuration;
+                    if (basicInfo.timeRemain) pollMeta.remaining = basicInfo.timeRemain;
+
+                    this.sendEventMessage(payload, 'poll_message', message, pollMeta);
+                },
+                roomPin: (data = {}) => {
+                    this.recordActivity();
+                    const action = data?.pin ? 'Pinned' : (data?.unpin ? 'Unpinned' : 'Pin updated');
+                    const operatorName = data?.operator?.nickname || data?.operator?.uniqueId || 'Host';
+
+                    let sourceMessage;
+                    if (data?.chatMessage?.comment) {
+                        sourceMessage = {
+                            text: data.chatMessage.comment,
+                            author: data.chatMessage.user?.nickname || data.chatMessage.user?.uniqueId || 'Viewer',
+                            avatar: data.chatMessage.user?.profilePicture?.url
+                        };
+                    } else if (data?.socialMessage?.shareInfo) {
+                        sourceMessage = {
+                            text: data.socialMessage.shareInfo?.shareText || 'Social action pinned',
+                            author: data.socialMessage.user?.nickname || data.socialMessage.user?.uniqueId || 'Viewer',
+                            avatar: data.socialMessage.user?.profilePicture?.url
+                        };
+                    }
+
+                    const author = sourceMessage?.author || 'Viewer';
+                    const text = sourceMessage?.text || 'Pinned message';
+                    const avatarArray = sourceMessage?.avatar;
+                    const avatarUrl = Array.isArray(avatarArray) && avatarArray.length ? avatarArray[0] : null;
+                    const message = `${action} by ${operatorName}: ${author} — ${text}`;
+
+                    console.info('[TikTok] Room pin update', {
+                        username: this.username,
+                        action,
+                        operator: operatorName,
+                        author,
+                        pinId: data?.pinId || null
+                    });
+
+                    const payload = {
+                        ...data,
+                        nickname: data?.nickname || author,
+                        profilePictureUrl: data?.profilePictureUrl || avatarUrl
+                    };
+
+                    const pinMeta = { action, operator: operatorName };
+                    if (data?.pinId) pinMeta.pinId = data.pinId;
+                    if (data?.displayDuration) pinMeta.displayDuration = data.displayDuration;
+
+                    this.sendEventMessage(payload, 'room_pin', message, pinMeta);
                 }
             };
 
@@ -7091,6 +7318,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 if (safeColor) {
                     payload.nameColor = safeColor;
                     payload.chatnamecolor = safeColor;
+                }
+            }
+
+            if (extraMeta && typeof extraMeta === 'object') {
+                const meta = { ...extraMeta };
+                if (Object.keys(meta).length > 0) {
+                    payload.meta = meta;
                 }
             }
 

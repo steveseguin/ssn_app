@@ -29,10 +29,13 @@
         }
         .dialog {
             position: relative;
-            background-color: white;
+            background-color: rgba(20, 20, 20, 0.85);
+            color: #f4f4f4;
             padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 0 20px rgba(255,255,255,0.2);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(6px);
             width: 100%;
             height: 100%;
             box-sizing: border-box;
@@ -45,6 +48,18 @@
             border: 1px solid #ccc;
             border-radius: 5px;
             font-size: 16px;
+            background: rgba(0, 0, 0, 0.45);
+            color: #f4f4f4;
+            border-color: rgba(255, 255, 255, 0.25);
+        }
+        input:focus {
+            outline: none;
+            border-color: #4da3ff;
+            box-shadow: 0 0 0 2px rgba(77, 163, 255, 0.35);
+        }
+        input.error {
+            border-color: #ff6b6b;
+            box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.35);
         }
         button {
             padding: 10px 20px;
@@ -61,10 +76,11 @@
             background-color: #0056b3;
         }
         button:last-child {
-            background-color: #6c757d;
+            background-color: rgba(255, 255, 255, 0.15);
+            color: #f4f4f4;
         }
         button:last-child:hover {
-            background-color: #545b62;
+            background-color: rgba(255, 255, 255, 0.25);
         }
         .checkbox-container {
             display: none;
@@ -79,6 +95,12 @@
         .checkbox-container label {
             vertical-align: middle;
         }
+        .error-message {
+            display: none;
+            margin: 5px 0 0;
+            color: #ff6b6b;
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
@@ -87,6 +109,7 @@
         <div class="dialog">
             <h2 id="title"></h2>
             <p id="message"></p>
+            <p id="errorMessage" class="error-message"></p>
             <input type="text" id="input">
             <!-- Add checkbox containers -->
             <div class="checkbox-container" id="shortsCheckbox">
@@ -102,40 +125,101 @@
         </div>
     </div>
     <script>
-        const { ipcRenderer } = require('electron');
-        var classic = true;
-        var showChannelType = false;
-        
-        ipcRenderer.on('prompt-data', (event, data) => {
-            if (!data.message && data.title && data.title.includes('\n')) {
-                let tmp = data.title.split('\n');
-                data.title = tmp.shift();
-                data.message = tmp.join('\n');
-            }
-            const titleElement = document.getElementById('title');
-            titleElement.textContent = data.title;
-            titleElement.innerHTML = titleElement.innerHTML.replace(/\n/g, '<br>');
-            const messageElement = document.getElementById('message');
-            messageElement.textContent = data.message;
-            messageElement.innerHTML = messageElement.innerHTML.replace(/\n/g, '<br>');
-            
-            //classic = true; // useful for debugging.
+		const { ipcRenderer } = require('electron');
+		var classic = true;
+		var showChannelType = false;
+
+		ipcRenderer.on('prompt-data', (event, data) => {
+			if (!data.message && data.title && data.title.includes('\n')) {
+				let tmp = data.title.split('\n');
+				data.title = tmp.shift();
+				data.message = tmp.join('\n');
+			}
+			const titleElement = document.getElementById('title');
+			titleElement.textContent = data.title;
+			titleElement.innerHTML = titleElement.innerHTML.replace(/\n/g, '<br>');
+			const messageElement = document.getElementById('message');
+			messageElement.textContent = data.message;
+			messageElement.innerHTML = messageElement.innerHTML.replace(/\n/g, '<br>');
+			const errorElement = document.getElementById('errorMessage');
+			const inputElement = document.getElementById('input');
+			if (inputElement) {
+				inputElement.value = (typeof data.value === 'string') ? data.value : '';
+				setTimeout(() => {
+					inputElement.focus();
+					inputElement.select();
+				}, 0);
+			}
+
+			if (errorElement) {
+				if (data.errorMessage) {
+					errorElement.style.display = 'block';
+					errorElement.textContent = data.errorMessage;
+					inputElement?.classList.add('error');
+				} else {
+					errorElement.style.display = 'none';
+					errorElement.textContent = '';
+					inputElement?.classList.remove('error');
+				}
+			}
+			
+			//classic = true; // useful for debugging.
 			//showChannelType = false;
 			
 			// Set flags based on data
 			if (data.showShortsCheckbox || data.showChannelTypeCheckbox) {
 				classic = false;
+			} else {
+				classic = true;
 			}
 			
+			const shortsContainer = document.getElementById('shortsCheckbox');
 			if (data.showShortsCheckbox) {
-				document.getElementById('shortsCheckbox').style.display = 'block';
+				shortsContainer.style.display = 'block';
+				const shortsCheckbox = document.getElementById('isShorts');
+				if (shortsCheckbox) {
+					shortsCheckbox.checked = !!data.defaultIsShorts;
+				}
 			}
-			
+			else {
+				shortsContainer.style.display = 'none';
+				const shortsCheckbox = document.getElementById('isShorts');
+				if (shortsCheckbox) {
+					shortsCheckbox.checked = false;
+				}
+			}
+
+			const channelContainer = document.getElementById('channelTypeCheckbox');
 			if (data.showChannelTypeCheckbox) {
 				showChannelType = true;
-				document.getElementById('channelTypeCheckbox').style.display = 'block';
+				channelContainer.style.display = 'block';
+				const channelCheckbox = document.getElementById('isChannelName');
+				if (channelCheckbox) {
+					channelCheckbox.checked = !!data.defaultIsChannelName;
+				}
+			} else {
+				channelContainer.style.display = 'none';
+				const channelCheckbox = document.getElementById('isChannelName');
+				if (channelCheckbox) {
+					channelCheckbox.checked = false;
+				}
 			}
 		});
+
+		const inputElement = document.getElementById('input');
+		if (inputElement) {
+			inputElement.addEventListener('input', () => {
+				const errorElement = document.getElementById('errorMessage');
+				if (!inputElement.value.trim()) {
+					return;
+				}
+				if (errorElement && errorElement.style.display === 'block') {
+					errorElement.style.display = 'none';
+					errorElement.textContent = '';
+					inputElement.classList.remove('error');
+				}
+			});
+		}
 
         function submit() {
              const inputValue = document.getElementById('input').value;
