@@ -418,6 +418,7 @@ if (sourcemode && !sourcemode.startsWith('http') && !sourcemode.startsWith('file
     }
 }
 var isBetaMode = false;
+const pendingTikTokStatusQueue = new Map();
 var session = {};
 var ipcRenderer = null;
 
@@ -798,15 +799,10 @@ function updateSourceUI(element, source) {
     }
 
     // While activating a regular WSS, allow stopping
-    if (source.connectionMode === 'websocket' && source.status === 'activating') {
-        const activateButton = element.querySelector('[data-activatehtml]');
+    if ((source.connectionMode === 'websocket' || (source.connectionMode === 'tiktok-websocket' && source.target === 'tiktok')) && source.status === 'activating') {
         const stopButton = element.querySelector('[data-stophtml]');
         const reloadButton = element.querySelector('[data-reloadhtml]');
-        if (activateButton) {
-            activateButton.dataset.connecting = 'true';
-            activateButton.textContent = '⏹️ Stop connecting';
-            activateButton.onclick = function() { stopThis(this); };
-        }
+        setActivateButtonConnecting(element);
         stopButton?.classList.add('hidden');
         if (reloadButton) reloadButton.classList.add('hidden');
     } else if (source.status === 'active' && (source.vid || source.wssId)) {
@@ -2428,23 +2424,23 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
         if (srcForMode && srcForMode.status !== 'activating') {
             delete activateButton.dataset.connecting;
         }
-        // Derive appropriate label for the main button based on mode + current state
+
         if (target === 'tiktok' && mode === 'tiktok-websocket') {
-            // Keep TikTok-specific label logic
-            activateButton.innerText = "Connect TikTok WebSocket";
+            if (srcForMode && srcForMode.status === 'activating') {
+                setActivateButtonConnecting(sourceElement);
+            } else {
+                activateButton.innerText = 'Connect TikTok WebSocket';
+            }
         } else if (mode === 'websocket') {
-            // Regular WSS: adjust label depending on connection phase
             const s = srcForMode;
             if (s && s.status === 'activating') {
                 activateButton.innerText = '⏹️ Stop connecting';
             } else if (s && s.vid) {
-                // Window exists but not connected
                 activateButton.innerText = '⏹️ Close WebSocket';
             } else {
                 activateButton.innerText = 'Connect WebSocket';
             }
         } else {
-            // Classic or other modes use the standard label
             activateButton.innerText = translate('btn.activate');
         }
     }
@@ -2912,7 +2908,33 @@ async function activateSource(ele) {
         console.error("activateSource: Could not find parent .entry");
         return;
     }
-    await createWindow(ele);
+    const sourceId = parentElement.dataset.sourceId;
+    const source = sourceId ? stateManager.getSource(sourceId) : null;
+    const isTikTokWebsocketAttempt = !!(source && source.target === 'tiktok' && source.connectionMode === 'tiktok-websocket' && !source.wssId);
+
+    if (isTikTokWebsocketAttempt) {
+        updateConnectionStatus(parentElement, 'connecting');
+        setActivateButtonConnecting(parentElement);
+        await waitForNextRender();
+    }
+
+    let windowId;
+    try {
+        windowId = await createWindow(ele);
+    } catch (err) {
+        if (isTikTokWebsocketAttempt) {
+            updateConnectionStatus(parentElement, 'clear');
+            restoreActivateButton(parentElement);
+        }
+        throw err;
+    }
+
+    if (isTikTokWebsocketAttempt && !windowId) {
+        updateConnectionStatus(parentElement, 'clear');
+        restoreActivateButton(parentElement);
+        return;
+    }
+
     // For classic mode, add a subtle reminder to verify chat/sign-in
     try {
         const sid = parentElement.dataset.sourceId;
@@ -3267,19 +3289,7 @@ async function stopThis(ele) {
         setTimeout(() => updateConnectionStatus(entry, 'clear'), 500);
 
         // Restore the main activate button to default action so user can start again
-        const activateButton = entry.querySelector('[data-activatehtml]');
-        if (activateButton) {
-            delete activateButton.dataset.connecting;
-            const mode = (stateManager.getSource(sourceId)?.connectionMode) || 'tiktok-websocket';
-            if (mode === 'tiktok-websocket' && source.target === 'tiktok') {
-                activateButton.textContent = 'Connect TikTok WebSocket';
-            } else if (mode === 'websocket') {
-                activateButton.textContent = 'Connect WebSocket';
-            } else {
-                activateButton.textContent = translate('btn.activate');
-            }
-            activateButton.onclick = function() { activateSource(this); };
-        }
+        restoreActivateButton(entry);
         return;
     }
 
@@ -3297,19 +3307,7 @@ async function stopThis(ele) {
         if (source.target === 'tiktok') updateConnectionStatus(entry, 'clear');
 
         // Restore activate button for any stop
-        const activateButton = entry.querySelector('[data-activatehtml]');
-        if (activateButton) {
-            delete activateButton.dataset.connecting;
-            const mode = (stateManager.getSource(sourceId)?.connectionMode) || 'classic';
-            if (mode === 'tiktok-websocket' && source.target === 'tiktok') {
-                activateButton.textContent = 'Connect TikTok WebSocket';
-            } else if (mode === 'websocket') {
-                activateButton.textContent = 'Connect WebSocket';
-            } else {
-                activateButton.textContent = translate('btn.activate');
-            }
-            activateButton.onclick = function() { activateSource(this); };
-        }
+        restoreActivateButton(entry);
         
         // For Rumble sources, clear video ID and chat ID for username-based sources
         if (source.target === 'rumble' && source.username && (source.videoId || source.chatId)) {
@@ -3325,6 +3323,50 @@ async function stopThis(ele) {
         }
     }
 }
+
+function setActivateButtonConnecting(entryElement) {
+    if (!entryElement) return;
+    const activateButton = entryElement.querySelector('[data-activatehtml]');
+    if (!activateButton) return;
+    activateButton.classList.remove('hidden');
+    activateButton.dataset.connecting = 'true';
+    activateButton.textContent = '⏹️ Stop connecting';
+    activateButton.onclick = function() { stopThis(this); };
+}
+
+function restoreActivateButton(entryElement) {
+    if (!entryElement) return;
+    const activateButton = entryElement.querySelector('[data-activatehtml]');
+    if (!activateButton) return;
+    delete activateButton.dataset.connecting;
+
+    const sourceId = entryElement.dataset.sourceId;
+    const source = sourceId ? stateManager.getSource(sourceId) : null;
+    const mode = source?.connectionMode || 'classic';
+    const target = source?.target;
+
+    if (mode === 'tiktok-websocket' && target === 'tiktok') {
+        activateButton.textContent = 'Connect TikTok WebSocket';
+    } else if (mode === 'websocket') {
+        activateButton.textContent = 'Connect WebSocket';
+    } else {
+        activateButton.textContent = translate('btn.activate');
+    }
+
+    activateButton.onclick = function() { activateSource(this); };
+}
+
+function waitForNextRender() {
+    return new Promise(resolve => {
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => resolve());
+        } else {
+            setTimeout(resolve, 0);
+        }
+    });
+}
+
+const STALE_CONNECTION_STATUSES = new Set(['activating', 'active', 'connected', 'reconnecting']);
 
 
 async function clearThis(ele) {
@@ -4021,24 +4063,27 @@ async function createTikTokWSSFromSource(source) {
         return false;
     }
 
-    updateConnectionStatus(document.querySelector(`[data-source-id="${source.id}"]`), 'connecting');
+    const entryElement = document.querySelector(`[data-source-id="${source.id}"]`);
+    updateConnectionStatus(entryElement, 'connecting');
+    setActivateButtonConnecting(entryElement);
+    await waitForNextRender();
 
     try {
         // Check if we have stored credentials for this source
         const sessionId = source.tiktokSessionId || null;
         const ttTargetIdc = source.tiktokTtTargetIdc || null;
         
-        const wssID = ipcRenderer.sendSync('createTikTokConnection', { 
+        const wssID = await ipcRenderer.invoke('createTikTokConnection', {
             username: cleanUsername,
             sessionId: sessionId,
             ttTargetIdc: ttTargetIdc,
             replyOnly: !!source.replyOnly
-        }); 
-        
-        if (wssID === null || typeof wssID === 'undefined') { 
-            throw new Error('Failed to create TikTok connection (IPC response null/undefined from main)');
+        });
+
+        if (wssID === null || typeof wssID === 'undefined') {
+            throw new Error('Failed to create TikTok connection (main process returned no tab ID)');
         }
-        return wssID; 
+        return wssID;
     } catch (error) {
         console.error('Error in TikTok WebSocket connection from source:', error);
         Toast.warning("TikTok WSS Error", `Connection Failed: ${error.message || 'Please try again.'}`);
@@ -4689,6 +4734,12 @@ document.addEventListener('DOMContentLoaded', async function() {
             console.log(`Clearing stale wssId ${source.wssId} for ${source.id} on startup`);
             stateManager.updateSource(source.id, { vid: null, wssId: null, status: 'inactive' });
         }
+
+        // Normalize any lingering activating/active states when nothing is connected
+        const hasActiveWindow = !!(source.vid || source.wssId);
+        if (!hasActiveWindow && STALE_CONNECTION_STATUSES.has(source.status)) {
+            stateManager.updateSource(source.id, { status: 'inactive', error: null });
+        }
         
         // Clear video IDs and chat IDs for username-based Rumble sources
         if (source.target === 'rumble' && source.username && (source.videoId || source.chatId)) {
@@ -4703,6 +4754,9 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (sourceElement) {
             const source = stateManager.getSource(sourceId);
             if (source) {
+                if (updates.status === 'activating' && source.target === 'tiktok' && source.connectionMode === 'tiktok-websocket') {
+                    setActivateButtonConnecting(sourceElement);
+                }
                 // Update mute button state if mute state changed
                 if ('isMuted' in updates) {
                     const muteButton = sourceElement.querySelector('[data-togglemute]');
@@ -4873,7 +4927,11 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (element && source) {
             updateSourceUI(element, source);
         }
-        
+
+        if ('wssId' in updates && updates.wssId) {
+            drainPendingTikTokStatuses(updates.wssId, sourceId, element);
+        }
+
         // If a TikTok source switches to classic mode, show a one-time sign-in/activation tip
         try {
             if (element && source && source.target === 'tiktok' && !element.dataset.tipShown) {
@@ -4934,6 +4992,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     stateManager.on('sourceRemoved', ({ sourceId, source }) => {
         const element = document.querySelector(`[data-source-id="${sourceId}"]`);
         element?.remove();
+        if (source && source.wssId) {
+            pendingTikTokStatusQueue.delete(source.wssId);
+        }
         // Stop any platform-specific auto-checkers for this source
         try {
             if (source && source.target === 'rumble') {
@@ -5321,49 +5382,69 @@ document.addEventListener('DOMContentLoaded', async function() {
             } catch (e) { console.warn('Failed to apply wssStatus:', e); }
         });
 
-        ipcRenderer.on('tiktokConnectionStatus', (event, data) => {
-            if (!data || !data.wssID) return;
-            const sourceToUpdate = stateManager.getSources({ wssId: data.wssID })[0];
-            if (!sourceToUpdate) return;
-
-            const entryElement = document.querySelector(`[data-source-id="${sourceToUpdate.id}"]`);
-            const currentState = stateManager.getSource(sourceToUpdate.id);
-
-            // Helper to set the main activate button into a "Stop connecting" state
-            const setConnectingStopUI = () => {
-                if (!entryElement) return;
-                const activateButton = entryElement.querySelector('[data-activatehtml]');
-                if (!activateButton) return;
-                activateButton.dataset.connecting = 'true';
-                activateButton.textContent = '⏹️ Stop connecting';
-                activateButton.onclick = function() { stopThis(this); };
-            };
-            // Helper to restore the main activate button to default action
-            const restoreActivateUI = () => {
-                if (!entryElement) return;
-                const activateButton = entryElement.querySelector('[data-activatehtml]');
-                if (!activateButton) return;
-                delete activateButton.dataset.connecting;
-                // Restore label based on mode
-                const currentMode = (stateManager.getSource(sourceToUpdate.id)?.connectionMode) || 'tiktok-websocket';
-                if (currentMode === 'tiktok-websocket') {
-                    activateButton.textContent = 'Connect TikTok WebSocket';
-                } else if (currentMode === 'websocket') {
-                    activateButton.textContent = 'Connect WebSocket';
-                } else {
-                    activateButton.textContent = translate('btn.activate');
+        function enqueuePendingTikTokStatus(status) {
+            if (!status || typeof status.wssID !== 'number') return;
+            const existing = pendingTikTokStatusQueue.get(status.wssID);
+            if (existing) {
+                existing.push(status);
+                if (existing.length > 10) {
+                    existing.splice(0, existing.length - 10);
                 }
-                activateButton.onclick = function() { activateSource(this); };
+            } else {
+                pendingTikTokStatusQueue.set(status.wssID, [status]);
+            }
+        }
+
+        function drainPendingTikTokStatuses(wssId, sourceId, entryElement) {
+            if (!wssId) return;
+            const queued = pendingTikTokStatusQueue.get(wssId);
+            if (!queued || queued.length === 0) return;
+            pendingTikTokStatusQueue.delete(wssId);
+            queued.forEach(status => {
+                applyTikTokStatusUpdate(status, sourceId, entryElement);
+            });
+        }
+
+        function applyTikTokStatusUpdate(data, sourceId, entryElementOverride) {
+            if (!data || !sourceId) return;
+            const entryElement = entryElementOverride || document.querySelector(`[data-source-id="${sourceId}"]`);
+            const currentState = stateManager.getSource(sourceId);
+            if (!currentState) {
+                if (typeof data.wssID === 'number') {
+                    pendingTikTokStatusQueue.delete(data.wssID);
+                }
+                return;
+            }
+
+            const setConnectingStopUI = () => {
+                if (entryElement) setActivateButtonConnecting(entryElement);
+            };
+            const restoreActivateUI = () => {
+                if (entryElement) restoreActivateButton(entryElement);
             };
 
-            // If the user already stopped and this is a late event, ignore
-            if (currentState && currentState.status === 'inactive' && !currentState.vid && !currentState.wssId && (data.status === 'error' || data.status === 'failed' || data.status === 'disconnected')) {
+            if (currentState.status === 'inactive' && !currentState.vid && !currentState.wssId && (data.status === 'error' || data.status === 'failed' || data.status === 'disconnected')) {
                 return;
             }
 
             switch (data.status) {
+                case 'connecting':
+                    if (currentState.status !== 'activating') {
+                        stateManager.updateSource(sourceId, { status: 'activating' });
+                    }
+                    if (entryElement) {
+                        if (entryElement._tiktokRetryTimer) {
+                            clearInterval(entryElement._tiktokRetryTimer);
+                            entryElement._tiktokRetryTimer = null;
+                        }
+                        entryElement._tiktokRetryEndAt = null;
+                        entryElement._tiktokRetryAttempt = null;
+                        entryElement._tiktokRetryMax = null;
+                        updateConnectionStatus(entryElement, 'connecting');
+                        setConnectingStopUI();
+                    }
+                    break;
                 case 'connected':
-                    // Clear any countdown timer
                     if (entryElement) {
                         if (entryElement._tiktokRetryTimer) {
                             clearInterval(entryElement._tiktokRetryTimer);
@@ -5373,13 +5454,12 @@ document.addEventListener('DOMContentLoaded', async function() {
                         entryElement._tiktokRetryAttempt = null;
                         entryElement._tiktokRetryMax = null;
                     }
-                    stateManager.updateSource(sourceToUpdate.id, { status: 'active' }); 
+                    stateManager.updateSource(sourceId, { status: 'active' });
                     if (entryElement) updateConnectionStatus(entryElement, 'connected');
-                    if (entryElement) restoreActivateUI();
+                    restoreActivateUI();
                     break;
-                case 'disconnected': 
-                    // Keep wssId so we can map subsequent reconnect updates.
-                    stateManager.updateSource(sourceToUpdate.id, { status: 'error', error: data.error || 'Connection lost.', vid: null });
+                case 'disconnected':
+                    stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection lost.', vid: null });
                     if (entryElement) {
                         if (entryElement._tiktokRetryEndAt) {
                             const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
@@ -5395,7 +5475,7 @@ document.addEventListener('DOMContentLoaded', async function() {
                     }
                     break;
                 case 'error':
-                    stateManager.updateSource(sourceToUpdate.id, { status: 'error', error: data.error || 'Connection error' });
+                    stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection error' });
                     if (entryElement) {
                         if (entryElement._tiktokRetryEndAt) {
                             const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
@@ -5410,9 +5490,8 @@ document.addEventListener('DOMContentLoaded', async function() {
                         }
                     }
                     break;
-                case 'failed': 
-                    // Keep wssId for mapping; show error and allow reconnect status to update UI.
-                    stateManager.updateSource(sourceToUpdate.id, { status: 'error', error: data.error || 'Connection failed', vid: null }); 
+                case 'failed':
+                    stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection failed', vid: null });
                     if (entryElement) {
                         if (entryElement._tiktokRetryEndAt) {
                             const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
@@ -5437,15 +5516,13 @@ document.addEventListener('DOMContentLoaded', async function() {
                         entryElement._tiktokRetryAttempt = null;
                         entryElement._tiktokRetryMax = null;
                     }
-                    // Fatal: clear IDs; connection won't retry.
-                    stateManager.updateSource(sourceToUpdate.id, { status: 'error', error: data.error || 'Connection failed', vid: null, wssId: null }); 
+                    stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection failed', vid: null, wssId: null });
                     if (entryElement) updateConnectionStatus(entryElement, 'error', data.error || 'Connection failed');
-                    if (entryElement) restoreActivateUI();
+                    restoreActivateUI();
                     break;
                 case 'reconnecting':
-                    stateManager.updateSource(sourceToUpdate.id, { status: 'activating' }); 
+                    stateManager.updateSource(sourceId, { status: 'activating' });
                     if (entryElement) {
-                        // Clear existing countdown, if any
                         if (entryElement._tiktokRetryTimer) {
                             clearInterval(entryElement._tiktokRetryTimer);
                             entryElement._tiktokRetryTimer = null;
@@ -5473,12 +5550,28 @@ document.addEventListener('DOMContentLoaded', async function() {
                         setConnectingStopUI();
                     }
                     break;
-                case 'stopped_by_user': 
-                    stateManager.updateSource(sourceToUpdate.id, { status: 'inactive', vid:null, wssId:null });
+                case 'stopped_by_user':
+                    stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null });
                     if (entryElement) updateConnectionStatus(entryElement, 'stopped', 'Connection stopped by user.');
-                    if (entryElement) restoreActivateUI();
+                    restoreActivateUI();
                     break;
             }
+
+            if (data.status === 'fatal_error' || data.status === 'stopped_by_user') {
+                pendingTikTokStatusQueue.delete(data.wssID);
+            }
+        }
+
+        ipcRenderer.on('tiktokConnectionStatus', (event, data) => {
+            if (!data || typeof data.wssID !== 'number') return;
+            const source = stateManager.getSources({ wssId: data.wssID })[0];
+            if (!source) {
+                enqueuePendingTikTokStatus(data);
+                return;
+            }
+
+            drainPendingTikTokStatuses(data.wssID, source.id);
+            applyTikTokStatusUpdate(data, source.id);
         });
     } 
 });
