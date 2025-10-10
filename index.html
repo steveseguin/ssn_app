@@ -3270,6 +3270,7 @@ async function stopThis(ele) {
     if (!source) return;
     
     if (ele.dataset.connecting === "true" && source.target === 'tiktok' && source.connectionMode === 'tiktok-websocket') {
+        cancelPendingTikTokActivation(sourceId);
         if (source.wssId && ipcRenderer) { 
             try {
                 await ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: source.wssId });
@@ -3367,6 +3368,29 @@ function waitForNextRender() {
 }
 
 const STALE_CONNECTION_STATUSES = new Set(['activating', 'active', 'connected', 'reconnecting']);
+
+const pendingTikTokActivations = new Map();
+let tikTokActivationTokenSeed = 0;
+
+function beginPendingTikTokActivation(sourceId) {
+    const token = ++tikTokActivationTokenSeed;
+    pendingTikTokActivations.set(sourceId, token);
+    return token;
+}
+
+function isPendingTikTokActivationCurrent(sourceId, token) {
+    return pendingTikTokActivations.get(sourceId) === token;
+}
+
+function markPendingTikTokActivationComplete(sourceId, token) {
+    if (token && isPendingTikTokActivationCurrent(sourceId, token)) {
+        pendingTikTokActivations.delete(sourceId);
+    }
+}
+
+function cancelPendingTikTokActivation(sourceId) {
+    pendingTikTokActivations.delete(sourceId);
+}
 
 
 async function clearThis(ele) {
@@ -3524,8 +3548,12 @@ async function createWindow(ele, tabid = false) {
     }
     
     let windowId; 
+    let pendingTikTokToken = null;
 
 	try {
+        if (mode === 'tiktok-websocket' && target === 'tiktok') {
+            pendingTikTokToken = beginPendingTikTokActivation(sourceId);
+        }
         stateManager.updateSource(sourceId, { status: 'activating' }); 
 
         if (mode === 'tiktok-websocket' && target === 'tiktok') {
@@ -3539,6 +3567,21 @@ async function createWindow(ele, tabid = false) {
         } else { 
 			windowId = await createClassicWindowFromSource(source, tabid);
 		}
+
+        if (pendingTikTokToken && !isPendingTikTokActivationCurrent(sourceId, pendingTikTokToken)) {
+            // User canceled this activation while the handshake was pending; ignore the resolved result.
+            if (windowId && ipcRenderer && source.target === 'tiktok' && mode === 'tiktok-websocket') {
+                const actualWssId = windowId > 900000 ? windowId - 900000 : windowId;
+                if (actualWssId) {
+                    try {
+                        await ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: actualWssId });
+                    } catch (cancelError) {
+                        console.warn('Error disconnecting canceled TikTok activation:', cancelError);
+                    }
+                }
+            }
+            return false;
+        }
 
         if (windowId) { 
             
@@ -3557,18 +3600,27 @@ async function createWindow(ele, tabid = false) {
                 wssId: actualWssId, 
                 status: (mode === 'websocket' || mode === 'tiktok-websocket') ? 'activating' : 'active'
             });
+            if (pendingTikTokToken) {
+                markPendingTikTokActivationComplete(sourceId, pendingTikTokToken);
+            }
             
             // Verify the assignment immediately
             const verifySource = stateManager.getSource(sourceId);
         } else {
             console.warn(`Activation failed for source ${sourceId}, windowId was:`, windowId);
             stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null });
+            if (pendingTikTokToken) {
+                markPendingTikTokActivationComplete(sourceId, pendingTikTokToken);
+            }
             Toast.error("Activation Failed", `Could not activate ${source.username || source.target}. Main process might have failed.`);
         }
         return windowId; 
 	} catch (error) {
 		console.error(`Error in createWindow for source ${sourceId} (mode: ${mode}):`, error);
         stateManager.updateSource(sourceId, { status: 'error', error: error.message, vid: null, wssId: null });
+        if (pendingTikTokToken) {
+            markPendingTikTokActivationComplete(sourceId, pendingTikTokToken);
+        }
 		return false; 
 	}
 }
