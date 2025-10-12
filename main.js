@@ -6,6 +6,13 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const {
+    cleanVisibleString,
+    firstNonEmptyVisibleString,
+    normalizeTikTokImageUrl,
+    collectTikTokBadges,
+    getBadgeImageUrl
+} = require('./tiktok-badges');
+const {
     app,
     Menu,
     Tray,
@@ -23,12 +30,29 @@ const {
 const { exec } = require('child_process');
 const contextMenu = require("electron-context-menu");
 const Yargs = require("yargs");
-let WebcastPushConnection;
+let TikTokLiveConnectionClass = null;
+let usingLegacyTikTokConnector = false;
 try {
-    WebcastPushConnection = require('tiktok-live-connector').WebcastPushConnection;
+    const tiktokConnector = require('tiktok-live-connector');
+    if (tiktokConnector && tiktokConnector.WebcastDeserializeConfig) {
+        const skipTypes = tiktokConnector.WebcastDeserializeConfig.skipMessageTypes;
+        if (Array.isArray(skipTypes) && !skipTypes.includes('WebcastInRoomBannerMessage')) {
+            // Avoid decode crashes until the proto schema supports the new banner payload
+            skipTypes.push('WebcastInRoomBannerMessage');
+        }
+    }
+    if (tiktokConnector && typeof tiktokConnector.TikTokLiveConnection === 'function') {
+        TikTokLiveConnectionClass = tiktokConnector.TikTokLiveConnection;
+    } else if (tiktokConnector && typeof tiktokConnector.WebcastPushConnection === 'function') {
+        TikTokLiveConnectionClass = tiktokConnector.WebcastPushConnection;
+        usingLegacyTikTokConnector = true;
+        console.warn('[TikTok] Using legacy WebcastPushConnection; upgrade tiktok-live-connector >= 2.0.4 for full event coverage.');
+    } else {
+        throw new Error('TikTok connector exports missing');
+    }
 } catch (e) {
     console.warn('[TikTok] tiktok-live-connector not available:', e && e.message ? e.message : e);
-    WebcastPushConnection = null; // Allow app to boot; TikTok features disabled until module present
+    TikTokLiveConnectionClass = null; // Allow app to boot; TikTok features disabled until module present
 }
 const fetch = require("electron-fetch").default;
 const TikTokAuth = require('./tiktok-auth');
@@ -49,19 +73,34 @@ const Store = require("electron-store");
 const store = new Store();
 
 // Define isDevMode
-const isDevMode = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
+const isDevMode = (
+    process.env.NODE_ENV === 'development' ||
+    process.argv.includes('--dev') ||
+    process.argv.includes('--running-from-source') ||
+    process.argv.includes('--inspect-brk') ||
+    process.argv.includes('--inspect')
+);
+
+const forceTikTokLogging = process.argv.includes('--enable-tiktok-logs') || process.env.SSAPP_TIKTOK_LOGS === '1';
+const disableTikTokLogging = process.argv.includes('--disable-tiktok-logs') || process.env.SSAPP_TIKTOK_LOGS === '0';
+const shouldEnableTikTokLogging = !disableTikTokLogging && (forceTikTokLogging || isDevMode);
 
 // Generate a random flag for this session to authenticate injected scripts
 const INJECTED_SCRIPT_FLAG = '_ssapp_' + Math.random().toString(36).substring(2) + Date.now().toString(36);
 
 // App-level helper: whether to forward non-gift events to overlays
 function isCaptureEventsEnabled() {
-    try {
-        // Presence-based: enabled if key exists in cachedState.settings
-        const s = (typeof cachedState === 'object' && cachedState) ? cachedState.settings : undefined;
-        if (!s || typeof s !== 'object') return false;
-        return (s.captureevents !== undefined) || (s.captureevent !== undefined);
-    } catch (_) { return false; }
+    const settings = cachedState && cachedState.settings;
+    if (!settings || typeof settings !== 'object') return false;
+    return Object.prototype.hasOwnProperty.call(settings, 'captureevents') ||
+        Object.prototype.hasOwnProperty.call(settings, 'captureevent') ||
+        Object.prototype.hasOwnProperty.call(settings, 'capturestreamevents');
+}
+
+function isCaptureJoinedEventEnabled() {
+    const settings = cachedState && cachedState.settings;
+    if (!settings || typeof settings !== 'object') return false;
+    return Object.prototype.hasOwnProperty.call(settings, 'capturejoinedevent');
 }
 
 function isViewerUpdateAllowed() {
@@ -71,6 +110,26 @@ function isViewerUpdateAllowed() {
         // Enabled if any of these keys exist (value ignored)
         return (s.showviewercount !== undefined) || (s.hypemode !== undefined) || (s.hypemeter !== undefined);
     } catch (_) { return false; }
+}
+
+function getCachedSettings() {
+    try {
+        if (cachedState && typeof cachedState === 'object') {
+            return cachedState.settings && typeof cachedState.settings === 'object'
+                ? cachedState.settings
+                : {};
+        }
+    } catch (_) {}
+    return {};
+}
+
+function isTextOnlyModeEnabled() {
+    try {
+        const settings = getCachedSettings();
+        return !!(settings.textonlymode || settings.textonly);
+    } catch (_) {
+        return false;
+    }
 }
 
 // Store the system locale - get it from environment or OS
@@ -294,6 +353,176 @@ function errorlog(msg) {
   console.error(`${timeStamp}ms [Line ${lineNumber}]:`, msg);
 }
  */
+
+const TIKTOK_LOG_SUBDIR = 'tiktok-logs';
+let cachedTikTokLogDir = null;
+
+function sanitizeForFilename(input) {
+    if (input === null || input === undefined) return 'tiktok';
+    return String(input)
+        .replace(/[^a-z0-9-_]+/gi, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 64) || 'tiktok';
+}
+
+function ensureTikTokLogDir() {
+    if (cachedTikTokLogDir) {
+        return cachedTikTokLogDir;
+    }
+    try {
+        const userDataPath = app.getPath('userData');
+        const logDir = path.join(userDataPath, TIKTOK_LOG_SUBDIR);
+        if (!fs.existsSync(logDir)) {
+            fs.mkdirSync(logDir, { recursive: true });
+        }
+        cachedTikTokLogDir = logDir;
+    } catch (error) {
+        console.error('Failed to prepare TikTok log directory:', error);
+        cachedTikTokLogDir = null;
+    }
+    return cachedTikTokLogDir;
+}
+
+function normalizeForLogging(value, seen = new WeakMap()) {
+    if (value === null || value === undefined) {
+        return value;
+    }
+
+    const valueType = typeof value;
+    if (valueType === 'bigint') {
+        return value.toString();
+    }
+    if (valueType === 'string' || valueType === 'number' || valueType === 'boolean') {
+        return value;
+    }
+    if (value instanceof Date) {
+        return value.toISOString();
+    }
+    if (Buffer.isBuffer(value)) {
+        return {
+            type: 'Buffer',
+            data: value.toString('base64')
+        };
+    }
+    if (ArrayBuffer.isView(value)) {
+        const buffer = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+        return {
+            type: value.constructor && value.constructor.name ? value.constructor.name : 'TypedArray',
+            data: buffer.toString('base64')
+        };
+    }
+    if (value instanceof Error) {
+        return {
+            name: value.name,
+            message: value.message,
+            stack: value.stack
+        };
+    }
+    if (valueType === 'function') {
+        return `[Function ${value.name || 'anonymous'}]`;
+    }
+    if (valueType === 'symbol') {
+        return value.toString();
+    }
+
+    if (valueType === 'object') {
+        if (seen.has(value)) {
+            return '[Circular]';
+        }
+
+        if (Array.isArray(value)) {
+            const arr = [];
+            seen.set(value, arr);
+            for (const item of value) {
+                arr.push(normalizeForLogging(item, seen));
+            }
+            return arr;
+        }
+
+        if (value instanceof Map) {
+            const obj = {};
+            seen.set(value, obj);
+            for (const [key, val] of value.entries()) {
+                const mapKey = typeof key === 'string' ? key : String(key);
+                obj[mapKey] = normalizeForLogging(val, seen);
+            }
+            return obj;
+        }
+
+        if (value instanceof Set) {
+            const arr = [];
+            seen.set(value, arr);
+            for (const item of value.values()) {
+                arr.push(normalizeForLogging(item, seen));
+            }
+            return arr;
+        }
+
+        const output = {};
+        seen.set(value, output);
+        for (const key of Object.keys(value)) {
+            try {
+                output[key] = normalizeForLogging(value[key], seen);
+            } catch (error) {
+                output[key] = `[Unserializable: ${error && error.message ? error.message : 'error'}]`;
+            }
+        }
+        return output;
+    }
+
+    return value;
+}
+
+function createTikTokLogWriter(username, wssID) {
+    if (!shouldEnableTikTokLogging) {
+        return null;
+    }
+    const logDir = ensureTikTokLogDir();
+    if (!logDir) {
+        return null;
+    }
+
+    const safeUser = sanitizeForFilename(username || 'tiktok');
+    const safeId = sanitizeForFilename(wssID || 'connection');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `${safeUser}-${safeId}-${timestamp}.log`;
+    const filePath = path.join(logDir, fileName);
+
+    let stream;
+    try {
+        stream = fs.createWriteStream(filePath, { flags: 'a' });
+    } catch (error) {
+        console.error('Failed to create TikTok log file:', error);
+        return null;
+    }
+
+    console.info('[TikTok] Debug logging enabled:', filePath);
+
+    return {
+        filePath,
+        append(entry) {
+            if (!stream || stream.destroyed || stream.closed) {
+                return;
+            }
+            try {
+                const normalized = normalizeForLogging(entry);
+                stream.write(JSON.stringify(normalized) + os.EOL);
+            } catch (error) {
+                console.error('Failed to write TikTok log entry:', error);
+            }
+        },
+        close() {
+            if (stream && !stream.destroyed && !stream.closed) {
+                try {
+                    stream.end();
+                } catch (error) {
+                    console.error('Failed to close TikTok log stream:', error);
+                }
+            }
+        }
+    };
+}
+
 function getWindowStateKey(window) {
     // Generate a unique key based on the window's URL
     // This prevents different types of windows from overwriting each other's saved dimensions
@@ -2760,6 +2989,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 ipcMain.removeAllListeners("disconnectTikTokConnection");
                 ipcMain.removeAllListeners("getVersion");
                 ipcMain.removeAllListeners("createTikTokConnection");
+                ipcMain.removeHandler("createTikTokConnection");
                 ipcMain.removeAllListeners("reloadWindow");
                 ipcMain.removeAllListeners("closeWindow");
                 ipcMain.removeAllListeners("clearWindowCache");
@@ -5713,116 +5943,464 @@ async function createWindow(args, reuse = false, mainApp = false) {
         eventRet.returnValue = app.getVersion();
     });
 
-    function getBadgeImageUrl(badge) {
+function isPlainObject(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+function cleanGenericString(value) {
+    if (value === undefined || value === null) return null;
+    const str = String(value).trim();
+    return str || null;
+}
 
-        if (badge.url) {
-            return badge.url;
+function normalizeTikTokImageUrl(value, seen) {
+    if (value === undefined || value === null) return null;
+
+    if (!seen) {
+        seen = new Set();
+    }
+
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        if (trimmed.startsWith('//')) {
+            return `https:${trimmed}`;
+        }
+        return trimmed;
+    }
+
+    if (typeof value === 'number' || typeof value === 'boolean') {
+        // Ignore primitives that cannot be valid URLs
+        return null;
+    }
+
+    if (typeof value === 'object') {
+        if (value === null) return null;
+        if (seen.has(value)) return null;
+        seen.add(value);
+
+        if (typeof value.href === 'string') {
+            return normalizeTikTokImageUrl(value.href, seen);
         }
 
-        // Gifter badges
-        if (badge.badgeSceneType === 8) {
-            const level = badge.level || 1;
-
-            // Determine version based on level
-            let version;
-            if (level >= 50) {
-                level = 50;
-                version = "v1";
-            } else if (level >= 45) {
-                version = "v1";
-            } else if (level >= 40) {
-                version = "v2";
-            } else if (level >= 35) {
-                version = "v3";
-            } else if (level >= 20) {
-                version = "v1";
-            } else if (level >= 15) {
-                version = "v2";
-            } else {
-                version = "v1";
+        const directKeys = ['url', 'uri', 'src'];
+        for (const key of directKeys) {
+            if (Object.prototype.hasOwnProperty.call(value, key)) {
+                const resolved = normalizeTikTokImageUrl(value[key], seen);
+                if (resolved) return resolved;
             }
+        }
 
-            return `https://p16-webcast.tiktokcdn.com/webcast-va/grade_badge_icon_lite_lv${(parseInt(level/5)*5)||1}_${version}.png~tplv-obj.image`;
+        const listKeys = ['urlList', 'urls', 'url_list', 'uriList', 'urlArray', 'url_array'];
+        for (const key of listKeys) {
+            if (Array.isArray(value[key])) {
+                const resolved = normalizeTikTokImageUrl(value[key], seen);
+                if (resolved) return resolved;
+            }
+        }
 
-        } else if (badge.badgeSceneType === 10) {
-            const level = badge.level || 1;
-            // TikTok seems to use grey version for low levels
-            const grey = level < 2 ? "_grey" : "";
-            return `https://p16-webcast.tiktokcdn.com/webcast-va/fans_badge_icon_lv${(parseInt(level/10)*10)||1}${grey}_v0.png~tplv-obj.image`;
+        const nestedKeys = ['thumb', 'default', 'origin', 'large', 'medium', 'small', 'avatar', 'image'];
+        for (const key of nestedKeys) {
+            if (Object.prototype.hasOwnProperty.call(value, key)) {
+                const resolved = normalizeTikTokImageUrl(value[key], seen);
+                if (resolved) return resolved;
+            }
+        }
 
-        } else if (badge.badgeSceneType === 2) {
-            return `https://p16-webcast.tiktokcdn.com/webcast-va/new_gifter_badge_v3.png~tplv-obj.image`
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                const resolved = normalizeTikTokImageUrl(item, seen);
+                if (resolved) return resolved;
+            }
+        }
 
-        } else if (badge.badgeSceneType === 1) {
-            // Moderator badge
-            return `https://p16-webcast.tiktokcdn.com/webcast-va/moderater_badge_icon.png~tplv-obj.image`;
+        if (typeof value.toString === 'function') {
+            const stringValue = value.toString();
+            if (stringValue && stringValue !== '[object Object]') {
+                return normalizeTikTokImageUrl(stringValue, seen);
+            }
         }
 
         return null;
     }
 
-    function sendChatMessage(data, virtualTabId) {
-        var msg = {};
-        msg.chatmessage = data.comment || '';
-        
-        // Check for emote/sticker data
-        if (data.emotes && Array.isArray(data.emotes) && data.emotes.length > 0) {
-            let stickerHtml = '';
-            data.emotes.forEach((emote, index) => {
-                const url = emote.emoteImageUrl || emote.imageUrl || emote.url || emote.image?.url;
-                const alt = emote.emoteName || emote.name || '';
-                const emoteId = emote.emoteId || emote.id || '';
-                if (url) {
-                    if (index > 0) stickerHtml += ' '; // Add space between stickers
-                    stickerHtml += `<img class="sticker" src="${url}"${alt ? ` alt="${alt}"` : ''}${emoteId ? ` data-emote-id="${emoteId}"` : ''}>`;
+    return null;
+}
+
+function pickFirstValue(sources, keys, cleaner) {
+    for (const source of sources) {
+        if (!isPlainObject(source)) continue;
+        for (const key of keys) {
+            if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+            const cleaned = cleaner(source[key]);
+            if (cleaned) {
+                return cleaned;
+            }
+        }
+    }
+    return null;
+}
+
+function extractTikTokIdentity(data = {}) {
+    const sources = [];
+    if (isPlainObject(data)) {
+        sources.push(data);
+    }
+
+    const user = isPlainObject(data.user) ? data.user : null;
+    if (user) {
+        sources.push(user);
+        const nestedKeys = ['profile', 'userInfo', 'author', 'userProfile', 'extraInfo'];
+        for (const key of nestedKeys) {
+            const nested = isPlainObject(user[key]) ? user[key] : null;
+            if (nested) {
+                sources.push(nested);
+            }
+        }
+    }
+
+    const nickname = pickFirstValue(sources, ['nickname', 'nickName', 'displayName', 'username', 'userName'], cleanVisibleString);
+    const uniqueId = pickFirstValue(sources, [
+        'uniqueId',
+        'uniqueID',
+        'unique_id',
+        'userId',
+        'user_id',
+        'userID',
+        'userid',
+        'id',
+        'uid',
+        'shortId',
+        'displayId',
+        'display_id',
+        'loginName',
+        'login_name',
+        'secUid',
+        'sec_uid',
+        'openId',
+        'open_id',
+        'publicUserId',
+        'public_user_id'
+    ], cleanVisibleString);
+    const profilePictureUrl = pickFirstValue(
+        sources,
+        ['profilePictureUrl', 'avatarThumb', 'avatarMedium', 'avatarLarger', 'avatarUrl', 'profilePicture'],
+        normalizeTikTokImageUrl
+    );
+
+    return {
+        nickname: nickname || null,
+        uniqueId: uniqueId || null,
+        profilePictureUrl: profilePictureUrl || null
+    };
+}
+
+function resolveTikTokUserId(data = {}, identity = null) {
+    const identityObj = identity && typeof identity === 'object' ? identity : null;
+    const user = isPlainObject(data.user) ? data.user : null;
+    const author = isPlainObject(data.author) ? data.author : null;
+    const extraInfo = isPlainObject(data.extraInfo) ? data.extraInfo : null;
+    const userProfile = isPlainObject(user?.profile) ? user.profile : null;
+
+    return firstNonEmptyVisibleString([
+        identityObj?.uniqueId,
+        data.uniqueId,
+        data.uniqueID,
+        data.unique_id,
+        data.userid,
+        data.userId,
+        data.user_id,
+        data.userID,
+        data.id,
+        data.idStr,
+        data.id_str,
+        data.uid,
+        data.shortId,
+        data.short_id,
+        data.displayId,
+        data.display_id,
+        data.secUid,
+        data.sec_uid,
+        user?.uniqueId,
+        user?.uniqueID,
+        user?.unique_id,
+        user?.userId,
+        user?.user_id,
+        user?.userID,
+        user?.id,
+        user?.idStr,
+        user?.id_str,
+        user?.uid,
+        user?.shortId,
+        user?.short_id,
+        user?.displayId,
+        user?.display_id,
+        user?.secUid,
+        user?.sec_uid,
+        userProfile?.uniqueId,
+        userProfile?.uniqueID,
+        userProfile?.unique_id,
+        author?.uniqueId,
+        author?.uniqueID,
+        author?.unique_id,
+        author?.userId,
+        author?.user_id,
+        author?.userID,
+        author?.id,
+        author?.idStr,
+        author?.id_str,
+        author?.uid,
+        author?.displayId,
+        author?.display_id,
+        author?.secUid,
+        author?.sec_uid,
+        extraInfo?.uniqueId,
+        extraInfo?.uniqueID,
+        extraInfo?.unique_id
+    ]);
+}
+
+function resolveTikTokDisplayName(data = {}, identity = null, fallbackUserId = null) {
+    const identityObj = identity && typeof identity === 'object' ? identity : null;
+    const user = isPlainObject(data.user) ? data.user : null;
+    const author = isPlainObject(data.author) ? data.author : null;
+    const userProfile = isPlainObject(user?.profile) ? user.profile : null;
+
+    const resolved = firstNonEmptyVisibleString([
+        identityObj?.nickname,
+        data.nickname,
+        data.nickName,
+        data.displayName,
+        data.display_name,
+        data.username,
+        data.userName,
+        user?.nickname,
+        user?.nickName,
+        user?.displayName,
+        user?.display_name,
+        userProfile?.nickname,
+        userProfile?.displayName,
+        author?.nickname,
+        author?.displayName,
+        author?.nickName,
+        identityObj?.uniqueId,
+        data.uniqueId,
+        data.uniqueID,
+        fallbackUserId
+    ]);
+
+    if (resolved) return resolved;
+    return fallbackUserId || 'Unknown';
+}
+
+function coerceTikTokBoolean(value) {
+    if (value === true) return true;
+    if (value === false) return false;
+
+    if (typeof value === 'number') {
+        if (Number.isNaN(value)) return null;
+        return value !== 0;
+    }
+
+    if (typeof value === 'string') {
+        const normalised = value.trim().toLowerCase();
+        if (!normalised) return null;
+        if (['true', 't', 'yes', 'y', 'on'].includes(normalised)) return true;
+        if (['false', 'f', 'no', 'n', 'off'].includes(normalised)) return false;
+
+        const numeric = Number(normalised);
+        if (!Number.isNaN(numeric)) {
+            return numeric !== 0;
+        }
+    }
+
+    return null;
+}
+
+function resolveTikTokModeratorStatus(data = {}) {
+    const userIdentity = isPlainObject(data.userIdentity)
+        ? data.userIdentity
+        : isPlainObject(data?.user?.userIdentity)
+            ? data.user.userIdentity
+            : isPlainObject(data?.author?.userIdentity)
+                ? data.author.userIdentity
+                : null;
+
+    const candidates = [
+        data.isModerator,
+        data.isModeratorOfAnchor,
+        data.moderator,
+        data?.user?.isModerator,
+        data?.author?.isModerator,
+        userIdentity?.isModeratorOfAnchor,
+        userIdentity?.isModerator,
+        data?.user?.privilege?.isModerator
+    ];
+
+    for (const candidate of candidates) {
+        const coerced = coerceTikTokBoolean(candidate);
+        if (coerced !== null) {
+            return coerced;
+        }
+    }
+
+    return false;
+}
+
+function resolveTikTokSubscriberStatus(data = {}) {
+    const userIdentity = isPlainObject(data.userIdentity)
+        ? data.userIdentity
+        : isPlainObject(data?.user?.userIdentity)
+            ? data.user.userIdentity
+            : isPlainObject(data?.author?.userIdentity)
+                ? data.author.userIdentity
+                : null;
+
+    const subscribeInfo = isPlainObject(data?.user?.subscribeInfo)
+        ? data.user.subscribeInfo
+        : null;
+
+    const candidates = [
+        data.isSubscriber,
+        data.membership,
+        data.isSubscriberOfAnchor,
+        data?.user?.isSubscriber,
+        userIdentity?.isSubscriberOfAnchor,
+        subscribeInfo?.status,
+        subscribeInfo?.subscribedStatus,
+        subscribeInfo?.isSubscribing
+    ];
+
+    for (const candidate of candidates) {
+        const coerced = coerceTikTokBoolean(candidate);
+        if (coerced !== null) {
+            return coerced;
+        }
+    }
+
+    // Some payloads provide numeric status where >0 represents subscribed
+    const numericCandidates = [subscribeInfo?.status, subscribeInfo?.subscribedStatus];
+    for (const candidate of numericCandidates) {
+        if (candidate === undefined || candidate === null) continue;
+        const numeric = Number(candidate);
+        if (!Number.isNaN(numeric)) {
+            return numeric > 0;
+        }
+    }
+
+    return false;
+}
+
+    function composeTikTokChatMessage(data = {}, options = {}) {
+        const { includeTopGifterBadgeAlways = false } = options;
+        const textOnly = isTextOnlyModeEnabled();
+
+        let chatmessage = typeof data?.comment === 'string' ? data.comment : '';
+
+        if (Array.isArray(data?.emotes) && data.emotes.length > 0) {
+            const emoteParts = [];
+            data.emotes.forEach((emote) => {
+                if (!emote) return;
+
+                const emoteLabel = cleanVisibleString(emote.emoteName || emote.name || emote.title || emote.id);
+
+                if (textOnly) {
+                    if (emoteLabel) {
+                        emoteParts.push(emoteLabel);
+                    } else {
+                        emoteParts.push('[sticker]');
+                    }
+                    return;
                 }
+
+                const urlCandidate = emote.emoteImageUrl || emote.imageUrl || emote.url || emote.image?.url;
+                const resolvedUrl = normalizeTikTokImageUrl(urlCandidate);
+                if (!resolvedUrl) return;
+
+                const emoteId = emote.emoteId || emote.id || '';
+                let tag = `<img class="sticker" src="${resolvedUrl}"`;
+                if (emoteLabel) {
+                    tag += ` alt="${emoteLabel}"`;
+                }
+                if (emoteId) {
+                    tag += ` data-emote-id="${emoteId}"`;
+                }
+                tag += '>';
+                emoteParts.push(tag);
             });
-            
-            if (stickerHtml) {
-                msg.chatmessage = msg.chatmessage + ' ' + stickerHtml;
+
+            if (emoteParts.length) {
+                const emoteText = emoteParts.join(' ');
+                chatmessage = chatmessage ? `${chatmessage} ${emoteText}` : emoteText;
             }
         }
 
-        // Extract badge URLs from userBadges
+        const message = {
+            chatmessage,
+            textonly: textOnly
+        };
 
-        if (Array.isArray(data.userBadges) && data.userBadges.length) {
-            msg.chatbadges = [];
-            data.userBadges.forEach(badge => {
+        const badgeSources = collectTikTokBadges(data);
+        if (badgeSources.length) {
+            const badges = [];
+            const seenBadgeUrls = new Set();
+            badgeSources.forEach((badge) => {
                 const badgeUrl = getBadgeImageUrl(badge);
-                if (badgeUrl) msg.chatbadges.push(badgeUrl);
+                if (!badgeUrl) return;
+                if (seenBadgeUrls.has(badgeUrl)) return;
+                seenBadgeUrls.add(badgeUrl);
+                badges.push(badgeUrl);
             });
-        }
-
-        // Special case: Top gifter badge
-        if (data.topGifterRank) {
-            msg.chatbadges.push(`https://p16-webcast.tiktokcdn.com/webcast-sg/new_top_gifter_version_2.png~tplv-obj.image`);
-        }
-
-        msg.moderator = data.isModerator;
-        msg.membership = data.isSubscriber;
-        
-        // More tolerant nickname handling with fallback chain
-        // First try nickname, trim whitespace and check if it has visible content
-        let chatname = data.nickname;
-        if (chatname && typeof chatname === 'string') {
-            // Remove zero-width spaces and other invisible characters
-            chatname = chatname.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
-            // If after cleaning it's empty, set to null to trigger fallback
-            if (!chatname) {
-                chatname = null;
+            if (badges.length) {
+                message.chatbadges = badges;
             }
         }
-        
-        // Fallback chain: cleaned nickname -> uniqueId -> "Unknown"
-        msg.chatname = chatname || data.uniqueId || 'Unknown';
-        
-        if (data.uniqueId) {
-            msg.userid = data.uniqueId;
+
+        if (data?.topGifterRank) {
+            const existingBadges = Array.isArray(message.chatbadges) ? message.chatbadges : [];
+            if (includeTopGifterBadgeAlways || existingBadges.length === 0) {
+                if (!Array.isArray(message.chatbadges)) {
+                    message.chatbadges = [];
+                }
+                const topGifterBadgeUrl = 'https://p16-webcast.tiktokcdn.com/webcast-sg/new_top_gifter_version_2.png~tplv-obj.image';
+                if (!message.chatbadges.includes(topGifterBadgeUrl)) {
+                    message.chatbadges.push(topGifterBadgeUrl);
+                }
+            }
         }
-        msg.chatimg = data.profilePictureUrl;
-        msg.textonlymode = false;
-        msg.type = "tiktok";
-        msg.tid = virtualTabId; // Include the virtual tab ID
+
+        message.moderator = resolveTikTokModeratorStatus(data);
+        message.membership = resolveTikTokSubscriberStatus(data);
+
+        const identity = extractTikTokIdentity(data);
+        const resolvedUserId = resolveTikTokUserId(data, identity);
+        if (resolvedUserId) {
+            message.userid = resolvedUserId;
+        }
+        message.chatname = resolveTikTokDisplayName(data, identity, resolvedUserId);
+
+        const avatarUrl = identity.profilePictureUrl
+            || normalizeTikTokImageUrl(data?.profilePictureUrl)
+            || normalizeTikTokImageUrl(data?.profilePicture)
+            || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+            || normalizeTikTokImageUrl(data?.user?.profilePicture);
+        message.chatimg = avatarUrl || null;
+
+        const nameColor = data?.nameColor || data?.name_color || data?.user?.nameColor;
+        const safeColor = normalizeNameColor(nameColor);
+        if (safeColor) {
+            message.nameColor = safeColor;
+        }
+
+        return message;
+    }
+
+    function sendChatMessage(data, virtualTabId) {
+        const msg = composeTikTokChatMessage(data, { includeTopGifterBadgeAlways: true });
+        if (typeof msg.textonly !== 'boolean') {
+            msg.textonly = isTextOnlyModeEnabled();
+        }
+        msg.type = 'tiktok';
+        msg.tid = virtualTabId;
         sendToBackground(msg);
     }
 
@@ -5873,9 +6451,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const {
                 wssID,
                 message
-            } = args;
-            const manager = websocketConnections[wssID];
+            } = args || {};
 
+            const manager = websocketConnections[wssID];
             if (!manager) {
                 log(`TikTok connection not found for wssID: ${wssID}`);
                 return {
@@ -5884,30 +6462,21 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 };
             }
 
-            // Check if user is signed in (has session)
-            if (!manager.sessionId) {
-                log('Cannot send TikTok message: User not signed in');
+            const result = await manager.sendChatMessage(message);
+            if (!result || typeof result.success !== 'boolean') {
                 return {
                     success: false,
-                    error: 'User not signed in'
+                    error: 'Unknown send status'
                 };
             }
 
-            // Check if connection is active
-            if (!manager.connection || manager.isStopped) {
-                log('Cannot send TikTok message: Connection not active');
-                return {
-                    success: false,
-                    error: 'Connection not active'
-                };
+            if (result.success) {
+                log('TikTok message sent via API request.');
+            } else if (result.error) {
+                log(`TikTok message send blocked: ${result.error}`);
             }
 
-            // Send message using the TikTok connection
-            await manager.connection.sendMessage(message);
-            log(`TikTok message sent: ${message}`);
-            return {
-                success: true
-            };
+            return result;
 
         } catch (error) {
             log(`Failed to send TikTok message: ${error.message}`);
@@ -5941,7 +6510,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
             // Backoff jitter factor (e.g., 0.1 => ±10%)
             BACKOFF_JITTER: 0.1,
             // Rate limit retry delay
-            RATE_LIMIT_RETRY_MS: 300000 // 5 minutes
+            RATE_LIMIT_RETRY_MS: 300000, // 5 minutes
+            // Maximum time to wait for the Euler sign server before failing fast
+            SIGN_REQUEST_TIMEOUT_MS: 25000,
+            // Increase timeout if the first attempt times out (added incrementally to avoid long hangs)
+            SIGN_REQUEST_TIMEOUT_STEP_MS: 10000,
+            // Do not exceed this timeout when boosting sign server calls
+            SIGN_REQUEST_TIMEOUT_MAX_MS: 45000,
+            // Small pause before immediately retrying after a boosted timeout
+            SIGN_REQUEST_IMMEDIATE_RETRY_DELAY_MS: 750
         },
         CHAT: {
             ENABLE_CLUSTERING: false,
@@ -5969,6 +6546,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
     const connectionCleanupInterval = setInterval(() => {
         for (const [id, state] of connectionStates.entries()) {
             const manager = websocketConnections[id];
+            const attemptInProgress = !!state?.attemptInProgress;
+
+            // Do not clean up while a connection attempt is actively running
+            if (attemptInProgress) {
+                continue;
+            }
+
             // Watchdog: if stuck in reconnecting state without a timer, kick the scheduler
             if (manager && !manager.isStopped) {
                 const isConnected = !!(manager.connection && manager.connection.isConnected);
@@ -6024,8 +6608,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 if (manager.activityBuckets instanceof Map) {
                     manager.activityBuckets.clear();
                 }
+                if (typeof manager.resetGoalAggregates === 'function') {
+                    try {
+                        manager.resetGoalAggregates({ flush: false });
+                    } catch (_) { /* noop */ }
+                }
                 // Mark as stopped
                 manager.isStopped = true;
+                if (typeof manager.logDebug === 'function') {
+                    manager.logDebug('lifecycle.cleanup', { triggeredBy: 'cleanupConnection' });
+                }
+                if (typeof manager.closeLogWriter === 'function') {
+                    manager.closeLogWriter('cleanupConnection');
+                }
 
                 // Remove the virtual tab entry
                 if (manager.virtualTabId && browserViews[manager.virtualTabId]) {
@@ -6045,38 +6640,160 @@ async function createWindow(args, reuse = false, mainApp = false) {
     function normalizeNameColor(raw) {
         if (raw === undefined || raw === null) return null;
 
-        let color = String(raw).trim();
-        if (!color) return null;
+        const normalized = String(raw).trim().toLowerCase();
+        if (!normalized) return null;
 
-        if (/^0x[0-9a-f]{6}$/i.test(color)) {
-            color = `#${color.slice(2)}`;
+        const compact = normalized.includes('rgb') ? normalized.replace(/\s+/g, '') : null;
+
+        if (
+            normalized === 'black' ||
+            normalized === '000000' ||
+            normalized === '#000' ||
+            normalized === '#000000' ||
+            normalized === '0x000000' ||
+            compact === 'rgb(0,0,0)' ||
+            compact === 'rgba(0,0,0,1)'
+        ) {
+            return null;
         }
 
-        if (/^[0-9a-f]{6}$/i.test(color)) {
-            color = `#${color}`;
-        } else if (/^#[0-9a-f]{3}$/i.test(color)) {
-            const r = color[1];
-            const g = color[2];
-            const b = color[3];
-            color = `#${r}${r}${g}${g}${b}${b}`;
+        let hex = normalized;
+        let hadHash = false;
+
+        if (hex.startsWith('0x') && hex.length === 8) {
+            hex = hex.slice(2);
         }
 
-        if (!/^#[0-9a-f]{6}$/i.test(color)) {
+        if (hex.startsWith('#')) {
+            hadHash = true;
+            hex = hex.slice(1);
+        }
+
+        if (hadHash && hex.length === 3 && /^[0-9a-f]{3}$/.test(hex)) {
+            hex = `${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`;
+        } else if (hex.length === 3) {
+            return null;
+        }
+
+        if (hex.length !== 6 || !/^[0-9a-f]{6}$/.test(hex)) {
             // Unsupported format; ignore to avoid injecting invalid CSS
             return null;
         }
 
-        const r = parseInt(color.slice(1, 3), 16);
-        const g = parseInt(color.slice(3, 5), 16);
-        const b = parseInt(color.slice(5, 7), 16);
+        return `#${hex}`;
+    }
 
-        // Treat colors that are effectively black as unset to avoid invisible names
-        if (r <= 10 && g <= 10 && b <= 10) {
-            return null;
+    function sanitizeMetaValue(value, depth = 0) {
+        if (value === null || value === undefined) {
+            return undefined;
         }
 
-        return color.toLowerCase();
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if (!trimmed) {
+                return undefined;
+            }
+            const MAX_LENGTH = 512;
+            return trimmed.length > MAX_LENGTH
+                ? `${trimmed.slice(0, MAX_LENGTH - 3)}...`
+                : trimmed;
+        }
+
+        if (typeof value === 'number') {
+            return Number.isFinite(value) ? value : undefined;
+        }
+
+        if (typeof value === 'boolean') {
+            return value;
+        }
+
+        if (Array.isArray(value)) {
+            if (depth >= 2) {
+                return undefined;
+            }
+            const sanitized = [];
+            for (const item of value) {
+                if (sanitized.length >= 20) break;
+                const candidate = sanitizeMetaValue(item, depth + 1);
+                if (candidate !== undefined) {
+                    sanitized.push(candidate);
+                }
+            }
+            return sanitized.length ? sanitized : undefined;
+        }
+
+        if (typeof value === 'object') {
+            if (depth >= 2) {
+                return undefined;
+            }
+            const sanitized = {};
+            for (const [key, val] of Object.entries(value)) {
+                const candidate = sanitizeMetaValue(val, depth + 1);
+                if (candidate !== undefined) {
+                    sanitized[key] = candidate;
+                }
+            }
+            return Object.keys(sanitized).length ? sanitized : undefined;
+        }
+
+        return undefined;
     }
+
+function sanitizeEventMeta(meta) {
+    if (!meta || typeof meta !== 'object') {
+        return null;
+    }
+    const sanitized = sanitizeMetaValue(meta, 0);
+    return sanitized && typeof sanitized === 'object' ? sanitized : null;
+}
+
+function pickFirstNonEmptyString(candidates = []) {
+    const list = Array.isArray(candidates) ? candidates : [candidates];
+    for (const candidate of list) {
+        if (Array.isArray(candidate)) {
+            const nested = pickFirstNonEmptyString(candidate);
+            if (nested) return nested;
+            continue;
+        }
+        if (candidate === undefined || candidate === null) continue;
+        if (typeof candidate === 'string') {
+            const cleaned = cleanVisibleString(candidate);
+            if (cleaned) return cleaned;
+        } else if (typeof candidate === 'number') {
+            if (!Number.isNaN(candidate)) {
+                return String(candidate);
+            }
+        }
+    }
+    return null;
+}
+
+function pickFirstPositiveNumber(candidates = []) {
+    const list = Array.isArray(candidates) ? candidates : [candidates];
+    for (const candidate of list) {
+        if (Array.isArray(candidate)) {
+            const nested = pickFirstPositiveNumber(candidate);
+            if (nested > 0) return nested;
+            continue;
+        }
+        const numeric = Number(candidate);
+        if (Number.isFinite(numeric) && numeric > 0) {
+            return numeric;
+        }
+    }
+    return 0;
+}
+
+function resolveFirstImageUrl(candidates = []) {
+    const list = Array.isArray(candidates) ? candidates : [candidates];
+    for (const candidate of list) {
+        const resolved = normalizeTikTokImageUrl(candidate);
+        if (resolved) {
+            return resolved;
+        }
+    }
+    return null;
+}
 
     // Load CircularBuffer if available
     let CircularBuffer;
@@ -6139,71 +6856,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         formatChatMessage(data) {
-            var msg = {};
-            msg.chatmessage = data.comment || '';
-            
-            // Check for emote/sticker data
-            if (data.emotes && Array.isArray(data.emotes) && data.emotes.length > 0) {
-                let stickerHtml = '';
-                data.emotes.forEach((emote, index) => {
-                    const url = emote.emoteImageUrl || emote.imageUrl || emote.url || emote.image?.url;
-                    const alt = emote.emoteName || emote.name || '';
-                    const emoteId = emote.emoteId || emote.id || '';
-                    if (url) {
-                        if (index > 0) stickerHtml += ' '; // Add space between stickers
-                        stickerHtml += `<img class="sticker" src="${url}"${alt ? ` alt="${alt}"` : ''}${emoteId ? ` data-emote-id="${emoteId}"` : ''}>`;
-                    }
-                });
-                
-                if (stickerHtml) {
-                    msg.chatmessage = msg.chatmessage + ' ' + stickerHtml;
-                }
+            const msg = composeTikTokChatMessage(data, { includeTopGifterBadgeAlways: false });
+            if (typeof msg.textonly !== 'boolean') {
+                msg.textonly = isTextOnlyModeEnabled();
             }
-
-            // Extract badge URLs from userBadges
-            if (Array.isArray(data.userBadges) && data.userBadges.length) {
-                msg.chatbadges = [];
-                data.userBadges.forEach(badge => {
-                    const badgeUrl = getBadgeImageUrl(badge);
-                    if (badgeUrl) msg.chatbadges.push(badgeUrl);
-                });
-            }
-
-            // Special case: Top gifter badge
-            if (data.topGifterRank && (!msg.chatbadges || !msg.chatbadges.length)) {
-                msg.chatbadges = [`https://p16-webcast.tiktokcdn.com/webcast-sg/new_top_gifter_version_2.png~tplv-obj.image`];
-            }
-
-            msg.moderator = data.isModerator;
-            msg.membership = data.isSubscriber;
-            
-            // More tolerant nickname handling with fallback chain
-            // First try nickname, trim whitespace and check if it has visible content
-            let chatname = data.nickname;
-            if (chatname && typeof chatname === 'string') {
-                // Remove zero-width spaces and other invisible characters
-                chatname = chatname.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
-                // If after cleaning it's empty, set to null to trigger fallback
-                if (!chatname) {
-                    chatname = null;
-                }
-            }
-            
-            // Fallback chain: cleaned nickname -> uniqueId -> "Unknown"
-            msg.chatname = chatname || data.uniqueId || 'Unknown';
-            
-            if (data.uniqueId) {
-                msg.userid = data.uniqueId;
-            }
-
-            const nameColor = data.nameColor || data.name_color || data.user?.nameColor;
-            if (nameColor) {
-                msg.nameColor = nameColor;
-                msg.chatnamecolor = nameColor;
-            }
-            msg.chatimg = data.profilePictureUrl;
-            msg.textonlymode = false;
-            msg.type = "tiktok";
+            msg.type = 'tiktok';
             return msg;
         }
 
@@ -6310,13 +6967,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         timestamp: Date.now()
                     });
                 }
-                
-            messageClusters.get(key).users.push({
-                userId: data.userId,
-                nickname: data.nickname,
-                profilePictureUrl: data.profilePictureUrl,
-                isModerator: data.isModerator,
-                isSubscriber: data.isSubscriber,
+                const identity = extractTikTokIdentity(data);
+                const isModerator = resolveTikTokModeratorStatus(data);
+                const isSubscriber = resolveTikTokSubscriberStatus(data);
+                const avatarUrl = identity.profilePictureUrl
+                    || normalizeTikTokImageUrl(data.profilePictureUrl)
+                    || normalizeTikTokImageUrl(data.profilePicture)
+                    || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+                    || normalizeTikTokImageUrl(data?.user?.profilePicture);
+
+                messageClusters.get(key).users.push({
+                    userId: data.userId || identity.uniqueId || null,
+                    uniqueId: identity.uniqueId || null,
+                    nickname: identity.nickname || null,
+                    profilePictureUrl: avatarUrl || null,
+                    isModerator,
+                    isSubscriber,
                     nameColor: data.nameColor || data.name_color || data.user?.nameColor
                 });
             });
@@ -6351,19 +7017,35 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         formatClusteredMessage(message, users) {
+            const formatSingleUserName = (userObj) => {
+                if (!userObj || typeof userObj !== 'object') return 'Unknown';
+                const identity = extractTikTokIdentity(userObj);
+                const userId = resolveTikTokUserId(userObj, identity);
+                return resolveTikTokDisplayName(userObj, identity, userId);
+            };
+
+            const primaryUser = users[0] || null;
+            const primaryIdentity = primaryUser ? extractTikTokIdentity(primaryUser) : { profilePictureUrl: null };
+            const primaryAvatar = primaryIdentity.profilePictureUrl
+                || normalizeTikTokImageUrl(primaryUser?.profilePictureUrl)
+                || normalizeTikTokImageUrl(primaryUser?.profilePicture)
+                || normalizeTikTokImageUrl(primaryUser?.avatarUrl)
+                || normalizeTikTokImageUrl(primaryUser?.avatarThumb)
+                || null;
+
             const msg = {
                 type: "tiktok",
-                textonlymode: false,
+                textonly: isTextOnlyModeEnabled(),
                 chatmessage: message,
                 meta: {
                     clustered: true,
                     userCount: users.length
                 },
-                chatimg: users[0] && users[0].profilePictureUrl,
+                chatimg: primaryAvatar,
                 chatname: (users.length <= 1)
-                    ? (users[0]?.nickname || users[0]?.uniqueId || 'Unknown')
+                    ? formatSingleUserName(users[0])
                     : (users.length === 2
-                        ? `${users[0]?.nickname || users[0]?.uniqueId || 'Unknown'} and ${users[1]?.nickname || users[1]?.uniqueId || 'Unknown'}`
+                        ? `${formatSingleUserName(users[0])} and ${formatSingleUserName(users[1])}`
                         : `${this.getShortestName(users)} and ${users.length - 1} others`),
                 moderator: users.some(u => u.isModerator),
                 membership: users.some(u => u.isSubscriber),
@@ -6371,11 +7053,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
             };
 
             const primaryColor = users
-                .map(u => u?.nameColor)
+                .map(u => u?.nameColor || u?.name_color)
                 .find(Boolean);
-            if (primaryColor) {
-                msg.nameColor = primaryColor;
-                msg.chatnamecolor = primaryColor;
+            const safeColor = normalizeNameColor(primaryColor);
+            if (safeColor) {
+                msg.nameColor = safeColor;
             }
             return msg;
         }
@@ -6386,7 +7068,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         getShortestName(users) {
-            const names = users.map(u => (u && (u.nickname || u.uniqueId || ''))).filter(Boolean);
+            const names = users
+                .map(user => {
+                    if (!user || typeof user !== 'object') return null;
+                    const identity = extractTikTokIdentity(user);
+                    const userId = resolveTikTokUserId(user, identity);
+                    return resolveTikTokDisplayName(user, identity, userId);
+                })
+                .filter(Boolean);
             if (names.length === 0) return 'Unknown';
             return names.reduce((a, b) => a.length <= b.length ? a : b);
         }
@@ -6439,7 +7128,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         addToQueue(data) {
-            if (data.giftType === 1 && !data.repeatEnd) return;
+            const repeatCount = Number(data.repeatCount) || 0;
+            const comboCount = Number(data.comboCount) || 0;
+            const groupCount = Number(data.groupCount) || 0;
+            const inferredComboInProgress = !data.repeatEnd && (repeatCount > 1 || comboCount > 1 || groupCount > 1);
+            if (inferredComboInProgress) {
+                return;
+            }
 
             const cache = this.manager?.messageCache;
             if (cache && data.msgId && cache.has(data.msgId)) {
@@ -6452,9 +7147,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 cache.add(data.msgId);
             }
 
+            const aggregatedCount = Math.max(
+                repeatCount,
+                comboCount,
+                groupCount,
+                Number(data?.giftDetails?.repeatCount) || 0,
+                Number(data?.giftDetails?.comboCount) || 0,
+                Number(data?.giftDetails?.groupCount) || 0,
+                Number(data?.extendedGiftInfo?.repeat_count) || 0,
+                Number(data?.extendedGiftInfo?.combo_count) || 0,
+                Number(data?.extendedGiftInfo?.group_count) || 0,
+                1
+            );
+
             this.queue.push({
                 data,
-                count: data.repeatCount || 1
+                count: aggregatedCount
             });
             this.startProcessing();
         }
@@ -6483,28 +7191,138 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         sendGiftMessage(data, count) {
-            // Handle both v1 and v2 gift data structures
-            const giftName = data.giftName || `Gift ID: ${data.giftId || 'Unknown'}`;
-            const giftPictureUrl = data.giftPictureUrl || data.gift?.image?.url || '';
-            const diamondCount = data.diamondCount || data.gift?.diamond_count || 0;
-            
+            const giftData = isPlainObject(data?.gift) ? data.gift : {};
+            const giftDetails = isPlainObject(data?.giftDetails) ? data.giftDetails : {};
+            const extendedGiftInfo = isPlainObject(data?.extendedGiftInfo) ? data.extendedGiftInfo : {};
+
+            const giftId = pickFirstNonEmptyString([
+                data.giftId,
+                giftData.giftId,
+                giftData.gift_id,
+                giftData.id,
+                giftData.id_str,
+                giftData.giftIdStr,
+                giftData.gift_id_str,
+                giftDetails.id,
+                giftDetails.id_str,
+                giftDetails.giftId,
+                giftDetails.gift_id,
+                extendedGiftInfo.id,
+                extendedGiftInfo.id_str
+            ]);
+
+            const mappedGiftName = giftId && giftMapping && giftMapping[giftId] ? giftMapping[giftId].name : null;
+            const giftName = pickFirstNonEmptyString([
+                data.giftName,
+                giftData.giftName,
+                giftData.name,
+                giftData.displayName,
+                giftData.title,
+                giftDetails.giftName,
+                giftDetails.describe,
+                extendedGiftInfo.name,
+                extendedGiftInfo.describe,
+                mappedGiftName
+            ]) || (giftId ? `Gift ${giftId}` : 'Gift');
+
+            const perGiftDiamonds = pickFirstPositiveNumber([
+                data.diamondCount,
+                giftData.diamondCount,
+                giftData.diamond_count,
+                giftData.diamondValue,
+                giftData.diamond_value,
+                giftData.value,
+                giftData.coins,
+                giftDetails.diamondCount,
+                giftDetails.diamond_count,
+                extendedGiftInfo.diamondCount,
+                extendedGiftInfo.diamond_count,
+                extendedGiftInfo.coins,
+                giftId && giftMapping && giftMapping[giftId] ? giftMapping[giftId].coins : 0
+            ]);
+            const totalDiamonds = perGiftDiamonds * count;
+            const donationDisplay = totalDiamonds > 0 ? `${totalDiamonds} 💎` : null;
+
+            const giftPictureUrl = resolveFirstImageUrl([
+                data.giftPictureUrl,
+                giftData.giftPictureUrl,
+                giftData.iconUrl,
+                giftData.icon_url,
+                giftData.pictureUrl,
+                giftData.picture_url,
+                giftData.imageUrl,
+                giftData.image_url,
+                giftData.image,
+                giftDetails.icon,
+                giftDetails.giftImage,
+                extendedGiftInfo.icon,
+                extendedGiftInfo.image
+            ]);
+
+            const identity = extractTikTokIdentity(data);
+            const resolvedUserId = resolveTikTokUserId(data, identity);
+            const resolvedChatname = resolveTikTokDisplayName(data, identity, resolvedUserId);
+            const textOnly = isTextOnlyModeEnabled();
+
+            const chatmessage = `Sent ${giftName} x${count}`;
+
             const msg = {
-                chatmessage: `Sent ${giftName} x${count}${giftPictureUrl && !data.textonlymode ? ` <img src='${giftPictureUrl}'>` : ''}`,
-                hasDonation: diamondCount > 0 ? `${diamondCount * count} 💎` : '',
-                donoValue: diamondCount * count * 0.005,
-                moderator: data.isModerator,
-                membership: data.isSubscriber,
-                chatname: data.nickname || data.uniqueId || 'Unknown',
-                chatimg: data.profilePictureUrl,
+                chatmessage,
                 type: "tiktok",
-                textonlymode: !!data.textonlymode,
-                tid: this.manager.virtualTabId // Include the virtual tab ID
+                textonly: textOnly,
+                event: 'gift',
+                chatname: resolvedChatname,
+                chatimg: identity.profilePictureUrl
+                    || normalizeTikTokImageUrl(data.profilePictureUrl)
+                    || normalizeTikTokImageUrl(data.profilePicture)
+                    || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+                    || normalizeTikTokImageUrl(data?.user?.profilePicture)
+                    || null,
+                moderator: resolveTikTokModeratorStatus(data),
+                membership: resolveTikTokSubscriberStatus(data),
+                tid: this.manager.virtualTabId,
+                title: giftName
             };
 
+            if (resolvedUserId) {
+                msg.userid = resolvedUserId;
+            }
+            if (donationDisplay) {
+                msg.hasDonation = donationDisplay;
+                msg.subtitle = donationDisplay;
+            }
+            if (giftPictureUrl) {
+                msg.contentimg = giftPictureUrl;
+            }
+
+            const fanTicketCount = pickFirstPositiveNumber([
+                data.fanTicketCount,
+                giftDetails.fanTicketCount,
+                extendedGiftInfo.fan_ticket_count
+            ]) * count;
+
+            const repeatCount = Number(data.repeatCount) || Number(giftDetails.repeatCount) || Number(extendedGiftInfo.repeat_count) || 0;
+            const comboCount = Number(data.comboCount) || Number(giftDetails.comboCount) || Number(extendedGiftInfo.combo_count) || 0;
+            const groupCount = Number(data.groupCount) || Number(giftDetails.groupCount) || Number(extendedGiftInfo.group_count) || 0;
+
+            const meta = sanitizeEventMeta({
+                giftId,
+                count,
+                repeatCount: repeatCount > 1 ? repeatCount : undefined,
+                comboCount: comboCount > 1 ? comboCount : undefined,
+                groupCount: groupCount > 1 ? groupCount : undefined,
+                diamondsPerGift: perGiftDiamonds || undefined,
+                diamondsTotal: totalDiamonds || undefined,
+                fanTickets: fanTicketCount > 0 ? fanTicketCount : undefined
+            });
+            if (meta) {
+                msg.meta = meta;
+            }
+
             const rawColor = data.nameColor || data.name_color || data.user?.nameColor;
-            if (rawColor) {
-                msg.nameColor = rawColor;
-                msg.chatnamecolor = rawColor;
+            const safeColor = normalizeNameColor(rawColor);
+            if (safeColor) {
+                msg.nameColor = safeColor;
             }
 
             sendToBackground(msg);
@@ -6526,6 +7344,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             this.giftProcessor = new GiftProcessor(this);
             this.messageCache = new MessageCache(CONFIG.CHAT.MESSAGE_CACHE_SIZE);
             this.activityBuckets = new Map();
+            this.recentShoppingEvents = new Map();
             this.reconnectAttempts = 0;
             this.isStopped = false;
             this.reconnectTimer = null;
@@ -6534,6 +7353,388 @@ async function createWindow(args, reuse = false, mainApp = false) {
             this.offlineReason = null;
             // Per-connection reply-only flag (skip forwarding captured events)
             this.replyOnly = false;
+            this.tiktokLogWriter = createTikTokLogWriter(this.username, this.wssID);
+            this.tiktokLogFilePath = this.tiktokLogWriter ? this.tiktokLogWriter.filePath : null;
+            this.signRequestTimeoutMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_MS || 25000;
+            this.signRequestTimeoutBaseMs = this.signRequestTimeoutMs;
+            this.signRequestTimeoutStepMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_STEP_MS || 10000;
+            if (!Number.isFinite(this.signRequestTimeoutStepMs) || this.signRequestTimeoutStepMs <= 0) {
+                this.signRequestTimeoutStepMs = 10000;
+            }
+            this.signRequestTimeoutMaxMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_MAX_MS || Math.max(this.signRequestTimeoutMs, this.signRequestTimeoutStepMs);
+            if (!Number.isFinite(this.signRequestTimeoutMaxMs) || this.signRequestTimeoutMaxMs < this.signRequestTimeoutMs) {
+                this.signRequestTimeoutMaxMs = Math.max(this.signRequestTimeoutMs, this.signRequestTimeoutStepMs * 2);
+            }
+            this.signRequestImmediateRetryDelayMs = CONFIG.CONNECTION.SIGN_REQUEST_IMMEDIATE_RETRY_DELAY_MS;
+            if (!Number.isFinite(this.signRequestImmediateRetryDelayMs) || this.signRequestImmediateRetryDelayMs < 0) {
+                this.signRequestImmediateRetryDelayMs = 750;
+            }
+            if (this.tiktokLogWriter) {
+                this.tiktokLogWriter.append({
+                    timestamp: new Date().toISOString(),
+                    event: 'log_initialized',
+                    connection: this.getLogContext(),
+                    payload: { message: 'TikTok logging started' }
+                });
+            }
+        }
+
+        getLogContext() {
+            return {
+                username: this.username,
+                wssID: this.wssID,
+                sessionProvided: !!this.sessionId,
+                ttTargetIdcProvided: !!this.ttTargetIdc,
+                virtualTabId: this.virtualTabId || null
+            };
+        }
+
+        logDebug(eventName, payload) {
+            if (!this.tiktokLogWriter) {
+                return;
+            }
+            const entry = {
+                timestamp: new Date().toISOString(),
+                event: eventName,
+                connection: this.getLogContext()
+            };
+            if (payload !== undefined) {
+                entry.payload = payload;
+            }
+            this.tiktokLogWriter.append(entry);
+        }
+
+        closeLogWriter(reason) {
+            if (!this.tiktokLogWriter) {
+                return;
+            }
+            this.logDebug('log_closed', reason ? { reason } : undefined);
+            this.tiktokLogWriter.close();
+            this.tiktokLogWriter = null;
+            this.tiktokLogFilePath = null;
+        }
+
+        applySignRequestTimeout(timeoutMs) {
+            if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+                return;
+            }
+
+            const previousTimeout = this.signRequestTimeoutMs;
+            this.signRequestTimeoutMs = timeoutMs;
+
+            if (!this.connection) {
+                return;
+            }
+
+            try {
+                const webcastApi = this.connection?.webClient?.webSigner?.webcast;
+                if (!webcastApi) {
+                    return;
+                }
+
+                if (webcastApi.configuration) {
+                    webcastApi.configuration.baseOptions = {
+                        ...(webcastApi.configuration.baseOptions || {}),
+                        timeout: timeoutMs
+                    };
+                }
+
+                if (webcastApi.axios && webcastApi.axios.defaults) {
+                    webcastApi.axios.defaults.timeout = timeoutMs;
+                    const defaultMessage = `Sign server request timed out after ${timeoutMs}ms`;
+                    if (!webcastApi.axios.defaults.timeoutErrorMessage) {
+                        webcastApi.axios.defaults.timeoutErrorMessage = defaultMessage;
+                    } else if (typeof webcastApi.axios.defaults.timeoutErrorMessage === 'string' && webcastApi.axios.defaults.timeoutErrorMessage.startsWith('Sign server request timed out after')) {
+                        webcastApi.axios.defaults.timeoutErrorMessage = defaultMessage;
+                    }
+                }
+
+                if (previousTimeout !== timeoutMs) {
+                    this.logDebug('sign.timeout.applied', {
+                        previousTimeoutMs: previousTimeout,
+                        timeoutMs
+                    });
+                }
+            } catch (timeoutConfigError) {
+                console.warn('Failed to configure Euler sign server timeout:', timeoutConfigError);
+                this.logDebug('sign.timeout.apply_failed', {
+                    timeoutMs,
+                    error: timeoutConfigError?.message || String(timeoutConfigError)
+                });
+            }
+        }
+
+        isSignServerTimeout(primaryError, rawMessage = '') {
+            const code = primaryError?.code;
+            if (typeof code === 'string') {
+                const normalizedCode = code.toUpperCase();
+                if (normalizedCode === 'ECONNABORTED' || normalizedCode === 'ETIMEDOUT' || normalizedCode === 'ESOCKETTIMEDOUT') {
+                    return true;
+                }
+            }
+
+            const combined = `${rawMessage || ''} ${primaryError?.message || ''}`.toLowerCase();
+            if (!combined.trim()) {
+                return false;
+            }
+
+            if (combined.includes('timeout') || combined.includes('timed out')) {
+                return true;
+            }
+
+            return false;
+        }
+
+        maybeBoostSignRequestTimeout(primaryError, rawMessage = '') {
+            if (!this.isSignServerTimeout(primaryError, rawMessage)) {
+                return false;
+            }
+
+            if (!Number.isFinite(this.signRequestTimeoutMaxMs) || this.signRequestTimeoutMaxMs <= this.signRequestTimeoutMs) {
+                return false;
+            }
+
+            const step = Number.isFinite(this.signRequestTimeoutStepMs) && this.signRequestTimeoutStepMs > 0
+                ? this.signRequestTimeoutStepMs
+                : Math.max(5000, this.signRequestTimeoutMs);
+
+            const nextTimeout = Math.min(this.signRequestTimeoutMaxMs, this.signRequestTimeoutMs + step);
+
+            if (!Number.isFinite(nextTimeout) || nextTimeout <= this.signRequestTimeoutMs) {
+                return false;
+            }
+
+            const previous = this.signRequestTimeoutMs;
+            console.info(`[TikTok] Sign server timeout - increasing request timeout from ${previous}ms to ${nextTimeout}ms`);
+            this.logDebug('sign.timeout.boost', {
+                previousTimeoutMs: previous,
+                nextTimeoutMs: nextTimeout,
+                maxTimeoutMs: this.signRequestTimeoutMaxMs
+            });
+            this.applySignRequestTimeout(nextTimeout);
+            return true;
+        }
+
+        handleSignServerFailure(primaryError, rawMessage = '', userFacingMessage = '') {
+            const detail = this.truncateForLog(rawMessage || primaryError?.message || '', 600);
+            const displayMessage = (typeof userFacingMessage === 'string' && userFacingMessage.trim())
+                ? userFacingMessage.trim()
+                : 'Sign server unavailable';
+
+            console.warn(`[TikTok] Sign server issue detected (${displayMessage}). Retrying silently.`);
+            this.logDebug('sign.error.retry', {
+                message: displayMessage,
+                detail: detail || null
+            });
+
+            // Attempt to notify renderer without surfacing an error banner
+            try {
+                if (mainWindow && mainWindow.webContents) {
+                    mainWindow.webContents.send('tiktokConnectionStatus', {
+                        wssID: this.wssID,
+                        status: 'reconnecting',
+                        reason: undefined,
+                        signServer: true
+                    });
+                }
+            } catch (_) { /* renderer may be gone */ }
+
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
+            }
+
+            try {
+                connectionStates.set(this.wssID, {
+                    isConnected: false,
+                    lastAttempt: Date.now(),
+                    isReconnecting: false,
+                    attemptInProgress: false
+                });
+            } catch (_) { /* noop */ }
+
+            if (this.isStopped) {
+                return;
+            }
+
+            this.offlineRetry = false;
+            this.offlineReason = null;
+            this.reconnectAttempts = Math.max(0, this.reconnectAttempts - 1);
+
+            const retryDelay = Number.isFinite(this.signRequestImmediateRetryDelayMs) && this.signRequestImmediateRetryDelayMs > 0
+                ? this.signRequestImmediateRetryDelayMs
+                : 0;
+
+            this.attemptReconnect(retryDelay, {
+                fixed: true,
+                immediate: retryDelay <= 0,
+                silent: true,
+                reason: 'sign_server_retry'
+            });
+        }
+
+        normalizeGoalUpdate(data = {}) {
+            if (!data || typeof data !== 'object') {
+                return null;
+            }
+
+            const pickFirst = (values, fallback = null) => {
+                for (const value of values) {
+                    if (value === undefined || value === null) continue;
+                    if (typeof value === 'string') {
+                        const trimmed = value.trim();
+                        if (trimmed.length) {
+                            return trimmed;
+                        }
+                    } else {
+                        return value;
+                    }
+                }
+                return fallback;
+            };
+
+            const hasValue = (value) => value !== undefined && value !== null && !(typeof value === 'string' && value.trim() === '');
+            const parseNumber = (value) => {
+                if (!hasValue(value)) return null;
+                const num = Number(value);
+                return Number.isFinite(num) ? num : null;
+            };
+
+            const goal = data?.goal || {};
+            const subGoal = data?.contributeSubgoal || {};
+
+            const contributorName = pickFirst([
+                data?.contributorDisplayId,
+                data?.contributorIdStr,
+                hasValue(data?.contributorId) ? String(data.contributorId) : null,
+                data?.nickname,
+                data?.user?.displayId,
+                data?.user?.uniqueId,
+                data?.user?.nickname
+            ], 'Viewer') || 'Viewer';
+
+            const giftName = pickFirst([
+                subGoal?.gift?.name,
+                goal?.title,
+                goal?.description,
+                data?.giftName
+            ], 'Goal') || 'Goal';
+
+            const progressRaw = pickFirst([
+                subGoal?.progress,
+                goal?.progress,
+                data?.progress
+            ], null);
+            const targetRaw = pickFirst([
+                subGoal?.target,
+                goal?.target,
+                data?.target
+            ], null);
+            const scoreRaw = pickFirst([
+                data?.contributeScore,
+                data?.score
+            ], null);
+
+            const progressNumber = parseNumber(progressRaw);
+            const targetNumber = parseNumber(targetRaw);
+            const scoreNumber = parseNumber(scoreRaw);
+
+            const avatarUrl = normalizeTikTokImageUrl(data?.contributorAvatar?.url)
+                || normalizeTikTokImageUrl(data?.profilePictureUrl)
+                || normalizeTikTokImageUrl(data?.profilePicture)
+                || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+                || normalizeTikTokImageUrl(data?.user?.profilePicture)
+                || null;
+
+            const contributorId = hasValue(data?.contributorId) ? data.contributorId : null;
+            const contributorIdStr = hasValue(data?.contributorIdStr) ? data.contributorIdStr : null;
+            const uniqueId = pickFirst([
+                data?.user?.uniqueId,
+                data?.user?.displayId,
+                contributorIdStr,
+                contributorId ? String(contributorId) : null
+            ], null);
+
+            const subGoalId = pickFirst([
+                subGoal?.id,
+                subGoal?.idStr,
+                goal?.id,
+                goal?.idStr
+            ], null);
+            const subGoalType = subGoal?.type !== undefined ? subGoal.type : null;
+
+            const eventType = data?.pin ? 'goal_pin' : (data?.unpin ? 'goal_unpin' : 'goal_update');
+
+            const meta = {
+                contributorName,
+                contributorId,
+                contributorIdStr,
+                uniqueId,
+                giftName,
+                progress: progressNumber !== null ? progressNumber : progressRaw ?? null,
+                target: targetNumber !== null ? targetNumber : targetRaw ?? null,
+                score: scoreNumber !== null ? scoreNumber : scoreRaw ?? null,
+                progressRaw: progressRaw ?? undefined,
+                targetRaw: targetRaw ?? undefined,
+                scoreRaw: scoreRaw ?? undefined,
+                avatarUrl: avatarUrl || undefined,
+                subGoalId: subGoalId || undefined,
+                subGoalType: subGoalType ?? undefined,
+                pin: data?.pin ? true : undefined,
+                unpin: data?.unpin ? true : undefined,
+                timestamp: Date.now()
+            };
+
+            if (goal?.title) meta.goalTitle = cleanVisibleString(goal.title);
+            if (goal?.description) meta.goalDescription = cleanVisibleString(goal.description);
+
+            return {
+                eventType,
+                meta
+            };
+        }
+
+        emitGoalEvent(goalEvent) {
+            if (!goalEvent || typeof goalEvent !== 'object') {
+                return;
+            }
+
+            if (!isCaptureEventsEnabled()) {
+                return;
+            }
+
+            const { eventType, meta } = goalEvent;
+            if (!eventType) {
+                return;
+            }
+
+            const metaObject = (meta && typeof meta === 'object') ? meta : {};
+            const progressPreview = metaObject.progress ?? metaObject.progressRaw ?? null;
+            const targetPreview = metaObject.target ?? metaObject.targetRaw ?? null;
+            const scorePreview = metaObject.score ?? metaObject.scoreRaw ?? null;
+
+            console.info('[TikTok] Goal event', {
+                username: this.username,
+                event: eventType,
+                contributor: metaObject.contributorName || metaObject.uniqueId || null,
+                giftName: metaObject.giftName || null,
+                progress: progressPreview,
+                target: targetPreview,
+                score: scorePreview
+            });
+
+            this.sendEventMessage({}, eventType, null, metaObject);
+        }
+
+        resetGoalAggregates() {
+            // Batching removed; method retained for compatibility.
+        }
+
+        static delay(ms) {
+            if (!Number.isFinite(ms) || ms <= 0) {
+                return Promise.resolve();
+            }
+            return new Promise((resolve) => setTimeout(resolve, ms));
         }
 
         recordActivity(timestamp = Date.now()) {
@@ -6604,9 +7805,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         async initialize() {
+            this.logDebug('lifecycle.initialize.start');
             console.log(`Initializing TikTok connection for user: ${this.username}`);
             try {
-                if (!WebcastPushConnection) {
+                if (!TikTokLiveConnectionClass) {
                     throw new Error('TikTok connector missing. Please reinstall tiktok-live-connector.');
                 }
                 const connectionOptions = {
@@ -6614,11 +7816,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     processInitialData: false,
                     // Fetch gift metadata so live gifts include images/diamonds
                     enableExtendedGiftInfo: true,
-                    // Prefer WebSocket and avoid HTTP polling that triggers legacy processing
-                    enableWebsocketUpgrade: true,
-                    requestPollingIntervalMs: 0,
+                    // Prefer WebSocket delivery but keep HTTP polling fallback for regions that block upgrades
+                    enableRequestPolling: true,
+                    requestPollingIntervalMs: 1000,
                     fetchRoomInfoOnConnect: true,
-                    clientParams: {
+                    webClientParams: {
+                        "app_language": "en-US",
+                        "device_platform": "web"
+                    },
+                    wsClientParams: {
                         "app_language": "en-US",
                         "device_platform": "web"
                     }
@@ -6635,10 +7841,25 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     console.log('Using anonymous connection');
                 }
 
-                this.connection = new WebcastPushConnection(this.username, connectionOptions);
+                if (usingLegacyTikTokConnector) {
+                    console.warn('[TikTok] Legacy connector in use; live shopping purchase events are unavailable until the package is upgraded.');
+                }
+
+                this.connection = new TikTokLiveConnectionClass(this.username, connectionOptions);
+
+                this.applySignRequestTimeout(this.signRequestTimeoutMs);
+                this.logDebug('lifecycle.initialize.signTimeoutConfigured', {
+                    timeoutMs: this.signRequestTimeoutMs,
+                    maxTimeoutMs: this.signRequestTimeoutMaxMs
+                });
+                this.logDebug('lifecycle.initialize.connectionCreated', {
+                    authenticated: !!this.sessionId,
+                    usingLegacyConnector: usingLegacyTikTokConnector
+                });
                 this.setupEventHandlers();
                 return this.connect();
             } catch (error) {
+                this.logDebug('lifecycle.initialize.error', error);
                 console.error('Failed to initialize TikTok connection:', error);
                 this.handleFatalError(error);
                 return false;
@@ -6646,6 +7867,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         handleFatalError(error) {
+            this.logDebug('lifecycle.fatalError', error);
             console.error('Fatal connection error:', error);
             this.isStopped = true;
 
@@ -6673,16 +7895,83 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         setupEventHandlers() {
-            this.connection.on('decodedData', () => this.lastMessageTime = Date.now());
-            this.connection.on('websocketConnected', () => this.handleConnect());
-            this.connection.on('disconnect', () => this.handleDisconnect());
-            this.connection.on('error', (err) => this.handleError(err));
-            this.connection.on('streamEnd', () => this.handleStreamEnd());
+            const suppressedDecodedLogTypes = new Set([
+                'WebcastLinkLayerMessage',
+                'WebcastLinkMessage',
+                'WebcastLinkMicFanTicketMethod',
+                'WebcastLinkMicMethod'
+            ]);
+            this.connection.on('websocketData', (buffer) => {
+                let preview = null;
+                let length = null;
+                try {
+                    if (buffer && typeof buffer.length === 'number') {
+                        length = buffer.length;
+                        if (length > 0) {
+                            const slice = typeof buffer.slice === 'function'
+                                ? buffer.slice(0, Math.min(length, 16))
+                                : (Buffer.isBuffer(buffer) ? buffer.subarray(0, Math.min(length, 16)) : null);
+                            if (slice) {
+                                preview = Buffer.from(slice).toString('hex');
+                            }
+                        }
+                    }
+                } catch (_) {
+                    preview = null;
+                }
+                this.logDebug('control.websocketData', {
+                    length,
+                    preview
+                });
+            });
+            this.connection.on('rawData', (messageType) => {
+                this.logDebug('control.rawData', {
+                    messageType
+                });
+            });
+            this.connection.on('decodedData', (messageType, decodedData, rawPayload) => {
+                this.lastMessageTime = Date.now();
+                const suppressed = suppressedDecodedLogTypes.has(messageType);
+                const logEntry = {
+                    messageType
+                };
+                if (!suppressed) {
+                    logEntry.decodedData = decodedData;
+                    if (rawPayload && typeof rawPayload === 'object') {
+                        const payloadLength = Array.isArray(rawPayload.data) ? rawPayload.data.length : undefined;
+                        if (payloadLength !== undefined) {
+                            logEntry.rawPayloadLength = payloadLength;
+                        }
+                    }
+                }
+                this.logDebug('control.decodedData', logEntry);
+            });
+            this.connection.on('enterRoom', (data) => {
+                this.logDebug('control.enterRoom', data);
+            });
+            this.connection.on('websocketConnected', () => {
+                this.logDebug('control.websocketConnected');
+                this.handleConnect();
+            });
+            this.connection.on('disconnect', () => {
+                this.logDebug('control.disconnect');
+                this.handleDisconnect();
+            });
+            this.connection.on('error', (err) => {
+                this.logDebug('control.error', err);
+                this.handleError(err);
+            });
+            this.connection.on('streamEnd', () => {
+                this.logDebug('control.streamEnd');
+                this.handleStreamEnd();
+            });
             this.connection.on('chat', (data) => {
+                this.logDebug('event.chat', data);
                 this.recordActivity();
                 this.messageProcessor.addToQueue(data);
             });
             this.connection.on('gift', (data) => {
+                this.logDebug('event.gift', data);
                 this.recordActivity();
                 this.giftProcessor.addToQueue(data);
             });
@@ -6690,23 +7979,70 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const eventHandlers = {
                 follow: (data) => {
                     this.recordActivity();
-                    this.sendEventMessage(data, "follow", `${data.nickname} followed!`);
+                    const identity = extractTikTokIdentity(data);
+                    const displayName = identity.nickname || identity.uniqueId || 'Viewer';
+                    if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
+                    if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
+                    this.sendEventMessage(data, "follow", `${displayName} followed!`);
                 },
                 subscribe: (data) => {
                     this.recordActivity();
-                    this.sendEventMessage(data, "subscribed", `${data.nickname} subscribed!`);
+                    const identity = extractTikTokIdentity(data);
+                    const displayName = identity.nickname || identity.uniqueId || 'Viewer';
+                    if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
+                    if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
+                    this.sendEventMessage(data, "subscribed", `${displayName} subscribed!`);
                 },
                 social: (data) => {
                     this.recordActivity();
                     if (data.displayType !== "pm_main_follow_message_viewer_2" &&
                         data.displayType !== "pm_mt_guidance_share") {
-                        let label = data.label || `${data.nickname} performed a social action!`;
+                        const identity = extractTikTokIdentity(data);
+                        const displayName = identity.nickname || identity.uniqueId || 'Someone';
+                        if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
+                        if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
+                        let label = data.label || `${displayName} performed a social action!`;
                         // Replace {0:user} placeholder with actual username
                         if (label.includes('{0:user}')) {
-                            label = label.replace('{0:user}', data.nickname || 'Someone');
+                            label = label.replace('{0:user}', displayName);
                         }
                         this.sendEventMessage(data, "SOCIAL", label);
                     }
+                },
+                member: (data = {}) => {
+                    this.recordActivity();
+                    if (!isCaptureEventsEnabled() || !isCaptureJoinedEventEnabled()) {
+                        return;
+                    }
+
+                    const action = data?.action;
+                    const actionCode = typeof action === 'number' ? action : Number(action);
+                    const actionIsJoin = actionCode === 1 ||
+                        (typeof action === 'string' && action.toLowerCase().trim() === 'join');
+                    const descriptionMentionsJoin = [
+                        data?.actionDescription,
+                        data?.displayText?.defaultPattern,
+                        data?.anchorDisplayText?.defaultPattern
+                    ].some(text => typeof text === 'string' && text.toLowerCase().includes('join'));
+
+                    if (!actionIsJoin && !descriptionMentionsJoin) {
+                        return;
+                    }
+
+                    if (typeof data.nickname === 'string') {
+                        const cleaned = data.nickname.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+                        if (cleaned) {
+                            data.nickname = cleaned;
+                        } else {
+                            delete data.nickname;
+                        }
+                    }
+
+                    const identity = extractTikTokIdentity(data);
+                    if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
+                    if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
+
+                    this.sendEventMessage(data, 'joined', 'joined');
                 },
                 roomUser: (data) => {
                     this.recordActivity();
@@ -6724,126 +8060,199 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 },
                 oecLiveShopping: (data = {}) => {
                     this.recordActivity();
-                    const shopData = data?.shopData || {};
-                    const details = data?.details || {};
-                    const title = shopData.title || 'Product';
+
+                    const shopData = data?.shopData && typeof data.shopData === 'object' ? data.shopData : {};
+                    const details = data?.details && typeof data.details === 'object' ? data.details : {};
+                    const rawTitle = (typeof shopData.title === 'string' && shopData.title.trim()) ? shopData.title.trim() : 'Product';
+                    const isGenericTitle = !rawTitle || /^product$/i.test(rawTitle);
+                    const meaningfulTitle = isGenericTitle ? null : rawTitle;
+                    const title = rawTitle || 'Product';
+                    const phaseRaw = data?.data1;
+                    const phaseNumber = Number(phaseRaw);
+                    const phase = Number.isFinite(phaseNumber) ? phaseNumber : null;
+                    const detailId = details?.id1 || shopData?.data1 || data?.id1 || null;
+                    const detailTimestamp = details?.timestamp || details?.data?.timestamp || null;
+                    const detailDataValueNumber = Number(details?.data?.data);
+                    const detailDataValue = Number.isFinite(detailDataValueNumber) ? detailDataValueNumber : null;
+
                     const priceText = shopData.priceString ? ` – ${shopData.priceString}` : '';
                     const shopText = shopData.shopName ? ` (${shopData.shopName})` : '';
+                    const identity = extractTikTokIdentity(data);
+                    const buyerName = identity?.nickname || identity?.uniqueId || null;
 
-                    const labelCandidates = [
+                    const labelSources = [
                         details?.data?.label,
                         details?.data?.label2,
-                        details?.data?.label3
-                    ].filter(Boolean);
-                    const displayLabel = labelCandidates[0];
-
-                    const likelyPurchase = labelCandidates.some(label => /purchas|order|bought|buy|checkout|paid/i.test(label)) ||
-                        (typeof details?.data?.data === 'number' && details.data.data >= 2);
-
-                    let eventType = likelyPurchase ? 'shopping_purchase' : 'oec_live_shopping';
-                    let message;
-
-                    if (displayLabel) {
-                        const includesTitle = title && displayLabel.toLowerCase().includes(title.toLowerCase());
-                        message = includesTitle ? displayLabel : `${displayLabel} — ${title}${priceText}${shopText}`;
-                    } else if (likelyPurchase) {
-                        message = `Purchase alert: ${title}${priceText}${shopText}`;
-                    } else {
-                        message = `Live shopping: ${title}${priceText}${shopText}`;
+                        details?.data?.label3,
+                        details?.label,
+                        details?.describe,
+                        data?.describe,
+                        data?.label,
+                        data?.labels,
+                        data?.eventLabel,
+                        data?.eventLabels
+                    ];
+                    const labelCandidates = [];
+                    for (const source of labelSources) {
+                        if (!source) continue;
+                        if (Array.isArray(source)) {
+                            source.forEach((item) => {
+                                if (typeof item === 'string') {
+                                    const trimmed = item.trim();
+                                    if (trimmed) labelCandidates.push(trimmed);
+                                }
+                            });
+                        } else if (typeof source === 'string') {
+                            const trimmed = source.trim();
+                            if (trimmed) labelCandidates.push(trimmed);
+                        }
                     }
+
+                    const displayLabel = labelCandidates[0] || null;
+                    const normalizedLabelSignals = labelCandidates.map((label) => label.toLowerCase());
+                    const purchaseSignal = normalizedLabelSignals.some(label => /purchase|sold\s?out|checkout|order|paid|bayar|beli|soldout/.test(label));
+                    const likelyPurchase = purchaseSignal || phase === 4 || (detailDataValue !== null && detailDataValue >= 2);
+
+                    const eventType = likelyPurchase ? 'shopping_purchase' : 'oec_live_shopping';
+                    const phaseDescriptions = {
+                        1: 'Product preview',
+                        2: 'Product spotlight',
+                        3: 'Product spotlight',
+                        4: 'Purchase event',
+                        5: 'Post-purchase update'
+                    };
+                    const phaseDescription = (phase !== null && phaseDescriptions[phase]) || null;
+
+                    let message = null;
+                    if (likelyPurchase) {
+                        if (buyerName && meaningfulTitle) {
+                            message = `${buyerName} purchased ${meaningfulTitle}${priceText}${shopText}`;
+                        } else if (buyerName) {
+                            message = `${buyerName} made a purchase${priceText}${shopText}`;
+                        } else if (meaningfulTitle) {
+                            message = `Purchase: ${meaningfulTitle}${priceText}${shopText}`;
+                        }
+                    } else if (meaningfulTitle) {
+                        if (displayLabel && !displayLabel.toLowerCase().includes(meaningfulTitle.toLowerCase())) {
+                            message = `${displayLabel} — ${meaningfulTitle}${priceText}${shopText}`;
+                        } else if (displayLabel) {
+                            message = `${displayLabel}${priceText}${shopText}`;
+                        } else {
+                            message = `Live shopping: ${meaningfulTitle}${priceText}${shopText}`;
+                        }
+                    } else if (displayLabel && /deal|drop|promo|flash|offer|discount/.test(displayLabel.toLowerCase())) {
+                        message = displayLabel;
+                    }
+
+                    const summaryParts = [];
+                    if (phaseDescription) summaryParts.push(phaseDescription);
+                    if (meaningfulTitle) summaryParts.push(meaningfulTitle);
+                    else if (displayLabel) summaryParts.push(displayLabel);
+                    if (shopData.priceString) summaryParts.push(shopData.priceString);
+                    if (shopData.shopName) summaryParts.push(shopData.shopName);
+                    if (likelyPurchase && buyerName) summaryParts.push(`Buyer: ${buyerName}`);
+                    const summary = summaryParts.length ? summaryParts.join(' • ') : null;
+
+                    const chatMessage = (typeof message === 'string' && message.trim().length) ? message.trim() : '';
+                    const chatSuppressed = !chatMessage;
+
+                    const now = Date.now();
+                    const eventKey = detailId || (displayLabel ? `${phase ?? 'phaseX'}:${displayLabel}` : `${phase ?? 'phaseX'}:${meaningfulTitle || title}`);
+                    if (!this.recentShoppingEvents) {
+                        this.recentShoppingEvents = new Map();
+                    }
+
+                    if (eventKey) {
+                        const previous = this.recentShoppingEvents.get(eventKey);
+                        if (previous && previous.type === eventType && (now - previous.timestamp) < 2000) {
+                            this.logDebug('event.oecLiveShopping.suppressedDuplicate', {
+                                eventKey,
+                                eventType,
+                                phase,
+                                deltaMs: now - previous.timestamp
+                            });
+                            return;
+                        }
+                        this.recentShoppingEvents.set(eventKey, {
+                            timestamp: now,
+                            type: eventType
+                        });
+                        for (const [key, info] of [...this.recentShoppingEvents.entries()]) {
+                            if (now - info.timestamp > 15000) {
+                                this.recentShoppingEvents.delete(key);
+                            }
+                        }
+                    }
+
+                    this.logDebug('event.oecLiveShopping.classified', {
+                        eventKey,
+                        eventType,
+                        phase,
+                        phaseDescription,
+                        labels: labelCandidates,
+                        detailId,
+                        detailDataValue,
+                        price: shopData.priceString || null,
+                        shopName: shopData.shopName || null,
+                        buyer: buyerName || null,
+                        likelyPurchase,
+                        chatSuppressed
+                    });
 
                     console.info('[TikTok] Live shopping event', {
                         username: this.username,
-                        title,
+                        title: meaningfulTitle || title,
                         price: shopData.priceString || null,
                         shopName: shopData.shopName || null,
-                        detailId: details.id1 || null,
-                        labels: labelCandidates,
+                        detailId,
+                        phase,
                         likelyPurchase,
-                        detailData: details?.data?.data ?? null
+                        labels: labelCandidates
                     });
 
                     const payload = {
                         ...data,
                         nickname: shopData.shopName || data?.nickname || 'TikTok Shop',
-                        profilePictureUrl: shopData.imageUrl || data?.profilePictureUrl || null
+                        profilePictureUrl: normalizeTikTokImageUrl(shopData.imageUrl)
+                            || normalizeTikTokImageUrl(data?.profilePictureUrl)
+                            || normalizeTikTokImageUrl(data?.profilePicture)
+                            || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+                            || normalizeTikTokImageUrl(data?.user?.profilePicture)
+                            || null
                     };
 
-                    const shoppingMeta = { productTitle: title };
+                    const shoppingMeta = {
+                        source: 'oec_live_shopping',
+                        productTitle: title,
+                        productTitleNormalized: meaningfulTitle || null,
+                        phase,
+                        eventKey,
+                        likelyPurchase,
+                        phaseDescription,
+                        buyer: buyerName || null,
+                        chatSuppressed
+                    };
                     if (shopData.priceString) shoppingMeta.price = shopData.priceString;
                     if (shopData.shopName) shoppingMeta.shopName = shopData.shopName;
                     const primaryShopUrl = shopData.shopUrl || shopData.shopUrl2;
                     if (primaryShopUrl) shoppingMeta.shopUrl = primaryShopUrl;
-                    if (details.timestamp) shoppingMeta.timestamp = details.timestamp;
+                    if (detailId) shoppingMeta.detailId = detailId;
+                    if (detailTimestamp) shoppingMeta.detailTimestamp = detailTimestamp;
+                    if (detailDataValue !== null) shoppingMeta.detailDataValue = detailDataValue;
                     if (labelCandidates.length) shoppingMeta.labels = labelCandidates;
-                    if (typeof details?.data?.data === 'number') shoppingMeta.detailDataValue = details.data.data;
                     if (data?.shopTimings) shoppingMeta.shopTimings = data.shopTimings;
-                    shoppingMeta.likelyPurchase = likelyPurchase;
+                    if (phase !== null) shoppingMeta.phaseRaw = phaseRaw;
+                    if (summary) shoppingMeta.summary = summary;
 
-                    this.sendEventMessage(payload, eventType, message, shoppingMeta);
+                    this.sendEventMessage(payload, eventType, chatMessage, shoppingMeta);
                 },
                 goalUpdate: (data = {}) => {
                     this.recordActivity();
-                    const subGoal = data?.contributeSubgoal || {};
-                    const contributor = data?.contributorDisplayId || data?.contributorIdStr || data?.contributorId || 'Viewer';
-                    const giftName = subGoal?.gift?.name || data?.goal?.title || 'Goal';
-                    const progress = subGoal?.progress;
-                    const target = subGoal?.target;
-                    const score = data?.contributeScore;
-
-                    const hasValue = (value) => value !== undefined && value !== null && !(typeof value === 'string' && value.trim() === '');
-                    const hasProgress = hasValue(progress);
-                    const hasTarget = hasValue(target);
-                    const hasScore = hasValue(score);
-
-                    let progressText = '';
-                    if (hasProgress && hasTarget) {
-                        progressText = `${progress}/${target}`;
-                    } else if (hasProgress) {
-                        progressText = `${progress}`;
-                    } else if (hasTarget) {
-                        progressText = `${target}`;
+                    const normalized = this.normalizeGoalUpdate(data);
+                    if (!normalized) {
+                        return;
                     }
-                    const actionPrefix = data?.pin ? 'Pinned goal update' : (data?.unpin ? 'Unpinned goal update' : 'Goal update');
-                    const messageParts = [`${contributor} contributed to ${giftName}`];
-                    if (progressText) {
-                        messageParts.push(`(${progressText})`);
-                    }
-                    if (hasScore) {
-                        messageParts.push(`score: ${score}`);
-                    }
-                    const message = `${actionPrefix}: ${messageParts.join(' ')}`;
-
-                    console.info('[TikTok] Goal update', {
-                        username: this.username,
-                        contributor,
-                        giftName,
-                        progress: hasProgress ? progress : null,
-                        target: hasTarget ? target : null,
-                        score: hasScore ? score : null,
-                        pin: data?.pin || false,
-                        unpin: data?.unpin || false
-                    });
-
-                    const avatarUrls = data?.contributorAvatar?.url;
-                    const avatarUrl = Array.isArray(avatarUrls) && avatarUrls.length ? avatarUrls[0] : null;
-                    const payload = {
-                        ...data,
-                        nickname: data?.nickname || contributor,
-                        profilePictureUrl: data?.profilePictureUrl || avatarUrl
-                    };
-
-                    const goalMeta = { giftName };
-                    if (hasValue(data?.contributorId)) goalMeta.contributorId = data.contributorId;
-                    if (hasProgress) goalMeta.progress = progress;
-                    if (hasTarget) goalMeta.target = target;
-                    if (hasScore) goalMeta.score = score;
-                    if (hasValue(subGoal?.id)) goalMeta.subGoalId = subGoal.id;
-                    if (subGoal?.type !== undefined) goalMeta.subGoalType = subGoal.type;
-                    if (data?.pin) goalMeta.pin = true;
-                    if (data?.unpin) goalMeta.unpin = true;
-
-                    this.sendEventMessage(payload, 'goal_update', message, goalMeta);
+                    this.emitGoalEvent(normalized);
                 },
                 pollMessage: (data = {}) => {
                     this.recordActivity();
@@ -6887,12 +8296,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     });
 
                     const operator = data?.startContent?.Operator || data?.endContent?.Operator;
-                    const operatorAvatar = operator?.profilePicture?.url;
-                    const operatorAvatarUrl = Array.isArray(operatorAvatar) && operatorAvatar.length ? operatorAvatar[0] : null;
+                    const operatorAvatarUrl = normalizeTikTokImageUrl(operator?.profilePicture?.url)
+                        || normalizeTikTokImageUrl(operator?.profilePictureUrl)
+                        || normalizeTikTokImageUrl(data?.profilePictureUrl)
+                        || normalizeTikTokImageUrl(data?.profilePicture)
+                        || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+                        || normalizeTikTokImageUrl(data?.user?.profilePicture);
                     const payload = {
                         ...data,
                         nickname: data?.nickname || basicInfo.pollSponsor || pollTitle,
-                        profilePictureUrl: data?.profilePictureUrl || operatorAvatarUrl
+                        profilePictureUrl: operatorAvatarUrl || null
                     };
 
                     const pollMeta = { status };
@@ -6926,7 +8339,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     const author = sourceMessage?.author || 'Viewer';
                     const text = sourceMessage?.text || 'Pinned message';
                     const avatarArray = sourceMessage?.avatar;
-                    const avatarUrl = Array.isArray(avatarArray) && avatarArray.length ? avatarArray[0] : null;
+                    const avatarUrl = normalizeTikTokImageUrl(avatarArray)
+                        || normalizeTikTokImageUrl(data?.profilePictureUrl)
+                        || normalizeTikTokImageUrl(data?.profilePicture)
+                        || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+                        || normalizeTikTokImageUrl(data?.user?.profilePicture);
                     const message = `${action} by ${operatorName}: ${author} — ${text}`;
 
                     console.info('[TikTok] Room pin update', {
@@ -6940,7 +8357,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     const payload = {
                         ...data,
                         nickname: data?.nickname || author,
-                        profilePictureUrl: data?.profilePictureUrl || avatarUrl
+                        profilePictureUrl: avatarUrl || null
                     };
 
                     const pinMeta = { action, operator: operatorName };
@@ -6952,7 +8369,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
             };
 
             Object.entries(eventHandlers).forEach(([event, handler]) => {
-                this.connection.on(event, handler);
+                this.connection.on(event, (data) => {
+                    this.logDebug(`event.${event}`, data);
+                    handler(data);
+                });
             });
         }
 
@@ -7013,8 +8433,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
 
             try {
+                this.logDebug('lifecycle.connect.start');
+                try {
+                    mainWindow.webContents.send('tiktokConnectionStatus', {
+                        wssID: this.wssID,
+                        status: 'connecting'
+                    });
+                } catch (_) { /* renderer may be gone */ }
                 await this.connection.connect();
                 console.info('Connected successfully');
+                this.logDebug('lifecycle.connect.success');
                 
                 // Clear any pending reconnect timer
                 if (this.reconnectTimer) {
@@ -7027,34 +8455,79 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 this.offlineReason = null;
                 return true;
             } catch (err) {
-                const msg = err && err.message ? err.message : '';
+                const primaryError = err instanceof Error ? err : (err && err.exception instanceof Error ? err.exception : err);
+                const errorName = primaryError && primaryError.name;
+                const errorMessage = primaryError && primaryError.message ? primaryError.message : '';
 
-                // Treat user offline / ended stream as non-fatal and retry on a safe fixed interval
-                const isOffline = err && (
-                    err.name === 'UserOfflineError' ||
-                    (msg && (msg.includes('LIVE has ended') || msg.includes('Live stream has ended') || msg.includes('live has ended')))
-                );
-
-                // Fatal if user likely doesn't exist or room cannot be retrieved
-                const isLikelyFatal = msg && (
-                    msg.includes("User doesn't exist") ||
-                    msg.includes('Failed to retrieve room_id')
-                );
-
-                const isRateLimited = msg && (msg.includes('429') || msg.toLowerCase().includes('too many requests'));
-
-                if (isLikelyFatal) {
-                    console.error('Fatal error - user might not exist or might be a display name:', this.username);
-                    this.handleFatalError(err);
+                if (errorName === 'AlreadyConnectingError') {
+                    console.warn('Connect request ignored because a connection attempt is already in progress');
+                    this.logDebug('lifecycle.connect.alreadyConnecting', {
+                        message: errorMessage || null
+                    });
                     return false;
                 }
 
-                console.error('Connection failed:', err);
-                mainWindow.webContents.send('tiktokConnectionStatus', {
-                    wssID: this.wssID,
-                    status: 'failed',
-                    error: err.message
+                const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, errorMessage);
+                const isSignServerIssue = this.isSignServerError(primaryError, errorMessage);
+
+                this.logDebug('lifecycle.connect.error', {
+                    errorName: primaryError?.name || null,
+                    errorReason: primaryError?.reason || null,
+                    rawMessage: errorMessage || null,
+                    userMessage: userFacingMessage
                 });
+
+                // Treat user offline / ended stream as non-fatal and retry on a safe fixed interval
+                const isOffline = primaryError && (
+                    primaryError.name === 'UserOfflineError' ||
+                    (errorMessage && (errorMessage.includes('LIVE has ended') || errorMessage.includes('Live stream has ended') || errorMessage.includes('live has ended')))
+                );
+
+                // Fatal if user likely doesn't exist or room cannot be retrieved
+                const isLikelyFatal = errorMessage && (
+                    errorMessage.includes("User doesn't exist") ||
+                    errorMessage.includes('Failed to retrieve room_id')
+                );
+
+                const isRateLimited = errorMessage && (errorMessage.includes('429') || errorMessage.toLowerCase().includes('too many requests'));
+
+                if (isLikelyFatal) {
+                    console.error('Fatal error - user might not exist or might be a display name:', this.username);
+                    this.handleFatalError(primaryError || err);
+                    return false;
+                }
+
+                if (isSignServerIssue && this.maybeBoostSignRequestTimeout(primaryError, errorMessage)) {
+                    this.logDebug('lifecycle.connect.retryImmediate', {
+                        reason: 'sign_server_timeout',
+                        timeoutMs: this.signRequestTimeoutMs,
+                        maxTimeoutMs: this.signRequestTimeoutMaxMs
+                    });
+
+                    const retryDelay = this.signRequestImmediateRetryDelayMs || 0;
+                    if (retryDelay > 0) {
+                        await ConnectionManager.delay(retryDelay);
+                    }
+
+                    return this.connect();
+                }
+
+                if (isSignServerIssue) {
+                    this.handleSignServerFailure(primaryError instanceof Error ? primaryError : err, errorMessage, userFacingMessage);
+                    return false;
+                }
+
+                this.logConsoleFailure(userFacingMessage, primaryError instanceof Error ? primaryError : null);
+
+                try {
+                    mainWindow.webContents.send('tiktokConnectionStatus', {
+                        wssID: this.wssID,
+                        status: 'failed',
+                        error: userFacingMessage
+                    });
+                } catch (sendErr) {
+                    console.warn('Failed to send TikTok connection failure status:', sendErr);
+                }
 
                 if (!this.isStopped) {
                     // Clear reconnecting flag before scheduling a new attempt
@@ -7062,18 +8535,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         connectionStates.set(this.wssID, {
                             isConnected: false,
                             lastAttempt: Date.now(),
-                            isReconnecting: false
+                            isReconnecting: false,
+                            attemptInProgress: false
                         });
                     } catch (_) { /* noop */ }
+
                     if (isRateLimited) {
                         this.offlineRetry = false;
                         this.offlineReason = 'Rate limited by TikTok';
                         this.attemptReconnect(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS, { fixed: true, offline: false });
                     } else if (isOffline) {
                         this.offlineRetry = true;
-                        this.offlineReason = err.message || 'User is not live';
+                        this.offlineReason = userFacingMessage || 'User is not live';
                         this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
                     } else {
+                        this.offlineRetry = false;
+                        this.offlineReason = null;
                         this.attemptReconnect();
                     }
                 }
@@ -7081,16 +8558,110 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
         }
 
+        logConsoleFailure(userMessage, primaryError) {
+            if (userMessage) {
+                console.error('Connection failed:', userMessage);
+            } else {
+                console.error('Connection failed');
+            }
+
+            if (!primaryError) {
+                return;
+            }
+
+            const detail = this.truncateForLog(primaryError.message || '', 600);
+            if (detail && detail !== userMessage) {
+                console.error('Connection failure detail:', detail);
+            }
+
+            if (primaryError.stack) {
+                const stackSnippet = this.truncateForLog(primaryError.stack, 800);
+                if (stackSnippet && stackSnippet !== detail && !/<html/i.test(stackSnippet)) {
+                    console.error(stackSnippet);
+                }
+            }
+        }
+
+        truncateForLog(text, maxLength = 600) {
+            if (!text || typeof text !== 'string') return '';
+            const trimmed = text.trim();
+            if (!trimmed) return '';
+            if (trimmed.length > maxLength) {
+                return trimmed.slice(0, maxLength) + '…';
+            }
+            return trimmed;
+        }
+
+        isSignServerError(primaryError, rawMessage = '') {
+            const reason = primaryError?.reason;
+            if (typeof reason === 'string' && reason.toLowerCase().includes('sign')) {
+                return true;
+            }
+
+            const combined = `${rawMessage || ''} ${primaryError?.message || ''}`.toLowerCase();
+            return combined.includes('sign server') || combined.includes('signapi');
+        }
+
+        getUserFriendlyErrorMessage(primaryError, fallbackMessage = '') {
+            const candidates = [fallbackMessage, primaryError?.message, primaryError?.info];
+            let message = '';
+            for (const candidate of candidates) {
+                if (typeof candidate === 'string' && candidate.trim().length) {
+                    message = candidate.trim();
+                    break;
+                }
+            }
+
+            if (!message) {
+                return 'Connection failed';
+            }
+
+            const firstLine = message.split(/\r?\n/).find(line => line.trim().length) || message;
+            const normalized = firstLine.toLowerCase();
+
+            if (normalized.includes('unexpected sign server status 524') || normalized.includes('524: a timeout occurred')) {
+                return 'Euler sign server timed out (524). Please try again later or switch TikTok to standard mode.';
+            }
+
+            if (normalized.includes('failed to connect to sign server') || normalized.includes('connect error')) {
+                return 'Unable to reach the Euler sign server. Please try again shortly.';
+            }
+
+            if (normalized.includes('timeout') || primaryError?.code === 'ECONNABORTED') {
+                return 'Sign server request timed out. Please try again shortly.';
+            }
+
+            if (/<html/i.test(message)) {
+                return 'Sign server returned an HTML error page. Please try again in a moment.';
+            }
+
+            if (firstLine.length > 320) {
+                return firstLine.slice(0, 320) + '…';
+            }
+
+            return firstLine;
+        }
+
         handleConnect() {
             console.info('Websocket connected, starting health check');
             connectionStates.set(this.wssID, {
                 isConnected: true,
                 lastAttempt: Date.now(),
-                isReconnecting: false
+                isReconnecting: false,
+                attemptInProgress: false
             });
             this.startHealthCheck();
             this.startViewerUpdateInterval();
             this.reconnectAttempts = 0;
+
+            if (Number.isFinite(this.signRequestTimeoutBaseMs) && this.signRequestTimeoutBaseMs > 0 && this.signRequestTimeoutMs !== this.signRequestTimeoutBaseMs) {
+                const previousTimeout = this.signRequestTimeoutMs;
+                this.applySignRequestTimeout(this.signRequestTimeoutBaseMs);
+                this.logDebug('sign.timeout.reset', {
+                    previousTimeoutMs: previousTimeout,
+                    baseTimeoutMs: this.signRequestTimeoutBaseMs
+                });
+            }
 
             mainWindow.webContents.send('tiktokConnectionStatus', {
                 wssID: this.wssID,
@@ -7103,7 +8674,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             console.info('Disconnect detected');
             connectionStates.set(this.wssID, {
                 isConnected: false,
-                lastAttempt: Date.now()
+                lastAttempt: Date.now(),
+                isReconnecting: false,
+                attemptInProgress: false
             });
             if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
             if (this.viewerUpdateInterval) clearInterval(this.viewerUpdateInterval);
@@ -7121,12 +8694,74 @@ async function createWindow(args, reuse = false, mainApp = false) {
         handleError(err) {
             if (this.isStopped) return;
 
-            console.error('Connection error:', err);
+            const infoText = typeof err?.info === 'string' ? err.info : '';
+            const primaryError = err instanceof Error ? err : (err?.exception instanceof Error ? err.exception : err);
+            const errorName = primaryError && primaryError.name;
+            const msg = primaryError && primaryError.message ? primaryError.message : '';
+            const errorMessageCandidates = [
+                msg,
+                infoText,
+                typeof err?.message === 'string' ? err.message : '',
+                typeof primaryError?.cause?.message === 'string' ? primaryError.cause.message : ''
+            ];
+            const rawErrorMessage = errorMessageCandidates.find(value => typeof value === 'string' && value.trim().length) || '';
+
+            if (rawErrorMessage && /failed to decode message type/i.test(rawErrorMessage)) {
+                const truncatedDetail = this.truncateForLog(rawErrorMessage, 400);
+                const messageTypeMatch = rawErrorMessage.match(/Failed to decode message type:\s*([^:\s]+)/i);
+                const messageType = messageTypeMatch ? messageTypeMatch[1] : null;
+
+                const logPieces = ['[TikTok] Ignoring decode error'];
+                if (messageType) logPieces.push(`(${messageType})`);
+                logPieces.push(truncatedDetail);
+                console.warn(logPieces.join(' '));
+                this.logDebug('control.error.ignoredDecode', {
+                    info: infoText || null,
+                    errorName: primaryError?.name || null,
+                    messageType: messageType || null,
+                    detail: truncatedDetail
+                });
+                return;
+            }
+
+            if (infoText) {
+                const normalizedInfo = infoText.toLowerCase();
+                if (normalizedInfo.includes('falling back')) {
+                    console.info('TikTok connection fallback:', infoText);
+                    this.logDebug('control.error.fallbackNotice', {
+                        info: infoText,
+                        message: msg || null
+                    });
+                    return;
+                }
+            }
+
+            if (errorName === 'AlreadyConnectingError') {
+                console.warn('TikTok connection already in progress; ignoring duplicate error event');
+                this.logDebug('control.error.alreadyConnecting', {
+                    info: infoText || null,
+                    message: msg || null
+                });
+                return;
+            }
+
+            const combinedMessage = msg || infoText || '';
+            const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, combinedMessage);
+            const isSignServerIssue = this.isSignServerError(primaryError, combinedMessage);
+
+            this.logDebug('control.error.processed', {
+                info: infoText || null,
+                errorName: primaryError?.name || null,
+                errorReason: primaryError?.reason || null,
+                rawMessage: msg || null,
+                userMessage: userFacingMessage
+            });
+
+            this.logConsoleFailure(userFacingMessage, primaryError instanceof Error ? primaryError : null);
 
             // Check if error is fatal
-            const msg = err && err.message ? err.message : '';
-            const isOffline = err && (
-                err.name === 'UserOfflineError' ||
+            const isOffline = primaryError && (
+                primaryError.name === 'UserOfflineError' ||
                 (msg && (msg.includes('LIVE has ended') || msg.includes('Live stream has ended') || msg.includes('live has ended')))
             );
             const isLikelyFatal = msg && (
@@ -7135,20 +8770,26 @@ async function createWindow(args, reuse = false, mainApp = false) {
             );
             const isRateLimited = msg && (msg.includes('429') || msg.toLowerCase().includes('too many requests'));
             if (isLikelyFatal) {
-                this.handleFatalError(err);
+                this.handleFatalError(primaryError || err);
                 return;
             }
 
             connectionStates.set(this.wssID, {
                 isConnected: false,
-                lastAttempt: Date.now()
+                lastAttempt: Date.now(),
+                isReconnecting: false,
+                attemptInProgress: false
             });
 
-            mainWindow.webContents.send('tiktokConnectionStatus', {
-                wssID: this.wssID,
-                status: 'error',
-                error: err.message
-            });
+            try {
+                mainWindow.webContents.send('tiktokConnectionStatus', {
+                    wssID: this.wssID,
+                    status: 'error',
+                    error: userFacingMessage
+                });
+            } catch (sendErr) {
+                console.warn('Failed to send TikTok error status to renderer:', sendErr);
+            }
 
             if (!this.isStopped) {
                 if (isRateLimited) {
@@ -7157,9 +8798,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     this.attemptReconnect(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS, { fixed: true, offline: false });
                 } else if (isOffline) {
                     this.offlineRetry = true;
-                    this.offlineReason = err.message || 'User is not live';
+                    this.offlineReason = userFacingMessage || 'User is not live';
                     this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
                 } else {
+                    this.offlineRetry = false;
+                    this.offlineReason = isSignServerIssue ? userFacingMessage : null;
                     this.attemptReconnect();
                 }
             }
@@ -7167,6 +8810,20 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         handleStreamEnd() {
             console.info('Stream ended');
+            // Broadcast zero viewers when the stream ends so overlays reset
+            this.lastViewerCount = 0;
+            if (isViewerUpdateAllowed()) {
+                try {
+                    sendToBackground({
+                        meta: 0,
+                        type: "tiktok",
+                        event: "viewer_update",
+                        tid: this.virtualTabId
+                    });
+                } catch (error) {
+                    console.error('Failed to send final TikTok viewer update:', error);
+                }
+            }
             // Treat stream end as offline and keep retrying periodically
             if (!this.isStopped) {
                 this.offlineRetry = true;
@@ -7191,6 +8848,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 clearTimeout(this.reconnectTimer);
                 this.reconnectTimer = null;
             }
+            this.resetGoalAggregates({ flush: false });
+            this.logDebug('lifecycle.disconnect', { method: 'disconnect()' });
+            this.closeLogWriter('disconnect');
         }
 
         forceReconnect() {
@@ -7204,14 +8864,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         attemptReconnect(delay = CONFIG.CONNECTION.RECONNECT_DELAY, options = {}) {
-            const { fixed = false, offline = false } = options || {};
+            const {
+                fixed = false,
+                offline = false,
+                immediate = false,
+                silent = false,
+                reason = undefined
+            } = options || {};
 
             if (this.isStopped) return;
 
             // Guard: avoid scheduling duplicate reconnect timers
             const st = connectionStates.get(this.wssID);
             if (this.reconnectTimer || (st && st.isReconnecting)) {
-                console.info('Reconnect already scheduled; skipping');
+                if (!silent) {
+                    console.info('Reconnect already scheduled; skipping');
+                }
                 return;
             }
 
@@ -7223,44 +8891,67 @@ async function createWindow(args, reuse = false, mainApp = false) {
             connectionStates.set(this.wssID, {
                 isConnected: false,
                 lastAttempt: Date.now(),
-                isReconnecting: true
+                isReconnecting: true,
+                attemptInProgress: false
             });
 
             // Delay calculation
             let backoffDelay;
-            if (fixed || offline || this.offlineRetry) {
+            if (immediate) {
+                backoffDelay = Number.isFinite(delay) ? Math.max(0, delay) : 0;
+            } else if (fixed || offline || this.offlineRetry) {
                 backoffDelay = (typeof delay === 'number' ? delay : CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS) || CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS;
             } else {
                 // Exponential backoff for transient errors, capped by config
                 const base = (typeof delay === 'number' ? delay : CONFIG.CONNECTION.RECONNECT_DELAY) || CONFIG.CONNECTION.RECONNECT_DELAY;
                 backoffDelay = Math.min(base * Math.pow(2, this.reconnectAttempts - 1), CONFIG.CONNECTION.MAX_RECONNECT_DELAY_MS);
             }
-            // Add jitter to reduce thundering herd
-            const jitter = CONFIG.CONNECTION.BACKOFF_JITTER || 0;
-            if (jitter > 0) {
-                const delta = backoffDelay * jitter;
-                const min = backoffDelay - delta;
-                const max = backoffDelay + delta;
-                backoffDelay = Math.max(0, Math.floor(min + Math.random() * (max - min)));
+            // Add jitter to reduce thundering herd when we're not doing an immediate retry
+            if (!immediate) {
+                const jitter = CONFIG.CONNECTION.BACKOFF_JITTER || 0;
+                if (jitter > 0) {
+                    const delta = backoffDelay * jitter;
+                    const min = backoffDelay - delta;
+                    const max = backoffDelay + delta;
+                    backoffDelay = Math.max(0, Math.floor(min + Math.random() * (max - min)));
+                }
             }
 
             // Safety: ensure a positive, non-zero delay to avoid edge cases
-            if (!Number.isFinite(backoffDelay) || backoffDelay <= 0) {
-                backoffDelay = Math.max(1000, CONFIG.CONNECTION.RECONNECT_DELAY);
+            if (!Number.isFinite(backoffDelay) || backoffDelay < 0 || (!immediate && backoffDelay <= 0)) {
+                backoffDelay = immediate ? 0 : Math.max(1000, CONFIG.CONNECTION.RECONNECT_DELAY);
             }
 
             const attemptLabel = (offline || this.offlineRetry) ? 'offline-retry' : `${this.reconnectAttempts}`;
-            console.info(`Reconnect attempt ${attemptLabel} - waiting ${Math.round(backoffDelay/1000)}s` + (this.offlineReason ? ` (reason: ${this.offlineReason})` : ''));
-
-            // Send reconnection status to the renderer
-            mainWindow.webContents.send('tiktokConnectionStatus', {
-                wssID: this.wssID,
-                status: 'reconnecting',
+            const reasonForLog = (reason !== undefined) ? reason : (this.offlineReason || null);
+            this.logDebug('lifecycle.reconnect.scheduled', {
                 attempt: this.reconnectAttempts,
-                maxAttempts: undefined,
-                nextAttemptIn: backoffDelay,
-                reason: this.offlineReason || undefined
+                delayMs: backoffDelay,
+                offline: !!(offline || this.offlineRetry),
+                reason: reasonForLog,
+                silent: !!silent
             });
+            if (!silent) {
+                const seconds = Math.round(backoffDelay / 1000);
+                const reasonSuffix = reasonForLog ? ` (reason: ${reasonForLog})` : '';
+                console.info(`Reconnect attempt ${attemptLabel} - waiting ${seconds}s${reasonSuffix}`);
+
+                // Send reconnection status to the renderer
+                try {
+                    if (mainWindow && mainWindow.webContents) {
+                        mainWindow.webContents.send('tiktokConnectionStatus', {
+                            wssID: this.wssID,
+                            status: 'reconnecting',
+                            attempt: this.reconnectAttempts,
+                            maxAttempts: undefined,
+                            nextAttemptIn: backoffDelay,
+                            reason: reasonForLog || undefined
+                        });
+                    }
+                } catch (sendErr) {
+                    console.warn('Failed to send reconnect status update:', sendErr);
+                }
+            }
 
             // Clear any existing reconnect timer
             if (this.reconnectTimer) {
@@ -7269,17 +8960,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             this.reconnectTimer = setTimeout(() => {
                 this.reconnectTimer = null;
-                // We are now actively attempting a connection; clear the reconnecting flag
-                // so that a failure can schedule the next attempt without being blocked.
+                // Mark the active attempt so cleanup logic does not dispose the manager mid-connect.
                 try {
                     connectionStates.set(this.wssID, {
                         isConnected: false,
                         lastAttempt: Date.now(),
-                        isReconnecting: false
+                        isReconnecting: true,
+                        attemptInProgress: true
                     });
                 } catch (_) { /* noop */ }
                 if (!this.isStopped) {
                     try {
+                        this.logDebug('lifecycle.reconnect.attempt', {
+                            attempt: this.reconnectAttempts,
+                            offline: !!this.offlineRetry,
+                            reason: this.offlineReason || null
+                        });
                         this.connect();
                     } catch (e) {
                         console.error('Reconnect attempt threw before promise handling:', e);
@@ -7300,148 +8996,188 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (!isCaptureEventsEnabled()) {
                 return; // drop non-gift events if captureevents disabled
             }
-            const rawColor = data.nameColor || data.name_color || data.user?.nameColor;
+
+            const includeChatPayload = typeof message === 'string' && message.trim().length > 0;
             const payload = {
-                chatmessage: message,
-                moderator: data.isModerator || false,
-                membership: data.isSubscriber || false,
-                chatname: data.nickname || data.uniqueId || "System",
-                chatimg: data.profilePictureUrl || null,
                 type: "tiktok",
-                textonlymode: false,
                 event: eventType,
-                tid: this.virtualTabId // Include the virtual tab ID
+                tid: this.virtualTabId
             };
 
-            if (rawColor) {
-                const safeColor = normalizeNameColor(rawColor);
-                if (safeColor) {
-                    payload.nameColor = safeColor;
-                    payload.chatnamecolor = safeColor;
+            if (includeChatPayload) {
+                const identity = extractTikTokIdentity(data);
+                const displayName = identity.nickname || identity.uniqueId;
+                const avatarUrl = identity.profilePictureUrl
+                    || normalizeTikTokImageUrl(data?.profilePictureUrl)
+                    || normalizeTikTokImageUrl(data?.profilePicture)
+                    || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+                    || normalizeTikTokImageUrl(data?.user?.profilePicture);
+
+                payload.chatmessage = message.trim();
+                payload.chatname = displayName || "System";
+                payload.chatimg = avatarUrl || null;
+                payload.moderator = resolveTikTokModeratorStatus(data);
+                payload.membership = resolveTikTokSubscriberStatus(data);
+                payload.textonly = isTextOnlyModeEnabled();
+
+                if (identity.uniqueId) {
+                    payload.userid = identity.uniqueId;
+                }
+
+                const rawColor = data?.nameColor || data?.name_color || data?.user?.nameColor;
+                if (rawColor) {
+                    const safeColor = normalizeNameColor(rawColor);
+                    if (safeColor) {
+                        payload.nameColor = safeColor;
+                    }
                 }
             }
 
-            if (extraMeta && typeof extraMeta === 'object') {
-                const meta = { ...extraMeta };
-                if (Object.keys(meta).length > 0) {
-                    payload.meta = meta;
-                }
+            const metaPayload = sanitizeEventMeta({
+                eventType,
+                ...extraMeta
+            });
+            if (metaPayload) {
+                payload.meta = metaPayload;
             }
 
             sendToBackground(payload);
         }
 
         async sendChatMessage(message) {
-            // Check if user is signed in (has session)
-            if (!this.sessionId) {
-                console.log('Cannot send message: User not signed in');
+            if (typeof message !== 'string' || !message.trim()) {
                 return {
                     success: false,
-                    error: 'User not signed in'
+                    error: 'Message must be a non-empty string'
                 };
             }
 
-            // Check if connection is active
-            if (!this.connection || this.isStopped) {
-                console.log('Cannot send message: Connection not active');
+            if (!this.sessionId || !this.ttTargetIdc) {
+                console.warn('Skipping TikTok chat send: session credentials missing');
+                return {
+                    success: false,
+                    error: 'TikTok chat sending requires sign-in'
+                };
+            }
+
+            if (!this.connection || this.isStopped || !this.connection.isConnected) {
+                console.warn('Cannot send TikTok message: Connection not active');
                 return {
                     success: false,
                     error: 'Connection not active'
                 };
             }
 
+            const trimmedMessage = message.trim();
+
             try {
-                // Send message using the TikTok connection
-                await this.connection.sendMessage(message);
-                console.log(`Message sent to TikTok chat: ${message}`);
+                await this.connection.sendMessage(trimmedMessage);
+                console.log('Message sent to TikTok chat.');
                 return {
                     success: true
                 };
             } catch (error) {
                 console.error('Failed to send TikTok message:', error);
+                const detail = typeof error?.message === 'string' && error.message.trim()
+                    ? error.message.trim()
+                    : 'Failed to send message';
                 return {
                     success: false,
-                    error: error.message || 'Failed to send message'
+                    error: detail
                 };
             }
         }
     }
 
-    ipcMain.on("createTikTokConnection", async function(eventRet, args) {
-        try {
-            wssID++;
-            let username = args.username;
-            if (username) {
-                username = username.replace("@", "").toLowerCase().trim();
-                // Warn if username contains spaces or special chars (might be display name)
-                if (username.includes(' ') || username.match(/[^a-z0-9._]/)) {
-                    console.warn('Username contains invalid characters - might be a display name:', username);
-                    // Remove spaces and special chars to try to extract username
-                    username = username.replace(/[^a-z0-9._]/g, '');
-                }
+    ipcMain.handle("createTikTokConnection", async function(_event, args) {
+        wssID++;
+        let username = args.username;
+        if (username) {
+            username = username.replace("@", "").toLowerCase().trim();
+            // Warn if username contains spaces or special chars (might be display name)
+            if (username.includes(' ') || username.match(/[^a-z0-9._]/)) {
+                console.warn('Username contains invalid characters - might be a display name:', username);
+                // Remove spaces and special chars to try to extract username
+                username = username.replace(/[^a-z0-9._]/g, '');
             }
-            if (!username) {
-                eventRet.returnValue = null;
-                return;
-            }
-            console.log('Attempting TikTok connection with username:', username);
+        }
+        if (!username) {
+            return null;
+        }
+        console.log('Attempting TikTok connection with username:', username);
 
-            // Extract session credentials if provided
-            const sessionId = args.sessionId || null;
-            const ttTargetIdc = args.ttTargetIdc || null;
+        // Extract session credentials if provided
+        const sessionId = args.sessionId || null;
+        const ttTargetIdc = args.ttTargetIdc || null;
 
-            const manager = new ConnectionManager(username, wssID, sessionId, ttTargetIdc);
-            if (args && args.replyOnly === true) {
-                manager.replyOnly = true;
-            }
-            websocketConnections[wssID] = manager;
+        const manager = new ConnectionManager(username, wssID, sessionId, ttTargetIdc);
+        if (args && args.replyOnly === true) {
+            manager.replyOnly = true;
+        }
+        websocketConnections[wssID] = manager;
 
-            connectionStates.set(wssID, {
-                isConnected: false,
-                lastAttempt: Date.now()
-            });
+        connectionStates.set(wssID, {
+            isConnected: false,
+            lastAttempt: Date.now(),
+            isReconnecting: false,
+            attemptInProgress: false
+        });
 
-            // Create a virtual tab entry for the TikTok connection
-            // Use a special tab ID that won't conflict with real browser tabs
-            const virtualTabId = 900000 + wssID; // High number to avoid conflicts
-            browserViews[virtualTabId] = {
-                isTikTokVirtual: true,
-                wssID: wssID,
-                username: username,
-                args: {
-                    url: `https://www.tiktok.com/@${username}/live`
-                },
-                webContents: {
-                    getURL: () => `https://www.tiktok.com/@${username}/live`,
-                    send: (channel, data) => {
-                        // Handle messages sent to this virtual tab
-                        if (channel === "sendToTab" && data && data.text) {
-                            // Send the message through the TikTok websocket
-                            if (manager.sessionId) {
-                                manager.sendChatMessage(data.text).then(result => {
-                                    if (!result.success) {
-                                        console.log('Failed to send TikTok message:', result.error);
-                                    }
-                                });
-                            } else {
-                                console.log('Cannot send TikTok message: User not signed in');
-                            }
-                        }
+        // Create a virtual tab entry for the TikTok connection
+        // Use a special tab ID that won't conflict with real browser tabs
+        const virtualTabId = 900000 + wssID; // High number to avoid conflicts
+        browserViews[virtualTabId] = {
+            isTikTokVirtual: true,
+            wssID: wssID,
+            username: username,
+            args: {
+                url: `https://www.tiktok.com/@${username}/live`
+            },
+            webContents: {
+                getURL: () => `https://www.tiktok.com/@${username}/live`,
+                send: (channel, data) => {
+                    // Handle messages sent to this virtual tab
+                    if (channel !== "sendToTab") return;
+
+                    const text = typeof data?.text === 'string' ? data.text.trim() : '';
+                    if (!text) {
+                        console.warn('Ignoring empty TikTok chat send request');
+                        return;
                     }
+
+                    if (!manager.sessionId || !manager.ttTargetIdc) {
+                        console.warn('TikTok outbound messaging ignored: sign-in required');
+                        return;
+                    }
+
+                    manager.sendChatMessage(text).then(result => {
+                        if (!result?.success && result?.error) {
+                            console.log('Failed to send TikTok message:', result.error);
+                        }
+                    }).catch(error => {
+                        console.error('Failed to send TikTok message:', error);
+                    });
                 }
-            };
+            }
+        };
 
-            // Store the virtual tab ID in the manager for reference
-            manager.virtualTabId = virtualTabId;
-            manager.wssID = wssID; // Store wssID for reference too
+        // Store the virtual tab ID in the manager for reference
+        manager.virtualTabId = virtualTabId;
+        manager.wssID = wssID; // Store wssID for reference too
+        if (typeof manager.logDebug === 'function') {
+            manager.logDebug('lifecycle.virtualTab.assigned', { virtualTabId });
+        }
 
+        try {
             await manager.initialize();
-            // Return the virtual tab ID instead of wssID so it can be used with browserViews
-            eventRet.returnValue = virtualTabId;
         } catch (e) {
             console.error('Error creating TikTok connection:', e);
-            eventRet.returnValue = null;
+            // Propagate the error to the renderer so the UI can react accordingly
+            throw e;
         }
+
+        // Return the virtual tab ID instead of wssID so it can be used with browserViews
+        return virtualTabId;
     });
 
     ipcMain.on("disconnectTikTokConnection", function(eventRet, args) {
@@ -7531,16 +9267,25 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const {
                 wssID,
                 message
-            } = args;
+            } = args || {};
 
-            if (!wssID || !message) {
+            const numericWssID = typeof wssID === 'number' ? wssID : Number.parseInt(wssID, 10);
+
+            if (!Number.isFinite(numericWssID)) {
                 return {
                     success: false,
                     error: 'Missing wssID or message'
                 };
             }
 
-            const connection = websocketConnections[wssID];
+            if (typeof message !== 'string' || !message.trim()) {
+                return {
+                    success: false,
+                    error: 'Message must be a non-empty string'
+                };
+            }
+
+            const connection = websocketConnections[numericWssID];
             if (!connection) {
                 return {
                     success: false,
@@ -7560,6 +9305,32 @@ async function createWindow(args, reuse = false, mainApp = false) {
             };
         }
     });
+    function logTikTokForwardedMessage(msg, context = 'single', meta = {}) {
+        try {
+            if (!msg || msg.type !== 'tiktok') return;
+            const tid = typeof msg.tid === 'number' ? msg.tid : null;
+            if (!tid || tid < 900001) return;
+            const wssID = tid - 900000;
+            const manager = websocketConnections[wssID];
+            if (!manager || typeof manager.logDebug !== 'function') return;
+            const summary = {
+                context,
+                event: msg.event || (msg.hasDonation ? 'gift' : 'chat'),
+                chatmessage: msg.chatmessage || null,
+                chatname: msg.chatname || null,
+                userid: msg.userid || null,
+                moderator: !!msg.moderator,
+                membership: !!msg.membership,
+                hasDonation: (typeof msg.hasDonation === 'string' && msg.hasDonation) ? msg.hasDonation : null,
+                batchSize: meta.batchSize || null,
+                itemIndex: meta.itemIndex || null
+            };
+            if (msg.meta !== undefined) summary.meta = msg.meta;
+            manager.logDebug('event.forwarded', summary);
+        } catch (error) {
+            console.error('Failed to record TikTok forwarded message:', error);
+        }
+    }
 
     function sendToBackground(msg) {
         // Per-connection reply-only filter (TikTok virtual tabs)
@@ -7570,11 +9341,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     const wssID = tid - 900000;
                     const conn = websocketConnections[wssID];
                     if (conn && conn.replyOnly) {
+                        if (typeof conn.logDebug === 'function') {
+                            conn.logDebug('event.forwarded.skipped', {
+                                reason: 'reply_only',
+                                context: 'single'
+                            });
+                        }
                         return; // drop captured message for reply-only connection
                     }
                 }
             }
         } catch (_) { /* noop */ }
+
+        logTikTokForwardedMessage(msg);
 
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
@@ -7598,13 +9377,30 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         if (tid >= 900001) {
                             const wssID = tid - 900000;
                             const conn = websocketConnections[wssID];
-                            if (conn && conn.replyOnly) return false;
+                            if (conn && conn.replyOnly) {
+                                if (typeof conn.logDebug === 'function' && m && m.type === 'tiktok') {
+                                    conn.logDebug('event.forwarded.skipped', {
+                                        reason: 'reply_only',
+                                        context: 'batch'
+                                    });
+                                }
+                                return false;
+                            }
                         }
                     } catch(_){}
                     return true;
                 });
             }
         } catch(_){}
+
+        if (Array.isArray(messages)) {
+            messages.forEach((m, idx) => {
+                logTikTokForwardedMessage(m, 'batch', {
+                    batchSize: messages.length,
+                    itemIndex: idx
+                });
+            });
+        }
 
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
