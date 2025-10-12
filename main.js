@@ -104,6 +104,26 @@ function isViewerUpdateAllowed() {
     } catch (_) { return false; }
 }
 
+function getCachedSettings() {
+    try {
+        if (cachedState && typeof cachedState === 'object') {
+            return cachedState.settings && typeof cachedState.settings === 'object'
+                ? cachedState.settings
+                : {};
+        }
+    } catch (_) {}
+    return {};
+}
+
+function isTextOnlyModeEnabled() {
+    try {
+        const settings = getCachedSettings();
+        return !!(settings.textonlymode || settings.textonly);
+    } catch (_) {
+        return false;
+    }
+}
+
 // Store the system locale - get it from environment or OS
 let SYSTEM_LOCALE = 'en-US'; // Default fallback
 
@@ -6264,28 +6284,52 @@ function resolveTikTokSubscriberStatus(data = {}) {
 
     function composeTikTokChatMessage(data = {}, options = {}) {
         const { includeTopGifterBadgeAlways = false } = options;
-        const message = {
-            chatmessage: data?.comment || ''
-        };
+        const textOnly = isTextOnlyModeEnabled();
+
+        let chatmessage = typeof data?.comment === 'string' ? data.comment : '';
 
         if (Array.isArray(data?.emotes) && data.emotes.length > 0) {
-            let stickerHtml = '';
-            data.emotes.forEach((emote, index) => {
+            const emoteParts = [];
+            data.emotes.forEach((emote) => {
                 if (!emote) return;
-                const url = emote.emoteImageUrl || emote.imageUrl || emote.url || emote.image?.url;
-                if (!url) return;
-                const alt = emote.emoteName || emote.name || '';
-                const emoteId = emote.emoteId || emote.id || '';
-                if (index > 0) {
-                    stickerHtml += ' ';
+
+                const emoteLabel = cleanVisibleString(emote.emoteName || emote.name || emote.title || emote.id);
+
+                if (textOnly) {
+                    if (emoteLabel) {
+                        emoteParts.push(emoteLabel);
+                    } else {
+                        emoteParts.push('[sticker]');
+                    }
+                    return;
                 }
-                stickerHtml += `<img class="sticker" src="${url}"${alt ? ` alt="${alt}"` : ''}${emoteId ? ` data-emote-id="${emoteId}"` : ''}>`;
+
+                const urlCandidate = emote.emoteImageUrl || emote.imageUrl || emote.url || emote.image?.url;
+                const resolvedUrl = normalizeTikTokImageUrl(urlCandidate);
+                if (!resolvedUrl) return;
+
+                const emoteId = emote.emoteId || emote.id || '';
+                let tag = `<img class="sticker" src="${resolvedUrl}"`;
+                if (emoteLabel) {
+                    tag += ` alt="${emoteLabel}"`;
+                }
+                if (emoteId) {
+                    tag += ` data-emote-id="${emoteId}"`;
+                }
+                tag += '>';
+                emoteParts.push(tag);
             });
 
-            if (stickerHtml) {
-                message.chatmessage = `${message.chatmessage} ${stickerHtml}`;
+            if (emoteParts.length) {
+                const emoteText = emoteParts.join(' ');
+                chatmessage = chatmessage ? `${chatmessage} ${emoteText}` : emoteText;
             }
         }
+
+        const message = {
+            chatmessage,
+            textonly: textOnly
+        };
 
         const badgeSources = collectTikTokBadges(data);
         if (badgeSources.length) {
@@ -6334,9 +6378,9 @@ function resolveTikTokSubscriberStatus(data = {}) {
         message.chatimg = avatarUrl || null;
 
         const nameColor = data?.nameColor || data?.name_color || data?.user?.nameColor;
-        if (nameColor) {
-            message.nameColor = nameColor;
-            message.chatnamecolor = nameColor;
+        const safeColor = normalizeNameColor(nameColor);
+        if (safeColor) {
+            message.nameColor = safeColor;
         }
 
         return message;
@@ -6344,7 +6388,9 @@ function resolveTikTokSubscriberStatus(data = {}) {
 
     function sendChatMessage(data, virtualTabId) {
         const msg = composeTikTokChatMessage(data, { includeTopGifterBadgeAlways: true });
-        msg.textonlymode = false;
+        if (typeof msg.textonly !== 'boolean') {
+            msg.textonly = isTextOnlyModeEnabled();
+        }
         msg.type = 'tiktok';
         msg.tid = virtualTabId;
         sendToBackground(msg);
@@ -6682,13 +6728,61 @@ function resolveTikTokSubscriberStatus(data = {}) {
         return undefined;
     }
 
-    function sanitizeEventMeta(meta) {
-        if (!meta || typeof meta !== 'object') {
-            return null;
-        }
-        const sanitized = sanitizeMetaValue(meta, 0);
-        return sanitized && typeof sanitized === 'object' ? sanitized : null;
+function sanitizeEventMeta(meta) {
+    if (!meta || typeof meta !== 'object') {
+        return null;
     }
+    const sanitized = sanitizeMetaValue(meta, 0);
+    return sanitized && typeof sanitized === 'object' ? sanitized : null;
+}
+
+function pickFirstNonEmptyString(candidates = []) {
+    const list = Array.isArray(candidates) ? candidates : [candidates];
+    for (const candidate of list) {
+        if (Array.isArray(candidate)) {
+            const nested = pickFirstNonEmptyString(candidate);
+            if (nested) return nested;
+            continue;
+        }
+        if (candidate === undefined || candidate === null) continue;
+        if (typeof candidate === 'string') {
+            const cleaned = cleanVisibleString(candidate);
+            if (cleaned) return cleaned;
+        } else if (typeof candidate === 'number') {
+            if (!Number.isNaN(candidate)) {
+                return String(candidate);
+            }
+        }
+    }
+    return null;
+}
+
+function pickFirstPositiveNumber(candidates = []) {
+    const list = Array.isArray(candidates) ? candidates : [candidates];
+    for (const candidate of list) {
+        if (Array.isArray(candidate)) {
+            const nested = pickFirstPositiveNumber(candidate);
+            if (nested > 0) return nested;
+            continue;
+        }
+        const numeric = Number(candidate);
+        if (Number.isFinite(numeric) && numeric > 0) {
+            return numeric;
+        }
+    }
+    return 0;
+}
+
+function resolveFirstImageUrl(candidates = []) {
+    const list = Array.isArray(candidates) ? candidates : [candidates];
+    for (const candidate of list) {
+        const resolved = normalizeTikTokImageUrl(candidate);
+        if (resolved) {
+            return resolved;
+        }
+    }
+    return null;
+}
 
     // Load CircularBuffer if available
     let CircularBuffer;
@@ -6752,7 +6846,9 @@ function resolveTikTokSubscriberStatus(data = {}) {
 
         formatChatMessage(data) {
             const msg = composeTikTokChatMessage(data, { includeTopGifterBadgeAlways: false });
-            msg.textonlymode = false;
+            if (typeof msg.textonly !== 'boolean') {
+                msg.textonly = isTextOnlyModeEnabled();
+            }
             msg.type = 'tiktok';
             return msg;
         }
@@ -6928,7 +7024,7 @@ function resolveTikTokSubscriberStatus(data = {}) {
 
             const msg = {
                 type: "tiktok",
-                textonlymode: false,
+                textonly: isTextOnlyModeEnabled(),
                 chatmessage: message,
                 meta: {
                     clustered: true,
@@ -6946,11 +7042,11 @@ function resolveTikTokSubscriberStatus(data = {}) {
             };
 
             const primaryColor = users
-                .map(u => u?.nameColor)
+                .map(u => u?.nameColor || u?.name_color)
                 .find(Boolean);
-            if (primaryColor) {
-                msg.nameColor = primaryColor;
-                msg.chatnamecolor = primaryColor;
+            const safeColor = normalizeNameColor(primaryColor);
+            if (safeColor) {
+                msg.nameColor = safeColor;
             }
             return msg;
         }
@@ -7088,66 +7184,7 @@ function resolveTikTokSubscriberStatus(data = {}) {
             const giftDetails = isPlainObject(data?.giftDetails) ? data.giftDetails : {};
             const extendedGiftInfo = isPlainObject(data?.extendedGiftInfo) ? data.extendedGiftInfo : {};
 
-            const normalizeGiftImage = (candidate) => normalizeTikTokImageUrl(candidate);
-
-            const extractNestedString = (value, cleaner = cleanVisibleString, preferredKeys = [], options = {}) => {
-                if (value === undefined || value === null) return null;
-
-                const { allowNumeric = false, allowBoolean = false } = options;
-
-                const cleanPrimitive = (primitive) => {
-                    const cleaned = cleaner(primitive);
-                    return typeof cleaned === 'string' && cleaned ? cleaned : null;
-                };
-
-                if (typeof value === 'string') {
-                    return cleanPrimitive(value);
-                }
-
-                if (typeof value === 'number') {
-                    if (!allowNumeric) return null;
-                    return cleanPrimitive(value);
-                }
-
-                if (typeof value === 'boolean') {
-                    if (!allowBoolean) return null;
-                    return cleanPrimitive(value);
-                }
-
-                if (Array.isArray(value)) {
-                    for (const item of value) {
-                        const result = extractNestedString(item, cleaner, preferredKeys, options);
-                        if (result) return result;
-                    }
-                    return null;
-                }
-
-                if (isPlainObject(value)) {
-                    const keysToTry = preferredKeys.length ? preferredKeys : Object.keys(value);
-                    for (const key of keysToTry) {
-                        if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
-                        const result = extractNestedString(value[key], cleaner, preferredKeys, options);
-                        if (result) return result;
-                    }
-                    // Fallback: iterate remaining values if preferred keys didn't match
-                    for (const val of Object.values(value)) {
-                        const result = extractNestedString(val, cleaner, preferredKeys, options);
-                        if (result) return result;
-                    }
-                }
-
-                return null;
-            };
-
-            const pickFirstString = (candidates, cleaner = cleanVisibleString, preferredKeys = [], options = {}) => {
-                for (const candidate of candidates) {
-                    const result = extractNestedString(candidate, cleaner, preferredKeys, options);
-                    if (result) return result;
-                }
-                return null;
-            };
-
-            const giftIdCandidates = [
+            const giftId = pickFirstNonEmptyString([
                 data.giftId,
                 giftData.giftId,
                 giftData.gift_id,
@@ -7161,85 +7198,23 @@ function resolveTikTokSubscriberStatus(data = {}) {
                 giftDetails.gift_id,
                 extendedGiftInfo.id,
                 extendedGiftInfo.id_str
-            ];
-            const giftId = pickFirstString(giftIdCandidates, cleanGenericString, [], { allowNumeric: true });
+            ]);
 
-            const giftNameCandidates = [
+            const mappedGiftName = giftId && giftMapping && giftMapping[giftId] ? giftMapping[giftId].name : null;
+            const giftName = pickFirstNonEmptyString([
                 data.giftName,
                 giftData.giftName,
                 giftData.name,
                 giftData.displayName,
                 giftData.title,
-                giftData.localized_name,
-                giftData.localizedName,
-                giftData.extendedGiftName,
-                giftData.extended_gift_name,
-                giftData.extendedGift?.name,
-                giftData.extended_gift?.name,
                 giftDetails.giftName,
                 giftDetails.describe,
-                giftDetails.icon?.text,
-                giftDetails.icon?.name,
                 extendedGiftInfo.name,
                 extendedGiftInfo.describe,
-                extendedGiftInfo.text,
-                giftId && giftMapping && giftMapping[giftId] && giftMapping[giftId].name
-            ];
-            const giftName = pickFirstString(
-                giftNameCandidates,
-                cleanVisibleString,
-                ['name', 'displayName', 'title', 'text', 'value', 'en', 'en_US', 'default', 'defaultText']
-            ) || (giftId ? `Gift ID: ${giftId}` : 'Gift');
+                mappedGiftName
+            ]) || (giftId ? `Gift ${giftId}` : 'Gift');
 
-            const imageCandidates = [
-                data.giftPictureUrl,
-                giftData.giftPictureUrl,
-                giftData.iconUrl,
-                giftData.icon_url,
-                giftData.pictureUrl,
-                giftData.picture_url,
-                giftData.imageUrl,
-                giftData.image_url,
-                giftData.image?.url,
-                giftData.image?.uri,
-                giftData.image?.gifUrl,
-                giftData.image?.gif_url,
-                giftData.image?.thumbUrl,
-                giftData.image?.thumb_url,
-                giftData.image?.url_list,
-                giftData.image?.urls,
-                giftDetails.icon,
-                giftDetails.icon?.url,
-                giftDetails.icon?.url_list,
-                giftDetails.icon?.urls,
-                giftDetails.giftImage,
-                giftDetails.giftImage?.url,
-                giftDetails.giftImage?.url_list,
-                giftDetails.giftImage?.urls,
-                extendedGiftInfo.icon,
-                extendedGiftInfo.icon?.url_list,
-                extendedGiftInfo.icon?.url,
-                extendedGiftInfo.image,
-                extendedGiftInfo.image?.url_list,
-                extendedGiftInfo.image?.url
-            ];
-            let giftPictureUrl = pickFirstString(
-                imageCandidates,
-                value => normalizeGiftImage(value) || cleanGenericString(value),
-                ['url', 'uri', 'gifUrl', 'gif_url', 'thumbUrl', 'thumb_url', 'url_list']
-            ) || '';
-
-            if (giftPictureUrl) {
-                const looksLikeUrl = /^(?:https?:)?\/\//i.test(giftPictureUrl)
-                    || giftPictureUrl.startsWith('data:image/')
-                    || giftPictureUrl.startsWith('/')
-                    || giftPictureUrl.includes('.');
-                if (!looksLikeUrl) {
-                    giftPictureUrl = '';
-                }
-            }
-
-            const diamondCandidates = [
+            const perGiftDiamonds = pickFirstPositiveNumber([
                 data.diamondCount,
                 giftData.diamondCount,
                 giftData.diamond_count,
@@ -7252,30 +7227,39 @@ function resolveTikTokSubscriberStatus(data = {}) {
                 extendedGiftInfo.diamondCount,
                 extendedGiftInfo.diamond_count,
                 extendedGiftInfo.coins,
-                giftId && giftMapping && giftMapping[giftId] && giftMapping[giftId].coins
-            ];
-            let diamondCount = 0;
-            for (const candidate of diamondCandidates) {
-                const num = Number(candidate);
-                if (Number.isFinite(num) && num > 0) {
-                    diamondCount = num;
-                    break;
-                }
-            }
+                giftId && giftMapping && giftMapping[giftId] ? giftMapping[giftId].coins : 0
+            ]);
+            const totalDiamonds = perGiftDiamonds * count;
+            const donationDisplay = totalDiamonds > 0 ? `${totalDiamonds} 💎` : null;
+
+            const giftPictureUrl = resolveFirstImageUrl([
+                data.giftPictureUrl,
+                giftData.giftPictureUrl,
+                giftData.iconUrl,
+                giftData.icon_url,
+                giftData.pictureUrl,
+                giftData.picture_url,
+                giftData.imageUrl,
+                giftData.image_url,
+                giftData.image,
+                giftDetails.icon,
+                giftDetails.giftImage,
+                extendedGiftInfo.icon,
+                extendedGiftInfo.image
+            ]);
 
             const identity = extractTikTokIdentity(data);
             const resolvedUserId = resolveTikTokUserId(data, identity);
             const resolvedChatname = resolveTikTokDisplayName(data, identity, resolvedUserId);
+            const textOnly = isTextOnlyModeEnabled();
 
-            const fanTicketCount = Number(data.fanTicketCount || giftDetails.fanTicketCount || extendedGiftInfo.fan_ticket_count || 0) * count;
+            const chatmessage = `Sent ${giftName} x${count}`;
+
             const msg = {
-                chatmessage: `Sent ${giftName} x${count}${giftPictureUrl && !data.textonlymode ? ` <img src='${giftPictureUrl}'>` : ''}`,
-                hasDonation: diamondCount > 0 ? `${diamondCount * count} 💎` : '',
-                donoValue: diamondCount * count * 0.005,
-                fanTickets: fanTicketCount > 0 ? fanTicketCount : undefined,
-                giftId: giftId || undefined,
-                moderator: resolveTikTokModeratorStatus(data),
-                membership: resolveTikTokSubscriberStatus(data),
+                chatmessage,
+                type: "tiktok",
+                textonly: textOnly,
+                event: 'gift',
                 chatname: resolvedChatname,
                 chatimg: identity.profilePictureUrl
                     || normalizeTikTokImageUrl(data.profilePictureUrl)
@@ -7283,19 +7267,51 @@ function resolveTikTokSubscriberStatus(data = {}) {
                     || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
                     || normalizeTikTokImageUrl(data?.user?.profilePicture)
                     || null,
-                type: "tiktok",
-                textonlymode: !!data.textonlymode,
-                tid: this.manager.virtualTabId // Include the virtual tab ID
+                moderator: resolveTikTokModeratorStatus(data),
+                membership: resolveTikTokSubscriberStatus(data),
+                tid: this.manager.virtualTabId,
+                title: giftName
             };
 
             if (resolvedUserId) {
                 msg.userid = resolvedUserId;
             }
+            if (donationDisplay) {
+                msg.hasDonation = donationDisplay;
+                msg.subtitle = donationDisplay;
+            }
+            if (giftPictureUrl) {
+                msg.contentimg = giftPictureUrl;
+            }
+
+            const fanTicketCount = pickFirstPositiveNumber([
+                data.fanTicketCount,
+                giftDetails.fanTicketCount,
+                extendedGiftInfo.fan_ticket_count
+            ]) * count;
+
+            const repeatCount = Number(data.repeatCount) || Number(giftDetails.repeatCount) || Number(extendedGiftInfo.repeat_count) || 0;
+            const comboCount = Number(data.comboCount) || Number(giftDetails.comboCount) || Number(extendedGiftInfo.combo_count) || 0;
+            const groupCount = Number(data.groupCount) || Number(giftDetails.groupCount) || Number(extendedGiftInfo.group_count) || 0;
+
+            const meta = sanitizeEventMeta({
+                giftId,
+                count,
+                repeatCount: repeatCount > 1 ? repeatCount : undefined,
+                comboCount: comboCount > 1 ? comboCount : undefined,
+                groupCount: groupCount > 1 ? groupCount : undefined,
+                diamondsPerGift: perGiftDiamonds || undefined,
+                diamondsTotal: totalDiamonds || undefined,
+                fanTickets: fanTicketCount > 0 ? fanTicketCount : undefined
+            });
+            if (meta) {
+                msg.meta = meta;
+            }
 
             const rawColor = data.nameColor || data.name_color || data.user?.nameColor;
-            if (rawColor) {
-                msg.nameColor = rawColor;
-                msg.chatnamecolor = rawColor;
+            const safeColor = normalizeNameColor(rawColor);
+            if (safeColor) {
+                msg.nameColor = safeColor;
             }
 
             sendToBackground(msg);
@@ -7773,8 +7789,17 @@ function resolveTikTokSubscriberStatus(data = {}) {
                         return;
                     }
 
-                    const actionCode = Number(data?.action);
-                    if (actionCode !== 1) {
+                    const action = data?.action;
+                    const actionCode = typeof action === 'number' ? action : Number(action);
+                    const actionIsJoin = actionCode === 1 ||
+                        (typeof action === 'string' && action.toLowerCase().trim() === 'join');
+                    const descriptionMentionsJoin = [
+                        data?.actionDescription,
+                        data?.displayText?.defaultPattern,
+                        data?.anchorDisplayText?.defaultPattern
+                    ].some(text => typeof text === 'string' && text.toLowerCase().includes('join'));
+
+                    if (!actionIsJoin && !descriptionMentionsJoin) {
                         return;
                     }
 
@@ -8737,6 +8762,7 @@ function resolveTikTokSubscriberStatus(data = {}) {
                 || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
                 || normalizeTikTokImageUrl(data?.user?.profilePicture);
 
+            const textOnly = isTextOnlyModeEnabled();
             const payload = {
                 chatmessage: message,
                 moderator: resolveTikTokModeratorStatus(data),
@@ -8744,7 +8770,7 @@ function resolveTikTokSubscriberStatus(data = {}) {
                 chatname: displayName || "System",
                 chatimg: avatarUrl || null,
                 type: "tiktok",
-                textonlymode: false,
+                textonly: textOnly,
                 event: eventType,
                 tid: this.virtualTabId // Include the virtual tab ID
             };
@@ -8757,7 +8783,6 @@ function resolveTikTokSubscriberStatus(data = {}) {
                 const safeColor = normalizeNameColor(rawColor);
                 if (safeColor) {
                     payload.nameColor = safeColor;
-                    payload.chatnamecolor = safeColor;
                 }
             }
 
@@ -9021,7 +9046,6 @@ function resolveTikTokSubscriberStatus(data = {}) {
                 userid: msg.userid || null,
                 moderator: !!msg.moderator,
                 membership: !!msg.membership,
-                donoValue: msg.donoValue ?? null,
                 hasDonation: (typeof msg.hasDonation === 'string' && msg.hasDonation) ? msg.hasDonation : null,
                 batchSize: meta.batchSize || null,
                 itemIndex: meta.itemIndex || null
