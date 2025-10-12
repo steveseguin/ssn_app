@@ -7576,7 +7576,7 @@ function resolveTikTokSubscriberStatus(data = {}) {
                     enableExtendedGiftInfo: true,
                     // Prefer WebSocket delivery but keep HTTP polling fallback for regions that block upgrades
                     enableRequestPolling: true,
-                    requestPollingIntervalMs: 0,
+                    requestPollingIntervalMs: 1000,
                     fetchRoomInfoOnConnect: true,
                     webClientParams: {
                         "app_language": "en-US",
@@ -7773,23 +7773,8 @@ function resolveTikTokSubscriberStatus(data = {}) {
                         return;
                     }
 
-                    const rawAction = data?.action;
-                    let actionCode = null;
-                    if (typeof rawAction === 'number') {
-                        actionCode = rawAction;
-                    } else if (typeof rawAction === 'string') {
-                        const parsed = parseInt(rawAction, 10);
-                        if (!Number.isNaN(parsed)) {
-                            actionCode = parsed;
-                        }
-                    }
-
-                    const description = typeof data?.actionDescription === 'string'
-                        ? data.actionDescription.toLowerCase()
-                        : '';
-
-                    const isJoin = actionCode === 1 || description.includes('join');
-                    if (!isJoin) {
+                    const actionCode = Number(data?.action);
+                    if (actionCode !== 1) {
                         return;
                     }
 
