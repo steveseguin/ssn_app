@@ -6,6 +6,13 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const {
+    cleanVisibleString,
+    firstNonEmptyVisibleString,
+    normalizeTikTokImageUrl,
+    collectTikTokBadges,
+    getBadgeImageUrl
+} = require('./tiktok-badges');
+const {
     app,
     Menu,
     Tray,
@@ -5943,128 +5950,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
         eventRet.returnValue = app.getVersion();
     });
 
-    function getBadgeImageUrl(badge) {
-        if (!badge) {
-            return null;
-        }
-
-        if (typeof badge === 'string') {
-            const trimmed = badge.trim();
-            return trimmed || null;
-        }
-
-        if (typeof badge !== 'object') {
-            return null;
-        }
-
-        const directCandidates = [
-            badge.url,
-            badge.uri,
-            badge.src,
-            badge.iconUrl,
-            badge.icon_url,
-            badge.imageUrl,
-            badge.image_url,
-            badge.badgeIcon,
-            badge.badgeImage,
-            badge.icon,
-            badge.icons,
-            badge.image,
-            badge.iconList,
-            badge.icon_list,
-            badge.imageList,
-            badge.image_list,
-            badge.images,
-            badge.urls,
-            badge.urlList,
-            badge.url_list,
-            badge.uriList,
-            badge.resource,
-            badge.resources,
-            badge.asset,
-            badge.assets,
-            badge.picture,
-            badge.pic,
-            badge.logo
-        ];
-
-        for (const candidate of directCandidates) {
-            if (!candidate) continue;
-            const normalised = normalizeTikTokImageUrl(candidate);
-            if (normalised) {
-                return normalised;
-            }
-        }
-
-        const resolvedFromObject = normalizeTikTokImageUrl(badge);
-        if (resolvedFromObject) {
-            return resolvedFromObject;
-        }
-
-        const sceneType = badge.badgeSceneType ?? badge.badgeScene ?? badge.sceneType ?? badge.scene;
-
-        // Gifter badges
-        if (sceneType === 8) {
-            let level = badge.level || 1;
-
-            // Determine version based on level
-            let version;
-            if (level >= 50) {
-                level = 50;
-                version = "v1";
-            } else if (level >= 45) {
-                version = "v1";
-            } else if (level >= 40) {
-                version = "v2";
-            } else if (level >= 35) {
-                version = "v3";
-            } else if (level >= 20) {
-                version = "v1";
-            } else if (level >= 15) {
-                version = "v2";
-            } else {
-                version = "v1";
-            }
-
-            return `https://p16-webcast.tiktokcdn.com/webcast-va/grade_badge_icon_lite_lv${(parseInt(level/5)*5)||1}_${version}.png~tplv-obj.image`;
-
-        } else if (sceneType === 10) {
-            const level = badge.level || 1;
-            // TikTok seems to use grey version for low levels
-            const grey = level < 2 ? "_grey" : "";
-            return `https://p16-webcast.tiktokcdn.com/webcast-va/fans_badge_icon_lv${(parseInt(level/10)*10)||1}${grey}_v0.png~tplv-obj.image`;
-
-        } else if (sceneType === 2) {
-            return `https://p16-webcast.tiktokcdn.com/webcast-va/new_gifter_badge_v3.png~tplv-obj.image`
-
-        } else if (sceneType === 1) {
-            // Moderator badge
-            return `https://p16-webcast.tiktokcdn.com/webcast-va/moderater_badge_icon.png~tplv-obj.image`;
-        }
-
-        return null;
-    }
-
 function isPlainObject(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
-
-function cleanVisibleString(value) {
-    if (value === undefined || value === null) return null;
-    const str = String(value);
-    const cleaned = str.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
-    return cleaned || null;
-}
-
-function firstNonEmptyVisibleString(values) {
-    if (!Array.isArray(values)) return null;
-    for (const value of values) {
-        const cleaned = cleanVisibleString(value);
-        if (cleaned) return cleaned;
-    }
-    return null;
-}
-
 function cleanGenericString(value) {
     if (value === undefined || value === null) return null;
     const str = String(value).trim();
@@ -6311,204 +6199,6 @@ function resolveTikTokDisplayName(data = {}, identity = null, fallbackUserId = n
     return fallbackUserId || 'Unknown';
 }
 
-function normalizeTikTokBadgeLevel(rawLevel) {
-    if (rawLevel === undefined || rawLevel === null) return null;
-    const numeric = Number(rawLevel);
-    if (Number.isFinite(numeric) && numeric > 0) {
-        return numeric;
-    }
-
-    if (typeof rawLevel === 'string') {
-        const trimmed = rawLevel.trim();
-        if (!trimmed) return null;
-        const parsed = Number(trimmed);
-        if (Number.isFinite(parsed) && parsed > 0) {
-            return parsed;
-        }
-    }
-
-    return null;
-}
-
-function collectTikTokBadges(data = {}) {
-    const result = [];
-    const seen = new Set();
-
-    const registerBadge = (badge, keyHint) => {
-        if (!badge) return;
-
-        if (typeof badge === 'string') {
-            const normalised = normalizeTikTokImageUrl(badge);
-            const key = normalised || cleanVisibleString(badge);
-            if (!key || seen.has(key)) return;
-            seen.add(key);
-            result.push(normalised || key);
-            return;
-        }
-
-        if (typeof badge !== 'object') return;
-
-        const keyParts = [
-            keyHint,
-            badge.badgeId,
-            badge.id,
-            badge.iconUrl,
-            badge.imageUrl,
-            badge.icon,
-            badge.name,
-            badge.badgeScene,
-            badge.scene,
-            badge.url,
-            badge?.image?.url,
-            badge?.image?.uri,
-            badge?.image?.urlList,
-            badge.badgeSceneType !== undefined ? `scene:${badge.badgeSceneType}` : null,
-            badge.badgeScene !== undefined ? `badgeScene:${badge.badgeScene}` : null,
-            badge.sceneType !== undefined ? `sceneType:${badge.sceneType}` : null,
-            badge.level !== undefined ? `level:${badge.level}` : null
-        ].flat().filter(Boolean);
-
-        const key = keyParts.length ? keyParts.join('|') : JSON.stringify(badge);
-        if (seen.has(key)) return;
-        seen.add(key);
-        result.push(badge);
-    };
-
-    const recurseBadge = (badge, context = {}) => {
-        if (!badge) return;
-
-        if (Array.isArray(badge)) {
-            badge.forEach(item => recurseBadge(item, context));
-            return;
-        }
-
-        if (typeof badge === 'string') {
-            registerBadge(badge);
-            return;
-        }
-
-        if (typeof badge !== 'object') return;
-
-        const merged = { ...badge };
-
-        const candidateSceneType = merged.badgeSceneType ?? merged.badgeScene ?? merged.sceneType ?? merged.scene;
-        if (candidateSceneType !== undefined && merged.badgeSceneType === undefined) {
-            merged.badgeSceneType = candidateSceneType;
-        }
-        if (merged.badgeScene === undefined && merged.badgeSceneType !== undefined) {
-            merged.badgeScene = merged.badgeSceneType;
-        }
-
-        if (context.badgeSceneType !== undefined && merged.badgeSceneType === undefined) {
-            merged.badgeSceneType = context.badgeSceneType;
-        }
-        if (context.badgeScene !== undefined && merged.badgeScene === undefined) {
-            merged.badgeScene = context.badgeScene;
-        }
-        if (context.level !== undefined && (merged.level === undefined || merged.level === null)) {
-            merged.level = context.level;
-        }
-
-        if (merged.privilegeLogExtra) {
-            const privilegeLevel = normalizeTikTokBadgeLevel(merged.privilegeLogExtra.level);
-            if (privilegeLevel !== null && (merged.level === undefined || merged.level === null)) {
-                merged.level = privilegeLevel;
-            }
-            if (merged.privilegeLogExtra.privilegeId && !merged.badgeId) {
-                merged.badgeId = merged.privilegeLogExtra.privilegeId;
-            }
-        }
-
-        // Handle wrappers provided by the proto messages
-        if (Array.isArray(merged.imageBadges)) {
-            merged.imageBadges.forEach(inner => {
-                recurseBadge(inner, {
-                    badgeSceneType: merged.badgeSceneType,
-                    badgeScene: merged.badgeScene,
-                    level: merged.level
-                });
-            });
-        }
-
-        if (Array.isArray(merged.badges)) {
-            merged.badges.forEach(inner => {
-                recurseBadge(inner, {
-                    badgeSceneType: merged.badgeSceneType,
-                    badgeScene: merged.badgeScene,
-                    level: merged.level
-                });
-            });
-        }
-
-        if (merged.image && typeof merged.image === 'object') {
-            recurseBadge(merged.image, {
-                badgeSceneType: merged.badgeSceneType,
-                badgeScene: merged.badgeScene,
-                level: merged.level
-            });
-        }
-
-        if (Array.isArray(merged.url)) {
-            merged.url.forEach(inner => recurseBadge(inner, {
-                badgeSceneType: merged.badgeSceneType,
-                badgeScene: merged.badgeScene,
-                level: merged.level
-            }));
-        }
-
-        if (Array.isArray(merged.urlList)) {
-            merged.urlList.forEach(inner => recurseBadge(inner, {
-                badgeSceneType: merged.badgeSceneType,
-                badgeScene: merged.badgeScene,
-                level: merged.level
-            }));
-        }
-
-        if (Array.isArray(merged.urls)) {
-            merged.urls.forEach(inner => recurseBadge(inner, {
-                badgeSceneType: merged.badgeSceneType,
-                badgeScene: merged.badgeScene,
-                level: merged.level
-            }));
-        }
-
-        registerBadge(merged);
-    };
-
-    const candidateArrays = [
-        data.userBadges,
-        data.badges,
-        data.badgeList,
-        data.badgeImageList,
-        data.badgePreviewList,
-        data?.user?.badges,
-        data?.user?.userBadges,
-        data?.user?.badgeImageList,
-        data?.user?.badgeList,
-        data?.user?.badgePreviewList,
-        data?.user?.extraInfo?.badges,
-        data?.user?.badgeIcons,
-        data?.user?.badgeIconList,
-        data?.user?.badge_icon_list,
-        data?.user?.profile?.badges,
-        data?.author?.badges,
-        data?.author?.userBadges,
-        data?.author?.badgeList,
-        data?.author?.badgeImageList,
-        data?.author?.badgeIcons,
-        data?.author?.extraInfo?.badges,
-        data?.extraInfo?.badges
-    ];
-
-    candidateArrays.forEach(arr => {
-        if (Array.isArray(arr)) {
-            arr.forEach(item => recurseBadge(item));
-        }
-    });
-
-    return result;
-}
-
 function coerceTikTokBoolean(value) {
     if (value === true) return true;
     if (value === false) return false;
@@ -6607,66 +6297,91 @@ function resolveTikTokSubscriberStatus(data = {}) {
     return false;
 }
 
-function sendChatMessage(data, virtualTabId) {
-    var msg = {};
-    msg.chatmessage = data.comment || '';
-    
-        // Check for emote/sticker data
-        if (data.emotes && Array.isArray(data.emotes) && data.emotes.length > 0) {
+    function composeTikTokChatMessage(data = {}, options = {}) {
+        const { includeTopGifterBadgeAlways = false } = options;
+        const message = {
+            chatmessage: data?.comment || ''
+        };
+
+        if (Array.isArray(data?.emotes) && data.emotes.length > 0) {
             let stickerHtml = '';
             data.emotes.forEach((emote, index) => {
+                if (!emote) return;
                 const url = emote.emoteImageUrl || emote.imageUrl || emote.url || emote.image?.url;
+                if (!url) return;
                 const alt = emote.emoteName || emote.name || '';
                 const emoteId = emote.emoteId || emote.id || '';
-                if (url) {
-                    if (index > 0) stickerHtml += ' '; // Add space between stickers
-                    stickerHtml += `<img class="sticker" src="${url}"${alt ? ` alt="${alt}"` : ''}${emoteId ? ` data-emote-id="${emoteId}"` : ''}>`;
+                if (index > 0) {
+                    stickerHtml += ' ';
                 }
+                stickerHtml += `<img class="sticker" src="${url}"${alt ? ` alt="${alt}"` : ''}${emoteId ? ` data-emote-id="${emoteId}"` : ''}>`;
             });
-            
+
             if (stickerHtml) {
-                msg.chatmessage = msg.chatmessage + ' ' + stickerHtml;
+                message.chatmessage = `${message.chatmessage} ${stickerHtml}`;
             }
         }
 
         const badgeSources = collectTikTokBadges(data);
         if (badgeSources.length) {
-            msg.chatbadges = [];
-            badgeSources.forEach(badge => {
+            const badges = [];
+            const seenBadgeUrls = new Set();
+            badgeSources.forEach((badge) => {
                 const badgeUrl = getBadgeImageUrl(badge);
-                if (badgeUrl) msg.chatbadges.push(badgeUrl);
+                if (!badgeUrl) return;
+                if (seenBadgeUrls.has(badgeUrl)) return;
+                seenBadgeUrls.add(badgeUrl);
+                badges.push(badgeUrl);
             });
-        }
-
-        // Special case: Top gifter badge
-        if (data.topGifterRank) {
-            if (!Array.isArray(msg.chatbadges)) {
-                msg.chatbadges = [];
+            if (badges.length) {
+                message.chatbadges = badges;
             }
-            msg.chatbadges.push(`https://p16-webcast.tiktokcdn.com/webcast-sg/new_top_gifter_version_2.png~tplv-obj.image`);
         }
 
-        const isModerator = resolveTikTokModeratorStatus(data);
-        const isSubscriber = resolveTikTokSubscriberStatus(data);
-        msg.moderator = isModerator;
-        msg.membership = isSubscriber;
-        
+        if (data?.topGifterRank) {
+            const existingBadges = Array.isArray(message.chatbadges) ? message.chatbadges : [];
+            if (includeTopGifterBadgeAlways || existingBadges.length === 0) {
+                if (!Array.isArray(message.chatbadges)) {
+                    message.chatbadges = [];
+                }
+                const topGifterBadgeUrl = 'https://p16-webcast.tiktokcdn.com/webcast-sg/new_top_gifter_version_2.png~tplv-obj.image';
+                if (!message.chatbadges.includes(topGifterBadgeUrl)) {
+                    message.chatbadges.push(topGifterBadgeUrl);
+                }
+            }
+        }
+
+        message.moderator = resolveTikTokModeratorStatus(data);
+        message.membership = resolveTikTokSubscriberStatus(data);
+
         const identity = extractTikTokIdentity(data);
         const resolvedUserId = resolveTikTokUserId(data, identity);
         if (resolvedUserId) {
-            msg.userid = resolvedUserId;
+            message.userid = resolvedUserId;
         }
-        msg.chatname = resolveTikTokDisplayName(data, identity, resolvedUserId);
+        message.chatname = resolveTikTokDisplayName(data, identity, resolvedUserId);
 
         const avatarUrl = identity.profilePictureUrl
-            || normalizeTikTokImageUrl(data.profilePictureUrl)
-            || normalizeTikTokImageUrl(data.profilePicture)
+            || normalizeTikTokImageUrl(data?.profilePictureUrl)
+            || normalizeTikTokImageUrl(data?.profilePicture)
             || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
             || normalizeTikTokImageUrl(data?.user?.profilePicture);
-        msg.chatimg = avatarUrl || null;
+        message.chatimg = avatarUrl || null;
+
+        const nameColor = data?.nameColor || data?.name_color || data?.user?.nameColor;
+        if (nameColor) {
+            message.nameColor = nameColor;
+            message.chatnamecolor = nameColor;
+        }
+
+        return message;
+    }
+
+    function sendChatMessage(data, virtualTabId) {
+        const msg = composeTikTokChatMessage(data, { includeTopGifterBadgeAlways: true });
         msg.textonlymode = false;
-        msg.type = "tiktok";
-        msg.tid = virtualTabId; // Include the virtual tab ID
+        msg.type = 'tiktok';
+        msg.tid = virtualTabId;
         sendToBackground(msg);
     }
 
@@ -7071,68 +6786,9 @@ function sendChatMessage(data, virtualTabId) {
         }
 
         formatChatMessage(data) {
-            var msg = {};
-            msg.chatmessage = data.comment || '';
-            
-            // Check for emote/sticker data
-            if (data.emotes && Array.isArray(data.emotes) && data.emotes.length > 0) {
-                let stickerHtml = '';
-                data.emotes.forEach((emote, index) => {
-                    const url = emote.emoteImageUrl || emote.imageUrl || emote.url || emote.image?.url;
-                    const alt = emote.emoteName || emote.name || '';
-                    const emoteId = emote.emoteId || emote.id || '';
-                    if (url) {
-                        if (index > 0) stickerHtml += ' '; // Add space between stickers
-                        stickerHtml += `<img class="sticker" src="${url}"${alt ? ` alt="${alt}"` : ''}${emoteId ? ` data-emote-id="${emoteId}"` : ''}>`;
-                    }
-                });
-                
-                if (stickerHtml) {
-                    msg.chatmessage = msg.chatmessage + ' ' + stickerHtml;
-                }
-            }
-
-            const badgeSources = collectTikTokBadges(data);
-            if (badgeSources.length) {
-                msg.chatbadges = [];
-                badgeSources.forEach(badge => {
-                    const badgeUrl = getBadgeImageUrl(badge);
-                    if (badgeUrl) msg.chatbadges.push(badgeUrl);
-                });
-            }
-
-            // Special case: Top gifter badge
-            if (data.topGifterRank && (!msg.chatbadges || !msg.chatbadges.length)) {
-                msg.chatbadges = [`https://p16-webcast.tiktokcdn.com/webcast-sg/new_top_gifter_version_2.png~tplv-obj.image`];
-            }
-
-            const isModerator = resolveTikTokModeratorStatus(data);
-            const isSubscriber = resolveTikTokSubscriberStatus(data);
-            msg.moderator = isModerator;
-            msg.membership = isSubscriber;
-            
-            const identity = extractTikTokIdentity(data);
-            const resolvedUserId = resolveTikTokUserId(data, identity);
-            if (resolvedUserId) {
-                msg.userid = resolvedUserId;
-            }
-
-            msg.chatname = resolveTikTokDisplayName(data, identity, resolvedUserId);
-
-            const nameColor = data.nameColor || data.name_color || data.user?.nameColor;
-            if (nameColor) {
-                msg.nameColor = nameColor;
-                msg.chatnamecolor = nameColor;
-            }
-
-            const avatarUrl = identity.profilePictureUrl
-                || normalizeTikTokImageUrl(data.profilePictureUrl)
-                || normalizeTikTokImageUrl(data.profilePicture)
-                || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
-                || normalizeTikTokImageUrl(data?.user?.profilePicture);
-            msg.chatimg = avatarUrl || null;
+            const msg = composeTikTokChatMessage(data, { includeTopGifterBadgeAlways: false });
             msg.textonlymode = false;
-            msg.type = "tiktok";
+            msg.type = 'tiktok';
             return msg;
         }
 
@@ -7400,7 +7056,13 @@ function sendChatMessage(data, virtualTabId) {
         }
 
         addToQueue(data) {
-            if (data.giftType === 1 && !data.repeatEnd) return;
+            const repeatCount = Number(data.repeatCount) || 0;
+            const comboCount = Number(data.comboCount) || 0;
+            const groupCount = Number(data.groupCount) || 0;
+            const inferredComboInProgress = !data.repeatEnd && (repeatCount > 1 || comboCount > 1 || groupCount > 1);
+            if (inferredComboInProgress) {
+                return;
+            }
 
             const cache = this.manager?.messageCache;
             if (cache && data.msgId && cache.has(data.msgId)) {
@@ -7413,9 +7075,22 @@ function sendChatMessage(data, virtualTabId) {
                 cache.add(data.msgId);
             }
 
+            const aggregatedCount = Math.max(
+                repeatCount,
+                comboCount,
+                groupCount,
+                Number(data?.giftDetails?.repeatCount) || 0,
+                Number(data?.giftDetails?.comboCount) || 0,
+                Number(data?.giftDetails?.groupCount) || 0,
+                Number(data?.extendedGiftInfo?.repeat_count) || 0,
+                Number(data?.extendedGiftInfo?.combo_count) || 0,
+                Number(data?.extendedGiftInfo?.group_count) || 0,
+                1
+            );
+
             this.queue.push({
                 data,
-                count: data.repeatCount || 1
+                count: aggregatedCount
             });
             this.startProcessing();
         }
@@ -7445,6 +7120,10 @@ function sendChatMessage(data, virtualTabId) {
 
         sendGiftMessage(data, count) {
             const giftData = isPlainObject(data?.gift) ? data.gift : {};
+            const giftDetails = isPlainObject(data?.giftDetails) ? data.giftDetails : {};
+            const extendedGiftInfo = isPlainObject(data?.extendedGiftInfo) ? data.extendedGiftInfo : {};
+
+            const normalizeGiftImage = (candidate) => normalizeTikTokImageUrl(candidate);
 
             const extractNestedString = (value, cleaner = cleanVisibleString, preferredKeys = [], options = {}) => {
                 if (value === undefined || value === null) return null;
@@ -7510,7 +7189,13 @@ function sendChatMessage(data, virtualTabId) {
                 giftData.id,
                 giftData.id_str,
                 giftData.giftIdStr,
-                giftData.gift_id_str
+                giftData.gift_id_str,
+                giftDetails.id,
+                giftDetails.id_str,
+                giftDetails.giftId,
+                giftDetails.gift_id,
+                extendedGiftInfo.id,
+                extendedGiftInfo.id_str
             ];
             const giftId = pickFirstString(giftIdCandidates, cleanGenericString, [], { allowNumeric: true });
 
@@ -7526,6 +7211,13 @@ function sendChatMessage(data, virtualTabId) {
                 giftData.extended_gift_name,
                 giftData.extendedGift?.name,
                 giftData.extended_gift?.name,
+                giftDetails.giftName,
+                giftDetails.describe,
+                giftDetails.icon?.text,
+                giftDetails.icon?.name,
+                extendedGiftInfo.name,
+                extendedGiftInfo.describe,
+                extendedGiftInfo.text,
                 giftId && giftMapping && giftMapping[giftId] && giftMapping[giftId].name
             ];
             const giftName = pickFirstString(
@@ -7550,12 +7242,26 @@ function sendChatMessage(data, virtualTabId) {
                 giftData.image?.thumbUrl,
                 giftData.image?.thumb_url,
                 giftData.image?.url_list,
-                giftData.image?.urls
+                giftData.image?.urls,
+                giftDetails.icon,
+                giftDetails.icon?.url,
+                giftDetails.icon?.url_list,
+                giftDetails.icon?.urls,
+                giftDetails.giftImage,
+                giftDetails.giftImage?.url,
+                giftDetails.giftImage?.url_list,
+                giftDetails.giftImage?.urls,
+                extendedGiftInfo.icon,
+                extendedGiftInfo.icon?.url_list,
+                extendedGiftInfo.icon?.url,
+                extendedGiftInfo.image,
+                extendedGiftInfo.image?.url_list,
+                extendedGiftInfo.image?.url
             ];
             let giftPictureUrl = pickFirstString(
                 imageCandidates,
-                cleanGenericString,
-                ['url', 'uri', 'gifUrl', 'gif_url', 'thumbUrl', 'thumb_url']
+                value => normalizeGiftImage(value) || cleanGenericString(value),
+                ['url', 'uri', 'gifUrl', 'gif_url', 'thumbUrl', 'thumb_url', 'url_list']
             ) || '';
 
             if (giftPictureUrl) {
@@ -7576,6 +7282,11 @@ function sendChatMessage(data, virtualTabId) {
                 giftData.diamond_value,
                 giftData.value,
                 giftData.coins,
+                giftDetails.diamondCount,
+                giftDetails.diamond_count,
+                extendedGiftInfo.diamondCount,
+                extendedGiftInfo.diamond_count,
+                extendedGiftInfo.coins,
                 giftId && giftMapping && giftMapping[giftId] && giftMapping[giftId].coins
             ];
             let diamondCount = 0;
@@ -7591,10 +7302,13 @@ function sendChatMessage(data, virtualTabId) {
             const resolvedUserId = resolveTikTokUserId(data, identity);
             const resolvedChatname = resolveTikTokDisplayName(data, identity, resolvedUserId);
 
+            const fanTicketCount = Number(data.fanTicketCount || giftDetails.fanTicketCount || extendedGiftInfo.fan_ticket_count || 0) * count;
             const msg = {
                 chatmessage: `Sent ${giftName} x${count}${giftPictureUrl && !data.textonlymode ? ` <img src='${giftPictureUrl}'>` : ''}`,
                 hasDonation: diamondCount > 0 ? `${diamondCount * count} 💎` : '',
                 donoValue: diamondCount * count * 0.005,
+                fanTickets: fanTicketCount > 0 ? fanTicketCount : undefined,
+                giftId: giftId || undefined,
                 moderator: resolveTikTokModeratorStatus(data),
                 membership: resolveTikTokSubscriberStatus(data),
                 chatname: resolvedChatname,
