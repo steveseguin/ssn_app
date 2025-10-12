@@ -83,51 +83,16 @@ const INJECTED_SCRIPT_FLAG = '_ssapp_' + Math.random().toString(36).substring(2)
 
 // App-level helper: whether to forward non-gift events to overlays
 function isCaptureEventsEnabled() {
-    try {
-        // Presence-based: enabled if key exists in cachedState.settings
-        const s = (typeof cachedState === 'object' && cachedState) ? cachedState.settings : undefined;
-        if (!s || typeof s !== 'object') return false;
-        return (s.captureevents !== undefined) || (s.captureevent !== undefined);
-    } catch (_) { return false; }
+    const settings = cachedState && cachedState.settings;
+    if (!settings || typeof settings !== 'object') return false;
+    return Object.prototype.hasOwnProperty.call(settings, 'captureevents') ||
+        Object.prototype.hasOwnProperty.call(settings, 'captureevent');
 }
 
 function isCaptureJoinedEventEnabled() {
-    try {
-        const s = (typeof cachedState === 'object' && cachedState) ? cachedState.settings : undefined;
-        if (!s || typeof s !== 'object') return false;
-        if (!Object.prototype.hasOwnProperty.call(s, 'capturejoinedevent')) return false;
-
-        const setting = s.capturejoinedevent;
-        if (setting === false || setting === null || setting === undefined) return false;
-
-        if (typeof setting === 'object') {
-            if (!setting) return false;
-
-            if (Object.prototype.hasOwnProperty.call(setting, 'state')) {
-                const state = setting.state;
-                if (state === false || state === null) return false;
-                if (typeof state === 'boolean') return state;
-                if (typeof state === 'string') {
-                    const normalised = state.trim().toLowerCase();
-                    if (!normalised || normalised === 'disabled' || normalised === 'off') return false;
-                    if (normalised === 'enabled' || normalised === 'on') return true;
-                } else if (state !== undefined) {
-                    return Boolean(state);
-                }
-            }
-
-            return true;
-        }
-
-        if (typeof setting === 'boolean') return setting;
-        if (typeof setting === 'string') {
-            const normalised = setting.trim().toLowerCase();
-            if (!normalised || normalised === 'false' || normalised === 'disabled' || normalised === 'off') return false;
-            if (normalised === 'true' || normalised === 'enabled' || normalised === 'on') return true;
-        }
-
-        return Boolean(setting);
-    } catch (_) { return false; }
+    const settings = cachedState && cachedState.settings;
+    if (!settings || typeof settings !== 'object') return false;
+    return Object.prototype.hasOwnProperty.call(settings, 'capturejoinedevent');
 }
 
 function isViewerUpdateAllowed() {
