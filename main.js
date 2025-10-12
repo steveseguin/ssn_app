@@ -8063,7 +8063,10 @@ function resolveFirstImageUrl(candidates = []) {
 
                     const shopData = data?.shopData && typeof data.shopData === 'object' ? data.shopData : {};
                     const details = data?.details && typeof data.details === 'object' ? data.details : {};
-                    const title = (typeof shopData.title === 'string' && shopData.title.trim()) ? shopData.title.trim() : 'Product';
+                    const rawTitle = (typeof shopData.title === 'string' && shopData.title.trim()) ? shopData.title.trim() : 'Product';
+                    const isGenericTitle = !rawTitle || /^product$/i.test(rawTitle);
+                    const meaningfulTitle = isGenericTitle ? null : rawTitle;
+                    const title = rawTitle || 'Product';
                     const phaseRaw = data?.data1;
                     const phaseNumber = Number(phaseRaw);
                     const phase = Number.isFinite(phaseNumber) ? phaseNumber : null;
@@ -8074,6 +8077,8 @@ function resolveFirstImageUrl(candidates = []) {
 
                     const priceText = shopData.priceString ? ` – ${shopData.priceString}` : '';
                     const shopText = shopData.shopName ? ` (${shopData.shopName})` : '';
+                    const identity = extractTikTokIdentity(data);
+                    const buyerName = identity?.nickname || identity?.uniqueId || null;
 
                     const labelSources = [
                         details?.data?.label,
@@ -8109,20 +8114,50 @@ function resolveFirstImageUrl(candidates = []) {
                     const likelyPurchase = purchaseSignal || phase === 4 || (detailDataValue !== null && detailDataValue >= 2);
 
                     const eventType = likelyPurchase ? 'shopping_purchase' : 'oec_live_shopping';
+                    const phaseDescriptions = {
+                        1: 'Product preview',
+                        2: 'Product spotlight',
+                        3: 'Product spotlight',
+                        4: 'Purchase event',
+                        5: 'Post-purchase update'
+                    };
+                    const phaseDescription = (phase !== null && phaseDescriptions[phase]) || null;
 
-                    let message;
-                    if (displayLabel) {
-                        const includesTitle = title && displayLabel.toLowerCase().includes(title.toLowerCase());
-                        const prefix = includesTitle ? displayLabel : `${displayLabel}`;
-                        message = `${prefix}${includesTitle ? '' : ' — ' + title}${priceText}${shopText}`;
-                    } else if (likelyPurchase) {
-                        message = `Purchase alert: ${title}${priceText}${shopText}`;
-                    } else {
-                        message = `Live shopping: ${title}${priceText}${shopText}`;
+                    let message = null;
+                    if (likelyPurchase) {
+                        if (buyerName && meaningfulTitle) {
+                            message = `${buyerName} purchased ${meaningfulTitle}${priceText}${shopText}`;
+                        } else if (buyerName) {
+                            message = `${buyerName} made a purchase${priceText}${shopText}`;
+                        } else if (meaningfulTitle) {
+                            message = `Purchase: ${meaningfulTitle}${priceText}${shopText}`;
+                        }
+                    } else if (meaningfulTitle) {
+                        if (displayLabel && !displayLabel.toLowerCase().includes(meaningfulTitle.toLowerCase())) {
+                            message = `${displayLabel} — ${meaningfulTitle}${priceText}${shopText}`;
+                        } else if (displayLabel) {
+                            message = `${displayLabel}${priceText}${shopText}`;
+                        } else {
+                            message = `Live shopping: ${meaningfulTitle}${priceText}${shopText}`;
+                        }
+                    } else if (displayLabel && /deal|drop|promo|flash|offer|discount/.test(displayLabel.toLowerCase())) {
+                        message = displayLabel;
                     }
 
+                    const summaryParts = [];
+                    if (phaseDescription) summaryParts.push(phaseDescription);
+                    if (meaningfulTitle) summaryParts.push(meaningfulTitle);
+                    else if (displayLabel) summaryParts.push(displayLabel);
+                    if (shopData.priceString) summaryParts.push(shopData.priceString);
+                    if (shopData.shopName) summaryParts.push(shopData.shopName);
+                    if (likelyPurchase && buyerName) summaryParts.push(`Buyer: ${buyerName}`);
+                    const summary = summaryParts.length ? summaryParts.join(' • ') : null;
+
+                    const chatMessage = (typeof message === 'string' && message.trim().length) ? message.trim() : '';
+                    const chatSuppressed = !chatMessage;
+
                     const now = Date.now();
-                    const eventKey = detailId || (displayLabel ? `${phase ?? 'phaseX'}:${displayLabel}` : `${phase ?? 'phaseX'}:${title}`);
+                    const eventKey = detailId || (displayLabel ? `${phase ?? 'phaseX'}:${displayLabel}` : `${phase ?? 'phaseX'}:${meaningfulTitle || title}`);
                     if (!this.recentShoppingEvents) {
                         this.recentShoppingEvents = new Map();
                     }
@@ -8153,17 +8188,20 @@ function resolveFirstImageUrl(candidates = []) {
                         eventKey,
                         eventType,
                         phase,
+                        phaseDescription,
                         labels: labelCandidates,
                         detailId,
                         detailDataValue,
                         price: shopData.priceString || null,
                         shopName: shopData.shopName || null,
-                        likelyPurchase
+                        buyer: buyerName || null,
+                        likelyPurchase,
+                        chatSuppressed
                     });
 
                     console.info('[TikTok] Live shopping event', {
                         username: this.username,
-                        title,
+                        title: meaningfulTitle || title,
                         price: shopData.priceString || null,
                         shopName: shopData.shopName || null,
                         detailId,
@@ -8186,9 +8224,13 @@ function resolveFirstImageUrl(candidates = []) {
                     const shoppingMeta = {
                         source: 'oec_live_shopping',
                         productTitle: title,
+                        productTitleNormalized: meaningfulTitle || null,
                         phase,
                         eventKey,
-                        likelyPurchase
+                        likelyPurchase,
+                        phaseDescription,
+                        buyer: buyerName || null,
+                        chatSuppressed
                     };
                     if (shopData.priceString) shoppingMeta.price = shopData.priceString;
                     if (shopData.shopName) shoppingMeta.shopName = shopData.shopName;
@@ -8200,8 +8242,9 @@ function resolveFirstImageUrl(candidates = []) {
                     if (labelCandidates.length) shoppingMeta.labels = labelCandidates;
                     if (data?.shopTimings) shoppingMeta.shopTimings = data.shopTimings;
                     if (phase !== null) shoppingMeta.phaseRaw = phaseRaw;
+                    if (summary) shoppingMeta.summary = summary;
 
-                    this.sendEventMessage(payload, eventType, message, shoppingMeta);
+                    this.sendEventMessage(payload, eventType, chatMessage, shoppingMeta);
                 },
                 goalUpdate: (data = {}) => {
                     this.recordActivity();
