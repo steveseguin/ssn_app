@@ -34,6 +34,13 @@ let TikTokLiveConnectionClass = null;
 let usingLegacyTikTokConnector = false;
 try {
     const tiktokConnector = require('tiktok-live-connector');
+    if (tiktokConnector && tiktokConnector.WebcastDeserializeConfig) {
+        const skipTypes = tiktokConnector.WebcastDeserializeConfig.skipMessageTypes;
+        if (Array.isArray(skipTypes) && !skipTypes.includes('WebcastInRoomBannerMessage')) {
+            // Avoid decode crashes until the proto schema supports the new banner payload
+            skipTypes.push('WebcastInRoomBannerMessage');
+        }
+    }
     if (tiktokConnector && typeof tiktokConnector.TikTokLiveConnection === 'function') {
         TikTokLiveConnectionClass = tiktokConnector.TikTokLiveConnection;
     } else if (tiktokConnector && typeof tiktokConnector.WebcastPushConnection === 'function') {
@@ -86,7 +93,8 @@ function isCaptureEventsEnabled() {
     const settings = cachedState && cachedState.settings;
     if (!settings || typeof settings !== 'object') return false;
     return Object.prototype.hasOwnProperty.call(settings, 'captureevents') ||
-        Object.prototype.hasOwnProperty.call(settings, 'captureevent');
+        Object.prototype.hasOwnProperty.call(settings, 'captureevent') ||
+        Object.prototype.hasOwnProperty.call(settings, 'capturestreamevents');
 }
 
 function isCaptureJoinedEventEnabled() {
@@ -6443,9 +6451,9 @@ function resolveTikTokSubscriberStatus(data = {}) {
             const {
                 wssID,
                 message
-            } = args;
-            const manager = websocketConnections[wssID];
+            } = args || {};
 
+            const manager = websocketConnections[wssID];
             if (!manager) {
                 log(`TikTok connection not found for wssID: ${wssID}`);
                 return {
@@ -6454,30 +6462,21 @@ function resolveTikTokSubscriberStatus(data = {}) {
                 };
             }
 
-            // Check if user is signed in (has session)
-            if (!manager.sessionId) {
-                log('Cannot send TikTok message: User not signed in');
+            const result = await manager.sendChatMessage(message);
+            if (!result || typeof result.success !== 'boolean') {
                 return {
                     success: false,
-                    error: 'User not signed in'
+                    error: 'Unknown send status'
                 };
             }
 
-            // Check if connection is active
-            if (!manager.connection || manager.isStopped) {
-                log('Cannot send TikTok message: Connection not active');
-                return {
-                    success: false,
-                    error: 'Connection not active'
-                };
+            if (result.success) {
+                log('TikTok message sent via API request.');
+            } else if (result.error) {
+                log(`TikTok message send blocked: ${result.error}`);
             }
 
-            // Send message using the TikTok connection
-            await manager.connection.sendMessage(message);
-            log(`TikTok message sent: ${message}`);
-            return {
-                success: true
-            };
+            return result;
 
         } catch (error) {
             log(`Failed to send TikTok message: ${error.message}`);
@@ -6547,6 +6546,13 @@ function resolveTikTokSubscriberStatus(data = {}) {
     const connectionCleanupInterval = setInterval(() => {
         for (const [id, state] of connectionStates.entries()) {
             const manager = websocketConnections[id];
+            const attemptInProgress = !!state?.attemptInProgress;
+
+            // Do not clean up while a connection attempt is actively running
+            if (attemptInProgress) {
+                continue;
+            }
+
             // Watchdog: if stuck in reconnecting state without a timer, kick the scheduler
             if (manager && !manager.isStopped) {
                 const isConnected = !!(manager.connection && manager.connection.isConnected);
@@ -6601,6 +6607,11 @@ function resolveTikTokSubscriberStatus(data = {}) {
                 }
                 if (manager.activityBuckets instanceof Map) {
                     manager.activityBuckets.clear();
+                }
+                if (typeof manager.resetGoalAggregates === 'function') {
+                    try {
+                        manager.resetGoalAggregates({ flush: false });
+                    } catch (_) { /* noop */ }
                 }
                 // Mark as stopped
                 manager.isStopped = true;
@@ -7504,6 +7515,221 @@ function resolveFirstImageUrl(candidates = []) {
             return true;
         }
 
+        handleSignServerFailure(primaryError, rawMessage = '', userFacingMessage = '') {
+            const detail = this.truncateForLog(rawMessage || primaryError?.message || '', 600);
+            const displayMessage = (typeof userFacingMessage === 'string' && userFacingMessage.trim())
+                ? userFacingMessage.trim()
+                : 'Sign server unavailable';
+
+            console.warn(`[TikTok] Sign server issue detected (${displayMessage}). Retrying silently.`);
+            this.logDebug('sign.error.retry', {
+                message: displayMessage,
+                detail: detail || null
+            });
+
+            // Attempt to notify renderer without surfacing an error banner
+            try {
+                if (mainWindow && mainWindow.webContents) {
+                    mainWindow.webContents.send('tiktokConnectionStatus', {
+                        wssID: this.wssID,
+                        status: 'reconnecting',
+                        reason: undefined,
+                        signServer: true
+                    });
+                }
+            } catch (_) { /* renderer may be gone */ }
+
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
+            }
+
+            try {
+                connectionStates.set(this.wssID, {
+                    isConnected: false,
+                    lastAttempt: Date.now(),
+                    isReconnecting: false,
+                    attemptInProgress: false
+                });
+            } catch (_) { /* noop */ }
+
+            if (this.isStopped) {
+                return;
+            }
+
+            this.offlineRetry = false;
+            this.offlineReason = null;
+            this.reconnectAttempts = Math.max(0, this.reconnectAttempts - 1);
+
+            const retryDelay = Number.isFinite(this.signRequestImmediateRetryDelayMs) && this.signRequestImmediateRetryDelayMs > 0
+                ? this.signRequestImmediateRetryDelayMs
+                : 0;
+
+            this.attemptReconnect(retryDelay, {
+                fixed: true,
+                immediate: retryDelay <= 0,
+                silent: true,
+                reason: 'sign_server_retry'
+            });
+        }
+
+        normalizeGoalUpdate(data = {}) {
+            if (!data || typeof data !== 'object') {
+                return null;
+            }
+
+            const pickFirst = (values, fallback = null) => {
+                for (const value of values) {
+                    if (value === undefined || value === null) continue;
+                    if (typeof value === 'string') {
+                        const trimmed = value.trim();
+                        if (trimmed.length) {
+                            return trimmed;
+                        }
+                    } else {
+                        return value;
+                    }
+                }
+                return fallback;
+            };
+
+            const hasValue = (value) => value !== undefined && value !== null && !(typeof value === 'string' && value.trim() === '');
+            const parseNumber = (value) => {
+                if (!hasValue(value)) return null;
+                const num = Number(value);
+                return Number.isFinite(num) ? num : null;
+            };
+
+            const goal = data?.goal || {};
+            const subGoal = data?.contributeSubgoal || {};
+
+            const contributorName = pickFirst([
+                data?.contributorDisplayId,
+                data?.contributorIdStr,
+                hasValue(data?.contributorId) ? String(data.contributorId) : null,
+                data?.nickname,
+                data?.user?.displayId,
+                data?.user?.uniqueId,
+                data?.user?.nickname
+            ], 'Viewer') || 'Viewer';
+
+            const giftName = pickFirst([
+                subGoal?.gift?.name,
+                goal?.title,
+                goal?.description,
+                data?.giftName
+            ], 'Goal') || 'Goal';
+
+            const progressRaw = pickFirst([
+                subGoal?.progress,
+                goal?.progress,
+                data?.progress
+            ], null);
+            const targetRaw = pickFirst([
+                subGoal?.target,
+                goal?.target,
+                data?.target
+            ], null);
+            const scoreRaw = pickFirst([
+                data?.contributeScore,
+                data?.score
+            ], null);
+
+            const progressNumber = parseNumber(progressRaw);
+            const targetNumber = parseNumber(targetRaw);
+            const scoreNumber = parseNumber(scoreRaw);
+
+            const avatarUrl = normalizeTikTokImageUrl(data?.contributorAvatar?.url)
+                || normalizeTikTokImageUrl(data?.profilePictureUrl)
+                || normalizeTikTokImageUrl(data?.profilePicture)
+                || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+                || normalizeTikTokImageUrl(data?.user?.profilePicture)
+                || null;
+
+            const contributorId = hasValue(data?.contributorId) ? data.contributorId : null;
+            const contributorIdStr = hasValue(data?.contributorIdStr) ? data.contributorIdStr : null;
+            const uniqueId = pickFirst([
+                data?.user?.uniqueId,
+                data?.user?.displayId,
+                contributorIdStr,
+                contributorId ? String(contributorId) : null
+            ], null);
+
+            const subGoalId = pickFirst([
+                subGoal?.id,
+                subGoal?.idStr,
+                goal?.id,
+                goal?.idStr
+            ], null);
+            const subGoalType = subGoal?.type !== undefined ? subGoal.type : null;
+
+            const eventType = data?.pin ? 'goal_pin' : (data?.unpin ? 'goal_unpin' : 'goal_update');
+
+            const meta = {
+                contributorName,
+                contributorId,
+                contributorIdStr,
+                uniqueId,
+                giftName,
+                progress: progressNumber !== null ? progressNumber : progressRaw ?? null,
+                target: targetNumber !== null ? targetNumber : targetRaw ?? null,
+                score: scoreNumber !== null ? scoreNumber : scoreRaw ?? null,
+                progressRaw: progressRaw ?? undefined,
+                targetRaw: targetRaw ?? undefined,
+                scoreRaw: scoreRaw ?? undefined,
+                avatarUrl: avatarUrl || undefined,
+                subGoalId: subGoalId || undefined,
+                subGoalType: subGoalType ?? undefined,
+                pin: data?.pin ? true : undefined,
+                unpin: data?.unpin ? true : undefined,
+                timestamp: Date.now()
+            };
+
+            if (goal?.title) meta.goalTitle = cleanVisibleString(goal.title);
+            if (goal?.description) meta.goalDescription = cleanVisibleString(goal.description);
+
+            return {
+                eventType,
+                meta
+            };
+        }
+
+        emitGoalEvent(goalEvent) {
+            if (!goalEvent || typeof goalEvent !== 'object') {
+                return;
+            }
+
+            if (!isCaptureEventsEnabled()) {
+                return;
+            }
+
+            const { eventType, meta } = goalEvent;
+            if (!eventType) {
+                return;
+            }
+
+            const metaObject = (meta && typeof meta === 'object') ? meta : {};
+            const progressPreview = metaObject.progress ?? metaObject.progressRaw ?? null;
+            const targetPreview = metaObject.target ?? metaObject.targetRaw ?? null;
+            const scorePreview = metaObject.score ?? metaObject.scoreRaw ?? null;
+
+            console.info('[TikTok] Goal event', {
+                username: this.username,
+                event: eventType,
+                contributor: metaObject.contributorName || metaObject.uniqueId || null,
+                giftName: metaObject.giftName || null,
+                progress: progressPreview,
+                target: targetPreview,
+                score: scorePreview
+            });
+
+            this.sendEventMessage({}, eventType, null, metaObject);
+        }
+
+        resetGoalAggregates() {
+            // Batching removed; method retained for compatibility.
+        }
+
         static delay(ms) {
             if (!Number.isFinite(ms) || ms <= 0) {
                 return Promise.resolve();
@@ -7979,70 +8205,11 @@ function resolveFirstImageUrl(candidates = []) {
                 },
                 goalUpdate: (data = {}) => {
                     this.recordActivity();
-                    const subGoal = data?.contributeSubgoal || {};
-                    const contributor = data?.contributorDisplayId || data?.contributorIdStr || data?.contributorId || 'Viewer';
-                    const giftName = subGoal?.gift?.name || data?.goal?.title || 'Goal';
-                    const progress = subGoal?.progress;
-                    const target = subGoal?.target;
-                    const score = data?.contributeScore;
-
-                    const hasValue = (value) => value !== undefined && value !== null && !(typeof value === 'string' && value.trim() === '');
-                    const hasProgress = hasValue(progress);
-                    const hasTarget = hasValue(target);
-                    const hasScore = hasValue(score);
-
-                    let progressText = '';
-                    if (hasProgress && hasTarget) {
-                        progressText = `${progress}/${target}`;
-                    } else if (hasProgress) {
-                        progressText = `${progress}`;
-                    } else if (hasTarget) {
-                        progressText = `${target}`;
+                    const normalized = this.normalizeGoalUpdate(data);
+                    if (!normalized) {
+                        return;
                     }
-                    const actionPrefix = data?.pin ? 'Pinned goal update' : (data?.unpin ? 'Unpinned goal update' : 'Goal update');
-                    const messageParts = [`${contributor} contributed to ${giftName}`];
-                    if (progressText) {
-                        messageParts.push(`(${progressText})`);
-                    }
-                    if (hasScore) {
-                        messageParts.push(`score: ${score}`);
-                    }
-                    const message = `${actionPrefix}: ${messageParts.join(' ')}`;
-
-                    console.info('[TikTok] Goal update', {
-                        username: this.username,
-                        contributor,
-                        giftName,
-                        progress: hasProgress ? progress : null,
-                        target: hasTarget ? target : null,
-                        score: hasScore ? score : null,
-                        pin: data?.pin || false,
-                        unpin: data?.unpin || false
-                    });
-
-                    const avatarUrls = data?.contributorAvatar?.url;
-                    const avatarUrl = normalizeTikTokImageUrl(avatarUrls)
-                        || normalizeTikTokImageUrl(data?.profilePictureUrl)
-                        || normalizeTikTokImageUrl(data?.profilePicture)
-                        || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
-                        || normalizeTikTokImageUrl(data?.user?.profilePicture);
-                    const payload = {
-                        ...data,
-                        nickname: data?.nickname || contributor,
-                        profilePictureUrl: avatarUrl || null
-                    };
-
-                    const goalMeta = { giftName };
-                    if (hasValue(data?.contributorId)) goalMeta.contributorId = data.contributorId;
-                    if (hasProgress) goalMeta.progress = progress;
-                    if (hasTarget) goalMeta.target = target;
-                    if (hasScore) goalMeta.score = score;
-                    if (hasValue(subGoal?.id)) goalMeta.subGoalId = subGoal.id;
-                    if (subGoal?.type !== undefined) goalMeta.subGoalType = subGoal.type;
-                    if (data?.pin) goalMeta.pin = true;
-                    if (data?.unpin) goalMeta.unpin = true;
-
-                    this.sendEventMessage(payload, 'goal_update', message, goalMeta);
+                    this.emitGoalEvent(normalized);
                 },
                 pollMessage: (data = {}) => {
                     this.recordActivity();
@@ -8302,6 +8469,11 @@ function resolveFirstImageUrl(candidates = []) {
                     return this.connect();
                 }
 
+                if (isSignServerIssue) {
+                    this.handleSignServerFailure(primaryError instanceof Error ? primaryError : err, errorMessage, userFacingMessage);
+                    return false;
+                }
+
                 this.logConsoleFailure(userFacingMessage, primaryError instanceof Error ? primaryError : null);
 
                 try {
@@ -8320,7 +8492,8 @@ function resolveFirstImageUrl(candidates = []) {
                         connectionStates.set(this.wssID, {
                             isConnected: false,
                             lastAttempt: Date.now(),
-                            isReconnecting: false
+                            isReconnecting: false,
+                            attemptInProgress: false
                         });
                     } catch (_) { /* noop */ }
 
@@ -8334,11 +8507,7 @@ function resolveFirstImageUrl(candidates = []) {
                         this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
                     } else {
                         this.offlineRetry = false;
-                        if (isSignServerIssue) {
-                            this.offlineReason = userFacingMessage;
-                        } else {
-                            this.offlineReason = null;
-                        }
+                        this.offlineReason = null;
                         this.attemptReconnect();
                     }
                 }
@@ -8435,7 +8604,8 @@ function resolveFirstImageUrl(candidates = []) {
             connectionStates.set(this.wssID, {
                 isConnected: true,
                 lastAttempt: Date.now(),
-                isReconnecting: false
+                isReconnecting: false,
+                attemptInProgress: false
             });
             this.startHealthCheck();
             this.startViewerUpdateInterval();
@@ -8461,7 +8631,9 @@ function resolveFirstImageUrl(candidates = []) {
             console.info('Disconnect detected');
             connectionStates.set(this.wssID, {
                 isConnected: false,
-                lastAttempt: Date.now()
+                lastAttempt: Date.now(),
+                isReconnecting: false,
+                attemptInProgress: false
             });
             if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
             if (this.viewerUpdateInterval) clearInterval(this.viewerUpdateInterval);
@@ -8561,7 +8733,9 @@ function resolveFirstImageUrl(candidates = []) {
 
             connectionStates.set(this.wssID, {
                 isConnected: false,
-                lastAttempt: Date.now()
+                lastAttempt: Date.now(),
+                isReconnecting: false,
+                attemptInProgress: false
             });
 
             try {
@@ -8631,6 +8805,7 @@ function resolveFirstImageUrl(candidates = []) {
                 clearTimeout(this.reconnectTimer);
                 this.reconnectTimer = null;
             }
+            this.resetGoalAggregates({ flush: false });
             this.logDebug('lifecycle.disconnect', { method: 'disconnect()' });
             this.closeLogWriter('disconnect');
         }
@@ -8646,14 +8821,22 @@ function resolveFirstImageUrl(candidates = []) {
         }
 
         attemptReconnect(delay = CONFIG.CONNECTION.RECONNECT_DELAY, options = {}) {
-            const { fixed = false, offline = false } = options || {};
+            const {
+                fixed = false,
+                offline = false,
+                immediate = false,
+                silent = false,
+                reason = undefined
+            } = options || {};
 
             if (this.isStopped) return;
 
             // Guard: avoid scheduling duplicate reconnect timers
             const st = connectionStates.get(this.wssID);
             if (this.reconnectTimer || (st && st.isReconnecting)) {
-                console.info('Reconnect already scheduled; skipping');
+                if (!silent) {
+                    console.info('Reconnect already scheduled; skipping');
+                }
                 return;
             }
 
@@ -8665,50 +8848,67 @@ function resolveFirstImageUrl(candidates = []) {
             connectionStates.set(this.wssID, {
                 isConnected: false,
                 lastAttempt: Date.now(),
-                isReconnecting: true
+                isReconnecting: true,
+                attemptInProgress: false
             });
 
             // Delay calculation
             let backoffDelay;
-            if (fixed || offline || this.offlineRetry) {
+            if (immediate) {
+                backoffDelay = Number.isFinite(delay) ? Math.max(0, delay) : 0;
+            } else if (fixed || offline || this.offlineRetry) {
                 backoffDelay = (typeof delay === 'number' ? delay : CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS) || CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS;
             } else {
                 // Exponential backoff for transient errors, capped by config
                 const base = (typeof delay === 'number' ? delay : CONFIG.CONNECTION.RECONNECT_DELAY) || CONFIG.CONNECTION.RECONNECT_DELAY;
                 backoffDelay = Math.min(base * Math.pow(2, this.reconnectAttempts - 1), CONFIG.CONNECTION.MAX_RECONNECT_DELAY_MS);
             }
-            // Add jitter to reduce thundering herd
-            const jitter = CONFIG.CONNECTION.BACKOFF_JITTER || 0;
-            if (jitter > 0) {
-                const delta = backoffDelay * jitter;
-                const min = backoffDelay - delta;
-                const max = backoffDelay + delta;
-                backoffDelay = Math.max(0, Math.floor(min + Math.random() * (max - min)));
+            // Add jitter to reduce thundering herd when we're not doing an immediate retry
+            if (!immediate) {
+                const jitter = CONFIG.CONNECTION.BACKOFF_JITTER || 0;
+                if (jitter > 0) {
+                    const delta = backoffDelay * jitter;
+                    const min = backoffDelay - delta;
+                    const max = backoffDelay + delta;
+                    backoffDelay = Math.max(0, Math.floor(min + Math.random() * (max - min)));
+                }
             }
 
             // Safety: ensure a positive, non-zero delay to avoid edge cases
-            if (!Number.isFinite(backoffDelay) || backoffDelay <= 0) {
-                backoffDelay = Math.max(1000, CONFIG.CONNECTION.RECONNECT_DELAY);
+            if (!Number.isFinite(backoffDelay) || backoffDelay < 0 || (!immediate && backoffDelay <= 0)) {
+                backoffDelay = immediate ? 0 : Math.max(1000, CONFIG.CONNECTION.RECONNECT_DELAY);
             }
 
             const attemptLabel = (offline || this.offlineRetry) ? 'offline-retry' : `${this.reconnectAttempts}`;
+            const reasonForLog = (reason !== undefined) ? reason : (this.offlineReason || null);
             this.logDebug('lifecycle.reconnect.scheduled', {
                 attempt: this.reconnectAttempts,
                 delayMs: backoffDelay,
                 offline: !!(offline || this.offlineRetry),
-                reason: this.offlineReason || null
+                reason: reasonForLog,
+                silent: !!silent
             });
-            console.info(`Reconnect attempt ${attemptLabel} - waiting ${Math.round(backoffDelay/1000)}s` + (this.offlineReason ? ` (reason: ${this.offlineReason})` : ''));
+            if (!silent) {
+                const seconds = Math.round(backoffDelay / 1000);
+                const reasonSuffix = reasonForLog ? ` (reason: ${reasonForLog})` : '';
+                console.info(`Reconnect attempt ${attemptLabel} - waiting ${seconds}s${reasonSuffix}`);
 
-            // Send reconnection status to the renderer
-            mainWindow.webContents.send('tiktokConnectionStatus', {
-                wssID: this.wssID,
-                status: 'reconnecting',
-                attempt: this.reconnectAttempts,
-                maxAttempts: undefined,
-                nextAttemptIn: backoffDelay,
-                reason: this.offlineReason || undefined
-            });
+                // Send reconnection status to the renderer
+                try {
+                    if (mainWindow && mainWindow.webContents) {
+                        mainWindow.webContents.send('tiktokConnectionStatus', {
+                            wssID: this.wssID,
+                            status: 'reconnecting',
+                            attempt: this.reconnectAttempts,
+                            maxAttempts: undefined,
+                            nextAttemptIn: backoffDelay,
+                            reason: reasonForLog || undefined
+                        });
+                    }
+                } catch (sendErr) {
+                    console.warn('Failed to send reconnect status update:', sendErr);
+                }
+            }
 
             // Clear any existing reconnect timer
             if (this.reconnectTimer) {
@@ -8717,13 +8917,13 @@ function resolveFirstImageUrl(candidates = []) {
 
             this.reconnectTimer = setTimeout(() => {
                 this.reconnectTimer = null;
-                // We are now actively attempting a connection; clear the reconnecting flag
-                // so that a failure can schedule the next attempt without being blocked.
+                // Mark the active attempt so cleanup logic does not dispose the manager mid-connect.
                 try {
                     connectionStates.set(this.wssID, {
                         isConnected: false,
                         lastAttempt: Date.now(),
-                        isReconnecting: false
+                        isReconnecting: true,
+                        attemptInProgress: true
                     });
                 } catch (_) { /* noop */ }
                 if (!this.isStopped) {
@@ -8753,36 +8953,40 @@ function resolveFirstImageUrl(candidates = []) {
             if (!isCaptureEventsEnabled()) {
                 return; // drop non-gift events if captureevents disabled
             }
-            const rawColor = data.nameColor || data.name_color || data.user?.nameColor;
-            const identity = extractTikTokIdentity(data);
-            const displayName = identity.nickname || identity.uniqueId;
-            const avatarUrl = identity.profilePictureUrl
-                || normalizeTikTokImageUrl(data.profilePictureUrl)
-                || normalizeTikTokImageUrl(data.profilePicture)
-                || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
-                || normalizeTikTokImageUrl(data?.user?.profilePicture);
 
-            const textOnly = isTextOnlyModeEnabled();
+            const includeChatPayload = typeof message === 'string' && message.trim().length > 0;
             const payload = {
-                chatmessage: message,
-                moderator: resolveTikTokModeratorStatus(data),
-                membership: resolveTikTokSubscriberStatus(data),
-                chatname: displayName || "System",
-                chatimg: avatarUrl || null,
                 type: "tiktok",
-                textonly: textOnly,
                 event: eventType,
-                tid: this.virtualTabId // Include the virtual tab ID
+                tid: this.virtualTabId
             };
 
-            if (identity.uniqueId) {
-                payload.userid = identity.uniqueId;
-            }
+            if (includeChatPayload) {
+                const identity = extractTikTokIdentity(data);
+                const displayName = identity.nickname || identity.uniqueId;
+                const avatarUrl = identity.profilePictureUrl
+                    || normalizeTikTokImageUrl(data?.profilePictureUrl)
+                    || normalizeTikTokImageUrl(data?.profilePicture)
+                    || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+                    || normalizeTikTokImageUrl(data?.user?.profilePicture);
 
-            if (rawColor) {
-                const safeColor = normalizeNameColor(rawColor);
-                if (safeColor) {
-                    payload.nameColor = safeColor;
+                payload.chatmessage = message.trim();
+                payload.chatname = displayName || "System";
+                payload.chatimg = avatarUrl || null;
+                payload.moderator = resolveTikTokModeratorStatus(data);
+                payload.membership = resolveTikTokSubscriberStatus(data);
+                payload.textonly = isTextOnlyModeEnabled();
+
+                if (identity.uniqueId) {
+                    payload.userid = identity.uniqueId;
+                }
+
+                const rawColor = data?.nameColor || data?.name_color || data?.user?.nameColor;
+                if (rawColor) {
+                    const safeColor = normalizeNameColor(rawColor);
+                    if (safeColor) {
+                        payload.nameColor = safeColor;
+                    }
                 }
             }
 
@@ -8798,36 +9002,45 @@ function resolveFirstImageUrl(candidates = []) {
         }
 
         async sendChatMessage(message) {
-            // Check if user is signed in (has session)
-            if (!this.sessionId) {
-                console.log('Cannot send message: User not signed in');
+            if (typeof message !== 'string' || !message.trim()) {
                 return {
                     success: false,
-                    error: 'User not signed in'
+                    error: 'Message must be a non-empty string'
                 };
             }
 
-            // Check if connection is active
-            if (!this.connection || this.isStopped) {
-                console.log('Cannot send message: Connection not active');
+            if (!this.sessionId || !this.ttTargetIdc) {
+                console.warn('Skipping TikTok chat send: session credentials missing');
+                return {
+                    success: false,
+                    error: 'TikTok chat sending requires sign-in'
+                };
+            }
+
+            if (!this.connection || this.isStopped || !this.connection.isConnected) {
+                console.warn('Cannot send TikTok message: Connection not active');
                 return {
                     success: false,
                     error: 'Connection not active'
                 };
             }
 
+            const trimmedMessage = message.trim();
+
             try {
-                // Send message using the TikTok connection
-                await this.connection.sendMessage(message);
-                console.log(`Message sent to TikTok chat: ${message}`);
+                await this.connection.sendMessage(trimmedMessage);
+                console.log('Message sent to TikTok chat.');
                 return {
                     success: true
                 };
             } catch (error) {
                 console.error('Failed to send TikTok message:', error);
+                const detail = typeof error?.message === 'string' && error.message.trim()
+                    ? error.message.trim()
+                    : 'Failed to send message';
                 return {
                     success: false,
-                    error: error.message || 'Failed to send message'
+                    error: detail
                 };
             }
         }
@@ -8862,7 +9075,9 @@ function resolveFirstImageUrl(candidates = []) {
 
         connectionStates.set(wssID, {
             isConnected: false,
-            lastAttempt: Date.now()
+            lastAttempt: Date.now(),
+            isReconnecting: false,
+            attemptInProgress: false
         });
 
         // Create a virtual tab entry for the TikTok connection
@@ -8879,18 +9094,26 @@ function resolveFirstImageUrl(candidates = []) {
                 getURL: () => `https://www.tiktok.com/@${username}/live`,
                 send: (channel, data) => {
                     // Handle messages sent to this virtual tab
-                    if (channel === "sendToTab" && data && data.text) {
-                        // Send the message through the TikTok websocket
-                        if (manager.sessionId) {
-                            manager.sendChatMessage(data.text).then(result => {
-                                if (!result.success) {
-                                    console.log('Failed to send TikTok message:', result.error);
-                                }
-                            });
-                        } else {
-                            console.log('Cannot send TikTok message: User not signed in');
-                        }
+                    if (channel !== "sendToTab") return;
+
+                    const text = typeof data?.text === 'string' ? data.text.trim() : '';
+                    if (!text) {
+                        console.warn('Ignoring empty TikTok chat send request');
+                        return;
                     }
+
+                    if (!manager.sessionId || !manager.ttTargetIdc) {
+                        console.warn('TikTok outbound messaging ignored: sign-in required');
+                        return;
+                    }
+
+                    manager.sendChatMessage(text).then(result => {
+                        if (!result?.success && result?.error) {
+                            console.log('Failed to send TikTok message:', result.error);
+                        }
+                    }).catch(error => {
+                        console.error('Failed to send TikTok message:', error);
+                    });
                 }
             }
         };
@@ -9001,16 +9224,25 @@ function resolveFirstImageUrl(candidates = []) {
             const {
                 wssID,
                 message
-            } = args;
+            } = args || {};
 
-            if (!wssID || !message) {
+            const numericWssID = typeof wssID === 'number' ? wssID : Number.parseInt(wssID, 10);
+
+            if (!Number.isFinite(numericWssID)) {
                 return {
                     success: false,
                     error: 'Missing wssID or message'
                 };
             }
 
-            const connection = websocketConnections[wssID];
+            if (typeof message !== 'string' || !message.trim()) {
+                return {
+                    success: false,
+                    error: 'Message must be a non-empty string'
+                };
+            }
+
+            const connection = websocketConnections[numericWssID];
             if (!connection) {
                 return {
                     success: false,
