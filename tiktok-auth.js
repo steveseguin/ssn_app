@@ -41,12 +41,14 @@ class TikTokAuth {
             });
 
             // Find the required cookies
-            const sessionId = cookies.find(c => c.name === 'sessionid')?.value;
-            const ttTargetIdc = cookies.find(c => c.name === 'tt-target-idc')?.value;
+            const rawSessionId = cookies.find(c => c.name === 'sessionid')?.value;
+            const rawTtTargetIdc = cookies.find(c => c.name === 'tt-target-idc')?.value;
+            const sessionId = typeof rawSessionId === 'string' ? rawSessionId.trim() : '';
+            const ttTargetIdc = typeof rawTtTargetIdc === 'string' ? rawTtTargetIdc.trim() : '';
 
             if (sessionId) {
               this.authWindow.close();
-              resolve({ sessionId, ttTargetIdc });
+              resolve({ sessionId, ttTargetIdc: ttTargetIdc || null });
             }
           } catch (error) {
             console.error('Error getting cookies:', error);
@@ -70,10 +72,12 @@ class TikTokAuth {
         domain: '.tiktok.com'
       });
 
-      const sessionId = cookies.find(c => c.name === 'sessionid')?.value;
-      const ttTargetIdc = cookies.find(c => c.name === 'tt-target-idc')?.value;
+      const rawSessionId = cookies.find(c => c.name === 'sessionid')?.value;
+      const rawTtTargetIdc = cookies.find(c => c.name === 'tt-target-idc')?.value;
+      const sessionId = typeof rawSessionId === 'string' ? rawSessionId.trim() : '';
+      const ttTargetIdc = typeof rawTtTargetIdc === 'string' ? rawTtTargetIdc.trim() : '';
 
-      return { sessionId, ttTargetIdc };
+      return { sessionId: sessionId || null, ttTargetIdc: ttTargetIdc || null };
     } catch (error) {
       console.error('Error getting cookies from session:', error);
       return { sessionId: null, ttTargetIdc: null };
@@ -88,7 +92,7 @@ class TikTokAuth {
       type: 'info',
       title: 'TikTok Authentication',
       message: 'To use authenticated features, you need to provide your TikTok session cookies.',
-      detail: 'Instructions:\n1. Open TikTok in your browser and log in\n2. Open DevTools (F12)\n3. Go to Application → Cookies → tiktok.com\n4. Find "sessionid" and "tt-target-idc" cookies\n5. Copy their values',
+      detail: 'Instructions:\n1. Open TikTok in your browser and log in\n2. Open DevTools (F12)\n3. Go to Application → Cookies → tiktok.com\n4. Copy the value of the "sessionid" cookie (required)\n5. Optionally copy "tt-target-idc" if it is present',
       buttons: ['Enter Cookies', 'Cancel'],
       defaultId: 0
     });
@@ -106,19 +110,22 @@ class TikTokAuth {
         type: 'input'
       }, this.mainWindow);
 
-      if (!sessionId) return null;
+      const sanitizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+      if (!sanitizedSessionId) return null;
 
       const ttTargetIdc = await prompt({
         title: 'Enter Target IDC',
         label: 'tt-target-idc:',
-        value: 'useast1a',
+        value: '',
         inputAttrs: {
           type: 'text'
         },
         type: 'input'
       }, this.mainWindow);
 
-      return { sessionId, ttTargetIdc };
+      const sanitizedTtTargetIdc = typeof ttTargetIdc === 'string' ? ttTargetIdc.trim() : '';
+
+      return { sessionId: sanitizedSessionId, ttTargetIdc: sanitizedTtTargetIdc || null };
     }
 
     return null;

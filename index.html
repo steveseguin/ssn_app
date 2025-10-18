@@ -2480,22 +2480,18 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
         const isWebsocketMode = mode === 'websocket' || mode === 'tiktok-websocket';
         
         if (target === 'tiktok' && mode === 'tiktok-websocket') {
-            // Show info instead of sign-in button for websocket mode
+            // Allow users to supply credentials even in read-only mode
+            const hasSession = !!(source && typeof source.tiktokSessionId === 'string' && source.tiktokSessionId.trim());
             signinButton.classList.remove("hidden");
             signinButton.setAttribute('data-tiktok-signin', 'true');
-            signinButton.innerHTML = '📖 Read-Only Mode';
-            signinButton.style.cursor = 'help';
-            signinButton.title = 'WebSocket mode is read-only. Use Standard mode to send messages.';
-            signinButton.onclick = function() { 
-                Toast.info('TikTok WebSocket Mode', 'This mode is read-only due to TikTok API limitations. To send messages, please use Standard mode instead.');
+            signinButton.innerHTML = hasSession ? '✓ TikTok Session Saved' : '🔐 Add TikTok Session ID';
+            signinButton.classList.toggle('authenticated', hasSession);
+            signinButton.style.cursor = '';
+            signinButton.title = 'Provide your TikTok session cookie to enable chat replies and authenticated features.';
+            signinButton.onclick = function() {
+                showTikTokSignInMenu(sourceId);
             };
-            
-            // Check if already authenticated
-            const source = stateManager.getSource(sourceId);
-            if (source && source.tiktokSessionId) {
-                signinButton.innerHTML = '✓ Signed In';
-                signinButton.classList.add('authenticated');
-            }
+            applySigninPolicy(signinButton, source);
         } else if (isWebsocketMode) {
             // Hide for other websocket modes
             signinButton.classList.add("hidden");
@@ -2503,11 +2499,21 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
             // Regular sign-in button
             signinButton.classList.remove("hidden");
             signinButton.removeAttribute('data-tiktok-signin');
-            signinButton.innerHTML = '🔑 Sign-in';
-            signinButton.onclick = function() { signin(this); };
-            signinButton.classList.remove('authenticated');
+            if (target === 'tiktok') {
+                const hasSession = !!(source && typeof source.tiktokSessionId === 'string' && source.tiktokSessionId.trim());
+                signinButton.innerHTML = hasSession ? '✓ TikTok Session Saved' : '🔐 Add TikTok Session ID';
+                signinButton.classList.toggle('authenticated', hasSession);
+                signinButton.onclick = function() {
+                    showTikTokSignInMenu(sourceId);
+                };
+                signinButton.title = 'Provide your TikTok session cookie to enable chat replies and authenticated features.';
+            } else {
+                signinButton.innerHTML = '🔑 Sign-in';
+                signinButton.onclick = function() { signin(this); };
+                signinButton.classList.remove('authenticated');
+                signinButton.title = '';
+            }
             // Apply config-based sign-in policy (disable if requested)
-            const source = stateManager.getSource(sourceId);
             applySigninPolicy(signinButton, source);
         }
     }
@@ -4191,29 +4197,39 @@ function showTikTokSignInMenu(sourceId) {
         <div style="padding: 20px; background: #2a2a2a; border-radius: 8px;">
             <h3 style="margin-bottom: 15px;">TikTok Authentication</h3>
             ${isAuthenticated ? 
-                `<p style="color: #4ade80; margin-bottom: 15px;">✓ Currently signed in</p>` : 
-                `<p style="margin-bottom: 15px;">Sign in to TikTok for enhanced features:</p>
+                `<p style="color: #4ade80; margin-bottom: 15px;">✓ TikTok session cookie saved for this source.</p>` : 
+                `<p style="margin-bottom: 15px;">Add your TikTok session cookie to unlock:</p>
                 <ul style="margin-bottom: 15px; margin-left: 20px;">
-                    <li>Send chat messages</li>
-                    <li>More stable connection</li>
-                    <li>Access to all features</li>
+                    <li>Sending chat messages from the app</li>
+                    <li>Improved connection stability</li>
+                    <li>Access to additional TikTok metadata</li>
                 </ul>`
             }
+            <div style="background: rgba(148, 163, 184, 0.12); border-radius: 6px; padding: 12px 14px; margin-bottom: 18px;">
+                <h4 style="margin: 0 0 10px 0; font-size: 15px;">How to find your session cookie</h4>
+                <ol style="margin: 0 0 10px 18px; padding: 0; line-height: 1.4;">
+                    <li>Open <strong>tiktok.com</strong> in your browser and sign in.</li>
+                    <li>Press <strong>F12</strong> (or right-click → Inspect) to open Developer Tools.</li>
+                    <li>Navigate to <strong>Application → Storage → Cookies → https://www.tiktok.com</strong>.</li>
+                    <li>Copy the value of the <code>sessionid</code> cookie. Optionally note <code>tt-target-idc</code> if it exists.</li>
+                </ol>
+                <p style="margin: 0; font-size: 13px; color: #e2e8f0;">
+                    Only the <code>sessionid</code> cookie is required to send chat replies. The <code>tt-target-idc</code> cookie is optional but can improve routing.
+                </p>
+            </div>
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                ${!isAuthenticated ? `
-                    <button onclick="tiktokSignIn('${sourceId}')" class="button" style="background: #6366f1;">
-                        🌐 Sign in with Browser
-                    </button>
-                    <button onclick="tiktokManualSignIn('${sourceId}')" class="button" style="background: #6b7280;">
-                        📝 Enter Cookies Manually
-                    </button>
-                ` : `
+                <button onclick="tiktokSignIn('${sourceId}')" class="button" style="background: #6366f1;">
+                    🌐 Sign in with Browser
+                </button>
+                <button onclick="tiktokManualSignIn('${sourceId}')" class="button" style="background: #6b7280;">
+                    📝 Enter Session ID
+                </button>
+                ${isAuthenticated ? `
                     <button onclick="clearTikTokAuth('${sourceId}')" class="button" style="background: #ef4444;">
                         🗑️ Clear Authentication
-                    </button>
-                `}
+                    </button>` : ''}
                 <button onclick="closeModal()" class="button" style="background: #374151;">
-                    Cancel
+                    Close
                 </button>
             </div>
         </div>
@@ -4233,9 +4249,10 @@ function clearTikTokAuth(sourceId) {
         // Update UI
         const entry = document.querySelector(`[data-source-id="${sourceId}"]`);
         if (entry) {
-            const signInBtn = entry.querySelector('[data-tiktok-signin]');
+            const signInBtn = entry.querySelector('[data-tiktok-signin]') || entry.querySelector('[data-signin]');
             if (signInBtn) {
-                signInBtn.innerHTML = '🔑 TikTok Sign-in';
+                signInBtn.innerHTML = '🔐 Add TikTok Session ID';
+                signInBtn.title = 'Provide your TikTok session cookie to enable chat replies and authenticated features.';
                 signInBtn.classList.remove('authenticated');
             }
         }
@@ -4250,22 +4267,29 @@ async function tiktokSignIn(sourceId) {
     try {
         const result = await ipcRenderer.invoke('authenticateTikTok');
         if (result.success && result.credentials) {
+            const rawSession = typeof result.credentials.sessionId === 'string' ? result.credentials.sessionId.trim() : '';
+            const rawIdc = typeof result.credentials.ttTargetIdc === 'string' ? result.credentials.ttTargetIdc.trim() : '';
+            if (!rawSession) {
+                Toast.error("TikTok Sign-in", "TikTok did not return a sessionid cookie. Please try again manually.");
+                return;
+            }
             // Store credentials in the source
             const source = stateManager.getSource(sourceId);
             if (source) {
                 stateManager.updateSource(sourceId, {
-                    tiktokSessionId: result.credentials.sessionId,
-                    tiktokTtTargetIdc: result.credentials.ttTargetIdc
+                    tiktokSessionId: rawSession,
+                    tiktokTtTargetIdc: rawIdc || null
                 });
                 Toast.success("TikTok Sign-in", "Successfully signed in to TikTok!");
                 
                 // Update UI to show authenticated status
                 const entry = document.querySelector(`[data-source-id="${sourceId}"]`);
                 if (entry) {
-                    const signInBtn = entry.querySelector('[data-tiktok-signin]');
+                    const signInBtn = entry.querySelector('[data-tiktok-signin]') || entry.querySelector('[data-signin]');
                     if (signInBtn) {
-                        signInBtn.innerHTML = '✓ Signed In';
+                        signInBtn.innerHTML = '✓ TikTok Session Saved';
                         signInBtn.classList.add('authenticated');
+                        signInBtn.title = 'TikTok session cookie stored for this source.';
                     }
                 }
             }
@@ -4283,22 +4307,29 @@ async function tiktokManualSignIn(sourceId) {
     try {
         const result = await ipcRenderer.invoke('promptTikTokCookies');
         if (result.success && result.credentials) {
+            const rawSession = typeof result.credentials.sessionId === 'string' ? result.credentials.sessionId.trim() : '';
+            const rawIdc = typeof result.credentials.ttTargetIdc === 'string' ? result.credentials.ttTargetIdc.trim() : '';
+            if (!rawSession) {
+                Toast.error("TikTok Sign-in", "Session ID is required.");
+                return;
+            }
             // Store credentials in the source
             const source = stateManager.getSource(sourceId);
             if (source) {
                 stateManager.updateSource(sourceId, {
-                    tiktokSessionId: result.credentials.sessionId,
-                    tiktokTtTargetIdc: result.credentials.ttTargetIdc
+                    tiktokSessionId: rawSession,
+                    tiktokTtTargetIdc: rawIdc || null
                 });
                 Toast.success("TikTok Sign-in", "Successfully added TikTok credentials!");
                 
                 // Update UI to show authenticated status
                 const entry = document.querySelector(`[data-source-id="${sourceId}"]`);
                 if (entry) {
-                    const signInBtn = entry.querySelector('[data-tiktok-signin]');
+                    const signInBtn = entry.querySelector('[data-tiktok-signin]') || entry.querySelector('[data-signin]');
                     if (signInBtn) {
-                        signInBtn.innerHTML = '✓ Signed In';
+                        signInBtn.innerHTML = '✓ TikTok Session Saved';
                         signInBtn.classList.add('authenticated');
+                        signInBtn.title = 'TikTok session cookie stored for this source.';
                     }
                 }
             }
@@ -6959,7 +6990,30 @@ function updateDynamicTranslations() {
 	});
 	
 	document.querySelectorAll('[data-signin]').forEach(btn => {
-		btn.textContent = translate('btn.signin');
+		const entry = btn.closest('.entry');
+		const sourceId = entry ? entry.dataset.sourceId : null;
+		const isTikTokEntry = entry && entry.dataset.target === 'tiktok';
+
+		if (!isTikTokEntry) {
+			btn.textContent = translate('btn.signin');
+			return;
+		}
+
+		let hasSession = false;
+		try {
+			if (sourceId && window.stateManager) {
+				const source = stateManager.getSource(sourceId);
+				hasSession = !!(source && typeof source.tiktokSessionId === 'string' && source.tiktokSessionId.trim());
+			}
+		} catch (e) {
+			console.warn('Failed to resolve TikTok session state for translations:', e);
+		}
+
+		btn.textContent = hasSession ? '✓ TikTok Session Saved' : '🔐 Add TikTok Session ID';
+		btn.classList.toggle('authenticated', hasSession);
+		btn.title = hasSession
+			? 'TikTok session cookie stored for this source.'
+			: 'Provide your TikTok session cookie to enable chat replies and authenticated features.';
 	});
 	
 	document.querySelectorAll('[data-showtips]').forEach(btn => {

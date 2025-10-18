@@ -5952,79 +5952,6 @@ function cleanGenericString(value) {
     return str || null;
 }
 
-function normalizeTikTokImageUrl(value, seen) {
-    if (value === undefined || value === null) return null;
-
-    if (!seen) {
-        seen = new Set();
-    }
-
-    if (typeof value === 'string') {
-        const trimmed = value.trim();
-        if (!trimmed) return null;
-        if (trimmed.startsWith('//')) {
-            return `https:${trimmed}`;
-        }
-        return trimmed;
-    }
-
-    if (typeof value === 'number' || typeof value === 'boolean') {
-        // Ignore primitives that cannot be valid URLs
-        return null;
-    }
-
-    if (typeof value === 'object') {
-        if (value === null) return null;
-        if (seen.has(value)) return null;
-        seen.add(value);
-
-        if (typeof value.href === 'string') {
-            return normalizeTikTokImageUrl(value.href, seen);
-        }
-
-        const directKeys = ['url', 'uri', 'src'];
-        for (const key of directKeys) {
-            if (Object.prototype.hasOwnProperty.call(value, key)) {
-                const resolved = normalizeTikTokImageUrl(value[key], seen);
-                if (resolved) return resolved;
-            }
-        }
-
-        const listKeys = ['urlList', 'urls', 'url_list', 'uriList', 'urlArray', 'url_array'];
-        for (const key of listKeys) {
-            if (Array.isArray(value[key])) {
-                const resolved = normalizeTikTokImageUrl(value[key], seen);
-                if (resolved) return resolved;
-            }
-        }
-
-        const nestedKeys = ['thumb', 'default', 'origin', 'large', 'medium', 'small', 'avatar', 'image'];
-        for (const key of nestedKeys) {
-            if (Object.prototype.hasOwnProperty.call(value, key)) {
-                const resolved = normalizeTikTokImageUrl(value[key], seen);
-                if (resolved) return resolved;
-            }
-        }
-
-        if (Array.isArray(value)) {
-            for (const item of value) {
-                const resolved = normalizeTikTokImageUrl(item, seen);
-                if (resolved) return resolved;
-            }
-        }
-
-        if (typeof value.toString === 'function') {
-            const stringValue = value.toString();
-            if (stringValue && stringValue !== '[object Object]') {
-                return normalizeTikTokImageUrl(stringValue, seen);
-            }
-        }
-
-        return null;
-    }
-
-    return null;
-}
 
 function pickFirstValue(sources, keys, cleaner) {
     for (const source of sources) {
@@ -7333,8 +7260,10 @@ function resolveFirstImageUrl(candidates = []) {
         constructor(username, wssID, sessionId = null, ttTargetIdc = null) {
             this.username = username;
             this.wssID = wssID;
-            this.sessionId = sessionId;
-            this.ttTargetIdc = ttTargetIdc;
+            const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : null;
+            const normalizedTtTargetIdc = typeof ttTargetIdc === 'string' ? ttTargetIdc.trim() : null;
+            this.sessionId = normalizedSessionId || null;
+            this.ttTargetIdc = normalizedTtTargetIdc || null;
             this.connection = null;
             this.lastMessageTime = Date.now();
             this.healthCheckInterval = null;
@@ -7355,6 +7284,7 @@ function resolveFirstImageUrl(candidates = []) {
             this.replyOnly = false;
             this.tiktokLogWriter = createTikTokLogWriter(this.username, this.wssID);
             this.tiktokLogFilePath = this.tiktokLogWriter ? this.tiktokLogWriter.filePath : null;
+            this.warnedMissingTtTargetIdc = false;
             this.signRequestTimeoutMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_MS || 25000;
             this.signRequestTimeoutBaseMs = this.signRequestTimeoutMs;
             this.signRequestTimeoutStepMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_STEP_MS || 10000;
@@ -9052,12 +8982,17 @@ function resolveFirstImageUrl(candidates = []) {
                 };
             }
 
-            if (!this.sessionId || !this.ttTargetIdc) {
-                console.warn('Skipping TikTok chat send: session credentials missing');
+            if (!this.sessionId) {
+                console.warn('Skipping TikTok chat send: sessionid cookie missing');
                 return {
                     success: false,
-                    error: 'TikTok chat sending requires sign-in'
+                    error: 'TikTok chat sending requires the sessionid cookie'
                 };
+            }
+
+            if (!this.ttTargetIdc && !this.warnedMissingTtTargetIdc) {
+                console.warn('TikTok chat send proceeding without tt-target-idc cookie');
+                this.warnedMissingTtTargetIdc = true;
             }
 
             if (!this.connection || this.isStopped || !this.connection.isConnected) {
@@ -9107,8 +9042,10 @@ function resolveFirstImageUrl(candidates = []) {
         console.log('Attempting TikTok connection with username:', username);
 
         // Extract session credentials if provided
-        const sessionId = args.sessionId || null;
-        const ttTargetIdc = args.ttTargetIdc || null;
+        const rawSessionId = typeof args.sessionId === 'string' ? args.sessionId.trim() : '';
+        const rawTtTargetIdc = typeof args.ttTargetIdc === 'string' ? args.ttTargetIdc.trim() : '';
+        const sessionId = rawSessionId || null;
+        const ttTargetIdc = rawTtTargetIdc || null;
 
         const manager = new ConnectionManager(username, wssID, sessionId, ttTargetIdc);
         if (args && args.replyOnly === true) {
@@ -9145,9 +9082,14 @@ function resolveFirstImageUrl(candidates = []) {
                         return;
                     }
 
-                    if (!manager.sessionId || !manager.ttTargetIdc) {
-                        console.warn('TikTok outbound messaging ignored: sign-in required');
+                    if (!manager.sessionId) {
+                        console.warn('TikTok outbound messaging ignored: sessionid cookie missing');
                         return;
+                    }
+
+                    if (!manager.ttTargetIdc && !manager.warnedMissingTtTargetIdc) {
+                        console.warn('TikTok outbound messaging proceeding without tt-target-idc cookie');
+                        manager.warnedMissingTtTargetIdc = true;
                     }
 
                     manager.sendChatMessage(text).then(result => {
