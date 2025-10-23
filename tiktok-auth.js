@@ -1,5 +1,9 @@
 const { BrowserWindow, session } = require('electron');
 
+const AUTH_PARTITION = 'persist:tiktok-auth';
+const LOGIN_URL = 'https://www.tiktok.com/login';
+const SUCCESS_URL_REGEX = /tiktok\.com\/(?:foryou|@)/i;
+
 class TikTokAuth {
   constructor(mainWindow) {
     this.mainWindow = mainWindow;
@@ -7,7 +11,19 @@ class TikTokAuth {
   }
 
   async authenticate() {
+    const authSession = session.fromPartition(AUTH_PARTITION);
+
+    try {
+      await authSession.clearStorageData({
+        storages: ['cookies', 'localstorage', 'sessionstorage']
+      });
+    } catch (error) {
+      console.warn('Failed to clear previous TikTok auth session:', error);
+    }
+
     return new Promise((resolve, reject) => {
+      let resolved = false;
+
       // Create a new window for TikTok login
       this.authWindow = new BrowserWindow({
         width: 500,
@@ -17,26 +33,28 @@ class TikTokAuth {
         webPreferences: {
           nodeIntegration: false,
           contextIsolation: true,
-          partition: 'persist:tiktok-auth' // Separate session for auth
+          partition: AUTH_PARTITION // Separate session for auth
         }
       });
 
-      // Load TikTok login page
-      this.authWindow.loadURL('https://www.tiktok.com/login');
+      // Load TikTok login page after ensuring session data is cleared
+      this.authWindow.loadURL(LOGIN_URL);
 
       // Handle window closed
       this.authWindow.on('closed', () => {
         this.authWindow = null;
-        reject(new Error('Authentication window closed'));
+        if (!resolved) {
+          reject(new Error('Authentication window closed'));
+        }
       });
 
       // Listen for navigation to detect successful login
       this.authWindow.webContents.on('did-navigate', async (event, url) => {
         // Check if we're on a page that indicates successful login
-        if (url.includes('tiktok.com/foryou') || url.includes('tiktok.com/@')) {
+        if (SUCCESS_URL_REGEX.test(url)) {
           try {
             // Get cookies from the session
-            const cookies = await this.authWindow.webContents.session.cookies.get({
+            const cookies = await authSession.cookies.get({
               domain: '.tiktok.com'
             });
 
@@ -47,8 +65,11 @@ class TikTokAuth {
             const ttTargetIdc = typeof rawTtTargetIdc === 'string' ? rawTtTargetIdc.trim() : '';
 
             if (sessionId) {
-              this.authWindow.close();
+              resolved = true;
               resolve({ sessionId, ttTargetIdc: ttTargetIdc || null });
+              if (this.authWindow && !this.authWindow.isDestroyed()) {
+                this.authWindow.close();
+              }
             }
           } catch (error) {
             console.error('Error getting cookies:', error);

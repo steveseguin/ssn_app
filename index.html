@@ -77,6 +77,7 @@
                     <option value="es">🇪🇸 Español</option>
                     <option value="fr">🇫🇷 Français</option>
                     <option value="de">🇩🇪 Deutsch</option>
+                    <option value="cs">🇨🇿 Čeština</option>
                     <option value="it">🇮🇹 Italiano</option>
                     <option value="ja">🇯🇵 日本語</option>
                     <option value="zh">🇨🇳 中文</option>
@@ -278,6 +279,7 @@
         <div class="button-group">
             <button onclick="handleYouTubeGroupActivationPrompt(this)">Select Live Sources</button>
             <button onclick="handleYouTubeGroupAutoActivation(this)">Auto-find & Activate</button>
+            <button class="hidden" data-signin data-group-signin title="Open a sign-in window for this group's browser session." onclick="signin(this)">🔑 Sign-in</button>
         </div>
          <div class="group-actions">
             <button class="group-control" title="Toggle All Streams Visibility" onclick="toggleGroupVisibility(this)">👁️</button>
@@ -869,6 +871,24 @@ function updateGroupUI(element, group) {
     const autoActivateCheckbox = element.querySelector('.auto-activate-toggle input[data-state-key="autoActivate"]');
     if (autoActivateCheckbox) {
         autoActivateCheckbox.checked = group.autoActivate;
+    }
+    
+    const groupSigninButton = element.querySelector('[data-group-signin]');
+    if (groupSigninButton) {
+        const isYouTubeGroup = group.target === 'youtube' || group.target === 'youtubeshorts';
+        if (isYouTubeGroup) {
+            const label = typeof translate === 'function' ? translate('btn.signin') : '🔑 Sign-in';
+            groupSigninButton.textContent = label;
+            groupSigninButton.classList.remove('hidden');
+            groupSigninButton.classList.remove('authenticated');
+            groupSigninButton.disabled = false;
+            groupSigninButton.style.cursor = '';
+            groupSigninButton.title = 'Open a sign-in window for this group\'s browser session.';
+            groupSigninButton.onclick = function() { signin(this); };
+            applySigninPolicy(groupSigninButton, group);
+        } else {
+            groupSigninButton.classList.add('hidden');
+        }
     }
     
     const visibilityButton = element.querySelector('.group-actions button[title="Toggle All Streams Visibility"]');
@@ -2499,20 +2519,10 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
             // Regular sign-in button
             signinButton.classList.remove("hidden");
             signinButton.removeAttribute('data-tiktok-signin');
-            if (target === 'tiktok') {
-                const hasSession = !!(source && typeof source.tiktokSessionId === 'string' && source.tiktokSessionId.trim());
-                signinButton.innerHTML = hasSession ? '✓ TikTok Session Saved' : '🔐 Add TikTok Session ID';
-                signinButton.classList.toggle('authenticated', hasSession);
-                signinButton.onclick = function() {
-                    showTikTokSignInMenu(sourceId);
-                };
-                signinButton.title = 'Provide your TikTok session cookie to enable chat replies and authenticated features.';
-            } else {
-                signinButton.innerHTML = '🔑 Sign-in';
-                signinButton.onclick = function() { signin(this); };
-                signinButton.classList.remove('authenticated');
-                signinButton.title = '';
-            }
+            signinButton.innerHTML = '🔑 Sign-in';
+            signinButton.onclick = function() { signin(this); };
+            signinButton.classList.remove('authenticated');
+            signinButton.title = '';
             // Apply config-based sign-in policy (disable if requested)
             applySigninPolicy(signinButton, source);
         }
@@ -3452,14 +3462,36 @@ async function refreshWindow(ele) {
 	const entry = ele.closest('.entry');
     if (!entry) return;
     const sourceId = entry.dataset.sourceId;
-    if (!sourceId) return;
+    const groupId = entry.dataset.groupId;
+    if (!sourceId && !groupId) return;
 
-    const source = stateManager.getSource(sourceId);
-	if (source && source.vid && ipcRenderer) {
-		ipcRenderer.sendSync('reloadWindow', { 
-			tab: source.vid 
-		});
-	};
+    if (sourceId) {
+        const source = stateManager.getSource(sourceId);
+        if (source && source.vid && ipcRenderer) {
+            ipcRenderer.sendSync('reloadWindow', { 
+                tab: source.vid 
+            });
+        }
+        return;
+    }
+
+    if (groupId && ipcRenderer) {
+        const group = stateManager.getGroup(groupId);
+        if (!group) return;
+        let refreshedCount = 0;
+        (group.streams || []).forEach(childId => {
+            const childSource = stateManager.getSource(childId);
+            if (childSource && childSource.vid) {
+                ipcRenderer.sendSync('reloadWindow', { tab: childSource.vid });
+                refreshedCount++;
+            }
+        });
+        if (refreshedCount === 0) {
+            Toast.info("Refresh Info", "No active group sources to refresh.");
+        } else if (refreshedCount > 1) {
+            Toast.info("Refresh Info", `Refreshed ${refreshedCount} active sources in this group.`);
+        }
+    }
 }
 
 async function createWindow(ele, tabid = false) { 
@@ -4205,8 +4237,11 @@ function showTikTokSignInMenu(sourceId) {
                     <li>Access to additional TikTok metadata</li>
                 </ul>`
             }
+            <p style="margin: 0 0 16px 0; line-height: 1.4;">
+                <strong>Tip:</strong> Clicking <em>Sign in with Browser</em> opens TikTok inside the app and automatically saves your <code>sessionid</code> once you finish signing in. Use the manual option only if you prefer to copy the cookie yourself.
+            </p>
             <div style="background: rgba(148, 163, 184, 0.12); border-radius: 6px; padding: 12px 14px; margin-bottom: 18px;">
-                <h4 style="margin: 0 0 10px 0; font-size: 15px;">How to find your session cookie</h4>
+                <h4 style="margin: 0 0 10px 0; font-size: 15px;">Manual session cookie steps</h4>
                 <ol style="margin: 0 0 10px 18px; padding: 0; line-height: 1.4;">
                     <li>Open <strong>tiktok.com</strong> in your browser and sign in.</li>
                     <li>Press <strong>F12</strong> (or right-click → Inspect) to open Developer Tools.</li>
@@ -4251,8 +4286,14 @@ function clearTikTokAuth(sourceId) {
         if (entry) {
             const signInBtn = entry.querySelector('[data-tiktok-signin]') || entry.querySelector('[data-signin]');
             if (signInBtn) {
-                signInBtn.innerHTML = '🔐 Add TikTok Session ID';
-                signInBtn.title = 'Provide your TikTok session cookie to enable chat replies and authenticated features.';
+                if (source.connectionMode === 'tiktok-websocket') {
+                    signInBtn.innerHTML = '🔐 Add TikTok Session ID';
+                    signInBtn.title = 'Provide your TikTok session cookie to enable chat replies and authenticated features.';
+                } else {
+                    const defaultLabel = typeof translate === 'function' ? translate('btn.signin') : '🔑 Sign-in';
+                    signInBtn.innerHTML = defaultLabel;
+                    signInBtn.title = '';
+                }
                 signInBtn.classList.remove('authenticated');
             }
         }
@@ -4287,9 +4328,16 @@ async function tiktokSignIn(sourceId) {
                 if (entry) {
                     const signInBtn = entry.querySelector('[data-tiktok-signin]') || entry.querySelector('[data-signin]');
                     if (signInBtn) {
-                        signInBtn.innerHTML = '✓ TikTok Session Saved';
-                        signInBtn.classList.add('authenticated');
-                        signInBtn.title = 'TikTok session cookie stored for this source.';
+                        if (source.connectionMode === 'tiktok-websocket') {
+                            signInBtn.innerHTML = '✓ TikTok Session Saved';
+                            signInBtn.classList.add('authenticated');
+                            signInBtn.title = 'TikTok session cookie stored for this source.';
+                        } else {
+                            const defaultLabel = typeof translate === 'function' ? translate('btn.signin') : '🔑 Sign-in';
+                            signInBtn.innerHTML = defaultLabel;
+                            signInBtn.classList.remove('authenticated');
+                            signInBtn.title = '';
+                        }
                     }
                 }
             }
@@ -4327,9 +4375,16 @@ async function tiktokManualSignIn(sourceId) {
                 if (entry) {
                     const signInBtn = entry.querySelector('[data-tiktok-signin]') || entry.querySelector('[data-signin]');
                     if (signInBtn) {
-                        signInBtn.innerHTML = '✓ TikTok Session Saved';
-                        signInBtn.classList.add('authenticated');
-                        signInBtn.title = 'TikTok session cookie stored for this source.';
+                        if (source.connectionMode === 'tiktok-websocket') {
+                            signInBtn.innerHTML = '✓ TikTok Session Saved';
+                            signInBtn.classList.add('authenticated');
+                            signInBtn.title = 'TikTok session cookie stored for this source.';
+                        } else {
+                            const defaultLabel = typeof translate === 'function' ? translate('btn.signin') : '🔑 Sign-in';
+                            signInBtn.innerHTML = defaultLabel;
+                            signInBtn.classList.remove('authenticated');
+                            signInBtn.title = '';
+                        }
                     }
                 }
             }
@@ -4440,29 +4495,32 @@ async function signin(ele, tabid = false) {
 
     const sourceId = entry.dataset.sourceId;
     const source = sourceId ? stateManager.getSource(sourceId) : null;
+    const groupId = entry.dataset.groupId;
+    const group = !source && groupId ? stateManager.getGroup(groupId) : null;
     console.log(`[SIGNIN DEBUG] Source ID: ${sourceId}, Source:`, source);
-    if (!source && !entry.dataset.target) { 
+    if (!source && !group && !entry.dataset.target) { 
          console.error('Cannot signin: no source data or target on element.'); return;
     }
-    const targetPlatform = source ? source.target : entry.dataset.target;
-    let urlForSignin = source ? source.url : entry.dataset.url; 
+    const rawTargetPlatform = source ? source.target : (group ? group.target : entry.dataset.target);
+    const effectivePlatform = rawTargetPlatform === 'youtubeshorts' ? 'youtube' : rawTargetPlatform;
+    let urlForSignin = source ? source.url : (group ? null : entry.dataset.url); 
 
-    let signinUrl = config?.[targetPlatform]?.signin?.url;
+    let signinUrl = config?.[effectivePlatform]?.signin?.url;
     if (!signinUrl && urlForSignin) {
         try {
             signinUrl = "https://" + getPrimaryDomain(urlForSignin);
         } catch { /* Use platform default */ }
     }
     if (!signinUrl) { 
-        if (targetPlatform === 'youtube') signinUrl = 'https://youtube.com';
-        else if (targetPlatform === 'twitch') signinUrl = 'https://www.twitch.tv';
-        else { Toast.error("Sign-in Error", `No sign-in URL configured for ${targetPlatform}.`); return; }
+        if (effectivePlatform === 'youtube') signinUrl = 'https://youtube.com';
+        else if (effectivePlatform === 'twitch') signinUrl = 'https://www.twitch.tv';
+        else { Toast.error("Sign-in Error", `No sign-in URL configured for ${rawTargetPlatform || 'this platform'}.`); return; }
     }
 
     let conf = config.global ? { ...config.global } : {};
     if (config.global?.signin) conf = { ...conf, ...config.global.signin };
-    if (config[targetPlatform]) conf = { ...conf, ...config[targetPlatform] };
-    if (config[targetPlatform]?.signin) conf = { ...conf, ...config[targetPlatform].signin };
+    if (config[effectivePlatform]) conf = { ...conf, ...config[effectivePlatform] };
+    if (config[effectivePlatform]?.signin) conf = { ...conf, ...config[effectivePlatform].signin };
     
     // Apply custom user agent if set
     if (source && source.userAgent && source.userAgent !== 'AUTO') {
@@ -4473,12 +4531,13 @@ async function signin(ele, tabid = false) {
         console.log('[SignIn] Using AUTO user agent from config:', conf.userAgent);
     }
     
-    console.log(`[SIGN-IN DEBUG] Platform: ${targetPlatform}, URL: ${signinUrl}, CustomSession: ${source ? (source.customSession || 'AUTO') : 'AUTO'}`);
+    const customSession = source ? (source.customSession || 'AUTO') : (group ? (group.customSession || 'AUTO') : 'AUTO');
+    console.log(`[SIGN-IN DEBUG] Platform: ${rawTargetPlatform}, Sign-in Platform: ${effectivePlatform}, URL: ${signinUrl}, CustomSession: ${customSession}`);
     try {
         const response = ipcRenderer.sendSync('signIn', {
             url: signinUrl.trim(),
             muted: true, visible: true, source: false, tab: tabid,
-            customSession: source ? (source.customSession || 'AUTO') : 'AUTO',
+            customSession,
             config: conf, configs: config
         });
         console.log("Sign-in window created with ID:", response);
@@ -6391,6 +6450,70 @@ const translations = {
 		'group.remove': '🗑️ Eliminar grupo y sus fuentes',
 	},
 	
+	'cs': {
+		// Navigation
+		'nav.streams': '🎭 Zdroje a nastavení',
+		'nav.linkoverlay': '🔗 Odkazy a nastavení',
+		'nav.dashboard': '📰 Stav a protokoly',
+		'nav.eventfloweditor': '🪤 Editor toku událostí',
+		'nav.vdoninja': '🎦 Vzdálený kamerový přenos',
+		'nav.sessions': '🧑‍🤝‍🧑 Relace',
+		
+		// Buttons
+		'btn.activate': '▶️ Aktivovat zdroj',
+		'btn.signin': '🔑 Přihlásit se',
+		'btn.help': '❓ Nápověda!',
+		'btn.stop': '⏹️ Zastavit',
+		'btn.reload': '🔄 Znovu načíst',
+		'btn.visible': '👁️ Viditelné',
+		'btn.hidden': '🙈 Skryté',
+		'btn.muted': '🔇 Ztlumeno',
+		'btn.unmuted': '🔊 Zvuk',
+		
+		// Settings menu
+		'settings.title': 'Další nastavení pro tento zdroj',
+		'settings.header': 'Další ovládací prvky',
+		'settings.clear': '🧹 Vymazat mezipaměť a úložiště',
+		'settings.remove': '🗑️ Odebrat zdroj',
+		
+		// Sessions
+		'sessions.title': 'Uživatelské relace',
+		'sessions.info': 'Spravujte více uživatelských profilů s odděleným nastavením a zdroji.',
+		'sessions.current': 'Aktuální relace',
+		'sessions.available': 'Dostupné relace',
+		'sessions.create': '➕ Vytvořit novou relaci',
+		'sessions.export': '💾 Exportovat aktuální relaci',
+		'sessions.import': '📂 Importovat relaci',
+		'sessions.switch': 'Přepnout',
+		'sessions.active': 'Aktivní',
+		
+		// Sources
+		'source.add': 'Přidat nový zdroj:',
+		'source.mode.standard': '📄 Standardní',
+		'source.mode.websocket': '🌐 WebSocket',
+		'source.autoactivate': 'Automaticky aktivovat',
+		'source.youtube.username': 'Uživatelské jméno YouTube',
+		'source.youtube.videoid': 'ID videa YouTube',
+		'source.twitch': 'Uživatelské jméno Twitch',
+		'source.kick': 'Uživatelské jméno Kick',
+		'source.instagram': 'Uživatelské jméno Instagram',
+		'source.facebook': 'Uživatelské jméno Facebook',
+		'source.tiktok': 'Uživatelské jméno TikTok',
+		'source.other': 'Další chatovací stránky',
+		
+		// App info
+		'app.title': 'Social Stream Ninja Samostatná aplikace',
+		'app.newversion': 'JE K DISPOZICI NOVÁ VERZE',
+		'app.download': 'Stáhnout novou verzi zde',
+		
+		// Groups
+		'group.togglevisibility': 'Přepnout viditelnost všech streamů',
+		'group.togglemute': 'Přepnout ztlumení všech streamů',
+		'group.stopall': 'Zastavit všechny streamy',
+		'group.reloadall': 'Znovu načíst všechny streamy',
+		'group.remove': '🗑️ Odebrat skupinu a její zdroje',
+	},
+	
 	'fr': {
 		// Navigation
 		'nav.streams': '🎭 Sources et Paramètres',
@@ -6938,6 +7061,7 @@ function refreshIframesWithLanguage() {
 	const languageMap = {
 		'en': '',  // Default
 		'de': 'de',
+		'cs': 'cs',
 		'es': 'es',
 		'pt-BR': 'pt-br',
 		'fr': 'fr',  // Add if supported
@@ -7000,13 +7124,24 @@ function updateDynamicTranslations() {
 		}
 
 		let hasSession = false;
+		let isTikTokWebsocket = false;
 		try {
 			if (sourceId && window.stateManager) {
 				const source = stateManager.getSource(sourceId);
-				hasSession = !!(source && typeof source.tiktokSessionId === 'string' && source.tiktokSessionId.trim());
+				if (source) {
+					hasSession = !!(typeof source.tiktokSessionId === 'string' && source.tiktokSessionId.trim());
+					isTikTokWebsocket = source.connectionMode === 'tiktok-websocket';
+				}
 			}
 		} catch (e) {
 			console.warn('Failed to resolve TikTok session state for translations:', e);
+		}
+
+		if (!isTikTokWebsocket) {
+			btn.textContent = translate('btn.signin');
+			btn.classList.remove('authenticated');
+			btn.title = '';
+			return;
 		}
 
 		btn.textContent = hasSession ? '✓ TikTok Session Saved' : '🔐 Add TikTok Session ID';

@@ -81,6 +81,20 @@ const isDevMode = (
     process.argv.includes('--inspect')
 );
 
+// Centralized logging toggle (disable console noise outside dev-style runs)
+const explicitLogEnable = process.argv.includes('--enable-logs') || process.env.SSAPP_DEBUG_LOGS === '1';
+const explicitLogDisable = process.argv.includes('--disable-logs') || process.env.SSAPP_DEBUG_LOGS === '0';
+const isDebugLoggingEnabled = explicitLogDisable ? false : (explicitLogEnable || isDevMode);
+
+if (!isDebugLoggingEnabled) {
+    const noop = () => {};
+    console.log = noop;
+    console.info = noop;
+    console.debug = noop;
+    console.warn = noop;
+    console.trace = noop;
+}
+
 const forceTikTokLogging = process.argv.includes('--enable-tiktok-logs') || process.env.SSAPP_TIKTOK_LOGS === '1';
 const disableTikTokLogging = process.argv.includes('--disable-tiktok-logs') || process.env.SSAPP_TIKTOK_LOGS === '0';
 const shouldEnableTikTokLogging = !disableTikTokLogging && (forceTikTokLogging || isDevMode);
@@ -595,6 +609,26 @@ let windowIdCounter = new Map();
 let browserViews = {};
 // Guard to prevent multiple main-process YouTube ad-skipper intervals
 let YT_AD_SKIPPER_INTERVAL = null;
+
+function getActiveBrowserView(id) {
+    const view = browserViews[id];
+    if (!view) return null;
+    try {
+        if (typeof view.isDestroyed === 'function' && view.isDestroyed()) {
+            delete browserViews[id];
+            releaseWindowId(id);
+            return null;
+        }
+        const wc = view.webContents;
+        if (wc && typeof wc.isDestroyed === 'function' && wc.isDestroyed()) {
+            return null;
+        }
+    } catch (error) {
+        console.warn('Error validating browser view state:', error);
+        return null;
+    }
+    return view;
+}
 
 function generateUniqueWindowId() {
     let id = 1;
@@ -3231,6 +3265,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         'de-DE': 'de',
                         'de-AT': 'de',
                         'de-CH': 'de',
+                        'cs-CZ': 'cs',
                         'it-IT': 'it',
                         'ja-JP': 'ja',
                         'zh-CN': 'zh',
@@ -3396,22 +3431,27 @@ async function createWindow(args, reuse = false, mainApp = false) {
             
             log("getSettings request - returning cachedState:", JSON.stringify(settingsResponse).substring(0, 200));
 
-            if (browserViews[tab]) {
-                log("-----------------------------------------");
-                log(browserViews[tab]);
-                if ("muted" in browserViews[tab].args) {
-                    if (browserViews[tab].args.muted) {
-                        browserViews[tab].webContents.setAudioMuted(true);
-                        browserViews[tab].webContents.send("sendToTab", {
+            const settingsView = getActiveBrowserView(tab);
+            if (settingsView && settingsView.webContents) {
+                try {
+                    log("-----------------------------------------");
+                    log(settingsView);
+                    if ("muted" in settingsView.args) {
+                        if (settingsView.args.muted) {
+                            settingsView.webContents.setAudioMuted(true);
+                            settingsView.webContents.send("sendToTab", {
+                                muteWindow: true
+                            });
+                        }
+                    } else {
+                        log("SENDING MUTE");
+                        settingsView.webContents.setAudioMuted(true);
+                        settingsView.webContents.send("sendToTab", {
                             muteWindow: true
                         });
                     }
-                } else {
-                    log("SENDING MUTE");
-                    browserViews[tab].webContents.setAudioMuted(true);
-                    browserViews[tab].webContents.send("sendToTab", {
-                        muteWindow: true
-                    });
+                } catch (error) {
+                    console.error('Failed to enforce mute state on settings response:', error);
                 }
             }
 
@@ -3690,20 +3730,23 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         // Handle existing tab case
-        if (args.tab && browserViews[args.tab] && browserViews[args.tab].webContents) {
-            log("Existing tab");
-            try {
-                if (args?.config?.userAgent) {
-                    browserViews[args.tab].webContents.loadURL(args.url, {
-                        userAgent: args.config.userAgent
-                    });
-                } else {
-                    browserViews[args.tab].webContents.loadURL(args.url);
+        if (args.tab) {
+            const existingView = getActiveBrowserView(args.tab);
+            if (existingView && existingView.webContents) {
+                log("Existing tab");
+                try {
+                    if (args?.config?.userAgent) {
+                        existingView.webContents.loadURL(args.url, {
+                            userAgent: args.config.userAgent
+                        });
+                    } else {
+                        existingView.webContents.loadURL(args.url);
+                    }
+                    eventRet.returnValue = args.tab;
+                    return;
+                } catch (e) {
+                    console.error(e);
                 }
-                eventRet.returnValue = args.tab;
-                return;
-            } catch (e) {
-                console.error(e);
             }
         }
 
@@ -4729,20 +4772,23 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 }
 
                 // If updating existing window
-                if (args.tab && browserViews[args.tab]) {
-                    try {
-                        if (args?.config?.userAgent) {
-                            browserViews[args.tab].webContents.loadURL(args.url, {
-                                userAgent: args.config.userAgent
-                            });
-                        } else {
-                            browserViews[args.tab].webContents.loadURL(args.url);
+                if (args.tab) {
+                    const existingView = getActiveBrowserView(args.tab);
+                    if (existingView && existingView.webContents) {
+                        try {
+                            if (args?.config?.userAgent) {
+                                existingView.webContents.loadURL(args.url, {
+                                    userAgent: args.config.userAgent
+                                });
+                            } else {
+                                existingView.webContents.loadURL(args.url);
+                            }
+                            resolve(args.tab);
+                            return;
+                        } catch (e) {
+                            reject(e);
+                            return;
                         }
-                        resolve(args.tab);
-                        return;
-                    } catch (e) {
-                        reject(e);
-                        return;
                     }
                 }
 
@@ -4800,19 +4846,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         // If updating existing window
-        if (args.tab && browserViews[args.tab]) {
-            try {
-                if (args?.config?.userAgent) {
-                    browserViews[args.tab].webContents.loadURL(args.url, {
-                        userAgent: args.config.userAgent
-                    });
-                } else {
-                    browserViews[args.tab].webContents.loadURL(args.url);
+        if (args.tab) {
+            const existingView = getActiveBrowserView(args.tab);
+            if (existingView && existingView.webContents) {
+                try {
+                    if (args?.config?.userAgent) {
+                        existingView.webContents.loadURL(args.url, {
+                            userAgent: args.config.userAgent
+                        });
+                    } else {
+                        existingView.webContents.loadURL(args.url);
+                    }
+                    eventRet.returnValue = args.tab;
+                    return;
+                } catch (e) {
+                    console.error(e);
                 }
-                eventRet.returnValue = args.tab;
-                return;
-            } catch (e) {
-                console.error(e);
             }
         }
 
@@ -5402,6 +5451,68 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     log("Script already injected, skipping duplicate injection");
                     return;
                 }
+
+                if (!view || (typeof view.isDestroyed === "function" && view.isDestroyed())) {
+                    log("Cannot start injection; view is already destroyed");
+                    return;
+                }
+
+                let webContents;
+                try {
+                    webContents = view.webContents;
+                } catch (err) {
+                    const reason = err && err.message ? err.message : String(err);
+                    log("Cannot start injection; failed to access webContents: " + reason);
+                    return;
+                }
+
+                const isDestroyedError = (err) => {
+                    if (!err) {
+                        return false;
+                    }
+                    const message = err && err.message ? err.message : String(err);
+                    return typeof message === "string" && message.indexOf("Object has been destroyed") !== -1;
+                };
+
+                const isWebContentsAlive = () => {
+                    if (!webContents) {
+                        return false;
+                    }
+                    if (typeof webContents.isDestroyed === "function") {
+                        return !webContents.isDestroyed();
+                    }
+                    return true;
+                };
+
+                if (!isWebContentsAlive()) {
+                    log("Cannot start injection; webContents is already destroyed");
+                    return;
+                }
+
+                const runWithWebContents = (context, action) => {
+                    if (!isWebContentsAlive()) {
+                        log(context + ": webContents is no longer available; skipping");
+                        return;
+                    }
+                    try {
+                        action(webContents);
+                    } catch (err) {
+                        if (isDestroyedError(err)) {
+                            log(context + ": webContents was destroyed during operation; skipping");
+                            return;
+                        }
+                        throw err;
+                    }
+                };
+
+                const whenDestroyedReject = (context) => (err) => {
+                    if (isDestroyedError(err)) {
+                        log(context + ": webContents was destroyed during async operation; skipping error");
+                        return;
+                    }
+                    console.error(context + " failed:", err);
+                };
+
                 scriptInjected = true;
                 if (runningLocally && args.source && !args.source.startsWith("https://")) {
                     var jsSource;
@@ -5425,11 +5536,21 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
                     
                     log("jsSource: " + jsSource);
+                    let text = null;
                     try {
-                        let text = fs.readFileSync(jsSource, 'utf8');
-                        
-                        
-                        if (view.webContents) {
+                        text = fs.readFileSync(jsSource, 'utf8');
+                    } catch (e) {
+                        let options = {
+                            title: "Site not supported or injection script not found",
+                            buttons: ["OK"],
+                            message: args.source + " was not found.\n\njoin the Discord for support: \nhttps://discord.socialstream.ninja",
+                        };
+                        dialog.showMessageBoxSync(options);
+                        console.error(e);
+                    }
+
+                    if (text) {
+                        runWithWebContents("Script injection", (wc) => {
                             // Removed empty console-message handler to allow console logs to flow through
 
                             var code =
@@ -5612,22 +5733,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 `;
 
                             // Inject into main world (worldId: 0) to access contextBridge APIs
-                            view.webContents.executeJavaScriptInIsolatedWorld(0, [{ code }])
+                            wc.executeJavaScriptInIsolatedWorld(0, [{ code }])
                                 .then(() => {
                                     log("Script injection completed successfully in main world");
                                 })
-                                .catch((err) => {
-                                    console.error("Script injection failed:", err);
-                                });
-                        }
-                    } catch (e) {
-                        let options = {
-                            title: "Site not supported or injection script not found",
-                            buttons: ["OK"],
-                            message: args.source + " was not found.\n\njoin the Discord for support: \nhttps://discord.socialstream.ninja",
-                        };
-                        let response = dialog.showMessageBoxSync(options);
-                        console.error(e);
+                                .catch(whenDestroyedReject("Script injection"));
+                        });
                     }
                 } else if (args.source) {
                     try {
@@ -5639,7 +5750,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             .then((response) => response.text())
                             .then((text) => {
                                 try {
-                                    if (view.webContents) {
+                                    runWithWebContents("Remote script injection", (wc) => {
                                         // Removed empty console-message handler to allow console logs to flow through
 
                                         var code =
@@ -5801,15 +5912,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                             `;
 
                                         // Inject into main world (worldId: 0) to access contextBridge APIs
-                                        view.webContents.executeJavaScriptInIsolatedWorld(0, [{ code }]);
-                                    }
+                                        wc.executeJavaScriptInIsolatedWorld(0, [{ code }])
+                                            .catch(whenDestroyedReject("Remote script injection"));
+                                    });
                                 } catch (e) {
                                     let options = {
                                         title: "Could not inject required code.",
                                         buttons: ["OK"],
                                         message: "An error occured parsing or injecting the required js script.",
                                     };
-                                    let response = dialog.showMessageBoxSync(options);
+                                    dialog.showMessageBoxSync(options);
                                     console.error(e);
                                 }
                             })
@@ -5870,29 +5982,31 @@ async function createWindow(args, reuse = false, mainApp = false) {
 						}
 					};
 					`;
-                    if (view.webContents) {
+                    runWithWebContents("Default script injection", (wc) => {
                         // Inject into main world (worldId: 0) to access contextBridge APIs
-                        view.webContents.executeJavaScriptInIsolatedWorld(0, [{ code }]);
-                    }
+                        wc.executeJavaScriptInIsolatedWorld(0, [{ code }]);
+                    });
                 }
                 // Set mute state based on args
-                if (view.webContents) {
+                runWithWebContents("Applying mute state", (wc) => {
                     if ("muted" in args) {
                         log(`Setting audio muted to: ${args.muted}`);
-                        view.webContents.setAudioMuted(args.muted);
-                        if (args.muted) {
-                            view.webContents.send("sendToTab", {
+                        wc.setAudioMuted(args.muted);
+                        if (args.muted && typeof wc.send === "function") {
+                            wc.send("sendToTab", {
                                 muteWindow: true
                             });
                         }
                     } else {
                         log("No muted arg, defaulting to muted=true");
-                        view.webContents.setAudioMuted(true);
-                        view.webContents.send("sendToTab", {
-                            muteWindow: true
-                        });
+                        wc.setAudioMuted(true);
+                        if (typeof wc.send === "function") {
+                            wc.send("sendToTab", {
+                                muteWindow: true
+                            });
+                        }
                     }
-                }
+                });
             }
             // Initialize logical visibility flag for stealth-hide/show
             view.__ss_visible = true;
@@ -6457,7 +6571,9 @@ function resolveTikTokSubscriberStatus(data = {}) {
             MAX_CLUSTER_SIZE: 100,
             CLUSTER_WINDOW: 500,
             // Dedup cache size for TikTok message IDs
-            MESSAGE_CACHE_SIZE: 5000,
+            MESSAGE_CACHE_SIZE: 30000,
+            // Drop stale messages that fall outside this trailing window
+            STALE_MESSAGE_GRACE_MS: 3 * 60 * 1000,
             HIGH_LOAD_THRESHOLD: 5000,
             HIGH_LOAD_INTERVAL: 20,
             EMERGENCY_CLUSTER_THRESHOLD: 10000,
@@ -6745,11 +6861,23 @@ function resolveFirstImageUrl(candidates = []) {
             this.pendingBatch = [];
             this.batchTimer = null;
             this.lastSendTime = Date.now();
+            this.lastProcessedTimestamp = 0;
         }
 
         addToQueue(data) {
 
             const cache = this.manager?.messageCache;
+
+            const timestamp = this.extractMessageTimestamp(data);
+            const graceWindow = CONFIG.CHAT.STALE_MESSAGE_GRACE_MS || (3 * 60 * 1000);
+            if (timestamp !== null && this.lastProcessedTimestamp > 0) {
+                const cutoff = this.lastProcessedTimestamp - graceWindow;
+                if (timestamp < cutoff) {
+                    const identifier = data?.msgId || data?.msg_id || 'unknown';
+                    log(`Dropping stale TikTok message: ${identifier}`);
+                    return;
+                }
+            }
 
             if (cache && data.msgId && cache.has(data.msgId)) {
                 log(`Skipping duplicate message: ${data.msgId}`);
@@ -6759,6 +6887,10 @@ function resolveFirstImageUrl(candidates = []) {
             // Add to message cache if it has an ID
             if (cache && data.msgId) {
                 cache.add(data.msgId);
+            }
+
+            if (timestamp !== null) {
+                this.lastProcessedTimestamp = Math.max(this.lastProcessedTimestamp, timestamp);
             }
 
             // Enforce queue caps (works for CircularBuffer and Array)
@@ -6780,6 +6912,59 @@ function resolveFirstImageUrl(candidates = []) {
                 try { this.queue[this.queue.length] = data; } catch (_) {}
             }
             this.startProcessing();
+        }
+
+        extractMessageTimestamp(data = {}) {
+            const candidates = [
+                data?.createTime,
+                data?.eventTime,
+                data?.timestamp,
+                data?.msgTime,
+                data?.event?.createTime,
+                data?.event?.eventTime
+            ];
+
+            for (const value of candidates) {
+                if (value === undefined || value === null) {
+                    continue;
+                }
+
+                let numericValue = null;
+
+                if (typeof value === 'number' && Number.isFinite(value)) {
+                    numericValue = value;
+                } else if (typeof value === 'bigint') {
+                    numericValue = Number(value);
+                } else if (typeof value === 'string') {
+                    const trimmed = value.trim();
+                    if (!trimmed) continue;
+                    const numeric = Number(trimmed);
+                    if (Number.isFinite(numeric)) {
+                        numericValue = numeric;
+                    } else {
+                        const parsed = Date.parse(trimmed);
+                        if (!Number.isNaN(parsed)) {
+                            numericValue = parsed;
+                        }
+                    }
+                }
+
+                if (!Number.isFinite(numericValue) || numericValue <= 0) {
+                    continue;
+                }
+
+                if (numericValue < 1e12) {
+                    return Math.floor(numericValue * 1000);
+                }
+
+                if (numericValue > 1e15) {
+                    return Math.floor(numericValue / 1000);
+                }
+
+                return Math.floor(numericValue);
+            }
+
+            return null;
         }
 
         formatChatMessage(data) {
@@ -7055,11 +7240,37 @@ function resolveFirstImageUrl(candidates = []) {
         }
 
         addToQueue(data) {
+            if (!data || typeof data !== 'object') {
+                return;
+            }
+
             const repeatCount = Number(data.repeatCount) || 0;
             const comboCount = Number(data.comboCount) || 0;
             const groupCount = Number(data.groupCount) || 0;
+
+            let giftType = null;
+            const giftTypeCandidates = [
+                data.giftType,
+                data?.gift?.giftType,
+                data?.gift?.type,
+                data?.gift?.gift_type,
+                data?.giftDetails?.giftType,
+                data?.giftDetails?.gift_type
+            ];
+            for (const candidate of giftTypeCandidates) {
+                const numeric = Number(candidate);
+                if (Number.isFinite(numeric)) {
+                    giftType = numeric;
+                    break;
+                }
+            }
+
             const inferredComboInProgress = !data.repeatEnd && (repeatCount > 1 || comboCount > 1 || groupCount > 1);
+            const isComboStarter = !data.repeatEnd && giftType === 1;
             if (inferredComboInProgress) {
+                return;
+            }
+            if (isComboStarter) {
                 return;
             }
 
@@ -9747,13 +9958,14 @@ function resolveFirstImageUrl(candidates = []) {
 
     ipcMain.on("reloadWindow", function(eventRet, args) {
         try {
-            if (browserViews[args.vid]) {
-                const view = browserViews[args.vid];
-                if (view && view.webContents && !view.isDestroyed()) {
-                    view.webContents.reload();
+            const byVid = getActiveBrowserView(args.vid);
+            if (byVid && byVid.webContents) {
+                byVid.webContents.reload();
+            } else if (args.tab) {
+                const byTab = getActiveBrowserView(args.tab);
+                if (byTab && byTab.webContents) {
+                    byTab.webContents.reload();
                 }
-            } else if (args.tab && browserViews[args.tab]) {
-                browserViews[args.tab].webContents.reload();
             }
             eventRet.returnValue = true;
         } catch (e) {
@@ -9961,15 +10173,18 @@ function resolveFirstImageUrl(candidates = []) {
     ipcMain.on("muteWindow", function(eventRet, args) {
         try {
             log("muteWindow 1");
-            if (browserViews[args.vid]) {
-                const view = browserViews[args.vid]; // tab ID should be here
-                if (view && view.webContents) {
+            const view = getActiveBrowserView(args.vid);
+            if (view && view.webContents) {
+                try {
+                    view.webContents.setAudioMuted(!!args.muteWindow);
                     view.webContents.send("sendToTab", {
-                        muteWindow: args.muteWindow
+                        muteWindow: !!args.muteWindow
                     });
-                    view.webContents.setAudioMuted(args.muteWindow);
+                    eventRet.returnValue = true;
+                } catch (error) {
+                    console.error('muteWindow send failed:', error);
+                    eventRet.returnValue = false;
                 }
-                eventRet.returnValue = true;
             } else {
                 eventRet.returnValue = false;
             }
@@ -9981,33 +10196,34 @@ function resolveFirstImageUrl(candidates = []) {
     // Async handler for messages that need responses
     ipcMain.handle("sendToTab-async", async (event, args) => {
         log("sendToTab-async");
-        if (browserViews[args.tab]) {
-            const view = browserViews[args.tab];
-            if (view && view.webContents) {
-                // Create a promise that will resolve with the response
-                return new Promise((resolve) => {
-                    // Generate unique ID for this request
-                    const requestId = `${Date.now()}-${Math.random()}`;
-                    
-                    // Set up one-time listener for the response
-                    ipcMain.once(`sendToTab-response-${requestId}`, (event, response) => {
-                        log(`sendToTab-async response for ${args.message}: ${response}`);
-                        resolve(response);
-                    });
-                    
-                    // Send the message with the request ID
+        const view = getActiveBrowserView(args.tab);
+        if (view && view.webContents) {
+            return new Promise((resolve) => {
+                const requestId = `${Date.now()}-${Math.random()}`;
+
+                const timeoutId = setTimeout(() => {
+                    ipcMain.removeAllListeners(`sendToTab-response-${requestId}`);
+                    resolve(false);
+                }, 5000);
+
+                ipcMain.once(`sendToTab-response-${requestId}`, (_evt, response) => {
+                    clearTimeout(timeoutId);
+                    log(`sendToTab-async response for ${args.message}: ${response}`);
+                    resolve(response);
+                });
+
+                try {
                     view.webContents.send("sendToTab-request", {
                         message: args.message,
-                        requestId: requestId
+                        requestId
                     });
-                    
-                    // Set timeout
-                    setTimeout(() => {
-                        ipcMain.removeAllListeners(`sendToTab-response-${requestId}`);
-                        resolve(false);
-                    }, 5000);
-                });
-            }
+                } catch (error) {
+                    console.error('sendToTab-async send failed:', error);
+                    clearTimeout(timeoutId);
+                    ipcMain.removeAllListeners(`sendToTab-response-${requestId}`);
+                    resolve(false);
+                }
+            });
         }
         return false;
     });
@@ -10073,16 +10289,18 @@ function resolveFirstImageUrl(candidates = []) {
     // Original synchronous handler for backward compatibility
     ipcMain.on("sendToTab", function(eventRet, args) {
         log("sendToTab 1");
-        // Support both args.tab and args.tabID for compatibility
         const tabId = args.tab || args.tabID;
-        const message = args.message || args; // Support both wrapped and unwrapped messages
-        
-        if (browserViews[tabId]) {
-            const view = browserViews[tabId]; // tab ID should be here
-            if (view && view.webContents) {
+        const message = args.message || args;
+
+        const view = getActiveBrowserView(tabId);
+        if (view && view.webContents) {
+            try {
                 view.webContents.send("sendToTab", message);
+                eventRet.returnValue = true;
+            } catch (error) {
+                console.error('sendToTab send failed:', error);
+                eventRet.returnValue = false;
             }
-            eventRet.returnValue = true;
         } else {
             eventRet.returnValue = false;
         }
@@ -10105,8 +10323,8 @@ function resolveFirstImageUrl(candidates = []) {
 
     ipcMain.on("sendInputToTab", function(eventRet, args) {
         log("sendInputToTab 1");
-        if (browserViews[args.tab]) {
-            const view = browserViews[args.tab]; // tab ID should be here
+        const view = getActiveBrowserView(args.tab);
+        if (view) {
 
             // Check if this is a TikTok virtual tab
             if (view && view.isTikTokVirtual) {
@@ -10124,27 +10342,29 @@ function resolveFirstImageUrl(candidates = []) {
                     eventRet.returnValue = false;
                 }
             } else if (view && view.webContents && view.webContents.sendInputEvent) {
-                view.focus();
-                if (args.key && args.type) {
-                    log("inputting: " + args.key);
-                    view.webContents.sendInputEvent({
-                        keyCode: args.key,
-                        type: args.type
-                    });
-                } else if (args.text) {
-                    // Spread operator to handle surrogate pairs correctly
-                    for (const char of [...args.text]) {
-                        log("Inputting: " + char);
-
-                        // Simulate keydown event for the character
+                try {
+                    view.focus();
+                    if (args.key && args.type) {
+                        log("inputting: " + args.key);
                         view.webContents.sendInputEvent({
-                            type: "char",
-                            keyCode: char, // This will now correctly handle characters like emojis
+                            keyCode: args.key,
+                            type: args.type
                         });
+                    } else if (args.text) {
+                        for (const char of [...args.text]) {
+                            log("Inputting: " + char);
+                            view.webContents.sendInputEvent({
+                                type: "char",
+                                keyCode: char
+                            });
+                        }
                     }
+                    log("ISSUED KEY EVENT");
+                    eventRet.returnValue = true;
+                } catch (error) {
+                    console.error('sendInputToTab failed:', error);
+                    eventRet.returnValue = false;
                 }
-                log("ISSUED KEY EVENT");
-                eventRet.returnValue = true;
             } else {
                 log("ISSUED KEY EVENT failed - webContents or sendInputEvent not available");
                 eventRet.returnValue = false;
