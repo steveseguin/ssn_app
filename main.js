@@ -6482,6 +6482,11 @@ function resolveTikTokSubscriberStatus(data = {}) {
         destroy() {
             this.clear();
         }
+
+        remove(msgId) {
+            if (!msgId) return false;
+            return this.messageIds.delete(msgId);
+        }
     }
 
     let wssID = 0;
@@ -6562,22 +6567,21 @@ function resolveTikTokSubscriberStatus(data = {}) {
             SIGN_REQUEST_IMMEDIATE_RETRY_DELAY_MS: 750
         },
         CHAT: {
-            ENABLE_CLUSTERING: false,
             PROCESSING_INTERVAL: 100,
             // Hard cap for total queued messages across TikTok chat processing
             MAX_QUEUE_SIZE: 10000,
-            // Soft cap target to trim back to when MAX_QUEUE_SIZE is reached
-            SOFT_CAP: 1000,
-            MAX_CLUSTER_SIZE: 100,
-            CLUSTER_WINDOW: 500,
             // Dedup cache size for TikTok message IDs
             MESSAGE_CACHE_SIZE: 30000,
             // Drop stale messages that fall outside this trailing window
             STALE_MESSAGE_GRACE_MS: 3 * 60 * 1000,
             HIGH_LOAD_THRESHOLD: 5000,
             HIGH_LOAD_INTERVAL: 20,
-            EMERGENCY_CLUSTER_THRESHOLD: 10000,
-            EMERGENCY_BATCH_SIZE: 500
+            // Preferred batch sizes across different load tiers
+            STANDARD_BATCH_SIZE: 50,
+            HIGH_LOAD_BATCH_SIZE: 120,
+            HIGH_WATER_THRESHOLD: 8000,
+            HIGH_WATER_BATCH_SIZE: 250,
+            HIGH_WATER_INTERVAL: 5
         },
         GIFT: {
             PROCESSING_INTERVAL: 50
@@ -6857,11 +6861,12 @@ function resolveFirstImageUrl(candidates = []) {
                 this.queue = [];
             }
             this.isProcessing = false;
-            this.clusters = new Map();
             this.pendingBatch = [];
             this.batchTimer = null;
             this.lastSendTime = Date.now();
             this.lastProcessedTimestamp = 0;
+            this.highWaterLoggedAt = 0;
+            this.droppedSinceHighWater = 0;
         }
 
         addToQueue(data) {
@@ -6895,14 +6900,44 @@ function resolveFirstImageUrl(candidates = []) {
 
             // Enforce queue caps (works for CircularBuffer and Array)
             const getSize = () => (this.queue.getSize ? this.queue.getSize() : this.queue.length);
+            const capacity = CONFIG.CHAT.MAX_QUEUE_SIZE;
             let qSize = getSize();
-            if (qSize >= CONFIG.CHAT.MAX_QUEUE_SIZE) {
-                // Trim oldest entries down to SOFT_CAP before adding new
-                const target = Math.max(0, CONFIG.CHAT.SOFT_CAP - 1);
-                while (getSize() > target) {
-                    if (this.queue.shift) this.queue.shift();
-                    else break;
+            if (qSize >= capacity) {
+                const dropsNeeded = Math.max(1, qSize - capacity + 1);
+                const droppedEntries = [];
+                let droppedCount = 0;
+                while (droppedCount < dropsNeeded) {
+                    let removed;
+                    if (typeof this.queue.shift === 'function') {
+                        removed = this.queue.shift();
+                    } else if (typeof this.queue.splice === 'function') {
+                        const spliced = this.queue.splice(0, 1);
+                        removed = Array.isArray(spliced) && spliced.length > 0 ? spliced[0] : undefined;
+                    }
+                    if (typeof removed === 'undefined') {
+                        break;
+                    }
+                    droppedEntries.push(removed);
+                    droppedCount++;
                 }
+                if (droppedEntries.length > 0) {
+                    if (cache && typeof cache.remove === 'function') {
+                        for (const entry of droppedEntries) {
+                            const droppedId = entry && entry.msgId;
+                            if (droppedId) {
+                                cache.remove(droppedId);
+                            }
+                        }
+                    }
+                    this.droppedSinceHighWater += droppedEntries.length;
+                    const now = Date.now();
+                    if (!this.highWaterLoggedAt || (now - this.highWaterLoggedAt) > 5000) {
+                        log(`[TikTok] message queue high-water trimmed ${this.droppedSinceHighWater} messages.`);
+                        this.highWaterLoggedAt = now;
+                        this.droppedSinceHighWater = 0;
+                    }
+                }
+                qSize = getSize();
             }
 
             // Add the new item
@@ -6981,215 +7016,101 @@ function resolveFirstImageUrl(candidates = []) {
                 // Get queue size properly for both CircularBuffer and array
                 const queueSize = this.queue.getSize ? this.queue.getSize() : this.queue.length;
                 // Use faster processing when queue is large
-                const interval = queueSize > CONFIG.CHAT.HIGH_LOAD_THRESHOLD 
-                    ? CONFIG.CHAT.HIGH_LOAD_INTERVAL 
-                    : CONFIG.CHAT.PROCESSING_INTERVAL;
+                const interval = queueSize >= CONFIG.CHAT.HIGH_WATER_THRESHOLD
+                    ? CONFIG.CHAT.HIGH_WATER_INTERVAL
+                    : (queueSize > CONFIG.CHAT.HIGH_LOAD_THRESHOLD
+                        ? CONFIG.CHAT.HIGH_LOAD_INTERVAL
+                        : (queueSize < 10
+                            ? 20
+                            : CONFIG.CHAT.PROCESSING_INTERVAL));
                 setTimeout(() => this.processQueue(), interval);
             }
         }
 
         processQueue() {
             // Check if queue is empty properly for both CircularBuffer and array
-            const isEmpty = this.queue.isEmpty ? this.queue.isEmpty() : (this.queue.length === 0);
-            if (isEmpty && this.pendingBatch.length === 0) {
+            const getSize = () => (this.queue.getSize ? this.queue.getSize() : this.queue.length);
+            const queueSize = getSize();
+            if (queueSize === 0 && this.pendingBatch.length === 0) {
                 this.isProcessing = false;
                 return;
             }
 
             this.isProcessing = true;
-            
-            // Get queue size properly
-            const queueSize = this.queue.getSize ? this.queue.getSize() : this.queue.length;
-            const isEmergencyMode = queueSize > CONFIG.CHAT.EMERGENCY_CLUSTER_THRESHOLD;
-            const isHighLoad = queueSize > CONFIG.CHAT.HIGH_LOAD_THRESHOLD;
-            
-            // Dynamic batch sizing based on load
+            const standardBatch = CONFIG.CHAT.STANDARD_BATCH_SIZE || 50;
+            const highLoadBatch = CONFIG.CHAT.HIGH_LOAD_BATCH_SIZE || Math.max(standardBatch, 120);
+            const highWaterBatch = CONFIG.CHAT.HIGH_WATER_BATCH_SIZE || Math.max(highLoadBatch, 250);
+
+            const isHighWater = queueSize >= CONFIG.CHAT.HIGH_WATER_THRESHOLD;
+            const isHighLoad = queueSize >= CONFIG.CHAT.HIGH_LOAD_THRESHOLD;
+            const isLowTraffic = queueSize < 10;
+
             let batchSize;
-            if (isEmergencyMode) {
-                batchSize = CONFIG.CHAT.EMERGENCY_BATCH_SIZE;
+            if (isHighWater) {
+                batchSize = highWaterBatch;
             } else if (isHighLoad) {
-                batchSize = 200;
-            } else if (queueSize < 10) {
-                // Small queue: send immediately for smooth flow
+                batchSize = highLoadBatch;
+            } else if (isLowTraffic) {
                 batchSize = queueSize || 1;
             } else {
-                batchSize = 50;
+                batchSize = standardBatch;
             }
-            
-            const batch = this.queue.splice(0, Math.min(batchSize, this.queue.length));
+
+            const batch = this.queue.splice(0, Math.min(batchSize, queueSize));
 
             try {
-                // For low traffic, send messages immediately
-                if (queueSize < 10 && !CONFIG.CHAT.ENABLE_CLUSTERING && !isEmergencyMode) {
-                    // Send small batches immediately for smooth flow
-                    const messages = batch.map(data => {
-                        const msg = this.formatChatMessage(data);
-                        msg.tid = this.manager.virtualTabId;
-                        return msg;
-                    });
-                    
-                    if (messages.length === 1) {
-                        // Single message: send immediately
-                        sendToBackground(messages[0]);
+                if (batch.length > 0) {
+                    if (isHighWater || isHighLoad) {
+                        if (this.pendingBatch.length > 0) {
+                            this.flushPendingBatch();
+                        }
+                        const messages = batch.map(data => {
+                            const msg = this.formatChatMessage(data);
+                            msg.tid = this.manager.virtualTabId;
+                            return msg;
+                        });
+                        if (messages.length === 1) {
+                            sendToBackground(messages[0]);
+                        } else {
+                            sendBatchToBackground(messages);
+                        }
+                        this.lastSendTime = Date.now();
+                    } else if (isLowTraffic) {
+                        const messages = batch.map(data => {
+                            const msg = this.formatChatMessage(data);
+                            msg.tid = this.manager.virtualTabId;
+                            return msg;
+                        });
+                        if (messages.length === 1) {
+                            sendToBackground(messages[0]);
+                        } else {
+                            sendBatchToBackground(messages);
+                        }
+                        this.lastSendTime = Date.now();
                     } else {
-                        // Small batch: send together
-                        sendBatchToBackground(messages);
+                        this.addToPendingBatch(batch);
                     }
-                } else if (!CONFIG.CHAT.ENABLE_CLUSTERING && !isEmergencyMode) {
-                    // Medium/high load: use intelligent batching
-                    this.addToPendingBatch(batch);
-                } else {
-                    // Emergency mode or clustering enabled
-                    this.processClusters(batch, isEmergencyMode);
                 }
             } catch (e) {
                 console.error('Error processing message batch:', e);
             }
 
             this.isProcessing = false;
-            if (this.queue.length > 0) {
-                // Dynamic interval based on queue size
-                let interval;
-                if (isEmergencyMode) {
-                    interval = CONFIG.CHAT.HIGH_LOAD_INTERVAL;
-                } else if (isHighLoad) {
-                    interval = CONFIG.CHAT.HIGH_LOAD_INTERVAL;
-                } else if (queueSize < 10) {
-                    interval = 20; // Very fast for low queue
-                } else {
-                    interval = CONFIG.CHAT.PROCESSING_INTERVAL;
-                }
-                setTimeout(() => this.processQueue(), interval);
+            const remaining = getSize();
+            if (remaining > 0) {
+                // Dynamic interval based on updated queue size
+                const nextInterval = remaining >= CONFIG.CHAT.HIGH_WATER_THRESHOLD
+                    ? CONFIG.CHAT.HIGH_WATER_INTERVAL
+                    : (remaining > CONFIG.CHAT.HIGH_LOAD_THRESHOLD
+                        ? CONFIG.CHAT.HIGH_LOAD_INTERVAL
+                        : (remaining < 10
+                            ? 20
+                            : CONFIG.CHAT.PROCESSING_INTERVAL));
+                setTimeout(() => this.processQueue(), nextInterval);
             } else if (this.pendingBatch.length > 0) {
                 // Ensure pending batch is sent
                 this.flushPendingBatch();
             }
-        }
-
-        processClusters(batch, isEmergencyMode = false) {
-            // In emergency mode, process the entire batch as clusters immediately
-            const messageClusters = new Map();
-            
-            batch.forEach(data => {
-                const key = String(data.comment || '').toLowerCase().trim();
-                if (!messageClusters.has(key)) {
-                    messageClusters.set(key, {
-                        message: data.comment,
-                        users: [],
-                        timestamp: Date.now()
-                    });
-                }
-                const identity = extractTikTokIdentity(data);
-                const isModerator = resolveTikTokModeratorStatus(data);
-                const isSubscriber = resolveTikTokSubscriberStatus(data);
-                const avatarUrl = identity.profilePictureUrl
-                    || normalizeTikTokImageUrl(data.profilePictureUrl)
-                    || normalizeTikTokImageUrl(data.profilePicture)
-                    || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
-                    || normalizeTikTokImageUrl(data?.user?.profilePicture);
-
-                messageClusters.get(key).users.push({
-                    userId: data.userId || identity.uniqueId || null,
-                    uniqueId: identity.uniqueId || null,
-                    nickname: identity.nickname || null,
-                    profilePictureUrl: avatarUrl || null,
-                    isModerator,
-                    isSubscriber,
-                    nameColor: data.nameColor || data.name_color || data.user?.nameColor
-                });
-            });
-
-            // In emergency mode, always cluster even small groups
-            const messagesToSend = [];
-            messageClusters.forEach((cluster, key) => {
-                if (isEmergencyMode || cluster.users.length > 2) {
-                    messagesToSend.push(this.formatClusteredMessage(cluster.message, cluster.users));
-                } else {
-                    // Non-emergency: send individual messages for small groups
-                    cluster.users.forEach(user => {
-                        const msg = this.formatChatMessage({
-                            comment: cluster.message,
-                            ...user
-                        });
-                        msg.tid = this.manager.virtualTabId;
-                        messagesToSend.push(msg);
-                    });
-                }
-            });
-            
-            // Send all messages as a batch
-            if (messagesToSend.length > 0) {
-                sendBatchToBackground(messagesToSend);
-            }
-            
-            // Log emergency mode status
-            if (isEmergencyMode) {
-                log(`Emergency clustering: ${batch.length} messages → ${messageClusters.size} clusters`);
-            }
-        }
-
-        formatClusteredMessage(message, users) {
-            const formatSingleUserName = (userObj) => {
-                if (!userObj || typeof userObj !== 'object') return 'Unknown';
-                const identity = extractTikTokIdentity(userObj);
-                const userId = resolveTikTokUserId(userObj, identity);
-                return resolveTikTokDisplayName(userObj, identity, userId);
-            };
-
-            const primaryUser = users[0] || null;
-            const primaryIdentity = primaryUser ? extractTikTokIdentity(primaryUser) : { profilePictureUrl: null };
-            const primaryAvatar = primaryIdentity.profilePictureUrl
-                || normalizeTikTokImageUrl(primaryUser?.profilePictureUrl)
-                || normalizeTikTokImageUrl(primaryUser?.profilePicture)
-                || normalizeTikTokImageUrl(primaryUser?.avatarUrl)
-                || normalizeTikTokImageUrl(primaryUser?.avatarThumb)
-                || null;
-
-            const msg = {
-                type: "tiktok",
-                textonly: isTextOnlyModeEnabled(),
-                chatmessage: message,
-                meta: {
-                    clustered: true,
-                    userCount: users.length
-                },
-                chatimg: primaryAvatar,
-                chatname: (users.length <= 1)
-                    ? formatSingleUserName(users[0])
-                    : (users.length === 2
-                        ? `${formatSingleUserName(users[0])} and ${formatSingleUserName(users[1])}`
-                        : `${this.getShortestName(users)} and ${users.length - 1} others`),
-                moderator: users.some(u => u.isModerator),
-                membership: users.some(u => u.isSubscriber),
-                tid: this.manager.virtualTabId // Include the virtual tab ID
-            };
-
-            const primaryColor = users
-                .map(u => u?.nameColor || u?.name_color)
-                .find(Boolean);
-            const safeColor = normalizeNameColor(primaryColor);
-            if (safeColor) {
-                msg.nameColor = safeColor;
-            }
-            return msg;
-        }
-
-        sendClusteredMessage(message, users) {
-            const msg = this.formatClusteredMessage(message, users);
-            sendToBackground(msg);
-        }
-
-        getShortestName(users) {
-            const names = users
-                .map(user => {
-                    if (!user || typeof user !== 'object') return null;
-                    const identity = extractTikTokIdentity(user);
-                    const userId = resolveTikTokUserId(user, identity);
-                    return resolveTikTokDisplayName(user, identity, userId);
-                })
-                .filter(Boolean);
-            if (names.length === 0) return 'Unknown';
-            return names.reduce((a, b) => a.length <= b.length ? a : b);
         }
 
         addToPendingBatch(batch) {
@@ -7957,7 +7878,8 @@ function resolveFirstImageUrl(candidates = []) {
                     processInitialData: false,
                     // Fetch gift metadata so live gifts include images/diamonds
                     enableExtendedGiftInfo: true,
-                    // Prefer WebSocket delivery but keep HTTP polling fallback for regions that block upgrades
+                    // Upstream connector stores polling knobs but never actually switches away from WebSocket;
+                    // leave fallback enabled so future library updates can opt-in without code changes.
                     enableRequestPolling: true,
                     requestPollingIntervalMs: 1000,
                     fetchRoomInfoOnConnect: true,
@@ -9976,25 +9898,45 @@ function resolveFirstImageUrl(candidates = []) {
     ipcMain.on("closeWindow", function(eventRet, args) {
         log("close window: " + args.vid);
         try {
-            if (browserViews[args.vid]) {
-                // Remove all event listeners before destroying
-                if (browserViews[args.vid].webContents) {
-                    browserViews[args.vid].webContents.removeAllListeners();
-                }
-
-                // Get the tabID before destroying
-                const tabID = browserViews[args.vid].tabID;
-
-                browserViews[args.vid].destroy();
-                delete browserViews[args.vid];
-
-                // Release the window ID to prevent ID exhaustion
-                if (tabID) {
-                    releaseWindowId(tabID);
-                }
+            const view = browserViews[args.vid];
+            if (!view) {
+                eventRet.returnValue = false;
+                return;
             }
+
+            if (view.isTikTokVirtual) {
+                const wssID = view.wssID;
+                if (wssID !== undefined) {
+                    cleanupConnection(wssID);
+                } else {
+                    delete browserViews[args.vid];
+                }
+                eventRet.returnValue = true;
+                return;
+            }
+
+            if (view.webContents && typeof view.webContents.removeAllListeners === 'function') {
+                view.webContents.removeAllListeners();
+            }
+
+            const tabID = view.tabID;
+
+            if (typeof view.close === 'function') {
+                try { view.close(); } catch (closeErr) { console.warn('Error closing view:', closeErr); }
+            }
+            if (typeof view.destroy === 'function') {
+                try { view.destroy(); } catch (destroyErr) { console.warn('Error destroying view:', destroyErr); }
+            }
+
+            delete browserViews[args.vid];
+
+            if (tabID) {
+                releaseWindowId(tabID);
+            }
+
             eventRet.returnValue = true;
         } catch (e) {
+            console.error('closeWindow handler error:', e);
             eventRet.returnValue = false;
         }
     });
@@ -10329,18 +10271,58 @@ function resolveFirstImageUrl(candidates = []) {
             // Check if this is a TikTok virtual tab
             if (view && view.isTikTokVirtual) {
                 log("TikTok virtual tab - sending message via WebSocket");
-                if (args.text && view.wssID !== undefined) {
-                    // Send the message through the TikTok WebSocket connection
-                    sendToTikTok({
-                        wssID: view.wssID,
-                        message: args.text
-                    });
-                    log("Sent message to TikTok WebSocket");
-                    eventRet.returnValue = true;
-                } else {
+                const text = typeof args.text === 'string' ? args.text : '';
+                if (!text.trim() || view.wssID === undefined) {
                     log("TikTok virtual tab - missing text or wssID");
                     eventRet.returnValue = false;
+                    return;
                 }
+
+                const manager = websocketConnections[view.wssID];
+                const isConnected = !!(manager && manager.connection && manager.connection.isConnected && !manager.isStopped);
+                const hasSession = !!manager?.sessionId;
+
+                if (!manager || !isConnected || !hasSession) {
+                    log("TikTok virtual tab - connection not ready for outbound send");
+                    eventRet.returnValue = false;
+                    return;
+                }
+
+                sendToTikTok({
+                    wssID: view.wssID,
+                    message: text
+                }).then(result => {
+                    if (!result?.success) {
+                        log(`TikTok virtual tab - outbound send failed: ${result?.error || 'unknown error'}`);
+                        try {
+                            if (mainWindow?.webContents) {
+                                mainWindow.webContents.send('tiktokSendResult', {
+                                    wssID: view.wssID,
+                                    success: false,
+                                    error: result?.error || 'Unknown error'
+                                });
+                            }
+                        } catch (notifyErr) {
+                            console.warn('Failed to notify renderer about TikTok send failure:', notifyErr);
+                        }
+                    }
+                }).catch(error => {
+                    console.error('TikTok virtual tab - outbound send threw:', error);
+                    try {
+                        if (mainWindow?.webContents) {
+                            mainWindow.webContents.send('tiktokSendResult', {
+                                wssID: view.wssID,
+                                success: false,
+                                error: error?.message || 'Failed to send TikTok message'
+                            });
+                        }
+                    } catch (notifyErr) {
+                        console.warn('Failed to notify renderer about TikTok send exception:', notifyErr);
+                    }
+                });
+
+                log("Sent message to TikTok WebSocket");
+                eventRet.returnValue = true;
             } else if (view && view.webContents && view.webContents.sendInputEvent) {
                 try {
                     view.focus();
