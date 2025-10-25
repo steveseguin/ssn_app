@@ -423,6 +423,7 @@ var isBetaMode = false;
 const pendingTikTokStatusQueue = new Map();
 var session = {};
 var ipcRenderer = null;
+let autoActivateCaptureEnsured = false;
 
 // Check if contextBridge exposed electron API (for windows with contextIsolation: true)
 if (window.electron && window.electron.ipcRenderer) {
@@ -4570,8 +4571,35 @@ function refreshActivatedWindow(ele) {
     }
 }
 
+function ensureAutoActivatedSourcesCapturing() {
+    if (autoActivateCaptureEnsured || !ipcRenderer || !stateManager) {
+        return;
+    }
+
+    try {
+        const hasAutoActivatedSource = stateManager.getSources().some(src => src.autoActivate);
+        const hasAutoActivatedGroup = stateManager.getGroups().some(group => group.autoActivate);
+
+        if (!hasAutoActivatedSource && !hasAutoActivatedGroup) {
+            return;
+        }
+
+        const stateResponse = ipcRenderer.sendSync('fromPopup', { cmd: 'getOnOffState' }) || {};
+        const currentlyEnabled = stateResponse.state === true;
+
+        if (!currentlyEnabled) {
+            ipcRenderer.sendSync('fromPopup', { cmd: 'setOnOffState', data: { value: true } });
+        }
+
+        autoActivateCaptureEnsured = true;
+    } catch (error) {
+        console.warn('Failed to ensure capture state for auto-activated sources:', error);
+    }
+}
+
 function processSettingsAndCreateSources() {
     console.log('[Startup] Processing settings and creating sources');
+    ensureAutoActivatedSourcesCapturing();
     cleanupYouTubeGroups(); 
     
     // Fix orphaned YouTube sources that should belong to groups
