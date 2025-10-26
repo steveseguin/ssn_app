@@ -4421,6 +4421,10 @@ function showTikTokSignInMenu(sourceId) {
     let menuContent = `
         <div style="padding: 20px; background: #2a2a2a; border-radius: 8px;">
             <h3 style="margin-bottom: 15px;">TikTok Authentication</h3>
+            <p style="margin: 0 0 14px 0; color: #facc15;">
+                Experimental option — these sign-in and session workflows may not work reliably yet. Please share feedback or bug reports at
+                <a href="https://discord.socialstream.ninja" target="_blank" style="color: #fde68a;">discord.socialstream.ninja</a>.
+            </p>
             ${isAuthenticated ? 
                 `<p style="color: #4ade80; margin-bottom: 15px;">✓ TikTok session cookie saved for this source.</p>` : 
                 `<p style="margin-bottom: 15px;">Add your TikTok session cookie to unlock:</p>

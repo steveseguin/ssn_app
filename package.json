@@ -183,7 +183,7 @@
     "minimist": "git+https://github.com/fortiZde/minimist.git",
     "phonemizer": "^1.2.1",
     "sharp": "^0.33.5",
-    "tiktok-live-connector": "github:steveseguin/TikTok-Live-Connector",
+    "tiktok-live-connector": "^1.2.3",
     "undici": "^7.5.0",
     "utf-8-validate": "^6.0.5",
     "ws": "^8.18.1",

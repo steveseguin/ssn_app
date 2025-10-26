@@ -231,7 +231,7 @@ function installTikTokSignServerFallback(connector) {
 
 let TikTokLiveConnectionClass = null;
 let TikTokPollingFallbackClass = null;
-let usingLegacyTikTokConnector = false;
+let usingLegacyTikTokConnector = true;
 try {
     const tiktokConnector = require('tiktok-live-connector');
     installTikTokSignServerFallback(tiktokConnector);
@@ -243,17 +243,12 @@ try {
         }
     }
     if (tiktokConnector && typeof tiktokConnector.WebcastPushConnection === 'function') {
+        TikTokLiveConnectionClass = tiktokConnector.WebcastPushConnection;
         TikTokPollingFallbackClass = tiktokConnector.WebcastPushConnection;
-    }
-    if (tiktokConnector && typeof tiktokConnector.TikTokLiveConnection === 'function') {
-        TikTokLiveConnectionClass = tiktokConnector.TikTokLiveConnection;
-    } else if (TikTokPollingFallbackClass) {
-        TikTokLiveConnectionClass = TikTokPollingFallbackClass;
-        usingLegacyTikTokConnector = true;
-        console.warn('[TikTok] Using legacy WebcastPushConnection; upgrade tiktok-live-connector >= 2.0.4 for full event coverage.');
     } else {
         throw new Error('TikTok connector exports missing');
     }
+    console.info('[TikTok] Using legacy WebcastPushConnection (tiktok-live-connector v1.x)');
 } catch (e) {
     console.warn('[TikTok] tiktok-live-connector not available:', e && e.message ? e.message : e);
     TikTokLiveConnectionClass = null; // Allow app to boot; TikTok features disabled until module present
@@ -3687,16 +3682,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 sender.tab.url = eventRet.sender.getURL();
             }
             
-            // For messages, pre-generate ID to return synchronously
-            // Background.js will use this ID if it exists (see line 3218: !request.message.id)
-            if (args[0] && args[0].message && !args[0].message.id) {
-                if (!global.messageCounter) {
-                    global.messageCounter = Math.floor(Math.random() * 90000);
-                }
-                global.messageCounter += 1;
-                args[0].message.id = global.messageCounter;
-            }
-            
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
                 if (frame.url.split("?")[0].endsWith("background.html")) {
                     frame.postMessage("fromMainSender", [args[0], {
@@ -3707,10 +3692,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
             
             // Return response with message ID for callbacks
             if (args[0] && args[0].message) {
-                eventRet.returnValue = {
-                    state: cachedState.state !== undefined ? cachedState.state : true,
-                    id: args[0].message.id
+                const response = {
+                    state: cachedState.state !== undefined ? cachedState.state : true
                 };
+                if (args[0].message.id !== undefined) {
+                    response.id = args[0].message.id;
+                }
+                eventRet.returnValue = response;
                 return;
             }
         }
@@ -6552,7 +6540,8 @@ function resolveTikTokSubscriberStatus(data = {}) {
 
     function composeTikTokChatMessage(data = {}, options = {}) {
         const { includeTopGifterBadgeAlways = false } = options;
-        const textOnly = isTextOnlyModeEnabled();
+        const explicitTextOnly = data && (data.textonly === true || data.textonlymode === true);
+        const textOnly = explicitTextOnly || isTextOnlyModeEnabled();
 
         let chatmessage = typeof data?.comment === 'string' ? data.comment : '';
 
@@ -6596,7 +6585,8 @@ function resolveTikTokSubscriberStatus(data = {}) {
 
         const message = {
             chatmessage,
-            textonly: textOnly
+            textonly: textOnly,
+            textonlymode: textOnly
         };
 
         const badgeSources = collectTikTokBadges(data);
@@ -6658,6 +6648,9 @@ function resolveTikTokSubscriberStatus(data = {}) {
         const msg = composeTikTokChatMessage(data, { includeTopGifterBadgeAlways: true });
         if (typeof msg.textonly !== 'boolean') {
             msg.textonly = isTextOnlyModeEnabled();
+        }
+        if (typeof msg.textonlymode !== 'boolean') {
+            msg.textonlymode = msg.textonly;
         }
         msg.type = 'tiktok';
         msg.tid = virtualTabId;
@@ -7226,6 +7219,9 @@ function resolveFirstImageUrl(candidates = []) {
             if (typeof msg.textonly !== 'boolean') {
                 msg.textonly = isTextOnlyModeEnabled();
             }
+            if (typeof msg.textonlymode !== 'boolean') {
+                msg.textonlymode = msg.textonly;
+            }
             msg.type = 'tiktok';
             return msg;
         }
@@ -7540,14 +7536,19 @@ function resolveFirstImageUrl(candidates = []) {
             const identity = extractTikTokIdentity(data);
             const resolvedUserId = resolveTikTokUserId(data, identity);
             const resolvedChatname = resolveTikTokDisplayName(data, identity, resolvedUserId);
-            const textOnly = isTextOnlyModeEnabled();
+            const explicitTextOnly = data && (data.textonly === true || data.textonlymode === true);
+            const textOnly = explicitTextOnly || isTextOnlyModeEnabled();
 
-            const chatmessage = `Sent ${giftName} x${count}`;
+            let chatmessage = `Sent ${giftName} x${count}`;
+            if (!textOnly && giftPictureUrl) {
+                chatmessage += ` <img src='${giftPictureUrl}'>`;
+            }
 
             const msg = {
                 chatmessage,
                 type: "tiktok",
                 textonly: textOnly,
+                textonlymode: textOnly,
                 event: 'gift',
                 chatname: resolvedChatname,
                 chatimg: identity.profilePictureUrl
@@ -7568,6 +7569,7 @@ function resolveFirstImageUrl(candidates = []) {
             if (donationDisplay) {
                 msg.hasDonation = donationDisplay;
                 msg.subtitle = donationDisplay;
+                msg.donoValue = totalDiamonds * 0.005;
             }
             if (giftPictureUrl) {
                 msg.contentimg = giftPictureUrl;
@@ -7625,6 +7627,7 @@ function resolveFirstImageUrl(candidates = []) {
             this.messageCache = new MessageCache(CONFIG.CHAT.MESSAGE_CACHE_SIZE);
             this.activityBuckets = new Map();
             this.recentShoppingEvents = new Map();
+            // Live shopping events rely on 2.x payloads; the Map sticks around harmlessly until we upgrade.
             this.reconnectAttempts = 0;
             this.isStopped = false;
             this.reconnectTimer = null;
@@ -7659,6 +7662,7 @@ function resolveFirstImageUrl(candidates = []) {
                 });
             }
             this.pollingFallbackActivated = false;
+            // With v1.x both connector references point to WebcastPushConnection, so fallback support stays false.
             this.pollingFallbackSupported = !!(TikTokPollingFallbackClass && TikTokPollingFallbackClass !== TikTokLiveConnectionClass);
             this.connectionStrategy = 'websocket';
         }
@@ -7699,23 +7703,39 @@ function resolveFirstImageUrl(candidates = []) {
         }
 
         buildConnectionOptions(forcePolling = false) {
+            if (usingLegacyTikTokConnector) {
+                const legacyOptions = {
+                    processInitialData: false,
+                    enableExtendedGiftInfo: true,
+                    enableWebsocketUpgrade: true,
+                    fetchRoomInfoOnConnect: true,
+                    requestPollingIntervalMs: 1000,
+                    clientParams: {
+                        app_language: "en-US",
+                        device_platform: "web"
+                    }
+                };
+                return legacyOptions;
+            }
+
+            const clientParams = {
+                app_language: "en-US",
+                device_platform: "web"
+            };
             const options = {
                 processInitialData: false,
                 enableExtendedGiftInfo: true,
                 enableRequestPolling: true,
                 requestPollingIntervalMs: 1000,
                 fetchRoomInfoOnConnect: true,
-                webClientParams: {
-                    app_language: "en-US",
-                    device_platform: "web"
-                },
-                wsClientParams: {
-                    app_language: "en-US",
-                    device_platform: "web"
-                }
+                enableWebsocketUpgrade: !forcePolling,
+                webClientParams: { ...clientParams },
+                wsClientParams: { ...clientParams },
+                clientParams: { ...clientParams }
             };
             if (forcePolling) {
                 options.enableRequestPolling = true;
+                options.enableWebsocketUpgrade = false;
             }
             return options;
         }
@@ -7798,43 +7818,15 @@ function resolveFirstImageUrl(candidates = []) {
         }
 
         async tryFallbackToPolling(primaryError, stage = 'connect') {
-            if (!this.pollingFallbackSupported || this.pollingFallbackActivated) {
-                return false;
-            }
-            const fallbackMessage = this.getSanitizedFallbackMessage(primaryError);
-            this.pollingFallbackActivated = true;
-            this.logDebug('lifecycle.fallback.polling.begin', {
+            // Legacy connector note: this stub comes from the 2.x WebSocket→polling fallback.
+            // WebcastPushConnection (v1.x) cannot poll anonymously, so we keep the method as a
+            // no-op to avoid confusion while remaining ready for a future upgrade.
+            this.logDebug('lifecycle.fallback.polling.skipped', {
+                reason: 'disabled_for_legacy_connector',
                 stage,
-                message: fallbackMessage,
-                payloadLength: primaryError?.payloadLength || null
+                message: primaryError?.message || null
             });
-            console.warn(`[TikTok] Polling fallback activated (${stage}) for ${this.username}: ${fallbackMessage}`);
-            try {
-                await this.teardownConnection({ silent: true });
-            } catch (error) {
-                this.logDebug('lifecycle.fallback.polling.teardownError', normalizeForLogging(error));
-            }
-            try {
-                this.initializeConnectionInstance({ forcePolling: true, context: 'polling_fallback' });
-            } catch (error) {
-                this.pollingFallbackActivated = false;
-                this.connectionStrategy = 'websocket';
-                this.logDebug('lifecycle.fallback.polling.instantiateError', normalizeForLogging(error));
-                console.error('[TikTok] Failed to instantiate polling fallback connection:', error);
-                return false;
-            }
-            try {
-                mainWindow.webContents.send('tiktokConnectionStatus', {
-                    wssID: this.wssID,
-                    status: 'fallback_polling',
-                    error: fallbackMessage,
-                    payloadLength: primaryError?.payloadLength || null,
-                    payloadPreviewHex: primaryError?.payloadPreviewHex || null
-                });
-            } catch (notifyErr) {
-                console.warn('Failed to notify renderer about TikTok polling fallback:', notifyErr);
-            }
-            return true;
+            return false;
         }
 
         applySignRequestTimeout(timeoutMs) {
