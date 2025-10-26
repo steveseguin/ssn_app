@@ -13,6 +13,8 @@ certs/
 *.crt
 *.cer
 old-certs-backup/
+referenceonly/
+vdoninja/
 
 # Claude-related files
 .claude/
