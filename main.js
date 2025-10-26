@@ -30,10 +30,211 @@ const {
 const { exec } = require('child_process');
 const contextMenu = require("electron-context-menu");
 const Yargs = require("yargs");
+
+function installTikTokSignServerFallback(connector) {
+    try {
+        const RouteClass = connector?.FetchSignedWebSocketFromEulerRoute;
+        const SignAPIError = connector?.SignAPIError;
+        const SignatureRateLimitError = connector?.SignatureRateLimitError;
+        const PremiumFeatureError = connector?.PremiumFeatureError;
+        const FetchSignedWebSocketIdentityParameterError = connector?.FetchSignedWebSocketIdentityParameterError;
+        const AuthenticatedWebSocketConnectionError = connector?.AuthenticatedWebSocketConnectionError;
+        const ErrorReason = connector?.ErrorReason;
+        const deserializeMessage = connector?.deserializeMessage;
+        const defaultHeaders =
+            connector?.DEFAULT_HTTP_CLIENT_HEADERS ||
+            connector?.Config?.DEFAULT_HTTP_CLIENT_HEADERS ||
+            (() => {
+                try {
+                    const cfg = require('tiktok-live-connector/dist/lib/config');
+                    return cfg?.DEFAULT_HTTP_CLIENT_HEADERS || null;
+                } catch (_) {
+                    return null;
+                }
+            })();
+        const userAgentHeader =
+            defaultHeaders?.['User-Agent'] ||
+            defaultHeaders?.['user-agent'] ||
+            defaultHeaders?.['userAgent'] ||
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36';
+        if (!RouteClass || !SignAPIError || !SignatureRateLimitError || !PremiumFeatureError
+            || !FetchSignedWebSocketIdentityParameterError || !AuthenticatedWebSocketConnectionError
+            || !ErrorReason || !deserializeMessage) {
+            return;
+        }
+        if (RouteClass.prototype.__ssappFallbackPatched) {
+            return;
+        }
+        const getHeader = (headers, name) => {
+            if (!headers || !name) return undefined;
+            const lower = name.toLowerCase();
+            const upper = name.toUpperCase();
+            return headers[name] ?? headers[lower] ?? headers[upper];
+        };
+        RouteClass.prototype.call = async function(params = {}) {
+            const {
+                roomId,
+                uniqueId,
+                sessionId,
+                ttTargetIdc
+            } = params;
+            if (!roomId && !uniqueId) {
+                throw new FetchSignedWebSocketIdentityParameterError('Either roomId or uniqueId must be provided.');
+            }
+            if (roomId && uniqueId) {
+                throw new FetchSignedWebSocketIdentityParameterError('Both roomId and uniqueId cannot be provided at the same time.');
+            }
+            const resolvedSessionId = sessionId || this.webClient.cookieJar.sessionId;
+            const resolvedTtTargetIdc = ttTargetIdc || this.webClient.cookieJar.ttTargetIdc;
+            if (resolvedSessionId && !resolvedTtTargetIdc) {
+                throw new FetchSignedWebSocketIdentityParameterError('ttTargetIdc must be set when sessionId is provided.');
+            }
+            if (this.webClient.configuration.authenticateWs && resolvedSessionId) {
+                const envHost = process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST;
+                const expectedHost = new URL(this.webClient.webSigner.configuration.basePath).host;
+                if (!envHost) {
+                    throw new AuthenticatedWebSocketConnectionError(`authenticate_websocket is true, but no whitelist host defined. Set the env var WHITELIST_AUTHENTICATED_SESSION_ID_HOST to proceed.`);
+                }
+                if (envHost !== expectedHost) {
+                    throw new AuthenticatedWebSocketConnectionError(`The env var WHITELIST_AUTHENTICATED_SESSION_ID_HOST "${envHost}" does not match sign server host "${expectedHost}".`);
+                }
+            }
+            const toBuffer = (value) => {
+                if (Buffer.isBuffer(value)) return value;
+                if (value instanceof ArrayBuffer) return Buffer.from(value);
+                if (ArrayBuffer.isView(value)) return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+                if (value && typeof value === 'object') {
+                    if (Array.isArray(value)) return Buffer.from(value);
+                    if (typeof value.type === 'string' && value.type === 'Buffer' && Array.isArray(value.data)) {
+                        return Buffer.from(value.data);
+                    }
+                    if (Array.isArray(value.data)) {
+                        return Buffer.from(value.data);
+                    }
+                }
+                if (typeof value === 'string') return Buffer.from(value, 'utf8');
+                return Buffer.from([]);
+            };
+            const clientEnterAttempts = [true, false];
+            let lastConnectorError = null;
+            for (let attemptIndex = 0; attemptIndex < clientEnterAttempts.length; attemptIndex++) {
+                const clientEnterFlag = clientEnterAttempts[attemptIndex];
+                let response;
+                try {
+                    response = await this.webClient.webSigner.webcast.fetchWebcastURL(
+                        'ttlive-node',
+                        roomId,
+                        uniqueId,
+                        this.webClient.clientParams?.cursor ?? undefined,
+                        resolvedSessionId,
+                        userAgentHeader,
+                        resolvedTtTargetIdc,
+                        clientEnterFlag,
+                        {
+                            responseType: 'arraybuffer'
+                        }
+                    );
+                } catch (err) {
+                    lastConnectorError = err;
+                    if (attemptIndex === clientEnterAttempts.length - 1) {
+                        const args = ['Failed to connect to sign server.'];
+                        if (lastConnectorError?.message) {
+                            args.push(lastConnectorError.message);
+                        }
+                        throw new SignAPIError(ErrorReason.CONNECT_ERROR, undefined, undefined, ...args);
+                    }
+                    continue;
+                }
+                const status = response?.status ?? 0;
+                if (status === 429) {
+                    const data = JSON.parse(toBuffer(response.data).toString('utf-8'));
+                    const message = process.env.SIGN_SERVER_MESSAGE_DISABLED ? null : data?.message;
+                    const label = data?.limit_label ? `(${data.limit_label}) ` : '';
+                    throw new SignatureRateLimitError(message, `${label}Too many connections started, try again later.`, response);
+                }
+                if (status === 402) {
+                    const data = JSON.parse(toBuffer(response.data).toString('utf-8'));
+                    const message = process.env.SIGN_SERVER_MESSAGE_DISABLED ? null : data?.message;
+                    throw new PremiumFeatureError(message, 'Error fetching the signed TikTok WebSocket');
+                }
+                if (status !== 200) {
+                    if (clientEnterFlag && status >= 500 && attemptIndex < clientEnterAttempts.length - 1) {
+                        continue;
+                    }
+                    let payload;
+                    try {
+                        payload = toBuffer(response.data).toString('utf-8');
+                    } catch {
+                        payload = `"${response.statusText}"`;
+                    }
+                    const logIdRaw = getHeader(response.headers, 'X-Log-Id');
+                    const agentId = getHeader(response.headers, 'X-Agent-ID');
+                    throw new SignAPIError(
+                        ErrorReason.SIGN_NOT_200,
+                        logIdRaw ? parseInt(logIdRaw) : undefined,
+                        agentId,
+                        `Unexpected sign server status ${status}. Payload:\n${payload}`
+                    );
+                }
+                const dataBuffer = toBuffer(response.data);
+                if (!dataBuffer.length && response?.data) {
+                    console.warn('[TikTok] Euler payload could not be buffered, raw shape:', Object.prototype.toString.call(response.data));
+                }
+                console.warn(`[TikTok] Euler payload attempt ${attemptIndex + 1}/${clientEnterAttempts.length} (clientEnter=${clientEnterFlag}) length=${dataBuffer.length}`);
+                const logIdRaw = getHeader(response.headers, 'X-Log-Id');
+                const agentId = getHeader(response.headers, 'X-Agent-ID');
+                const setCookieHeader = getHeader(response.headers, 'x-set-tt-cookie');
+                if (!setCookieHeader) {
+                    throw new SignAPIError(ErrorReason.EMPTY_COOKIES, logIdRaw ? parseInt(logIdRaw) : undefined, agentId, 'No cookies received from sign server.');
+                }
+                this.webClient.cookieJar.processSetCookieHeader(setCookieHeader);
+                const nextRoomId = getHeader(response.headers, 'x-room-id');
+                if (nextRoomId) {
+                    this.webClient.roomId = nextRoomId;
+                }
+                try {
+                    if (dataBuffer.length < 32) {
+                        console.warn('[TikTok] Euler payload preview (hex):', dataBuffer.toString('hex'));
+                    }
+                    return deserializeMessage('ProtoMessageFetchResult', dataBuffer);
+                } catch (decodeError) {
+                    if (clientEnterFlag && attemptIndex < clientEnterAttempts.length - 1) {
+                        console.warn('[TikTok] Euler payload decode failed, retrying with clientEnter=false:', decodeError?.message || decodeError);
+                        decodeError.ssappFallback = true;
+                        decodeError.ssappFallbackMode = 'polling';
+                        decodeError.code = decodeError.code || 'SSAPP_TIKTOK_FALLBACK';
+                        decodeError.payloadLength = dataBuffer.length;
+                        decodeError.payloadPreviewHex = dataBuffer.subarray(0, Math.min(dataBuffer.length, 64)).toString('hex');
+                        continue;
+                    }
+                    console.warn('[TikTok] Euler payload decode failed (no further retries):', decodeError?.message || decodeError);
+                    decodeError.ssappFallback = true;
+                    decodeError.ssappFallbackMode = 'polling';
+                    decodeError.code = decodeError.code || 'SSAPP_TIKTOK_FALLBACK';
+                    decodeError.payloadLength = dataBuffer.length;
+                    decodeError.payloadPreviewHex = dataBuffer.subarray(0, Math.min(dataBuffer.length, 64)).toString('hex');
+                    throw decodeError;
+                }
+            }
+            const args = ['Failed to connect to sign server.'];
+            if (lastConnectorError?.message) {
+                args.push(lastConnectorError.message);
+            }
+            throw new SignAPIError(ErrorReason.CONNECT_ERROR, undefined, undefined, ...args);
+        };
+        RouteClass.prototype.__ssappFallbackPatched = true;
+        console.info('[TikTok] Sign server fallback patch installed (clientEnter retry enabled)');
+    } catch (error) {
+        console.warn('[TikTok] Failed to install sign server fallback patch:', error);
+    }
+}
+
 let TikTokLiveConnectionClass = null;
+let TikTokPollingFallbackClass = null;
 let usingLegacyTikTokConnector = false;
 try {
     const tiktokConnector = require('tiktok-live-connector');
+    installTikTokSignServerFallback(tiktokConnector);
     if (tiktokConnector && tiktokConnector.WebcastDeserializeConfig) {
         const skipTypes = tiktokConnector.WebcastDeserializeConfig.skipMessageTypes;
         if (Array.isArray(skipTypes) && !skipTypes.includes('WebcastInRoomBannerMessage')) {
@@ -41,10 +242,13 @@ try {
             skipTypes.push('WebcastInRoomBannerMessage');
         }
     }
+    if (tiktokConnector && typeof tiktokConnector.WebcastPushConnection === 'function') {
+        TikTokPollingFallbackClass = tiktokConnector.WebcastPushConnection;
+    }
     if (tiktokConnector && typeof tiktokConnector.TikTokLiveConnection === 'function') {
         TikTokLiveConnectionClass = tiktokConnector.TikTokLiveConnection;
-    } else if (tiktokConnector && typeof tiktokConnector.WebcastPushConnection === 'function') {
-        TikTokLiveConnectionClass = tiktokConnector.WebcastPushConnection;
+    } else if (TikTokPollingFallbackClass) {
+        TikTokLiveConnectionClass = TikTokPollingFallbackClass;
         usingLegacyTikTokConnector = true;
         console.warn('[TikTok] Using legacy WebcastPushConnection; upgrade tiktok-live-connector >= 2.0.4 for full event coverage.');
     } else {
@@ -773,6 +977,12 @@ function createYargs() {
         type: "string",
         default: null,
     });
+    addOption("tiktokclassic", {
+        alias: "tc",
+        describe: "Force TikTok sources to use classic (HTTP) mode instead of WebSockets.",
+        type: "boolean",
+        default: false
+    });
 
 
     const options = argv.getOptions();
@@ -791,6 +1001,15 @@ function createYargs() {
 
 var Args = createYargs();
 var Argv = Args.argv;
+
+const envForceTikTokClassic = process.env.SSAPP_FORCE_TIKTOK_CLASSIC === '1';
+const CLI_FORCE_TIKTOK_CLASSIC = Argv.tiktokclassic === true;
+if (CLI_FORCE_TIKTOK_CLASSIC) {
+    process.env.SSAPP_FORCE_TIKTOK_CLASSIC = '1';
+} else if (process.env.SSAPP_FORCE_TIKTOK_CLASSIC === undefined) {
+    process.env.SSAPP_FORCE_TIKTOK_CLASSIC = envForceTikTokClassic ? '1' : '0';
+}
+let runtimeForceTikTokClassic = CLI_FORCE_TIKTOK_CLASSIC || process.env.SSAPP_FORCE_TIKTOK_CLASSIC === '1';
 
 function showCommandLineArguments() {
 
@@ -7439,6 +7658,9 @@ function resolveFirstImageUrl(candidates = []) {
                     payload: { message: 'TikTok logging started' }
                 });
             }
+            this.pollingFallbackActivated = false;
+            this.pollingFallbackSupported = !!(TikTokPollingFallbackClass && TikTokPollingFallbackClass !== TikTokLiveConnectionClass);
+            this.connectionStrategy = 'websocket';
         }
 
         getLogContext() {
@@ -7474,6 +7696,145 @@ function resolveFirstImageUrl(candidates = []) {
             this.tiktokLogWriter.close();
             this.tiktokLogWriter = null;
             this.tiktokLogFilePath = null;
+        }
+
+        buildConnectionOptions(forcePolling = false) {
+            const options = {
+                processInitialData: false,
+                enableExtendedGiftInfo: true,
+                enableRequestPolling: true,
+                requestPollingIntervalMs: 1000,
+                fetchRoomInfoOnConnect: true,
+                webClientParams: {
+                    app_language: "en-US",
+                    device_platform: "web"
+                },
+                wsClientParams: {
+                    app_language: "en-US",
+                    device_platform: "web"
+                }
+            };
+            if (forcePolling) {
+                options.enableRequestPolling = true;
+            }
+            return options;
+        }
+
+        initializeConnectionInstance({ forcePolling = false, context = 'primary' } = {}) {
+            const ConnectorClass = forcePolling && this.pollingFallbackSupported
+                ? TikTokPollingFallbackClass
+                : TikTokLiveConnectionClass;
+            if (!ConnectorClass) {
+                throw new Error('TikTok connector missing. Please reinstall tiktok-live-connector.');
+            }
+            const connectionOptions = this.buildConnectionOptions(forcePolling);
+            if (this.sessionId) {
+                connectionOptions.sessionId = this.sessionId;
+                if (this.ttTargetIdc) {
+                    connectionOptions.ttTargetIdc = this.ttTargetIdc;
+                }
+            }
+            this.connectionStrategy = forcePolling ? 'polling' : 'websocket';
+            const connectorLabel = ConnectorClass && ConnectorClass.name
+                ? ConnectorClass.name
+                : (forcePolling ? 'WebcastPushConnection' : 'TikTokLiveConnection');
+
+            this.connection = new ConnectorClass(this.username, connectionOptions);
+            this.applySignRequestTimeout(this.signRequestTimeoutMs);
+            this.logDebug('lifecycle.initialize.signTimeoutConfigured', {
+                timeoutMs: this.signRequestTimeoutMs,
+                maxTimeoutMs: this.signRequestTimeoutMaxMs,
+                context
+            });
+            this.logDebug('lifecycle.initialize.connectionCreated', {
+                authenticated: !!this.sessionId,
+                usingLegacyConnector: usingLegacyTikTokConnector,
+                strategy: this.connectionStrategy,
+                connector: connectorLabel,
+                forcePolling
+            });
+            this.setupEventHandlers();
+        }
+
+        async teardownConnection({ silent = false } = {}) {
+            if (!this.connection) {
+                return;
+            }
+            try {
+                if (typeof this.connection.removeAllListeners === 'function') {
+                    this.connection.removeAllListeners();
+                }
+            } catch (error) {
+                if (!silent) {
+                    console.warn('Error removing TikTok connection listeners:', error);
+                }
+            }
+            try {
+                if (typeof this.connection.disconnect === 'function') {
+                    const result = this.connection.disconnect();
+                    if (result && typeof result.then === 'function') {
+                        await result.catch(() => {});
+                    }
+                }
+            } catch (error) {
+                if (!silent) {
+                    console.warn('Error disconnecting TikTok connection:', error);
+                }
+            }
+            this.connection = null;
+        }
+
+        getSanitizedFallbackMessage(primaryError, defaultMessage = 'TikTok WebSocket signer returned unreadable data. Using polling fallback.') {
+            const rawMessage = typeof primaryError?.ssappFallbackMessage === 'string' && primaryError.ssappFallbackMessage.trim()
+                ? primaryError.ssappFallbackMessage.trim()
+                : (typeof primaryError?.message === 'string' ? primaryError.message : '');
+            const sanitized = rawMessage.replace(/^SSAPP_TIKTOK_FALLBACK:\s*/i, '').trim();
+            const finalMessage = sanitized || defaultMessage;
+            primaryError.code = primaryError.code || 'SSAPP_TIKTOK_FALLBACK';
+            primaryError.ssappFallback = true;
+            primaryError.ssappFallbackMode = 'polling';
+            primaryError.ssappFallbackMessage = finalMessage;
+            return finalMessage;
+        }
+
+        async tryFallbackToPolling(primaryError, stage = 'connect') {
+            if (!this.pollingFallbackSupported || this.pollingFallbackActivated) {
+                return false;
+            }
+            const fallbackMessage = this.getSanitizedFallbackMessage(primaryError);
+            this.pollingFallbackActivated = true;
+            this.logDebug('lifecycle.fallback.polling.begin', {
+                stage,
+                message: fallbackMessage,
+                payloadLength: primaryError?.payloadLength || null
+            });
+            console.warn(`[TikTok] Polling fallback activated (${stage}) for ${this.username}: ${fallbackMessage}`);
+            try {
+                await this.teardownConnection({ silent: true });
+            } catch (error) {
+                this.logDebug('lifecycle.fallback.polling.teardownError', normalizeForLogging(error));
+            }
+            try {
+                this.initializeConnectionInstance({ forcePolling: true, context: 'polling_fallback' });
+            } catch (error) {
+                this.pollingFallbackActivated = false;
+                this.connectionStrategy = 'websocket';
+                this.logDebug('lifecycle.fallback.polling.instantiateError', normalizeForLogging(error));
+                console.error('[TikTok] Failed to instantiate polling fallback connection:', error);
+                return false;
+            }
+            try {
+                mainWindow.webContents.send('tiktokConnectionStatus', {
+                    wssID: this.wssID,
+                    status: 'fallback_polling',
+                    error: fallbackMessage,
+                    payloadLength: primaryError?.payloadLength || null,
+                    payloadPreviewHex: primaryError?.payloadPreviewHex || null
+                });
+            } catch (notifyErr) {
+                console.warn('Failed to notify renderer about TikTok polling fallback:', notifyErr);
+            }
+            return true;
         }
 
         applySignRequestTimeout(timeoutMs) {
@@ -7869,63 +8230,26 @@ function resolveFirstImageUrl(candidates = []) {
         async initialize() {
             this.logDebug('lifecycle.initialize.start');
             console.log(`Initializing TikTok connection for user: ${this.username}`);
+            if (this.sessionId) {
+                console.log('Using authenticated connection');
+            } else {
+                console.log('Using anonymous connection');
+            }
+            if (usingLegacyTikTokConnector && !this.pollingFallbackActivated) {
+                console.warn('[TikTok] Legacy connector in use; live shopping purchase events are unavailable until the package is upgraded.');
+            }
             try {
-                if (!TikTokLiveConnectionClass) {
-                    throw new Error('TikTok connector missing. Please reinstall tiktok-live-connector.');
-                }
-                const connectionOptions = {
-                    // Avoid legacy converter crashes by skipping initial backlog processing
-                    processInitialData: false,
-                    // Fetch gift metadata so live gifts include images/diamonds
-                    enableExtendedGiftInfo: true,
-                    // Upstream connector stores polling knobs but never actually switches away from WebSocket;
-                    // leave fallback enabled so future library updates can opt-in without code changes.
-                    enableRequestPolling: true,
-                    requestPollingIntervalMs: 1000,
-                    fetchRoomInfoOnConnect: true,
-                    webClientParams: {
-                        "app_language": "en-US",
-                        "device_platform": "web"
-                    },
-                    wsClientParams: {
-                        "app_language": "en-US",
-                        "device_platform": "web"
-                    }
-                };
-
-                // Add authentication if provided
-                if (this.sessionId) {
-                    connectionOptions.sessionId = this.sessionId;
-                    if (this.ttTargetIdc) {
-                        connectionOptions.ttTargetIdc = this.ttTargetIdc;
-                    }
-                    console.log('Using authenticated connection');
-                } else {
-                    console.log('Using anonymous connection');
-                }
-
-                if (usingLegacyTikTokConnector) {
-                    console.warn('[TikTok] Legacy connector in use; live shopping purchase events are unavailable until the package is upgraded.');
-                }
-
-                this.connection = new TikTokLiveConnectionClass(this.username, connectionOptions);
-
-                this.applySignRequestTimeout(this.signRequestTimeoutMs);
-                this.logDebug('lifecycle.initialize.signTimeoutConfigured', {
-                    timeoutMs: this.signRequestTimeoutMs,
-                    maxTimeoutMs: this.signRequestTimeoutMaxMs
-                });
-                this.logDebug('lifecycle.initialize.connectionCreated', {
-                    authenticated: !!this.sessionId,
-                    usingLegacyConnector: usingLegacyTikTokConnector
-                });
-                this.setupEventHandlers();
+                this.initializeConnectionInstance({ forcePolling: false, context: 'primary' });
                 return this.connect();
             } catch (error) {
+                const fallbackHandled = await this.tryFallbackToPolling(error, 'initialize');
+                if (fallbackHandled) {
+                    return this.connect();
+                }
                 this.logDebug('lifecycle.initialize.error', error);
                 console.error('Failed to initialize TikTok connection:', error);
                 this.handleFatalError(error);
-                return false;
+                throw error;
             }
         }
 
@@ -8521,6 +8845,12 @@ function resolveFirstImageUrl(candidates = []) {
                 const primaryError = err instanceof Error ? err : (err && err.exception instanceof Error ? err.exception : err);
                 const errorName = primaryError && primaryError.name;
                 const errorMessage = primaryError && primaryError.message ? primaryError.message : '';
+                if (primaryError?.ssappFallback) {
+                    const fallbackHandled = await this.tryFallbackToPolling(primaryError, 'connect');
+                    if (fallbackHandled) {
+                        return this.connect();
+                    }
+                }
 
                 if (errorName === 'AlreadyConnectingError') {
                     console.warn('Connect request ignored because a connection attempt is already in progress');
@@ -8558,6 +8888,13 @@ function resolveFirstImageUrl(candidates = []) {
                     console.error('Fatal error - user might not exist or might be a display name:', this.username);
                     this.handleFatalError(primaryError || err);
                     return false;
+                }
+
+                if (isSignServerIssue && !this.pollingFallbackActivated) {
+                    const fallbackHandled = await this.tryFallbackToPolling(primaryError, 'connect_sign_error');
+                    if (fallbackHandled) {
+                        return this.connect();
+                    }
                 }
 
                 if (isSignServerIssue && this.maybeBoostSignRequestTimeout(primaryError, errorMessage)) {
@@ -8656,13 +8993,27 @@ function resolveFirstImageUrl(candidates = []) {
         }
 
         isSignServerError(primaryError, rawMessage = '') {
-            const reason = primaryError?.reason;
-            if (typeof reason === 'string' && reason.toLowerCase().includes('sign')) {
+            const reason = typeof primaryError?.reason === 'string'
+                ? primaryError.reason.toLowerCase()
+                : '';
+            if (reason && (reason.includes('sign') || reason.includes('premium') || reason.includes('authenticated'))) {
+                return true;
+            }
+
+            const name = typeof primaryError?.name === 'string'
+                ? primaryError.name.toLowerCase()
+                : '';
+            if (name === 'signapierror' || name === 'premiumfeatureerror' || name === 'schemadecodeerror') {
                 return true;
             }
 
             const combined = `${rawMessage || ''} ${primaryError?.message || ''}`.toLowerCase();
-            return combined.includes('sign server') || combined.includes('signapi');
+            return combined.includes('sign server')
+                || combined.includes('signapi')
+                || combined.includes('proto messagefetchresult')
+                || combined.includes('schema decode')
+                || combined.includes('premature eof')
+                || combined.includes('not authorized');
         }
 
         getUserFriendlyErrorMessage(primaryError, fallbackMessage = '') {
@@ -9157,7 +9508,28 @@ function resolveFirstImageUrl(candidates = []) {
         }
     }
 
+    ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
+        if (CLI_FORCE_TIKTOK_CLASSIC) {
+            runtimeForceTikTokClassic = true;
+            process.env.SSAPP_FORCE_TIKTOK_CLASSIC = '1';
+            return;
+        }
+        const next = !!enabled;
+        runtimeForceTikTokClassic = next;
+        process.env.SSAPP_FORCE_TIKTOK_CLASSIC = next ? '1' : '0';
+    });
+
     ipcMain.handle("createTikTokConnection", async function(_event, args) {
+        if (runtimeForceTikTokClassic) {
+            console.info('[TikTok] Skipping WebSocket connection - classic mode is forced.');
+            const fallbackError = new Error('SSAPP_TIKTOK_FORCED_CLASSIC: TikTok WebSocket disabled by classic mode preference');
+            fallbackError.code = 'SSAPP_TIKTOK_FORCED_CLASSIC';
+            fallbackError.ssappFallback = true;
+            fallbackError.ssappFallbackMode = 'classic';
+            fallbackError.ssappFallbackMessage = 'TikTok WebSocket disabled by classic mode preference';
+            fallbackError.payloadLength = 0;
+            throw fallbackError;
+        }
         wssID++;
         let username = args.username;
         if (username) {

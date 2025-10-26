@@ -6,6 +6,7 @@ class StateManager {
             groups: new Map(),  // Map of groupId -> group state
             global: {
                 betaMode: false,
+                forceTikTokClassic: false,
                 youtubeAutoAdd: false,
                 youtubeAutoCleanup: false,
                 youtubeCheckInterval: 300000,
@@ -103,7 +104,9 @@ class StateManager {
                         username: source.username || '',
                         videoId: source.videoId || '',
                         isAutoDiscovered: false, // Old format only stored manual sources
-                        connectionMode: source.state?.connectionMode || (source.target === 'tiktok' ? 'tiktok-websocket' : 'classic'),
+                        connectionMode: source.state?.connectionMode || (source.target === 'tiktok'
+                            ? (this.state.global.forceTikTokClassic ? 'classic' : 'tiktok-websocket')
+                            : 'classic'),
                         isVisible: source.state?.togglehtml !== "false",
                         isMuted: source.state?.togglemute === "true",
                         autoActivate: source.state?.togglelock === "true",
@@ -124,7 +127,9 @@ class StateManager {
                         target: group.target,
                         username: group.username,
                         isChannel: group.isChannel !== "false",
-                        connectionMode: group.state?.connectionMode || (group.target === 'tiktok' ? 'tiktok-websocket' : 'classic'),
+                        connectionMode: group.state?.connectionMode || (group.target === 'tiktok'
+                            ? (this.state.global.forceTikTokClassic ? 'classic' : 'tiktok-websocket')
+                            : 'classic'),
                         autoActivate: group.state?.togglelock === "true",
                         groupVisible: group.state?.groupVisible !== "false",
                         groupMuted: group.state?.groupMuted === "true",
@@ -137,6 +142,7 @@ class StateManager {
             this.state.global.betaMode = localStorage.getItem('betaMode') === 'true';
             this.state.global.youtubeAutoAdd = localStorage.getItem('youtubeAutoAdd') === 'true';
             this.state.global.youtubeAutoCleanup = localStorage.getItem('youtubeAutoCleanup') === 'true';
+            this.state.global.forceTikTokClassic = localStorage.getItem('forceTikTokClassic') === 'true';
             const checkInterval = localStorage.getItem('youtubeCheckInterval');
             if (checkInterval) {
                 this.state.global.youtubeCheckInterval = parseInt(checkInterval);
@@ -168,6 +174,7 @@ class StateManager {
     // Add a new source
     addSource(sourceData) {
         let id = sourceData.id || this.generateSourceId(sourceData);
+        const defaultTikTokMode = this.state.global.forceTikTokClassic ? 'classic' : 'tiktok-websocket';
         const source = {
             id,
             target: sourceData.target,
@@ -175,7 +182,7 @@ class StateManager {
             username: sourceData.username || '',
             videoId: sourceData.videoId || '',
             isAutoDiscovered: sourceData.isAutoDiscovered || false,
-            connectionMode: sourceData.connectionMode || (sourceData.target === 'tiktok' ? 'tiktok-websocket' : 'classic'),
+            connectionMode: sourceData.connectionMode || (sourceData.target === 'tiktok' ? defaultTikTokMode : 'classic'),
             isVisible: sourceData.isVisible !== false,
             isMuted: sourceData.isMuted || false,
             autoActivate: sourceData.autoActivate || false,
@@ -258,7 +265,9 @@ class StateManager {
             target: groupData.target,
             username: groupData.username,
             isChannel: groupData.isChannel !== false,
-            connectionMode: groupData.connectionMode || (groupData.target === 'tiktok' ? 'tiktok-websocket' : 'classic'),
+            connectionMode: groupData.connectionMode || (groupData.target === 'tiktok'
+                ? (this.state.global.forceTikTokClassic ? 'classic' : 'tiktok-websocket')
+                : 'classic'),
             autoActivate: groupData.autoActivate || false,
             groupVisible: groupData.groupVisible !== false,
             groupMuted: groupData.groupMuted || false,
@@ -333,6 +342,9 @@ class StateManager {
         }
         if ('youtubeCheckInterval' in updates) {
             localStorage.setItem('youtubeCheckInterval', updates.youtubeCheckInterval.toString());
+        }
+        if ('forceTikTokClassic' in updates) {
+            localStorage.setItem('forceTikTokClassic', updates.forceTikTokClassic ? 'true' : 'false');
         }
         
         this.emit('globalUpdated', { updates, oldState });
