@@ -139,6 +139,9 @@ var doSomethingInWebAppWrapper = function(message, sender, sendResponse) {
 };
 function configureContextBridge(){
 	try {
+		const effectiveLocale = process.env.SSAPP_LOCALE_EFFECTIVE || 'en-US';
+		const acceptLanguageHeader = process.env.SSAPP_ACCEPT_LANGUAGE || 'en-US,en;q=0.9';
+		const localeSource = process.env.SSAPP_LOCALE_SOURCE || 'system';
 		// Always expose to main world, regardless of whether it exists in isolated context
 		contextBridge.exposeInMainWorld('ninjafy', {
 			
@@ -235,6 +238,14 @@ function configureContextBridge(){
 				});
 			  }
 			});
+		contextBridge.exposeInMainWorld('ssappLocale', {
+			locale: effectiveLocale,
+			acceptLanguage: acceptLanguageHeader,
+			source: localeSource,
+			getLocale: () => effectiveLocale,
+			getAcceptLanguage: () => acceptLanguageHeader,
+			getSource: () => localeSource
+		});
 	} catch(e){
 		// Silently fail if context isolation is disabled - this is expected
 		if (!e.message || !e.message.includes('contextBridge API can only be used when contextIsolation is enabled')) {
@@ -295,6 +306,14 @@ try {
 			updateVersion: function (version) {
 				console.log("Version: "+version);
 			}
+		};
+		window.ssappLocale = {
+			locale: process.env.SSAPP_LOCALE_EFFECTIVE || 'en-US',
+			acceptLanguage: process.env.SSAPP_ACCEPT_LANGUAGE || 'en-US,en;q=0.9',
+			source: process.env.SSAPP_LOCALE_SOURCE || 'system',
+			getLocale() { return this.locale; },
+			getAcceptLanguage() { return this.acceptLanguage; },
+			getSource() { return this.source; }
 		};
 	} else {
 		console.error('[Preload] Unexpected error configuring context bridge:', e);

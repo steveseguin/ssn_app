@@ -1,3 +1,6 @@
+const YT_ACCEPT_LANGUAGE = window.SSAPP_ACCEPT_LANGUAGE || (window.ssappLocale && window.ssappLocale.acceptLanguage) || 'en-US,en;q=0.9';
+window.SSAPP_ACCEPT_LANGUAGE = YT_ACCEPT_LANGUAGE;
+
 class YouTubeStreamSelector {
     constructor() {
         console.log("YouTubeStreamSelector constructor called");
@@ -783,7 +786,7 @@ async function fetchYoutube(username, alt = false) {
             }
 			const response = await ipcRenderer.invoke('nodefetch', {
 				url: fetchUrl,
-				headers: { 'Accept-Language': 'en-US,en;q=0.9', 'User-Agent': config?.global?.userAgent || getDefaultConfig().global.userAgent, 'Cookie': 'SOCS=CAESNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMxMTE0LjAzX3AwGgJlbiADGgYIgObvqgY; CONSENT=YES+ regione.lang'},
+				headers: { 'Accept-Language': YT_ACCEPT_LANGUAGE, 'User-Agent': config?.global?.userAgent || getDefaultConfig().global.userAgent, 'Cookie': 'SOCS=CAESNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMxMTE0LjAzX3AwGgJlbiADGgYIgObvqgY; CONSENT=YES+ regione.lang'},
                 timeout: 15000 
 			});
 			const htmlData = response?.data || response; 
@@ -883,7 +886,7 @@ async function fetchRumble(username, alt = false) {
         const commonHeaders = {
             'User-Agent': config?.global?.userAgent || getDefaultConfig().global.userAgent,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Language': YT_ACCEPT_LANGUAGE,
             'Referer': 'https://rumble.com/',
             'Cache-Control': 'no-cache',
             'Pragma': 'no-cache'

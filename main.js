@@ -345,30 +345,105 @@ function isTextOnlyModeEnabled() {
     }
 }
 
+function normalizeLocaleCandidate(candidate) {
+    if (!candidate || typeof candidate !== 'string') {
+        return null;
+    }
+    const trimmed = candidate.trim();
+    if (!trimmed) {
+        return null;
+    }
+    // Normalize separators to BCP-47 style without forcing case
+    let normalized = trimmed.replace('_', '-');
+    const dotIndex = normalized.indexOf('.');
+    if (dotIndex !== -1) {
+        normalized = normalized.slice(0, dotIndex);
+    }
+    return normalized;
+}
+
+function resolveLocaleOverride() {
+    const envOverride =
+        process.env.SSAPP_LOCALE ||
+        process.env.SSAPP_LANGUAGE ||
+        process.env.SSAPP_LANG;
+    if (envOverride) {
+        return {
+            value: normalizeLocaleCandidate(envOverride),
+            source: 'environment'
+        };
+    }
+
+    let cliValue = null;
+    const localeFlag = process.argv.find((arg) => arg.startsWith('--locale='));
+    if (localeFlag) {
+        cliValue = localeFlag.split('=')[1];
+    } else {
+        const idx = process.argv.indexOf('--locale');
+        if (idx !== -1 && process.argv[idx + 1] && !process.argv[idx + 1].startsWith('--')) {
+            cliValue = process.argv[idx + 1];
+        }
+    }
+    if (cliValue) {
+        return {
+            value: normalizeLocaleCandidate(cliValue),
+            source: 'command line'
+        };
+    }
+
+    return null;
+}
+
+function buildAcceptLanguageHeader(locale) {
+    const normalized = normalizeLocaleCandidate(locale) || 'en-US';
+    if (normalized === 'en-US') {
+        return 'en-US,en;q=0.9';
+    }
+
+    const parts = [];
+    const seen = new Set();
+    const push = (segment) => {
+        if (!segment) return;
+        const key = segment.split(';')[0];
+        if (seen.has(key)) return;
+        seen.add(key);
+        parts.push(segment);
+    };
+
+    push(normalized);
+    const base = (normalized.split('-')[0] || '').toLowerCase() || 'en';
+    push(`${base};q=0.9`);
+    if (base !== 'en') {
+        push('en;q=0.8');
+    }
+
+    return parts.join(',');
+}
+
 // Store the system locale - get it from environment or OS
 let SYSTEM_LOCALE = 'en-US'; // Default fallback
 
 // Try to get system locale from environment variables or OS
+let localeOverrideSource = null;
 try {
-    if (process.platform === 'win32') {
-        // Windows: Try multiple methods
-        // Method 1: Use os.userInfo() which might have locale info
+    const override = resolveLocaleOverride();
+    if (override && override.value) {
+        SYSTEM_LOCALE = override.value;
+        localeOverrideSource = override.source;
+        console.log(`Locale override detected (${override.source}): ${SYSTEM_LOCALE}`);
+    } else if (process.platform === 'win32') {
         try {
             const { execSync } = require('child_process');
-            // Get locale from Windows using PowerShell
             const locale = execSync('powershell -command "Get-Culture | Select-Object -ExpandProperty Name"', { encoding: 'utf8' }).trim();
             if (locale) {
-                SYSTEM_LOCALE = locale;
+                SYSTEM_LOCALE = normalizeLocaleCandidate(locale);
             }
         } catch (e) {
-            // Fallback: Check environment variables
-            SYSTEM_LOCALE = process.env.LANG || process.env.LC_ALL || process.env.LC_MESSAGES || 'en-US';
+            SYSTEM_LOCALE = normalizeLocaleCandidate(process.env.LANG || process.env.LC_ALL || process.env.LC_MESSAGES) || 'en-US';
         }
     } else {
-        // macOS/Linux: Usually have LANG environment variable
-        SYSTEM_LOCALE = process.env.LANG || process.env.LC_ALL || process.env.LC_MESSAGES || 'en-US';
-        // Clean up the locale string (remove .UTF-8 suffix if present)
-        SYSTEM_LOCALE = SYSTEM_LOCALE.split('.')[0].replace('_', '-');
+        SYSTEM_LOCALE = normalizeLocaleCandidate(process.env.LANG || process.env.LC_ALL || process.env.LC_MESSAGES) || 'en-US';
+        SYSTEM_LOCALE = SYSTEM_LOCALE.split('.')[0];
     }
     console.log('System locale detected:', SYSTEM_LOCALE);
 } catch (e) {
@@ -416,12 +491,13 @@ app.commandLine.appendSwitch('--disable-permissions-api', 'false');
 app.commandLine.appendSwitch('--lang', SYSTEM_LOCALE);
 
 // Build proper Accept-Language header based on system locale
-const acceptLangValue = SYSTEM_LOCALE === 'en-US' 
-    ? 'en-US,en;q=0.9' 
-    : `${SYSTEM_LOCALE},${SYSTEM_LOCALE.split('-')[0]};q=0.9,en;q=0.8`;
+const acceptLangValue = buildAcceptLanguageHeader(SYSTEM_LOCALE);
 app.commandLine.appendSwitch('--accept-lang', acceptLangValue);
 
 console.log(`Setting app language to system locale: ${SYSTEM_LOCALE} (Note: Electron bug may change en-CA to en-GB)`);
+process.env.SSAPP_LOCALE_EFFECTIVE = SYSTEM_LOCALE;
+process.env.SSAPP_ACCEPT_LANGUAGE = acceptLangValue;
+process.env.SSAPP_LOCALE_SOURCE = localeOverrideSource || 'system';
 
 // Chrome-specific feature flags from working code
 app.commandLine.appendSwitch('--enable-features', 'NetworkService,NetworkServiceInProcess,VaapiVideoDecoder');
@@ -951,6 +1027,12 @@ function createYargs() {
     addOption("disablemediafoundation", {
         alias: "dmf",
         describe: "Disable media foundation video capture; helps capture some webcams",
+        type: "string",
+        default: null,
+    });
+    addOption("locale", {
+        alias: "loc",
+        describe: "Force Chromium locale (e.g. pt-BR) for testing regional behaviour.",
         type: "string",
         default: null,
     });

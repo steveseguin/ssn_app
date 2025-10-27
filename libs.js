@@ -3,6 +3,8 @@ function log(msg) {
 		console.log(msg);
 	}
 }
+const SSAPP_ACCEPT_LANGUAGE = window.SSAPP_ACCEPT_LANGUAGE || ((window.ssappLocale && window.ssappLocale.acceptLanguage) || 'en-US,en;q=0.9');
+window.SSAPP_ACCEPT_LANGUAGE = SSAPP_ACCEPT_LANGUAGE;
 window.onerror = function(message, source, lineno, colno, error) {
 	console.error("Global error:", message, "at", source, ":", lineno);
 	return true;
@@ -47,7 +49,7 @@ async function getRumbleVideoId(url) {
     // Returns numeric chat ID extracted from the Rumble video page
     const headers = {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Language': SSAPP_ACCEPT_LANGUAGE,
         'Referer': 'https://rumble.com/',
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache'
@@ -89,7 +91,7 @@ async function getRumbleChatId(videoId) {
         if (typeof ipcRenderer !== 'undefined' && ipcRenderer) {
             const response = await ipcRenderer.invoke('nodefetch', {
                 url,
-                headers: { 'User-Agent': (config?.global?.userAgent || 'Mozilla/5.0'), 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Referer': 'https://rumble.com/', 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+                headers: { 'User-Agent': (config?.global?.userAgent || 'Mozilla/5.0'), 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8', 'Accept-Language': SSAPP_ACCEPT_LANGUAGE, 'Referer': 'https://rumble.com/', 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
                 timeout: 15000
             });
             const html = response?.data || '';
@@ -103,7 +105,7 @@ async function getRumbleChatId(videoId) {
         console.warn('nodefetch getRumbleChatId failed, falling back to renderer fetch:', e?.message || e);
     }
     try {
-        const res = await fetch(url, { headers: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Referer': 'https://rumble.com/', 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }, credentials: 'omit', cache: 'no-store' });
+        const res = await fetch(url, { headers: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8', 'Accept-Language': SSAPP_ACCEPT_LANGUAGE, 'Referer': 'https://rumble.com/', 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }, credentials: 'omit', cache: 'no-store' });
         const html = await res.text();
         const match = html.match(/video_id:\s*(\d+)/);
         if (match && match[1]) {
