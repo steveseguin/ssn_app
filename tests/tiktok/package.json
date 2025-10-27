@@ -1,0 +1,12 @@
+{
+  "name": "ssapp-tiktok-tests",
+  "version": "0.0.1",
+  "private": true,
+  "main": "run.js",
+  "scripts": {
+    "start": "node run.js",
+    "ws": "node run.js --mode=websocket",
+    "legacy": "node run.js --mode=legacy",
+    "both": "node run.js --mode=both"
+  }
+}

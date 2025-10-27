@@ -7,6 +7,8 @@ class StateManager {
             global: {
                 betaMode: false,
                 forceTikTokClassic: false,
+                preferTikTokLegacy: false,
+                lastTikTokMode: 'tiktok-websocket',
                 youtubeAutoAdd: false,
                 youtubeAutoCleanup: false,
                 youtubeCheckInterval: 300000,
@@ -56,6 +58,12 @@ class StateManager {
                         if (source.supportsWSS === undefined) {
                             source.supportsWSS = this.checkWebSocketSupport(source.target);
                         }
+                        if (source.activeConnectionMode === undefined) {
+                            source.activeConnectionMode = null;
+                        }
+                        if (source.disableTikTokAutoFallback === undefined) {
+                            source.disableTikTokAutoFallback = false;
+                        }
                     });
                 }
                 if (parsed.groups) {
@@ -64,6 +72,22 @@ class StateManager {
                 if (parsed.global) {
                     this.state.global = { ...this.state.global, ...parsed.global };
                 }
+
+                const allowedLastModes = new Set(['classic', 'tiktok-websocket', 'tiktok-legacy']);
+                let resolvedLastMode = this.state.global.lastTikTokMode;
+                if (!allowedLastModes.has(resolvedLastMode)) {
+                    const storedLast = localStorage.getItem('lastTikTokMode');
+                    if (storedLast && allowedLastModes.has(storedLast)) {
+                        resolvedLastMode = storedLast;
+                    } else if (this.state.global.forceTikTokClassic) {
+                        resolvedLastMode = 'classic';
+                    } else if (this.state.global.preferTikTokLegacy) {
+                        resolvedLastMode = 'tiktok-legacy';
+                    } else {
+                        resolvedLastMode = 'tiktok-websocket';
+                    }
+                }
+                this.state.global.lastTikTokMode = resolvedLastMode;
             }
             
             // Also migrate old settings format if exists
@@ -105,7 +129,9 @@ class StateManager {
                         videoId: source.videoId || '',
                         isAutoDiscovered: false, // Old format only stored manual sources
                         connectionMode: source.state?.connectionMode || (source.target === 'tiktok'
-                            ? (this.state.global.forceTikTokClassic ? 'classic' : 'tiktok-websocket')
+                            ? (this.state.global.forceTikTokClassic
+                                ? 'classic'
+                                : (this.state.global.lastTikTokMode || (this.state.global.preferTikTokLegacy ? 'tiktok-legacy' : 'tiktok-websocket')))
                             : 'classic'),
                         isVisible: source.state?.togglehtml !== "false",
                         isMuted: source.state?.togglemute === "true",
@@ -113,7 +139,9 @@ class StateManager {
                         vid: null, // Window ID when active
                         wssId: null, // WebSocket ID when active
                         status: 'inactive',
-                        supportsWSS: this.checkWebSocketSupport(source.target)
+                        supportsWSS: this.checkWebSocketSupport(source.target),
+                        activeConnectionMode: null,
+                        disableTikTokAutoFallback: false
                     });
                 });
             }
@@ -128,7 +156,9 @@ class StateManager {
                         username: group.username,
                         isChannel: group.isChannel !== "false",
                         connectionMode: group.state?.connectionMode || (group.target === 'tiktok'
-                            ? (this.state.global.forceTikTokClassic ? 'classic' : 'tiktok-websocket')
+                            ? (this.state.global.forceTikTokClassic
+                                ? 'classic'
+                                : (this.state.global.lastTikTokMode || (this.state.global.preferTikTokLegacy ? 'tiktok-legacy' : 'tiktok-websocket')))
                             : 'classic'),
                         autoActivate: group.state?.togglelock === "true",
                         groupVisible: group.state?.groupVisible !== "false",
@@ -143,6 +173,11 @@ class StateManager {
             this.state.global.youtubeAutoAdd = localStorage.getItem('youtubeAutoAdd') === 'true';
             this.state.global.youtubeAutoCleanup = localStorage.getItem('youtubeAutoCleanup') === 'true';
             this.state.global.forceTikTokClassic = localStorage.getItem('forceTikTokClassic') === 'true';
+            this.state.global.preferTikTokLegacy = localStorage.getItem('preferTikTokLegacy') === 'true';
+            this.state.global.lastTikTokMode = this.state.global.forceTikTokClassic
+                ? 'classic'
+                : (this.state.global.preferTikTokLegacy ? 'tiktok-legacy' : 'tiktok-websocket');
+            localStorage.setItem('lastTikTokMode', this.state.global.lastTikTokMode);
             const checkInterval = localStorage.getItem('youtubeCheckInterval');
             if (checkInterval) {
                 this.state.global.youtubeCheckInterval = parseInt(checkInterval);
@@ -174,7 +209,9 @@ class StateManager {
     // Add a new source
     addSource(sourceData) {
         let id = sourceData.id || this.generateSourceId(sourceData);
-        const defaultTikTokMode = this.state.global.forceTikTokClassic ? 'classic' : 'tiktok-websocket';
+        const defaultTikTokMode = this.state.global.forceTikTokClassic
+            ? 'classic'
+            : (this.state.global.lastTikTokMode || (this.state.global.preferTikTokLegacy ? 'tiktok-legacy' : 'tiktok-websocket'));
         const source = {
             id,
             target: sourceData.target,
@@ -194,6 +231,12 @@ class StateManager {
             replyOnly: !!sourceData.replyOnly,
             ...sourceData // Allow additional properties
         };
+        if (source.activeConnectionMode === undefined) {
+            source.activeConnectionMode = null;
+        }
+        if (source.disableTikTokAutoFallback === undefined) {
+            source.disableTikTokAutoFallback = false;
+        }
 
         // Ensure unique ID when duplicates exist (allow multiple entries for same videoId/URL)
         if (this.state.sources.has(id)) {
@@ -266,7 +309,9 @@ class StateManager {
             username: groupData.username,
             isChannel: groupData.isChannel !== false,
             connectionMode: groupData.connectionMode || (groupData.target === 'tiktok'
-                ? (this.state.global.forceTikTokClassic ? 'classic' : 'tiktok-websocket')
+                ? (this.state.global.forceTikTokClassic
+                    ? 'classic'
+                    : (this.state.global.lastTikTokMode || (this.state.global.preferTikTokLegacy ? 'tiktok-legacy' : 'tiktok-websocket')))
                 : 'classic'),
             autoActivate: groupData.autoActivate || false,
             groupVisible: groupData.groupVisible !== false,
@@ -345,6 +390,18 @@ class StateManager {
         }
         if ('forceTikTokClassic' in updates) {
             localStorage.setItem('forceTikTokClassic', updates.forceTikTokClassic ? 'true' : 'false');
+        }
+        if ('preferTikTokLegacy' in updates) {
+            localStorage.setItem('preferTikTokLegacy', updates.preferTikTokLegacy ? 'true' : 'false');
+        }
+        if ('lastTikTokMode' in updates) {
+            const allowed = new Set(['classic', 'tiktok-websocket', 'tiktok-legacy']);
+            const requested = updates.lastTikTokMode;
+            const sanitized = allowed.has(requested)
+                ? requested
+                : (this.state.global.forceTikTokClassic ? 'classic' : 'tiktok-websocket');
+            this.state.global.lastTikTokMode = sanitized;
+            localStorage.setItem('lastTikTokMode', sanitized);
         }
         
         this.emit('globalUpdated', { updates, oldState });

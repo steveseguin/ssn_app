@@ -236,6 +236,9 @@
                 <div class="settings-menu-item" onclick="toggleReplyOnly(this)" data-reply-only>
                     🤖 Bot reply-only (no capture)
                 </div>
+                <div class="settings-menu-item" onclick="toggleTikTokAutoFallback(this)" data-tiktok-fallback>
+                    🔁 TikTok auto-fallback enabled
+                </div>
                 <div class="settings-menu-item youtube-type-toggle hidden" onclick="toggleYouTubeType(this)">
                     🔄 Switch to <span class="toggle-type-text">YouTube</span>
                 </div>
@@ -429,7 +432,7 @@ let autoActivateCaptureEnsured = false;
 const envForcesTikTokClassic = typeof process !== 'undefined' && process?.env?.SSAPP_FORCE_TIKTOK_CLASSIC === '1';
 const cliForcesTikTokClassic = envForcesTikTokClassic;
 let preferTikTokClassic = cliForcesTikTokClassic;
-let tiktokModePreferenceContainer = null;
+let lastTikTokMode = 'tiktok-websocket';
 let tikTokClassicSilentUpdate = false;
 
 // Check if contextBridge exposed electron API (for windows with contextIsolation: true)
@@ -677,6 +680,12 @@ function applySigninPolicy(signinButton, source) {
     }
 }
 
+function getEffectiveConnectionMode(source) {
+    if (!source) return null;
+    if (source.activeConnectionMode) return source.activeConnectionMode;
+    return source.connectionMode || null;
+}
+
 // --- Core UI Update Functions ---
 function updateSourceUI(element, source) {
     if (!element || !source) return;
@@ -718,10 +727,13 @@ function updateSourceUI(element, source) {
     } catch (_) {}
     
     // Hide sign-in button when in websocket mode
+    const effectiveMode = getEffectiveConnectionMode(source);
+
     const signinButton = element.querySelector("[data-signin]");
     if (signinButton) {
-        const isWebsocketMode = source.connectionMode === 'websocket' || 
-                               source.connectionMode === 'tiktok-websocket';
+        const isWebsocketMode = effectiveMode === 'websocket' || 
+                               effectiveMode === 'tiktok-websocket' || 
+                               effectiveMode === 'tiktok-legacy';
         signinButton.classList.toggle("hidden", isWebsocketMode);
         applySigninPolicy(signinButton, source);
     }
@@ -730,20 +742,20 @@ function updateSourceUI(element, source) {
     if (visibilityControl) {
         visibilityControl.textContent = source.isVisible ? '👁️' : '🙈';
         // Show for regular WSS once a window exists (even while connecting); keep hidden for TikTok special mode
-        const isTikTokWebsocket = source.target === 'tiktok' && source.connectionMode === 'tiktok-websocket';
-        const showDuringConnect = (source.connectionMode === 'websocket' && !!source.vid);
+        const isTikTokApiMode = source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy');
+        const showDuringConnect = (effectiveMode === 'websocket' && !!source.vid);
         const showWhenActive = (source.status === 'active' && !!source.vid);
-        const hide = isTikTokWebsocket || (!showDuringConnect && !showWhenActive);
+        const hide = isTikTokApiMode || (!showDuringConnect && !showWhenActive);
         visibilityControl.classList.toggle('hidden', hide);
     }
-    
+
     const muteControl = element.querySelector('[data-togglemute]');
     if (muteControl) {
         muteControl.textContent = source.isMuted ? '🔇' : '🔊';
         muteControl.classList.toggle('active', source.isMuted);
         // Hide only for TikTok websocket mode (which doesn't support mute)
-        const isTikTokWebsocket = source.target === 'tiktok' && source.connectionMode === 'tiktok-websocket';
-        muteControl.classList.toggle('hidden', isTikTokWebsocket);
+        const isTikTokApiMode = source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy');
+        muteControl.classList.toggle('hidden', isTikTokApiMode);
     }
     
     const autoActivateCheckbox = element.querySelector('.auto-activate-toggle input[data-state-key="autoActivate"]');
@@ -771,7 +783,7 @@ function updateSourceUI(element, source) {
                 // If user disables auto-activate while TikTok WSS is connecting/reconnecting, stop it
                 if (!autoActivateCheckbox.checked) {
                     const latest = stateManager.getSource(source.id);
-                    const isTikTokWss = latest && latest.target === 'tiktok' && latest.connectionMode === 'tiktok-websocket';
+                    const isTikTokWss = latest && latest.target === 'tiktok' && (latest.connectionMode === 'tiktok-websocket' || latest.connectionMode === 'tiktok-legacy');
                     const isConnecting = latest && (latest.status === 'activating' || !!(element && element._tiktokRetryTimer));
                     if (isTikTokWss && isConnecting) {
                         const stopBtn = element.querySelector('[data-activatehtml]');
@@ -785,7 +797,7 @@ function updateSourceUI(element, source) {
     }
 
     const wsStatusElement = element.querySelector('.ws-status');
-    if (source.connectionMode === 'websocket' || source.connectionMode === 'tiktok-websocket') {
+    if (source.connectionMode === 'websocket' || source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy') {
         if (source.status === 'active' && source.wssId) {
             updateConnectionStatus(element, 'connected');
         } else if (source.status === 'activating') {
@@ -809,7 +821,7 @@ function updateSourceUI(element, source) {
     }
 
     // While activating a regular WSS, allow stopping
-    if ((source.connectionMode === 'websocket' || (source.connectionMode === 'tiktok-websocket' && source.target === 'tiktok')) && source.status === 'activating') {
+    if ((source.connectionMode === 'websocket' || (source.target === 'tiktok' && (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy'))) && source.status === 'activating') {
         const stopButton = element.querySelector('[data-stophtml]');
         const reloadButton = element.querySelector('[data-reloadhtml]');
         setActivateButtonConnecting(element);
@@ -820,9 +832,9 @@ function updateSourceUI(element, source) {
         stopButton?.classList.remove('hidden');
         
         // Hide reload button for TikTok websocket mode
-        const isTikTokWebsocket = source.target === 'tiktok' && source.connectionMode === 'tiktok-websocket';
+        const isTikTokApiMode = source.target === 'tiktok' && (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy');
         if (reloadButton) {
-            reloadButton.classList.toggle('hidden', isTikTokWebsocket || !source.vid);
+            reloadButton.classList.toggle('hidden', isTikTokApiMode || !source.vid);
         }
         
         element.dataset.vid = source.vid; 
@@ -841,6 +853,8 @@ function updateSourceUI(element, source) {
                 const mode = source.connectionMode || 'classic';
                 if (mode === 'tiktok-websocket' && source.target === 'tiktok') {
                     activateButton.textContent = 'Connect TikTok WebSocket';
+                } else if (mode === 'tiktok-legacy' && source.target === 'tiktok') {
+                    activateButton.textContent = 'Connect TikTok Legacy';
                 } else if (mode === 'websocket') {
                     activateButton.textContent = 'Connect WebSocket';
                 } else {
@@ -1530,9 +1544,12 @@ async function newSource(target, username, startup = false, initialState = {}, i
         
         // Set default connection mode based on platform
         let defaultMode = 'classic';
-        // TikTok defaults to websocket mode
         if (target === 'tiktok') {
-            defaultMode = 'tiktok-websocket';
+            if (preferTikTokClassic || cliForcesTikTokClassic) {
+                defaultMode = 'classic';
+            } else {
+                defaultMode = lastTikTokMode || 'tiktok-websocket';
+            }
         }
         
         // Force classic mode for platforms that don't have websocket support
@@ -1632,9 +1649,13 @@ async function newSourceVideoID(target, videoID, startup = false, initialState =
     
     // Set default connection mode based on platform
     let defaultMode = 'classic';
-    // TikTok defaults to websocket mode
+    // TikTok defaults based on global preference
     if (target === 'tiktok') {
-        defaultMode = 'tiktok-websocket';
+        if (preferTikTokClassic || cliForcesTikTokClassic) {
+            defaultMode = 'classic';
+        } else {
+            defaultMode = lastTikTokMode || 'tiktok-websocket';
+        }
     }
 
     let sourceDataVid = {
@@ -1728,9 +1749,13 @@ async function newOtherSource(target, URL, startup = false, initialState = {}) {
     
     // Set default connection mode based on platform
     let defaultMode = 'classic';
-    // TikTok defaults to websocket mode
+    // TikTok defaults based on global preference
     if (target === 'tiktok') {
-        defaultMode = 'tiktok-websocket';
+        if (preferTikTokClassic || cliForcesTikTokClassic) {
+            defaultMode = 'classic';
+        } else {
+            defaultMode = lastTikTokMode || 'tiktok-websocket';
+        }
     }
 
     let sourceData = {
@@ -2010,13 +2035,23 @@ function setGroupConnectionMode(groupElement, mode) {
     // Update the group's default connection mode
     stateManager.updateGroup(groupId, { connectionMode: mode });
 
+    if (group.target === 'tiktok') {
+        const allowedLastModes = new Set(['classic', 'tiktok-websocket', 'tiktok-legacy']);
+        if (allowedLastModes.has(mode) && mode !== lastTikTokMode) {
+            lastTikTokMode = mode;
+            if (stateManager.state?.global?.lastTikTokMode !== mode) {
+                stateManager.updateGlobal({ lastTikTokMode: mode });
+            }
+        }
+    }
+
     // Update child sources that are not currently active; skip active ones
     const sources = stateManager.getSourcesByGroup(groupId);
     let skipped = 0;
     sources.forEach(source => {
         const isActive = !!(source.vid || source.wssId);
         if (isActive) { skipped++; return; }
-        stateManager.updateSource(source.id, { connectionMode: mode });
+        stateManager.updateSource(source.id, { connectionMode: mode, activeConnectionMode: null });
 
         // Update the UI for each source
         const sourceElement = document.querySelector(`[data-source-id="${source.id}"]`);
@@ -2046,7 +2081,7 @@ function setGroupConnectionMode(groupElement, mode) {
     if (skipped > 0) {
         Toast.warning('Partial Mode Update', `Updated inactive streams; ${skipped} active source(s) unchanged. Stop them to switch modes.`);
     } else {
-        Toast.info('Connection Mode Updated', `All streams in ${group.username} now use ${mode === 'websocket' ? 'WebSocket' : (mode === 'tiktok-websocket' ? 'TikTok WS' : 'Standard')} mode`);
+        Toast.info('Connection Mode Updated', `All streams in ${group.username} now use ${mode === 'websocket' ? 'WebSocket' : (mode === 'tiktok-websocket' ? 'TikTok WS' : (mode === 'tiktok-legacy' ? 'TikTok Legacy' : 'Standard'))} mode`);
     }
 }
 
@@ -2442,6 +2477,7 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
     const source = sourceId ? stateManager.getSource(sourceId) : null;
     
     const target = source ? source.target : sourceElement.dataset.target;
+    const activeMode = source ? (getEffectiveConnectionMode(source) || mode) : mode;
 
     const activateButton = sourceElement.querySelector('[data-activatehtml]');
     const controlPanel = sourceElement.querySelector('.control-panel');
@@ -2453,12 +2489,14 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
     const classicMenuItem = settingsMenu?.querySelector('.settings-menu-item[data-action="classic-mode"]');
     const wssMenuItem = settingsMenu?.querySelector('.settings-menu-item[data-wss="true"]');
     const tiktokWssMenuItem = settingsMenu?.querySelector('.settings-menu-item[data-tiktokwss="true"]');
+    const tiktokLegacyMenuItem = settingsMenu?.querySelector('.settings-menu-item[data-tiktoklegacy="true"]');
 
     classicModePanelButton?.classList.remove('active');
     wsModePanelButton?.classList.remove('active');
     if (classicMenuItem) classicMenuItem.dataset.selected = "false";
     if (wssMenuItem) wssMenuItem.dataset.selected = "false";
     if (tiktokWssMenuItem) tiktokWssMenuItem.dataset.selected = "false";
+    if (tiktokLegacyMenuItem) tiktokLegacyMenuItem.dataset.selected = "false";
 
     if (activateButton) { 
         // Ensure transient connecting flag is cleared if not truly connecting
@@ -2467,13 +2505,19 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
             delete activateButton.dataset.connecting;
         }
 
-        if (target === 'tiktok' && mode === 'tiktok-websocket') {
+        const displayMode = getEffectiveConnectionMode(srcForMode) || mode;
+
+        if (target === 'tiktok') {
             if (srcForMode && srcForMode.status === 'activating') {
                 setActivateButtonConnecting(sourceElement);
-            } else {
+            } else if (displayMode === 'tiktok-legacy') {
+                activateButton.innerText = 'Connect TikTok Legacy';
+            } else if (displayMode === 'tiktok-websocket') {
                 activateButton.innerText = 'Connect TikTok WebSocket';
+            } else {
+                activateButton.innerText = translate('btn.activate');
             }
-        } else if (mode === 'websocket') {
+        } else if (displayMode === 'websocket') {
             const s = srcForMode;
             if (s && s.status === 'activating') {
                 activateButton.innerText = '⏹️ Stop connecting';
@@ -2488,23 +2532,24 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
     }
     
     if (target === 'tiktok') {
+        const panelClassic = controlPanel?.querySelector('.mode-option[data-mode="classic"]');
+        const panelWss = controlPanel?.querySelector('.mode-option[data-mode="tiktok-websocket"]');
+        const panelLegacy = controlPanel?.querySelector('.mode-option[data-mode="tiktok-legacy"]');
+        panelClassic?.classList.remove('active');
+        panelWss?.classList.remove('active');
+        panelLegacy?.classList?.remove('active');
+
         if (mode === 'tiktok-websocket') {
             if (tiktokWssMenuItem) tiktokWssMenuItem.dataset.selected = "true";
-            // Update panel buttons as well
-            const panelWss = controlPanel?.querySelector('.mode-option[data-mode="tiktok-websocket"]');
-            const panelClassic = controlPanel?.querySelector('.mode-option[data-mode="classic"]');
-            panelClassic?.classList.remove('active');
             panelWss?.classList.add('active');
-            // Don't hide the mode selector
-        } else { 
+        } else if (mode === 'tiktok-legacy') {
+            if (tiktokLegacyMenuItem) tiktokLegacyMenuItem.dataset.selected = "true";
+            panelLegacy?.classList?.add('active');
+        } else {
             if (classicMenuItem) classicMenuItem.dataset.selected = "true";
-            // Update panel buttons as well
-            const panelWss = controlPanel?.querySelector('.mode-option[data-mode="tiktok-websocket"]');
-            const panelClassic = controlPanel?.querySelector('.mode-option[data-mode="classic"]');
-            panelWss?.classList.remove('active');
             panelClassic?.classList.add('active');
-            // Don't hide the mode selector
         }
+        // Don't hide mode selector
     } else { 
         if (mode === 'websocket') {
             wsModePanelButton?.classList.add('active');
@@ -2519,9 +2564,10 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
     // Update sign-in button visibility and behavior based on connection mode
     const signinButton = sourceElement.querySelector("[data-signin]");
     if (signinButton) {
-        const isWebsocketMode = mode === 'websocket' || mode === 'tiktok-websocket';
+        const signinMode = source ? (getEffectiveConnectionMode(source) || mode) : mode;
+        const isWebsocketMode = signinMode === 'websocket' || signinMode === 'tiktok-websocket' || signinMode === 'tiktok-legacy';
         
-        if (target === 'tiktok' && mode === 'tiktok-websocket') {
+        if (target === 'tiktok' && (signinMode === 'tiktok-websocket' || signinMode === 'tiktok-legacy')) {
             // Allow users to supply credentials even in read-only mode
             const hasSession = !!(source && typeof source.tiktokSessionId === 'string' && source.tiktokSessionId.trim());
             signinButton.classList.remove("hidden");
@@ -2547,6 +2593,20 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
             signinButton.title = '';
             // Apply config-based sign-in policy (disable if requested)
             applySigninPolicy(signinButton, source);
+        }
+    }
+
+    const fallbackMenuItem = settingsMenu?.querySelector('.settings-menu-item[data-tiktok-fallback]');
+    if (fallbackMenuItem) {
+        if (source && target === 'tiktok') {
+            const fallbackEnabled = !source.disableTikTokAutoFallback;
+            fallbackMenuItem.classList.remove('hidden');
+            fallbackMenuItem.classList.toggle('active', fallbackEnabled);
+            fallbackMenuItem.textContent = fallbackEnabled
+                ? '✅ TikTok auto-fallback enabled'
+                : '🚫 TikTok auto-fallback disabled';
+        } else {
+            fallbackMenuItem.classList.add('hidden');
         }
     }
 
@@ -2579,16 +2639,17 @@ async function setSourceConnectionMode(sourceElement, mode, clickedMenuItemOrPan
     if (!source) return;
 
     const forcingClassic = preferTikTokClassic || cliForcesTikTokClassic;
-    if (source.target === 'tiktok' && mode === 'tiktok-websocket' && forcingClassic) {
+    const isTikTokApiMode = mode === 'tiktok-websocket' || mode === 'tiktok-legacy';
+    if (source.target === 'tiktok' && isTikTokApiMode && forcingClassic) {
         Toast.info('TikTok Classic', cliForcesTikTokClassic
             ? 'Classic mode is locked by launch flag.'
-            : 'Disable the global TikTok Classic preference to use TikTok WebSocket mode.');
+            : 'Disable the global TikTok Classic preference to use TikTok API connectors.');
         return;
     }
     if (clickedMenuItemOrPanelButton && clickedMenuItemOrPanelButton.dataset?.disabled === 'true') {
         Toast.info('TikTok Classic', cliForcesTikTokClassic
             ? 'Classic mode is locked by launch flag.'
-            : 'Disable the global TikTok Classic preference to use TikTok WebSocket mode.');
+            : 'Disable the global TikTok Classic preference to use TikTok API connectors.');
         return;
     }
 
@@ -2603,7 +2664,18 @@ async function setSourceConnectionMode(sourceElement, mode, clickedMenuItemOrPan
         return;
     }
 
-    stateManager.updateSource(sourceId, { connectionMode: mode });
+    stateManager.updateSource(sourceId, { connectionMode: mode, activeConnectionMode: null });
+
+    if (source.target === 'tiktok') {
+        const allowedLastModes = new Set(['classic', 'tiktok-websocket', 'tiktok-legacy']);
+        const normalizedMode = allowedLastModes.has(mode) ? mode : lastTikTokMode;
+        if (normalizedMode && allowedLastModes.has(normalizedMode) && normalizedMode !== lastTikTokMode) {
+            lastTikTokMode = normalizedMode;
+            if (stateManager.state?.global?.lastTikTokMode !== normalizedMode) {
+                stateManager.updateGlobal({ lastTikTokMode: normalizedMode });
+            }
+        }
+    }
 
     if (clickedMenuItemOrPanelButton && clickedMenuItemOrPanelButton.classList.contains('settings-menu-item')) {
         const mainActivateButton = sourceElement.querySelector('[data-activatehtml]');
@@ -2630,9 +2702,59 @@ function setupSourceControls(sourceElement) {
     const username = source ? source.username : sourceElement.dataset.username; 
     const controlPanel = sourceElement.querySelector('.control-panel');
 
+
+    let connectionModesSection = settingsMenu?.querySelector('.connection-modes');
+    if (!connectionModesSection && settingsMenu) {
+        connectionModesSection = document.createElement('div');
+        connectionModesSection.className = 'settings-menu-section connection-modes';
+
+        const connectionHeader = document.createElement('div');
+        connectionHeader.className = 'settings-menu-header';
+        connectionHeader.textContent = 'Connection Modes';
+        connectionModesSection.appendChild(connectionHeader);
+
+        const createConnectionItem = (icon, label, dataset, handler) => {
+            const item = document.createElement('div');
+            item.className = 'settings-menu-item';
+            Object.entries(dataset || {}).forEach(([key, value]) => {
+                item.dataset[key] = value;
+            });
+            const iconElement = document.createElement('i');
+            iconElement.textContent = icon;
+            item.appendChild(iconElement);
+            const labelSpan = document.createElement('span');
+            labelSpan.textContent = label;
+            item.appendChild(labelSpan);
+            if (handler) {
+                item.setAttribute('onclick', handler);
+            }
+            return item;
+        };
+
+        const classicItem = createConnectionItem('📄', translate('source.mode.standard'), { action: 'classic-mode' }, 'setClassicMode(this)');
+        const genericWsItem = createConnectionItem('🌐', translate('source.mode.websocket'), { wss: 'true' }, "setSourceConnectionMode(this.closest('.entry'), 'websocket', this)");
+        const tiktokWsItem = createConnectionItem('🌐', translate('source.mode.websocket'), { tiktokwss: 'true' }, "setSourceConnectionMode(this.closest('.entry'), 'tiktok-websocket', this)");
+        const tiktokLegacyItem = createConnectionItem('🕰️', translate('source.mode.legacy'), { tiktoklegacy: 'true' }, "setSourceConnectionMode(this.closest('.entry'), 'tiktok-legacy', this)");
+        tiktokWsItem.classList.add('hidden');
+        tiktokLegacyItem.classList.add('hidden');
+
+        connectionModesSection.appendChild(classicItem);
+        connectionModesSection.appendChild(genericWsItem);
+        connectionModesSection.appendChild(tiktokWsItem);
+        connectionModesSection.appendChild(tiktokLegacyItem);
+
+        const sourceManagementSection = settingsMenu.querySelector('.settings-menu-section:nth-last-child(1)');
+        if (sourceManagementSection) {
+            settingsMenu.insertBefore(connectionModesSection, sourceManagementSection);
+        } else {
+            settingsMenu.appendChild(connectionModesSection);
+        }
+    }
+
     const classicMenuItem = settingsMenu.querySelector('.settings-menu-item[data-action="classic-mode"]');
     const wssMenuItem = settingsMenu.querySelector('.settings-menu-item[data-wss="true"]');
     const tiktokWssMenuItem = settingsMenu.querySelector('.settings-menu-item[data-tiktokwss="true"]');
+    const tiktokLegacyMenuItem = settingsMenu.querySelector('.settings-menu-item[data-tiktoklegacy="true"]');
 
     let isYouTube = target && target.startsWith('youtube');
     let isTikTok = target === 'tiktok';
@@ -2654,6 +2776,7 @@ function setupSourceControls(sourceElement) {
     if (isTikTok) {
         wssMenuItem?.classList.add('hidden');
         tiktokWssMenuItem?.classList.remove('hidden');
+        tiktokLegacyMenuItem?.classList.remove('hidden');
         
         // Add TikTok-specific mode selector
         let modeSelector = controlPanel?.querySelector('.mode-selector');
@@ -2673,16 +2796,22 @@ function setupSourceControls(sourceElement) {
                          onclick="setSourceConnectionMode(this.closest('.entry'), 'tiktok-websocket', this); updateModeSelector(this)">
                         🌐 TikTok WS
                     </div>
+                    <div class="mode-option" 
+                         data-mode="tiktok-legacy" 
+                         onclick="setSourceConnectionMode(this.closest('.entry'), 'tiktok-legacy', this); updateModeSelector(this)">
+                        🕰️ Legacy
+                    </div>
                 </div>
                 <div class="mode-info">
-                    <span class="info-icon" title="TikTok WebSocket mode is READ-ONLY. You can view messages but cannot send them due to TikTok API limitations. Use Standard mode for full interaction.">ℹ️</span>
+                    <span class="info-icon" title="WebSocket uses the new v2.x signer (read-only). Legacy uses the former v1.x bridge. Standard opens a browser window.">ℹ️</span>
                 </div>`;
             controlPanel.appendChild(modeSelector);
         }
         if (modeSelector) {
             modeSelector.classList.remove('hidden');
             // Update the active state based on current connection mode
-            const currentMode = source?.connectionMode || 'tiktok-websocket';
+            const fallbackMode = (preferTikTokClassic || cliForcesTikTokClassic) ? 'classic' : (lastTikTokMode || 'tiktok-websocket');
+            const currentMode = source?.connectionMode || fallbackMode;
             modeSelector.querySelectorAll('.mode-option').forEach(opt => {
                 opt.classList.remove('active');
                 if (opt.dataset.mode === currentMode) {
@@ -2692,6 +2821,7 @@ function setupSourceControls(sourceElement) {
         }
     } else {
         tiktokWssMenuItem?.classList.add('hidden');
+        tiktokLegacyMenuItem?.classList.add('hidden');
         if (isYouTube || genericWsSupported) {
             wssMenuItem?.classList.remove('hidden');
             let modeSelector = controlPanel?.querySelector('.mode-selector');
@@ -2748,6 +2878,20 @@ function setupSourceControls(sourceElement) {
         }
     }
 
+    const fallbackMenuItem = settingsMenu?.querySelector('.settings-menu-item[data-tiktok-fallback]');
+    if (fallbackMenuItem) {
+        if (source && target === 'tiktok') {
+            const fallbackDisabled = !!source.disableTikTokAutoFallback;
+            fallbackMenuItem.classList.remove('hidden');
+            fallbackMenuItem.classList.toggle('active', !fallbackDisabled);
+            fallbackMenuItem.textContent = fallbackDisabled
+                ? '🚫 TikTok auto-fallback disabled'
+                : '✅ TikTok auto-fallback enabled';
+        } else {
+            fallbackMenuItem.classList.add('hidden');
+        }
+    }
+
     settingsBtn.onclick = (e) => {
         e.stopPropagation();
         document.querySelectorAll('.settings-menu.active').forEach(menu => {
@@ -2765,6 +2909,22 @@ function setupSourceControls(sourceElement) {
                     roItem.textContent = (s.replyOnly ? '✅ ' : '🤖 ') + 'Bot reply-only (no capture)';
                 }
             } catch (_) {}
+            try {
+                const s = sourceId ? stateManager.getSource(sourceId) : null;
+                const fallbackItem = settingsMenu.querySelector('.settings-menu-item[data-tiktok-fallback]');
+                if (fallbackItem) {
+                    if ( s && s.target === 'tiktok') {
+                        const fallbackDisabled = !!s.disableTikTokAutoFallback;
+                        fallbackItem.classList.remove('hidden');
+                        fallbackItem.classList.toggle('active', !fallbackDisabled);
+                        fallbackItem.textContent = fallbackDisabled
+                            ? '🚫 TikTok auto-fallback disabled'
+                            : '✅ TikTok auto-fallback enabled';
+                    } else {
+                        fallbackItem.classList.add('hidden');
+                    }
+                }
+            } catch (_) {}
         }
 
         const currentSource = sourceId ? stateManager.getSource(sourceId) : null;
@@ -2777,7 +2937,8 @@ function setupSourceControls(sourceElement) {
 
             const itemMode = item.dataset.action === 'classic-mode' ? 'classic' :
                              item.dataset.wss === 'true' ? 'websocket' :
-                             item.dataset.tiktokwss === 'true' ? 'tiktok-websocket' : null;
+                             item.dataset.tiktokwss === 'true' ? 'tiktok-websocket' :
+                             item.dataset.tiktoklegacy === 'true' ? 'tiktok-legacy' : null;
 
             const isSelected = itemMode === currentMode;
             item.dataset.selected = isSelected.toString(); 
@@ -2797,6 +2958,7 @@ function setupSourceControls(sourceElement) {
                     if (icon) {
                         if (item.dataset.action === 'classic-mode') icon.textContent = '📄';
                         else if (item.dataset.wss === 'true' || item.dataset.tiktokwss === 'true') icon.textContent = '🌐';
+                        else if (item.dataset.tiktoklegacy === 'true') icon.textContent = '🕰️';
                     }
                 }
             } else { 
@@ -2812,14 +2974,21 @@ function setupSourceControls(sourceElement) {
                 } else if (item.dataset.tiktokwss === 'true') {
                     item.title = forcedClassic
                         ? (cliForcesTikTokClassic
-                            ? 'TikTok WebSocket mode is disabled by launch flag.'
-                            : 'Disable the global TikTok Classic preference to use TikTok WebSocket mode.')
+                            ? 'TikTok API connectors are disabled by launch flag.'
+                            : 'Disable the global TikTok Classic preference to use TikTok API connectors.')
                         : 'Connect to the TikTok API directly using WebSockets';
                     if (icon) icon.textContent = '🌐';
+                } else if (item.dataset.tiktoklegacy === 'true') {
+                    item.title = forcedClassic
+                        ? (cliForcesTikTokClassic
+                            ? 'TikTok API connectors are disabled by launch flag.'
+                            : 'Disable the global TikTok Classic preference to use TikTok API connectors.')
+                        : 'Use HTTP polling without signing.';
+                    if (icon) icon.textContent = '🕰️';
                 } else {
                     item.title = '';
                 }
-                if (!isActive && forcedClassic && itemMode === 'tiktok-websocket') {
+                if (!isActive && forcedClassic && (itemMode === 'tiktok-websocket' || itemMode === 'tiktok-legacy')) {
                     item.style.opacity = '0.5';
                     item.style.pointerEvents = 'none';
                 }
@@ -2881,6 +3050,38 @@ async function toggleReplyOnly(menuItem) {
     } else {
         Toast.success('Updated', enabled ? 'Reply-only mode enabled' : 'Reply-only mode disabled');
     }
+}
+
+function toggleTikTokAutoFallback(menuItem) {
+    const entry = menuItem.closest('.entry');
+    if (!entry) return;
+    const sourceId = entry.dataset.sourceId;
+    if (!sourceId) return;
+
+    const source = stateManager.getSource(sourceId);
+    if (!source || source.target !== 'tiktok') {
+        Toast.info('TikTok Fallback', 'Automatic fallback applies to TikTok sources only.');
+        return;
+    }
+
+    const currentlyDisabled = !!source.disableTikTokAutoFallback;
+    const nextDisabled = !currentlyDisabled;
+    stateManager.updateSource(sourceId, { disableTikTokAutoFallback: nextDisabled });
+
+    const enabled = !nextDisabled;
+    menuItem.classList.toggle('active', enabled);
+    menuItem.textContent = enabled
+        ? '✅ TikTok auto-fallback enabled'
+        : '🚫 TikTok auto-fallback disabled';
+    if (entry._tiktokFallback) {
+        entry._tiktokFallback.fallbackDisabled = nextDisabled;
+        if (enabled) {
+            entry._tiktokFallback.notifiedExhausted = false;
+        }
+    }
+    Toast.success('TikTok Fallback', enabled
+        ? 'Automatic fallback enabled for this source.'
+        : 'Automatic fallback disabled for this source.');
 }
 
 // Ensure a default bot session exists
@@ -2976,7 +3177,7 @@ async function activateSource(ele) {
     }
     const sourceId = parentElement.dataset.sourceId;
     const source = sourceId ? stateManager.getSource(sourceId) : null;
-    const isTikTokWebsocketAttempt = !!(source && source.target === 'tiktok' && source.connectionMode === 'tiktok-websocket' && !source.wssId);
+    const isTikTokWebsocketAttempt = !!(source && source.target === 'tiktok' && (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy') && !source.wssId);
 
     if (isTikTokWebsocketAttempt) {
         updateConnectionStatus(parentElement, 'connecting');
@@ -3334,8 +3535,9 @@ async function stopThis(ele) {
 
     const source = stateManager.getSource(sourceId);
     if (!source) return;
+    const effectiveMode = getEffectiveConnectionMode(source) || source.connectionMode;
     
-    if (ele.dataset.connecting === "true" && source.target === 'tiktok' && source.connectionMode === 'tiktok-websocket') {
+    if (ele.dataset.connecting === "true" && source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy')) {
         cancelPendingTikTokActivation(sourceId);
         if (source.wssId && ipcRenderer) { 
             try {
@@ -3350,19 +3552,20 @@ async function stopThis(ele) {
         entry._tiktokRetryEndAt = null;
         entry._tiktokRetryAttempt = null;
         entry._tiktokRetryMax = null;
-        stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null });
+        stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, activeConnectionMode: null });
         // Update UI status
         updateConnectionStatus(entry, 'stopped', "Stopping...");
         setTimeout(() => updateConnectionStatus(entry, 'clear'), 500);
 
         // Restore the main activate button to default action so user can start again
         restoreActivateButton(entry);
+        entry._tiktokFallback = null;
         return;
     }
 
     if (source.vid || source.wssId) {
         try {
-            if (source.target === 'tiktok' && source.connectionMode === 'tiktok-websocket' && source.wssId && ipcRenderer) {
+            if (source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy') && source.wssId && ipcRenderer) {
                 await ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: source.wssId });
             } else if (source.vid && ipcRenderer) { 
                 await ipcRenderer.sendSync('closeWindow', { vid: source.vid });
@@ -3370,11 +3573,12 @@ async function stopThis(ele) {
         } catch (error) {
             console.error('Error in stopThis during IPC call:', error);
         }
-        stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null });
+        stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, activeConnectionMode: null });
         if (source.target === 'tiktok') updateConnectionStatus(entry, 'clear');
 
         // Restore activate button for any stop
         restoreActivateButton(entry);
+        entry._tiktokFallback = null;
         
         // For Rumble sources, clear video ID and chat ID for username-based sources
         if (source.target === 'rumble' && source.username && (source.videoId || source.chatId)) {
@@ -3409,12 +3613,19 @@ function restoreActivateButton(entryElement) {
 
     const sourceId = entryElement.dataset.sourceId;
     const source = sourceId ? stateManager.getSource(sourceId) : null;
-    const mode = source?.connectionMode || 'classic';
+    const preferredMode = source?.connectionMode || 'classic';
+    const activeMode = source ? (getEffectiveConnectionMode(source) || preferredMode) : preferredMode;
     const target = source?.target;
 
-    if (mode === 'tiktok-websocket' && target === 'tiktok') {
-        activateButton.textContent = 'Connect TikTok WebSocket';
-    } else if (mode === 'websocket') {
+    if (target === 'tiktok') {
+        if (activeMode === 'tiktok-websocket') {
+            activateButton.textContent = 'Connect TikTok WebSocket';
+        } else if (activeMode === 'tiktok-legacy') {
+            activateButton.textContent = 'Connect TikTok Legacy';
+        } else {
+            activateButton.textContent = translate('btn.activate');
+        }
+    } else if (activeMode === 'websocket') {
         activateButton.textContent = 'Connect WebSocket';
     } else {
         activateButton.textContent = translate('btn.activate');
@@ -3576,7 +3787,7 @@ async function createWindow(ele, tabid = false) {
 		// Check if we're switching connection modes
 		const currentMode = source.connectionMode;
 		const isTikTokModeSwitch = target === 'tiktok' && 
-			((currentMode === 'tiktok-websocket' && source.vid && source.vid < 900000) || // Was classic, now websocket
+			(((currentMode === 'tiktok-websocket' || currentMode === 'tiktok-legacy') && source.vid && source.vid < 900000) || // Was classic, now websocket
 			 (currentMode === 'classic' && source.vid && source.vid > 900000)); // Was websocket, now classic
 		
 		if (isTikTokModeSwitch) {
@@ -3594,21 +3805,21 @@ async function createWindow(ele, tabid = false) {
 				console.warn('Error closing old connection during mode switch:', e);
 			}
 			// Clear the old IDs
-			stateManager.updateSource(sourceId, { vid: null, wssId: null, status: 'inactive' });
+			stateManager.updateSource(sourceId, { vid: null, wssId: null, status: 'inactive', activeConnectionMode: null });
 		} else {
 			// Verify the window actually exists before reusing the ID
 			if (source.vid && ipcRenderer) {
 				const windowExists = await ipcRenderer.invoke('checkWindowExists', { vid: source.vid });
 				if (!windowExists) {
-					stateManager.updateSource(sourceId, { vid: null, wssId: null, status: 'inactive' });
+					stateManager.updateSource(sourceId, { vid: null, wssId: null, status: 'inactive', activeConnectionMode: null });
 				} else {
 					return source.vid;
 				}
-			} else if (source.wssId && target === 'tiktok' && currentMode === 'tiktok-websocket') {
+			} else if (source.wssId && target === 'tiktok' && (currentMode === 'tiktok-websocket' || currentMode === 'tiktok-legacy')) {
 				// For TikTok websocket, we need to check if the connection still exists
 				// The wssId alone doesn't mean the connection is active
 				// Clear the stale wssId and allow new connection
-				stateManager.updateSource(sourceId, { vid: null, wssId: null, status: 'inactive' });
+				stateManager.updateSource(sourceId, { vid: null, wssId: null, status: 'inactive', activeConnectionMode: null });
 				return false;
 			} else if (source.wssId) {
 				return source.wssId;
@@ -3620,7 +3831,7 @@ async function createWindow(ele, tabid = false) {
     // target already declared above
     if (target === 'tiktok') {
         const forcedClassic = preferTikTokClassic || cliForcesTikTokClassic;
-        if (forcedClassic && mode === 'tiktok-websocket') {
+        if (forcedClassic && (mode === 'tiktok-websocket' || mode === 'tiktok-legacy')) {
             mode = 'classic';
             stateManager.updateSource(sourceId, { connectionMode: 'classic' });
             updateSourceUIAfterModeChange(entry, 'classic', false);
@@ -3643,30 +3854,379 @@ async function createWindow(ele, tabid = false) {
         }
     }
     
-    let windowId; 
+    const windowId = await attemptActivationModes({
+        sourceId,
+        entry,
+        initialMode: mode,
+        tabid
+    });
+    return windowId;
+}
+
+async function attemptActivationModes({ sourceId, entry, initialMode, tabid, reuseFallbackState = false }) {
+    const source = stateManager.getSource(sourceId);
+    if (!source) {
+        console.warn('attemptActivationModes: source missing', sourceId);
+        return false;
+    }
+
+    const target = source.target;
+    const preferredMode = source.connectionMode || initialMode || 'classic';
+    const preferredNormalized = target === 'tiktok'
+        ? normalizeTikTokMode(preferredMode)
+        : preferredMode;
+
+    const resolvedEntry = entry || document.querySelector(`[data-source-id="${sourceId}"]`);
+
+    if (target !== 'tiktok') {
+        const result = await performActivationAttempt({
+            sourceId,
+            entry: resolvedEntry,
+            tabid,
+            mode: initialMode,
+            target
+        });
+        return result.success ? result.windowId : false;
+    }
+
+    const fallbackLockedToClassic = (preferTikTokClassic || cliForcesTikTokClassic);
+    const fallbackDisabled = fallbackLockedToClassic || !!source.disableTikTokAutoFallback;
+
+    let fallbackState = resolvedEntry ? resolvedEntry._tiktokFallback : null;
+    let sequence;
+
+    const fallbackStateNeedsReset = !reuseFallbackState ||
+        !fallbackState ||
+        fallbackState.preferredMode !== preferredNormalized ||
+        fallbackState.forceClassic !== fallbackLockedToClassic;
+
+    if (fallbackStateNeedsReset) {
+        const baseSequence = fallbackLockedToClassic
+            ? ['classic']
+            : buildTikTokFallbackSequence(initialMode, preferredMode);
+        sequence = [...baseSequence];
+        fallbackState = {
+            sequence,
+            attempted: new Set(),
+            preferredMode: preferredNormalized,
+            fallbackDisabled,
+            forceClassic: fallbackLockedToClassic,
+            lastMode: null,
+            connectedMode: null,
+            pendingAutoRetry: false,
+            autoRetryCount: 0,
+            exhausted: false,
+            lastFailureStatus: null,
+            lastFailureMessage: null,
+            lastError: null,
+            inProgress: false,
+            lastAttemptAt: null,
+            lastSuccessAt: null,
+            notifiedExhausted: false
+        };
+        if (resolvedEntry) {
+            resolvedEntry._tiktokFallback = fallbackState;
+        }
+    } else {
+        sequence = Array.isArray(fallbackState.sequence) && fallbackState.sequence.length
+            ? fallbackState.sequence
+            : (fallbackLockedToClassic
+                ? ['classic']
+                : buildTikTokFallbackSequence(initialMode, preferredMode));
+        fallbackState.sequence = sequence;
+        fallbackState.fallbackDisabled = fallbackDisabled;
+        fallbackState.forceClassic = fallbackLockedToClassic;
+        fallbackState.exhausted = false;
+        fallbackState.notifiedExhausted = false;
+    }
+
+    const attempted = fallbackState?.attempted || new Set();
+    let lastError = null;
+
+    for (const candidate of sequence) {
+        const normalizedCandidate = normalizeTikTokMode(candidate);
+        if (attempted.has(normalizedCandidate)) {
+            continue;
+        }
+        if (fallbackDisabled && normalizedCandidate !== preferredNormalized) {
+            continue;
+        }
+
+        attempted.add(normalizedCandidate);
+
+        if (fallbackState) {
+            fallbackState.lastMode = normalizedCandidate;
+            fallbackState.inProgress = true;
+            fallbackState.lastAttemptAt = Date.now();
+        }
+
+        const result = await performActivationAttempt({
+            sourceId,
+            entry: resolvedEntry,
+            tabid,
+            mode: normalizedCandidate,
+            target
+        });
+
+        if (fallbackState) {
+            fallbackState.lastError = result.error || null;
+            fallbackState.inProgress = false;
+        }
+
+        if (result.success) {
+            if (fallbackState) {
+                fallbackState.connectedMode = normalizedCandidate;
+                fallbackState.pendingAutoRetry = false;
+                fallbackState.lastFailureStatus = null;
+                fallbackState.lastFailureMessage = null;
+                fallbackState.autoRetryCount = 0;
+                fallbackState.exhausted = false;
+                fallbackState.lastSuccessAt = Date.now();
+            }
+            if (normalizedCandidate !== preferredNormalized) {
+                notifyTikTokFallbackSuccess(resolvedEntry, preferredMode, normalizedCandidate);
+            } else if (resolvedEntry) {
+                updateConnectionStatus(resolvedEntry, 'connected');
+            }
+            return result.windowId;
+        }
+
+        lastError = result.error;
+        if (result.error && result.error.message === 'Activation canceled') {
+            break;
+        }
+        const fallbackInfo = result.fallbackInfo;
+
+        if (fallbackDisabled) {
+            break;
+        }
+
+        if (fallbackInfo && fallbackInfo.mode === 'classic' && !sequence.includes('classic')) {
+            sequence.push('classic');
+        }
+    }
+
+    if (fallbackState) {
+        fallbackState.exhausted = true;
+        fallbackState.lastFailureStatus = 'activation';
+        fallbackState.lastFailureMessage = lastError ? lastError.message : null;
+    }
+
+    if (lastError) {
+        console.error(`TikTok activation failed for ${sourceId} after fallback attempts:`, lastError);
+        if (resolvedEntry) {
+            updateConnectionStatus(resolvedEntry, 'error', lastError.message || 'TikTok activation failed');
+        }
+        if (!fallbackDisabled || attempted.size > 1) {
+            const message = lastError.message || 'All TikTok modes failed to connect.';
+            Toast.error('TikTok Error', message);
+        }
+    }
+    return false;
+}
+
+function buildTikTokFallbackSequence(initialMode, preferredMode) {
+    const order = [];
+    const seen = new Set();
+    const pushMode = (mode) => {
+        const normalized = normalizeTikTokMode(mode);
+        if (!normalized || seen.has(normalized)) return;
+        seen.add(normalized);
+        order.push(normalized);
+    };
+
+    pushMode(initialMode);
+    pushMode(preferredMode);
+    ['tiktok-websocket', 'tiktok-legacy', 'classic'].forEach(pushMode);
+    return order;
+}
+
+function normalizeTikTokMode(mode) {
+    if (!mode || typeof mode !== 'string') return null;
+    if (mode === 'websocket') return 'tiktok-websocket';
+    if (mode === 'legacy') return 'tiktok-legacy';
+    return mode;
+}
+
+function describeTikTokMode(mode) {
+    const normalized = normalizeTikTokMode(mode);
+    switch (normalized) {
+        case 'tiktok-websocket':
+            return 'TikTok WebSocket';
+        case 'tiktok-legacy':
+            return 'TikTok Legacy';
+        case 'classic':
+            return 'Classic';
+        default:
+            return normalized || 'Unknown';
+    }
+}
+
+const TIKTOK_AUTO_FALLBACK_DELAY_MS = 2000;
+
+function autoFallbackToNextTikTokMode(sourceId, failureStatus, errorMessage = null) {
+    if (!sourceId) return;
+    const source = stateManager.getSource(sourceId);
+    if (!source || source.target !== 'tiktok') return;
+    if (preferTikTokClassic || cliForcesTikTokClassic) return;
+    if (source.disableTikTokAutoFallback) return;
+
+    const entry = document.querySelector(`[data-source-id="${sourceId}"]`);
+    if (!entry) return;
+
+    let fallbackState = entry._tiktokFallback;
+    const preferredMode = normalizeTikTokMode(source.connectionMode || 'classic');
+    if (!fallbackState) {
+        const sequence = buildTikTokFallbackSequence(preferredMode, preferredMode);
+        fallbackState = {
+            sequence,
+            attempted: new Set(),
+            preferredMode,
+            fallbackDisabled: !!source.disableTikTokAutoFallback,
+            forceClassic: (preferTikTokClassic || cliForcesTikTokClassic),
+            lastMode: null,
+            connectedMode: null,
+            pendingAutoRetry: false,
+            autoRetryCount: 0,
+            exhausted: false,
+            lastFailureStatus: null,
+            lastFailureMessage: null,
+            lastError: null,
+            inProgress: false,
+            lastAttemptAt: null,
+            lastSuccessAt: null,
+            notifiedExhausted: false
+        };
+        entry._tiktokFallback = fallbackState;
+    }
+
+    if (fallbackState.fallbackDisabled || fallbackState.pendingAutoRetry) {
+        return;
+    }
+
+    const attempted = (fallbackState.attempted instanceof Set) ? fallbackState.attempted : new Set();
+    fallbackState.attempted = attempted;
+    const sequence = Array.isArray(fallbackState.sequence) && fallbackState.sequence.length
+        ? fallbackState.sequence
+        : buildTikTokFallbackSequence(preferredMode, preferredMode);
+    fallbackState.sequence = sequence;
+
+    const lastKnownMode = normalizeTikTokMode(
+        fallbackState.lastMode
+        || source.activeConnectionMode
+        || fallbackState.connectedMode
+        || source.connectionMode
+        || preferredMode
+    );
+    if (lastKnownMode) {
+        attempted.add(lastKnownMode);
+    }
+
+    let nextMode = null;
+    for (const candidate of sequence) {
+        const normalizedCandidate = normalizeTikTokMode(candidate);
+        if (!attempted.has(normalizedCandidate)) {
+            nextMode = normalizedCandidate;
+            break;
+        }
+    }
+
+    if (!nextMode) {
+        fallbackState.exhausted = true;
+        if (!fallbackState.notifiedExhausted) {
+            fallbackState.notifiedExhausted = true;
+            const message = errorMessage || 'All TikTok connection modes failed. Try again later or disable automatic fallback.';
+            Toast.error('TikTok Error', message);
+        }
+        return;
+    }
+
+    fallbackState.pendingAutoRetry = true;
+    fallbackState.autoRetryCount = (fallbackState.autoRetryCount || 0) + 1;
+    fallbackState.lastFailureStatus = failureStatus || null;
+    fallbackState.lastFailureMessage = errorMessage || null;
+
+    const fromLabel = describeTikTokMode(lastKnownMode);
+    const toLabel = describeTikTokMode(nextMode);
+    const statusMessage = errorMessage
+        ? `${errorMessage} — Trying ${toLabel} after ${fromLabel} failed.`
+        : `Trying ${toLabel} after ${fromLabel} failed.`;
+
+    updateConnectionStatus(entry, 'info', statusMessage);
+    Toast.info('TikTok Auto Fallback', `Trying ${toLabel} after ${fromLabel} failed.`);
+
+    setTimeout(async () => {
+        fallbackState.pendingAutoRetry = false;
+
+        const latestSource = stateManager.getSource(sourceId);
+        if (!latestSource || latestSource.status === 'active') {
+            return;
+        }
+
+        const latestEntry = document.querySelector(`[data-source-id="${sourceId}"]`);
+        if (!latestEntry) {
+            return;
+        }
+        if (!latestEntry._tiktokFallback) {
+            latestEntry._tiktokFallback = fallbackState;
+        }
+
+        await attemptActivationModes({
+            sourceId,
+            entry: latestEntry,
+            initialMode: nextMode,
+            tabid: false,
+            reuseFallbackState: true
+        });
+    }, fallbackState.retryDelayMs ?? TIKTOK_AUTO_FALLBACK_DELAY_MS);
+}
+
+function notifyTikTokFallbackSuccess(entry, preferredMode, fallbackMode) {
+    const preferredLabel = describeTikTokMode(preferredMode);
+    const fallbackLabel = describeTikTokMode(fallbackMode);
+    const message = `Connected using ${fallbackLabel} after ${preferredLabel} failed.`;
+    Toast.info('TikTok Fallback', message);
+    if (entry) {
+        updateConnectionStatus(entry, 'info', message);
+        setTimeout(() => updateConnectionStatus(entry, 'connected'), 4000);
+    }
+}
+
+async function performActivationAttempt({ sourceId, entry, tabid, mode, target }) {
+    let source = stateManager.getSource(sourceId);
+    if (!source) {
+        return { success: false, error: new Error('Source not available') };
+    }
+
+    const resolvedTarget = target || source.target;
+    const normalizedMode = resolvedTarget === 'tiktok' ? normalizeTikTokMode(mode) : mode;
     let pendingTikTokToken = null;
 
-	try {
-        if (mode === 'tiktok-websocket' && target === 'tiktok') {
-            pendingTikTokToken = beginPendingTikTokActivation(sourceId);
-        }
-        stateManager.updateSource(sourceId, { status: 'activating' }); 
+    try {
+        const baseUpdate = {
+            status: 'activating',
+            error: null,
+            activeConnectionMode: normalizedMode
+        };
+        stateManager.updateSource(sourceId, baseUpdate);
+        source = stateManager.getSource(sourceId);
 
-        if (mode === 'tiktok-websocket' && target === 'tiktok') {
-            windowId = await createTikTokWSSFromSource(source); 
-        } else if (mode === 'websocket') {
-            if (target && target.startsWith('youtube')) {
+        let windowId;
+        if (resolvedTarget === 'tiktok' && (normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')) {
+            pendingTikTokToken = beginPendingTikTokActivation(sourceId);
+            windowId = await createTikTokWSSFromSource(source, normalizedMode === 'tiktok-legacy' ? 'legacy' : 'websocket');
+        } else if (normalizedMode === 'websocket') {
+            if (resolvedTarget && resolvedTarget.startsWith('youtube')) {
                 windowId = await createYoutubeWebSocketWindowFromSource(source, tabid);
-            } else { 
-                 windowId = await createWindowWSSFromSource(source, tabid);
+            } else {
+                windowId = await createWindowWSSFromSource(source, tabid);
             }
-        } else { 
-			windowId = await createClassicWindowFromSource(source, tabid);
-		}
+        } else {
+            windowId = await createClassicWindowFromSource(source, tabid);
+        }
 
         if (pendingTikTokToken && !isPendingTikTokActivationCurrent(sourceId, pendingTikTokToken)) {
-            // User canceled this activation while the handshake was pending; ignore the resolved result.
-            if (windowId && ipcRenderer && source.target === 'tiktok' && mode === 'tiktok-websocket') {
+            if (windowId && ipcRenderer && resolvedTarget === 'tiktok' && (normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')) {
                 const actualWssId = windowId > 900000 ? windowId - 900000 : windowId;
                 if (actualWssId) {
                     try {
@@ -3676,64 +4236,74 @@ async function createWindow(ele, tabid = false) {
                     }
                 }
             }
-            return false;
+            markPendingTikTokActivationComplete(sourceId, pendingTikTokToken);
+            stateManager.updateSource(sourceId, {
+                status: 'inactive',
+                vid: null,
+                wssId: null,
+                activeConnectionMode: null
+            });
+            return { success: false, error: new Error('Activation canceled') };
         }
 
-        if (windowId) { 
-            
-            // For TikTok websocket, windowId is the virtual tab ID (900000+wssId)
-            // We need to extract the actual wssId
+        if (windowId) {
             let actualWssId = null;
-            if (mode === 'tiktok-websocket' && windowId > 900000) {
+            if (resolvedTarget === 'tiktok' && windowId > 900000) {
                 actualWssId = windowId - 900000;
-            } else if (mode.includes('websocket')) {
+            } else if (normalizedMode && typeof normalizedMode === 'string' && normalizedMode.includes('websocket')) {
+                actualWssId = windowId;
+            } else if (normalizedMode === 'tiktok-legacy') {
                 actualWssId = windowId;
             }
-            
-            // Mark classic as active immediately; keep WSS as activating until it reports connected
+
+            const statusValue = (normalizedMode === 'websocket' || normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')
+                ? 'activating'
+                : 'active';
+
             stateManager.updateSource(sourceId, {
-                vid: windowId, 
-                wssId: actualWssId, 
-                status: (mode === 'websocket' || mode === 'tiktok-websocket') ? 'activating' : 'active'
+                vid: windowId,
+                wssId: actualWssId,
+                status: statusValue,
+                activeConnectionMode: normalizedMode,
+                error: null
             });
+
             if (pendingTikTokToken) {
                 markPendingTikTokActivationComplete(sourceId, pendingTikTokToken);
             }
-            
-            // Verify the assignment immediately
-            const verifySource = stateManager.getSource(sourceId);
-        } else {
-            console.warn(`Activation failed for source ${sourceId}, windowId was:`, windowId);
-            stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null });
-            if (pendingTikTokToken) {
-                markPendingTikTokActivationComplete(sourceId, pendingTikTokToken);
+
+            if (entry && resolvedTarget === 'tiktok') {
+                updateConnectionStatus(entry, statusValue === 'active' ? 'connected' : 'connecting');
             }
-            Toast.error("Activation Failed", `Could not activate ${source.username || source.target}. Main process might have failed.`);
+
+            return { success: true, windowId };
         }
-        return windowId; 
-	} catch (error) {
-        const fallbackInfo = resolveTikTokFallbackInfo(error);
-        if (mode === 'tiktok-websocket' && fallbackInfo && fallbackInfo.mode === 'classic') {
-            try {
-                const fallbackWindowId = await handleTikTokFallbackToClassic({
-                    sourceId,
-                    entryElement: entry,
-                    tabid,
-                    originalError: error,
-                    pendingTikTokToken
-                });
-                return fallbackWindowId;
-            } catch (fallbackErr) {
-                error = fallbackErr;
-            }
-        }
-		console.error(`Error in createWindow for source ${sourceId} (mode: ${mode}):`, error);
-        stateManager.updateSource(sourceId, { status: 'error', error: error.message, vid: null, wssId: null });
+
+        stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, activeConnectionMode: null });
         if (pendingTikTokToken) {
             markPendingTikTokActivationComplete(sourceId, pendingTikTokToken);
         }
-		return false; 
-	}
+        const failureTarget = source.username || source.target || 'source';
+        Toast.error("Activation Failed", `Could not activate ${failureTarget}. Main process might have failed.`);
+        return { success: false, error: new Error('Activation failed without window ID') };
+    } catch (error) {
+        const fallbackInfo = resolveTikTokFallbackInfo(error);
+        if (pendingTikTokToken) {
+            markPendingTikTokActivationComplete(sourceId, pendingTikTokToken);
+        }
+        stateManager.updateSource(sourceId, {
+            status: 'error',
+            error: error.message,
+            vid: null,
+            wssId: null,
+            activeConnectionMode: null
+        });
+        if (entry) {
+            const statusMessage = error.message || 'Connection failed';
+            updateConnectionStatus(entry, 'error', statusMessage);
+        }
+        return { success: false, error, fallbackInfo };
+    }
 }
 
 function resolveTikTokFallbackInfo(error) {
@@ -3792,11 +4362,11 @@ async function handleTikTokFallbackToClassic({ sourceId, entryElement, tabid, or
     }
 
     stateManager.updateSource(sourceId, {
-        connectionMode: 'classic',
         status: 'activating',
         vid: null,
         wssId: null,
-        error: null
+        error: null,
+        activeConnectionMode: 'classic'
     });
 
     const updatedSource = stateManager.getSource(sourceId);
@@ -3811,7 +4381,7 @@ async function handleTikTokFallbackToClassic({ sourceId, entryElement, tabid, or
             vid: fallbackWindowId,
             wssId: null,
             status: 'active',
-            connectionMode: 'classic',
+            activeConnectionMode: 'classic',
             error: null
         });
 
@@ -3833,7 +4403,8 @@ async function handleTikTokFallbackToClassic({ sourceId, entryElement, tabid, or
             status: 'error',
             error: fallbackErr.message || 'Classic fallback failed',
             vid: null,
-            wssId: null
+            wssId: null,
+            activeConnectionMode: null
         });
         if (entry) {
             updateConnectionStatus(entry, 'error', fallbackErr.message || 'Classic fallback failed');
@@ -4328,20 +4899,20 @@ async function createYoutubeWebSocketWindowFromSource(source, tabid = false) {
     }
 }
 
-async function createTikTokWSSFromSource(source) { 
+async function createTikTokWSSFromSource(source, strategy = 'websocket') { 
     if (!ipcRenderer) return false;
     const cleanUsername = source.username?.replace('@', '').trim();
     if (!cleanUsername) {
-        Toast.warning("TikTok WSS Error", 'No username found for TikTok connection');
+        Toast.warning('TikTok Connector Error', 'No username found for TikTok connection');
         return false;
     }
 
-    if (preferTikTokClassic || cliForcesTikTokClassic) {
-        const fallbackError = new Error('SSAPP_TIKTOK_FORCED_CLASSIC: TikTok WebSocket disabled by classic mode preference');
+    if ((preferTikTokClassic || cliForcesTikTokClassic) && strategy !== 'classic') {
+        const fallbackError = new Error('SSAPP_TIKTOK_FORCED_CLASSIC: TikTok API connectors disabled by classic mode preference');
         fallbackError.code = 'SSAPP_TIKTOK_FORCED_CLASSIC';
         fallbackError.ssappFallback = true;
         fallbackError.ssappFallbackMode = 'classic';
-        fallbackError.ssappFallbackMessage = 'TikTok WebSocket disabled by classic mode preference';
+        fallbackError.ssappFallbackMessage = 'TikTok API connectors disabled by classic mode preference';
         throw fallbackError;
     }
 
@@ -4351,15 +4922,15 @@ async function createTikTokWSSFromSource(source) {
     await waitForNextRender();
 
     try {
-        // Check if we have stored credentials for this source
         const sessionId = source.tiktokSessionId || null;
         const ttTargetIdc = source.tiktokTtTargetIdc || null;
-        
+
         const wssID = await ipcRenderer.invoke('createTikTokConnection', {
             username: cleanUsername,
             sessionId: sessionId,
             ttTargetIdc: ttTargetIdc,
-            replyOnly: !!source.replyOnly
+            replyOnly: !!source.replyOnly,
+            strategy: strategy
         });
 
         if (wssID === null || typeof wssID === 'undefined') {
@@ -4368,9 +4939,11 @@ async function createTikTokWSSFromSource(source) {
         return wssID;
     } catch (error) {
         const fallbackInfo = resolveTikTokFallbackInfo(error);
+        const isLegacyAttempt = strategy === 'legacy';
         if (!fallbackInfo || fallbackInfo.mode !== 'classic') {
-            console.error('Error in TikTok WebSocket connection from source:', error);
-            Toast.warning("TikTok WSS Error", `Connection Failed: ${error.message || 'Please try again.'}`);
+            console.error('Error in TikTok connector from source:', error);
+            const label = isLegacyAttempt ? 'Legacy' : 'WebSocket';
+            Toast.warning('TikTok Connector Error', `(${label}) Connection Failed: ${error.message || 'Please try again.'}`);
         }
         throw error; 
     }
@@ -4485,7 +5058,7 @@ function clearTikTokAuth(sourceId) {
         if (entry) {
             const signInBtn = entry.querySelector('[data-tiktok-signin]') || entry.querySelector('[data-signin]');
             if (signInBtn) {
-                if (source.connectionMode === 'tiktok-websocket') {
+                if (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy') {
                     signInBtn.innerHTML = '🔐 Add TikTok Session ID';
                     signInBtn.title = 'Provide your TikTok session cookie to enable chat replies and authenticated features.';
                 } else {
@@ -4527,7 +5100,7 @@ async function tiktokSignIn(sourceId) {
                 if (entry) {
                     const signInBtn = entry.querySelector('[data-tiktok-signin]') || entry.querySelector('[data-signin]');
                     if (signInBtn) {
-                        if (source.connectionMode === 'tiktok-websocket') {
+                        if (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy') {
                             signInBtn.innerHTML = '✓ TikTok Session Saved';
                             signInBtn.classList.add('authenticated');
                             signInBtn.title = 'TikTok session cookie stored for this source.';
@@ -4574,7 +5147,7 @@ async function tiktokManualSignIn(sourceId) {
                 if (entry) {
                     const signInBtn = entry.querySelector('[data-tiktok-signin]') || entry.querySelector('[data-signin]');
                     if (signInBtn) {
-                        if (source.connectionMode === 'tiktok-websocket') {
+                        if (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy') {
                             signInBtn.innerHTML = '✓ TikTok Session Saved';
                             signInBtn.classList.add('authenticated');
                             signInBtn.title = 'TikTok session cookie stored for this source.';
@@ -4640,7 +5213,7 @@ function updateConnectionStatus(element, status, message = null) {
 			{
 				let tipHtml = '';
 					try {
-						const isWss = sourceCtx && (sourceCtx.connectionMode === 'websocket' || sourceCtx.connectionMode === 'tiktok-websocket');
+						const isWss = sourceCtx && (sourceCtx.connectionMode === 'websocket' || sourceCtx.connectionMode === 'tiktok-websocket' || sourceCtx.connectionMode === 'tiktok-legacy');
 						const isTikTok = sourceCtx && sourceCtx.target === 'tiktok';
 						if (isWss && !isTikTok) {
 							tipHtml = ' <span class="ws-tip">If a window opens, sign in and ensure the chat is visible.</span>';
@@ -4912,8 +5485,6 @@ function initializeFeatures() {
     const betaToggle = new BetaToggle(); 
 	betaToggle.checkBetaAvailability();
 
-    initializeTikTokModePreference();
-
     streamSelector = new YouTubeStreamSelector(); 
 	youtubeStatusManager = new YouTubeStatusManager(); 
 }
@@ -5045,20 +5616,32 @@ function syncTikTokClassicPreferenceToMain(enabled) {
 
 function updatePreferTikTokClassicFromState(options = {}) {
     if (typeof stateManager === 'undefined') return;
-    const previous = preferTikTokClassic;
+    const previousClassic = preferTikTokClassic;
     const globalPref = !!(stateManager.state?.global?.forceTikTokClassic);
-    const newValue = cliForcesTikTokClassic || globalPref;
-    preferTikTokClassic = newValue;
-    if (options.forceApply || previous !== newValue) {
-        onTikTokClassicPreferenceChanged(newValue, previous, options);
+    const newClassicValue = cliForcesTikTokClassic || globalPref;
+    preferTikTokClassic = newClassicValue;
+
+    const storedLast = stateManager.state?.global?.lastTikTokMode;
+    const allowedModes = new Set(['classic', 'tiktok-websocket', 'tiktok-legacy']);
+    if (storedLast && allowedModes.has(storedLast)) {
+        lastTikTokMode = storedLast;
+    } else if (preferTikTokClassic) {
+        lastTikTokMode = 'classic';
+    } else if (stateManager.state?.global?.preferTikTokLegacy) {
+        lastTikTokMode = 'tiktok-legacy';
+    } else {
+        lastTikTokMode = 'tiktok-websocket';
+    }
+
+    const classicChanged = options.forceApply || previousClassic !== newClassicValue;
+    if (classicChanged) {
+        onTikTokClassicPreferenceChanged(newClassicValue, previousClassic, options);
     }
 }
-
 function onTikTokClassicPreferenceChanged(newValue, previousValue, options = {}) {
     if (!options.skipSync) {
         syncTikTokClassicPreferenceToMain(newValue);
     }
-    updateTikTokModePreferenceUI();
     applyTikTokClassicPreferenceToAllEntries(newValue, previousValue, options);
 }
 
@@ -5076,7 +5659,7 @@ function applyTikTokClassicPreferenceToAllEntries(newValue, previousValue, optio
     let adjusted = 0;
     sources.forEach(src => {
         if (src.target !== 'tiktok') return;
-        if (src.connectionMode === 'tiktok-websocket') {
+        if (src.connectionMode === 'tiktok-websocket' || src.connectionMode === 'tiktok-legacy') {
             const updates = { connectionMode: 'classic' };
             if (src.wssId && ipcRenderer) {
                 try {
@@ -5102,10 +5685,12 @@ function applyTikTokClassicPreferenceToEntry(entry, forcedValue) {
     if (!entry || entry.dataset.target !== 'tiktok') return;
     entry.dataset.tiktokClassicForced = forcedValue ? 'true' : 'false';
     const wsOption = entry.querySelector('.mode-option[data-mode="tiktok-websocket"]');
+    const legacyOption = entry.querySelector('.mode-option[data-mode="tiktok-legacy"]');
     const wsMenuItem = entry.querySelector('.settings-menu-item[data-tiktokwss="true"]');
+    const legacyMenuItem = entry.querySelector('.settings-menu-item[data-tiktoklegacy="true"]');
     const lockMessage = cliForcesTikTokClassic
-        ? 'TikTok WebSocket mode is disabled by launch flag.'
-        : 'Disable the global TikTok Classic preference to use TikTok WebSocket mode.';
+        ? 'TikTok API connectors are disabled by launch flag.'
+        : 'Disable the global TikTok Classic preference to use API connectors.';
 
     if (wsOption) {
         wsOption.classList.toggle('disabled', forcedValue);
@@ -5121,6 +5706,14 @@ function applyTikTokClassicPreferenceToEntry(entry, forcedValue) {
             wsOption.title = lockMessage;
         }
     }
+    if (legacyOption) {
+        legacyOption.classList.toggle('disabled', forcedValue);
+        legacyOption.dataset.disabled = forcedValue ? 'true' : 'false';
+        legacyOption.style.opacity = forcedValue ? '0.6' : '';
+        legacyOption.title = forcedValue
+            ? lockMessage
+            : 'Use HTTP polling without signing.';
+    }
     if (wsMenuItem) {
         wsMenuItem.classList.toggle('disabled', forcedValue);
         if (forcedValue) {
@@ -5132,99 +5725,23 @@ function applyTikTokClassicPreferenceToEntry(entry, forcedValue) {
         if (!wsMenuItem.dataset.originalTitle) {
             wsMenuItem.dataset.originalTitle = wsMenuItem.title || 'Connect to the TikTok API directly using WebSockets';
         }
-        wsMenuItem.title = forcedValue ? lockMessage : wsMenuItem.dataset.originalTitle;
+        wsMenuItem.title = forcedValue
+            ? lockMessage
+            : (wsMenuItem.dataset.originalTitle || 'Connect to the TikTok API directly using WebSockets');
+    }
+    if (legacyMenuItem) {
+        legacyMenuItem.classList.toggle('disabled', forcedValue);
+        legacyMenuItem.dataset.disabled = forcedValue ? 'true' : 'false';
+        legacyMenuItem.style.opacity = forcedValue ? '0.6' : '';
+        if (!legacyMenuItem.dataset.originalTitle) {
+            legacyMenuItem.dataset.originalTitle = legacyMenuItem.title || 'Use HTTP polling without signing.';
+        }
+        legacyMenuItem.title = forcedValue
+            ? lockMessage
+            : legacyMenuItem.dataset.originalTitle;
     }
 }
 
-function initializeTikTokModePreference() {
-    if (tiktokModePreferenceContainer) {
-        updateTikTokModePreferenceUI();
-        return;
-    }
-    const sourcesDiv = document.getElementById("sources");
-    if (!sourcesDiv) return;
-
-    const container = document.createElement('div');
-    container.className = 'mode-selector global-tiktok-mode-selector';
-
-    const label = document.createElement('div');
-    label.className = 'mode-selector-label';
-    label.textContent = 'Default TikTok Mode:';
-    container.appendChild(label);
-
-    const options = document.createElement('div');
-    options.className = 'mode-options';
-    container.appendChild(options);
-
-    const classicOption = document.createElement('div');
-    classicOption.className = 'mode-option';
-    classicOption.dataset.mode = 'classic';
-    classicOption.textContent = '📄 Classic';
-    options.appendChild(classicOption);
-
-    const wsOption = document.createElement('div');
-    wsOption.className = 'mode-option';
-    wsOption.dataset.mode = 'tiktok-websocket';
-    wsOption.textContent = '🌐 TikTok WS';
-    options.appendChild(wsOption);
-
-    const info = document.createElement('div');
-    info.className = 'mode-info';
-    info.textContent = 'Classic mode uses HTTP polling and skips the signer. WebSocket mode offers richer data when the TikTok signer is healthy.';
-    container.appendChild(info);
-
-    classicOption.addEventListener('click', () => {
-        if (cliForcesTikTokClassic) {
-            Toast.info('TikTok Classic', 'Classic mode is locked by launch flag.');
-            return;
-        }
-        if (!stateManager.state.global.forceTikTokClassic) {
-            stateManager.updateGlobal({ forceTikTokClassic: true });
-        }
-    });
-
-    wsOption.addEventListener('click', () => {
-        if (cliForcesTikTokClassic) {
-            Toast.info('TikTok Classic', 'Classic mode is locked by launch flag.');
-            return;
-        }
-        if (stateManager.state.global.forceTikTokClassic) {
-            stateManager.updateGlobal({ forceTikTokClassic: false });
-            Toast.info('TikTok Mode', 'WebSocket mode restored. Reactivate sources to reconnect via signer.');
-        }
-    });
-
-    const insertBefore = sourcesDiv.querySelector('p') || sourcesDiv.firstChild;
-    if (insertBefore) {
-        sourcesDiv.insertBefore(container, insertBefore);
-    } else {
-        sourcesDiv.appendChild(container);
-    }
-    tiktokModePreferenceContainer = container;
-    updateTikTokModePreferenceUI();
-}
-
-function updateTikTokModePreferenceUI() {
-    if (!tiktokModePreferenceContainer) return;
-    const classicOption = tiktokModePreferenceContainer.querySelector('.mode-option[data-mode="classic"]');
-    const wsOption = tiktokModePreferenceContainer.querySelector('.mode-option[data-mode="tiktok-websocket"]');
-    if (classicOption) {
-        classicOption.classList.toggle('active', preferTikTokClassic);
-        classicOption.title = 'Use the classic HTTP/polling connector for TikTok.';
-    }
-    if (wsOption) {
-        const forced = cliForcesTikTokClassic || preferTikTokClassic;
-        wsOption.classList.toggle('active', !forced);
-        wsOption.classList.toggle('disabled', forced);
-        wsOption.dataset.disabled = forced ? 'true' : 'false';
-        wsOption.style.opacity = forced ? '0.6' : '';
-        wsOption.title = forced
-            ? (cliForcesTikTokClassic
-                ? 'TikTok WebSocket mode is disabled by launch flag.'
-                : 'Disable the global TikTok Classic preference to use TikTok WebSocket mode.')
-            : 'Use the TikTok WebSocket connector when the signer is healthy.';
-    }
-}
 
 async function initializeConfig() { 
     configReady = false;
@@ -5286,7 +5803,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     for (const source of sources) {
         // Set default connection mode for TikTok sources if not set
         if (source.target === 'tiktok' && !source.connectionMode) {
-            const defaultMode = (preferTikTokClassic || cliForcesTikTokClassic) ? 'classic' : 'tiktok-websocket';
+            const defaultMode = (preferTikTokClassic || cliForcesTikTokClassic)
+            ? 'classic'
+            : (lastTikTokMode || 'tiktok-websocket');
             console.log(`Setting default ${defaultMode} mode for ${source.id} on startup`);
             stateManager.updateSource(source.id, { connectionMode: defaultMode });
         }
@@ -5295,20 +5814,20 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (source.vid && ipcRenderer) {
             const windowExists = await ipcRenderer.invoke('checkWindowExists', { vid: source.vid });
             if (!windowExists) {
-                stateManager.updateSource(source.id, { vid: null, status: 'inactive' });
+                stateManager.updateSource(source.id, { vid: null, status: 'inactive', activeConnectionMode: null });
             }
         }
         
         // Clean up websocket IDs on startup - websocket connections don't persist across app restarts
         if (source.wssId) {
             console.log(`Clearing stale wssId ${source.wssId} for ${source.id} on startup`);
-            stateManager.updateSource(source.id, { vid: null, wssId: null, status: 'inactive' });
+            stateManager.updateSource(source.id, { vid: null, wssId: null, status: 'inactive', activeConnectionMode: null });
         }
 
         // Normalize any lingering activating/active states when nothing is connected
         const hasActiveWindow = !!(source.vid || source.wssId);
         if (!hasActiveWindow && STALE_CONNECTION_STATUSES.has(source.status)) {
-            stateManager.updateSource(source.id, { status: 'inactive', error: null });
+            stateManager.updateSource(source.id, { status: 'inactive', error: null, activeConnectionMode: null });
         }
         
         // Clear video IDs and chat IDs for username-based Rumble sources
@@ -5324,7 +5843,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (sourceElement) {
             const source = stateManager.getSource(sourceId);
             if (source) {
-                if (updates.status === 'activating' && source.target === 'tiktok' && source.connectionMode === 'tiktok-websocket') {
+                if (updates.status === 'activating' && source.target === 'tiktok' && (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy')) {
                     setActivateButtonConnecting(sourceElement);
                 }
                 // Update mute button state if mute state changed
@@ -5374,7 +5893,10 @@ document.addEventListener('DOMContentLoaded', async function() {
             if (source.target === 'tiktok') {
                 const sourceElement = document.querySelector(`[data-source-id="${source.id}"]`);
                 if (sourceElement) {
-                    const mode = source.connectionMode || 'tiktok-websocket';
+                    const fallbackMode = (preferTikTokClassic || cliForcesTikTokClassic)
+                        ? 'classic'
+                        : (lastTikTokMode || 'tiktok-websocket');
+                    const mode = source.connectionMode || fallbackMode;
                     
                     // Update button text
                     updateSourceUIAfterModeChange(sourceElement, mode, false);
@@ -5668,8 +6190,11 @@ document.addEventListener('DOMContentLoaded', async function() {
     });
     
     stateManager.on('globalUpdated', ({ updates }) => {
-        if ('forceTikTokClassic' in updates) {
-            const opts = { forceApply: true, silent: tikTokClassicSilentUpdate };
+        if ('forceTikTokClassic' in updates || 'lastTikTokMode' in updates) {
+            const opts = {
+                forceApply: 'forceTikTokClassic' in updates,
+                silent: tikTokClassicSilentUpdate
+            };
             tikTokClassicSilentUpdate = false;
             updatePreferTikTokClassicFromState(opts);
         }
@@ -5904,7 +6429,7 @@ document.addEventListener('DOMContentLoaded', async function() {
                     source = stateManager.getSources({ vid: tabID })[0];
                 }
                 if (source) {
-                    stateManager.updateSource(source.id, { status: 'inactive', vid: null });
+                    stateManager.updateSource(source.id, { status: 'inactive', vid: null, activeConnectionMode: null });
                 }
                 const title = 'Source Stopped';
                 const msg = `Closed due to navigation change (${mode || 'prefix'} via ${reason || 'navigate'}).`;
@@ -5947,7 +6472,7 @@ document.addEventListener('DOMContentLoaded', async function() {
                         break;
                     case 'disconnected':
                     case 'signed_out':
-                        stateManager.updateSource(source.id, { status: 'inactive' });
+                        stateManager.updateSource(source.id, { status: 'inactive', activeConnectionMode: null });
                         updateConnectionStatus(entryElement, 'stopped', message || 'Disconnected');
                         setTimeout(() => updateConnectionStatus(entryElement, 'clear'), 2000);
                         break;
@@ -6033,6 +6558,18 @@ document.addEventListener('DOMContentLoaded', async function() {
                     }
                     stateManager.updateSource(sourceId, { status: 'active', tiktokFallbackMode: null });
                     if (entryElement) updateConnectionStatus(entryElement, 'connected');
+                    if (entryElement && entryElement._tiktokFallback) {
+                        try {
+                            const latestSource = stateManager.getSource(sourceId);
+                            const effectiveMode = latestSource ? getEffectiveConnectionMode(latestSource) : null;
+                            entryElement._tiktokFallback.connectedMode = normalizeTikTokMode(
+                                effectiveMode || latestSource?.connectionMode || entryElement._tiktokFallback.preferredMode
+                            );
+                            entryElement._tiktokFallback.pendingAutoRetry = false;
+                            entryElement._tiktokFallback.exhausted = false;
+                            entryElement._tiktokFallback.notifiedExhausted = false;
+                        } catch (_) { /* noop */ }
+                    }
                     restoreActivateUI();
                     break;
                 case 'disconnected':
@@ -6094,8 +6631,16 @@ document.addEventListener('DOMContentLoaded', async function() {
                         entryElement._tiktokRetryMax = null;
                     }
                     stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection failed', vid: null, wssId: null, tiktokFallbackMode: null });
-                    if (entryElement) updateConnectionStatus(entryElement, 'error', data.error || 'Connection failed');
+                    if (entryElement) {
+                        updateConnectionStatus(entryElement, 'error', data.error || 'Connection failed');
+                        if (entryElement._tiktokFallback) {
+                            entryElement._tiktokFallback.pendingAutoRetry = false;
+                            entryElement._tiktokFallback.lastFailureStatus = 'fatal_error';
+                            entryElement._tiktokFallback.lastFailureMessage = data.error || null;
+                        }
+                    }
                     restoreActivateUI();
+                    autoFallbackToNextTikTokMode(sourceId, 'fatal_error', data.error || null);
                     break;
                 case 'fallback_polling':
                     stateManager.updateSource(sourceId, {
@@ -6104,13 +6649,13 @@ document.addEventListener('DOMContentLoaded', async function() {
                         tiktokFallbackMode: 'polling'
                     });
                     if (entryElement) {
-                        updateConnectionStatus(entryElement, 'info', data.error || 'TikTok signer unavailable. Switching to polling fallback...');
+                        updateConnectionStatus(entryElement, 'info', data.error || 'TikTok signer unavailable. Switching to legacy connector...');
                         setConnectingStopUI();
                     }
                     {
                         const infoMessage = data.error || 'TikTok signer unavailable.';
                         const formatted = infoMessage.endsWith('.') ? infoMessage : `${infoMessage}.`;
-                        Toast.info('TikTok Fallback', `${formatted} Using polling fallback.`);
+                        Toast.info('TikTok Fallback', `${formatted} Using legacy connector.`);
                     }
                     break;
                 case 'reconnecting':
@@ -6144,8 +6689,11 @@ document.addEventListener('DOMContentLoaded', async function() {
                     }
                     break;
                 case 'stopped_by_user':
-                    stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null });
-                    if (entryElement) updateConnectionStatus(entryElement, 'stopped', 'Connection stopped by user.');
+                    stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, activeConnectionMode: null });
+                    if (entryElement) {
+                        updateConnectionStatus(entryElement, 'stopped', 'Connection stopped by user.');
+                        entryElement._tiktokFallback = null;
+                    }
                     restoreActivateUI();
                     break;
             }
@@ -6746,14 +7294,17 @@ const translations = {
 		'sessions.available': 'Available Sessions',
 		'sessions.create': '➕ Create New Session',
 		'sessions.export': '💾 Export Current Session',
-		'sessions.import': '📂 Import Session',
-		'sessions.switch': 'Switch',
-		'sessions.active': 'Active',
-		
-		// Sources
-		'source.add': 'Add a new source:',
+			'sessions.import': '📂 Import Session',
+			'sessions.switch': 'Switch',
+			'sessions.active': 'Active',
+			
+			// Global
+			
+			// Sources
+			'source.add': 'Add a new source:',
 		'source.mode.standard': '📄 Standard',
 		'source.mode.websocket': '🌐 WebSocket',
+		'source.mode.legacy': '🕰️ Legacy',
 		'source.autoactivate': 'Auto-activate',
 		'source.youtube.username': 'YouTube Username',
 		'source.youtube.videoid': 'YouTube Video ID',
@@ -6806,16 +7357,19 @@ const translations = {
 		// Sessions
 		'sessions.title': 'Sessões de Usuário',
 		'sessions.info': 'Gerencie múltiplos perfis de usuário com configurações e fontes separadas.',
-		'sessions.current': 'Sessão Atual',
-		'sessions.available': 'Sessões Disponíveis',
-		'sessions.create': '➕ Criar Nova Sessão',
-		'sessions.switch': 'Alternar',
-		'sessions.active': 'Ativa',
-		
-		// Sources
+			'sessions.current': 'Sessão Atual',
+			'sessions.available': 'Sessões Disponíveis',
+			'sessions.create': '➕ Criar Nova Sessão',
+			'sessions.switch': 'Alternar',
+			'sessions.active': 'Ativa',
+			
+			// Global
+			
+			// Sources
 		'source.add': 'Adicionar nova fonte:',
 		'source.mode.standard': '📄 Padrão',
 		'source.mode.websocket': '🌐 WebSocket',
+		'source.mode.legacy': '🕰️ Legacy',
 		'source.autoactivate': 'Ativar automaticamente',
 		'source.youtube.username': 'Nome de usuário do YouTube',
 		'source.youtube.videoid': 'ID do vídeo do YouTube',
@@ -6870,14 +7424,17 @@ const translations = {
 		'sessions.info': 'Gestione múltiples perfiles de usuario con configuraciones y fuentes separadas.',
 		'sessions.current': 'Sesión Actual',
 		'sessions.available': 'Sesiones Disponibles',
-		'sessions.create': '➕ Crear Nueva Sesión',
-		'sessions.switch': 'Cambiar',
-		'sessions.active': 'Activa',
-		
-		// Sources
+			'sessions.create': '➕ Crear Nueva Sesión',
+			'sessions.switch': 'Cambiar',
+			'sessions.active': 'Activa',
+			
+			// Global
+			
+			// Sources
 		'source.add': 'Añadir nueva fuente',
 		'source.mode.standard': '📄 Estándar',
 		'source.mode.websocket': '🌐 WebSocket',
+		'source.mode.legacy': '🕰️ Legacy',
 		'source.autoactivate': 'Activar automáticamente',
 		'source.youtube.username': 'Nombre de usuario de YouTube',
 		'source.youtube.videoid': 'ID de video de YouTube',
@@ -6934,14 +7491,17 @@ const translations = {
 		'sessions.available': 'Dostupné relace',
 		'sessions.create': '➕ Vytvořit novou relaci',
 		'sessions.export': '💾 Exportovat aktuální relaci',
-		'sessions.import': '📂 Importovat relaci',
-		'sessions.switch': 'Přepnout',
-		'sessions.active': 'Aktivní',
-		
-		// Sources
+			'sessions.import': '📂 Importovat relaci',
+			'sessions.switch': 'Přepnout',
+			'sessions.active': 'Aktivní',
+			
+			// Global
+			
+			// Sources
 		'source.add': 'Přidat nový zdroj:',
 		'source.mode.standard': '📄 Standardní',
 		'source.mode.websocket': '🌐 WebSocket',
+		'source.mode.legacy': '🕰️ Legacy',
 		'source.autoactivate': 'Automaticky aktivovat',
 		'source.youtube.username': 'Uživatelské jméno YouTube',
 		'source.youtube.videoid': 'ID videa YouTube',
@@ -6996,14 +7556,17 @@ const translations = {
 		'sessions.info': 'Gérez plusieurs profils utilisateur avec des paramètres et sources séparés.',
 		'sessions.current': 'Session Actuelle',
 		'sessions.available': 'Sessions Disponibles',
-		'sessions.create': '➕ Créer une Nouvelle Session',
-		'sessions.switch': 'Changer',
-		'sessions.active': 'Active',
-		
-		// Sources
+			'sessions.create': '➕ Créer une Nouvelle Session',
+			'sessions.switch': 'Changer',
+			'sessions.active': 'Active',
+			
+			// Global
+			
+			// Sources
 		'source.add': 'Ajouter une nouvelle source',
 		'source.mode.standard': '📄 Standard',
 		'source.mode.websocket': '🌐 WebSocket',
+		'source.mode.legacy': '🕰️ Legacy',
 		'source.autoactivate': 'Activation automatique',
 		'source.youtube.username': 'Nom d\'utilisateur YouTube',
 		'source.youtube.videoid': 'ID de vidéo YouTube',
@@ -7058,14 +7621,17 @@ const translations = {
 		'sessions.info': 'Verwalten Sie mehrere Benutzerprofile mit separaten Einstellungen und Quellen.',
 		'sessions.current': 'Aktuelle Sitzung',
 		'sessions.available': 'Verfügbare Sitzungen',
-		'sessions.create': '➕ Neue Sitzung erstellen',
-		'sessions.switch': 'Wechseln',
-		'sessions.active': 'Aktiv',
-		
-		// Sources
+			'sessions.create': '➕ Neue Sitzung erstellen',
+			'sessions.switch': 'Wechseln',
+			'sessions.active': 'Aktiv',
+			
+			// Global
+			
+			// Sources
 		'source.add': 'Neue Quelle hinzufügen',
 		'source.mode.standard': '📄 Standard',
 		'source.mode.websocket': '🌐 WebSocket',
+		'source.mode.legacy': '🕰️ Legacy',
 		'source.autoactivate': 'Automatisch aktivieren',
 		'source.youtube.username': 'YouTube-Benutzername',
 		'source.youtube.videoid': 'YouTube-Video-ID',
@@ -7121,13 +7687,16 @@ const translations = {
 		'sessions.current': 'Sessione Corrente',
 		'sessions.available': 'Sessioni Disponibili',
 		'sessions.create': '➕ Crea Nuova Sessione',
-		'sessions.switch': 'Cambia',
-		'sessions.active': 'Attiva',
-		
-		// Sources
+			'sessions.switch': 'Cambia',
+			'sessions.active': 'Attiva',
+			
+			// Global
+			
+			// Sources
 		'source.add': 'Aggiungi nuova fonte',
 		'source.mode.standard': '📄 Standard',
 		'source.mode.websocket': '🌐 WebSocket',
+		'source.mode.legacy': '🕰️ Legacy',
 		'source.autoactivate': 'Attivazione automatica',
 		'source.youtube.username': 'Nome utente YouTube',
 		'source.youtube.videoid': 'ID video YouTube',
@@ -7183,13 +7752,16 @@ const translations = {
 		'sessions.current': '現在のセッション',
 		'sessions.available': '利用可能なセッション',
 		'sessions.create': '➕ 新しいセッションを作成',
-		'sessions.switch': '切り替え',
-		'sessions.active': 'アクティブ',
-		
-		// Sources
+			'sessions.switch': '切り替え',
+			'sessions.active': 'アクティブ',
+			
+			// Global
+			
+			// Sources
 		'source.add': '新しいソースを追加',
 		'source.mode.standard': '📄 スタンダード',
 		'source.mode.websocket': '🌐 WebSocket',
+		'source.mode.legacy': '🕰️ Legacy',
 		'source.autoactivate': '自動有効化',
 		'source.youtube.username': 'YouTubeユーザー名',
 		'source.youtube.videoid': 'YouTube動画ID',
@@ -7244,14 +7816,17 @@ const translations = {
 		'sessions.info': '使用单独的设置和来源管理多个用户配置文件。',
 		'sessions.current': '当前会话',
 		'sessions.available': '可用会话',
-		'sessions.create': '➕ 创建新会话',
-		'sessions.switch': '切换',
-		'sessions.active': '活动',
-		
-		// Sources
+			'sessions.create': '➕ 创建新会话',
+			'sessions.switch': '切换',
+			'sessions.active': '活动',
+			
+			// Global
+			
+			// Sources
 		'source.add': '添加新来源',
 		'source.mode.standard': '📄 标准',
 		'source.mode.websocket': '🌐 WebSocket',
+		'source.mode.legacy': '🕰️ Legacy',
 		'source.autoactivate': '自动激活',
 		'source.youtube.username': 'YouTube用户名',
 		'source.youtube.videoid': 'YouTube视频ID',
@@ -7306,14 +7881,17 @@ const translations = {
 		'sessions.info': '별도의 설정과 소스로 여러 사용자 프로필을 관리합니다.',
 		'sessions.current': '현재 세션',
 		'sessions.available': '사용 가능한 세션',
-		'sessions.create': '➕ 새 세션 만들기',
-		'sessions.switch': '전환',
-		'sessions.active': '활성',
-		
-		// Sources
+			'sessions.create': '➕ 새 세션 만들기',
+			'sessions.switch': '전환',
+			'sessions.active': '활성',
+			
+			// Global
+			
+			// Sources
 		'source.add': '새 소스 추가',
 		'source.mode.standard': '📄 표준',
 		'source.mode.websocket': '🌐 WebSocket',
+		'source.mode.legacy': '🕰️ Legacy',
 		'source.autoactivate': '자동 활성화',
 		'source.youtube.username': 'YouTube 사용자명',
 		'source.youtube.videoid': 'YouTube 동영상 ID',
@@ -7369,13 +7947,16 @@ const translations = {
 		'sessions.current': 'Текущая сессия',
 		'sessions.available': 'Доступные сессии',
 		'sessions.create': '➕ Создать новую сессию',
-		'sessions.switch': 'Переключить',
-		'sessions.active': 'Активная',
-		
-		// Sources
+			'sessions.switch': 'Переключить',
+			'sessions.active': 'Активная',
+			
+			// Global
+			
+			// Sources
 		'source.add': 'Добавить новый источник',
 		'source.mode.standard': '📄 Стандартный',
 		'source.mode.websocket': '🌐 WebSocket',
+		'source.mode.legacy': '🕰️ Legacy',
 		'source.autoactivate': 'Автоактивация',
 		'source.youtube.username': 'Имя пользователя YouTube',
 		'source.youtube.videoid': 'ID видео YouTube',
@@ -7432,14 +8013,17 @@ const translations = {
 		'sessions.available': 'Kullanılabilir Oturumlar',
 		'sessions.create': '➕ Yeni Oturum Oluştur',
 		'sessions.export': '💾 Mevcut Oturumu Dışa Aktar',
-		'sessions.import': '📂 Oturum İçe Aktar',
-		'sessions.switch': 'Değiştir',
-		'sessions.active': 'Aktif',
-		
-		// Sources
+			'sessions.import': '📂 Oturum İçe Aktar',
+			'sessions.switch': 'Değiştir',
+			'sessions.active': 'Aktif',
+			
+			// Global
+			
+			// Sources
 		'source.add': 'Yeni kaynak ekle:',
 		'source.mode.standard': '📄 Standart',
 		'source.mode.websocket': '🌐 WebSocket',
+		'source.mode.legacy': '🕰️ Legacy',
 		'source.autoactivate': 'Otomatik etkinleştir',
 		'source.youtube.username': 'YouTube Kullanıcı Adı',
 		'source.youtube.videoid': 'YouTube Video ID',
@@ -7575,20 +8159,20 @@ function updateDynamicTranslations() {
 		}
 
 		let hasSession = false;
-		let isTikTokWebsocket = false;
+		let isTikTokApiConnector = false;
 		try {
 			if (sourceId && window.stateManager) {
 				const source = stateManager.getSource(sourceId);
 				if (source) {
 					hasSession = !!(typeof source.tiktokSessionId === 'string' && source.tiktokSessionId.trim());
-					isTikTokWebsocket = source.connectionMode === 'tiktok-websocket';
+					isTikTokApiConnector = source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy';
 				}
 			}
 		} catch (e) {
 			console.warn('Failed to resolve TikTok session state for translations:', e);
 		}
 
-		if (!isTikTokWebsocket) {
+		if (!isTikTokApiConnector) {
 			btn.textContent = translate('btn.signin');
 			btn.classList.remove('authenticated');
 			btn.title = '';
@@ -7612,9 +8196,26 @@ function updateDynamicTranslations() {
 			option.textContent = translate('source.mode.standard');
 		} else if (option.dataset.mode === 'websocket' || option.dataset.mode === 'tiktok-websocket') {
 			option.textContent = translate('source.mode.websocket');
+		} else if (option.dataset.mode === 'tiktok-legacy' || option.dataset.mode === 'legacy') {
+			option.textContent = translate('source.mode.legacy');
 		}
 	});
-	
+
+	// Update connection mode menu items
+	document.querySelectorAll('.connection-modes .settings-menu-item').forEach(item => {
+		const labelSpan = item.querySelector('span');
+		if (!labelSpan) return;
+		if (item.dataset.action === 'classic-mode') {
+			labelSpan.textContent = translate('source.mode.standard');
+		} else if (item.dataset.wss === 'true') {
+			labelSpan.textContent = translate('source.mode.websocket');
+		} else if (item.dataset.tiktokwss === 'true') {
+			labelSpan.textContent = translate('source.mode.websocket');
+		} else if (item.dataset.tiktoklegacy === 'true') {
+			labelSpan.textContent = translate('source.mode.legacy');
+		}
+	});
+
 	// Update toggle labels
 	document.querySelectorAll('.toggle-label').forEach(label => {
 		if (label.textContent.includes('Auto-activate')) {
