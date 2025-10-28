@@ -7,6 +7,37 @@
 	<meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; worker-src 'self' 'unsafe-inline' 'unsafe-eval' blob:;"/>
 	<link rel="stylesheet" href="https://maxst.icons8.com/vue-static/landings/line-awesome/line-awesome/1.3.0/css/line-awesome.min.css">
 	<link rel="stylesheet" type="text/css" href="main.css" />
+    <script>
+        window.SSAPP_DEBUG_LOGS = Boolean(window.SSAPP_DEBUG_LOGS);
+        (function() {
+            const filterTokens = [
+                'Potential permissions policy violation',
+                'Unrecognized feature'
+            ];
+
+            function shouldSuppress(args) {
+                try {
+                    const message = args.map(part => {
+                        if (typeof part === 'string') return part;
+                        if (part instanceof Error && part.message) return part.message;
+                        return JSON.stringify(part);
+                    }).join(' ');
+                    return filterTokens.some(token => message.includes(token));
+                } catch (_) {
+                    return false;
+                }
+            }
+
+            ['warn', 'error', 'info', 'log'].forEach(method => {
+                const original = console[method]?.bind(console);
+                if (!original) return;
+                console[method] = function(...args) {
+                    if (shouldSuppress(args)) return;
+                    return original(...args);
+                };
+            });
+        })();
+    </script>
 	<style>
 		.session-item {
 			padding: 10px 15px;
@@ -126,16 +157,16 @@
 			<div id="link-overlay-page" style="min-width:400px;right:0;position:absolute;height:100%;width:35%">
 				<!-- Subtle edge handle to collapse/expand the popup sidebar -->
 				<div id="popup-handle" class="overlay-handle" role="button" tabindex="0" aria-label="Toggle chat panel" title="Hide/Show chat panel">⯇</div>
-				<iframe id="frame1" class="loading" style="height:100%;width:100%" allow="clipboard-write;document-domain;encrypted-media;sync-xhr;usb;web-share;cross-origin-isolated;accelerometer;midi *;geolocation;autoplay;camera;microphone;fullscreen;gyroscope;shared-array-buffer;" ></iframe>
+				<iframe id="frame1" class="loading" style="height:100%;width:100%" allow="autoplay *; camera *; clipboard-write *; encrypted-media *; fullscreen *; geolocation *; microphone *; midi *; usb *"></iframe>
 			</div>
         </div>
 
         <div id="dashboard-page" style="display:none;">
-			<iframe id="frame2" class="loading" style="height:100%;width:100%" aria-hidden="true" allow="clipboard-write;document-domain;encrypted-media;sync-xhr;usb;web-share;cross-origin-isolated;accelerometer;midi *;geolocation;autoplay;camera;microphone;fullscreen;gyroscope;shared-array-buffer;" title="Background Service Loader"></iframe>
+			<iframe id="frame2" class="loading" style="height:100%;width:100%" aria-hidden="true" allow="autoplay *; camera *; clipboard-write *; encrypted-media *; fullscreen *; geolocation *; microphone *; midi *; usb *" title="Background Service Loader"></iframe>
         </div>
 			
 		<div id="vdo-ninja-page" style="display:none;">
-			<iframe id="frame3" class="loading" style="height:100%;width:100%" allow="clipboard-write;document-domain;encrypted-media;sync-xhr;usb;web-share;cross-origin-isolated;accelerometer;midi *;geolocation;autoplay;camera;microphone;fullscreen;gyroscope;shared-array-buffer;" ></iframe>
+			<iframe id="frame3" class="loading" style="height:100%;width:100%" allow="autoplay *; camera *; clipboard-write *; encrypted-media *; fullscreen *; geolocation *; microphone *; midi *; usb *"></iframe>
         </div>
 		
 		<div id="sessions-page" style="display:none;">
@@ -441,6 +472,16 @@ if (window.electron && window.electron.ipcRenderer) {
     ipcRenderer = window.electron.ipcRenderer;
 }
 var localServer = "";
+
+if (ipcRenderer) {
+    ipcRenderer.on('app:clear-all-sources', () => {
+        try {
+            clearAllSources();
+        } catch (e) {
+            console.error('Error clearing sources from menu command:', e);
+        }
+    });
+}
 
 // Universal IPC Promise Handler
 class UniversalIPCHandler {
@@ -1873,7 +1914,9 @@ async function cleanupYouTubeGroups() {
         }
     });
     
-    console.log("YouTube cleanup debug info:", debugInfo);
+    if (window.SSAPP_DEBUG_LOGS) {
+        console.log("YouTube cleanup debug info:", debugInfo);
+    }
     
     if (removedCount > 0) {
         console.log(`Removed ${removedCount} auto-discovered YouTube video sources on startup`);
@@ -3324,6 +3367,60 @@ async function deleteThis(ele) {
         }
     }
     manageWelcomePage();
+}
+
+async function clearAllSources() {
+    if (typeof stateManager === 'undefined') return;
+
+    const sourcesSnapshot = stateManager.getSources();
+    const groupsSnapshot = stateManager.getGroups ? stateManager.getGroups() : [];
+
+    if (sourcesSnapshot.length === 0 && groupsSnapshot.length === 0) {
+        if (typeof Toast !== 'undefined' && Toast?.info) {
+            Toast.info('Nothing to Clear', 'No sources or groups are currently configured.');
+        }
+        return;
+    }
+
+    if (ipcRenderer) {
+        const closedWindows = new Set();
+        const disconnectedWss = new Set();
+        for (const source of sourcesSnapshot) {
+            if (!source) continue;
+            if (source.target === 'tiktok' && source.wssId && !disconnectedWss.has(source.wssId)) {
+                try {
+                    ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: source.wssId });
+                } catch (e) {
+                    console.warn('Failed to disconnect TikTok connection during clear-all-sources:', e);
+                }
+                disconnectedWss.add(source.wssId);
+            }
+            if (source.vid && !closedWindows.has(source.vid)) {
+                try {
+                    ipcRenderer.sendSync('closeWindow', { vid: source.vid });
+                } catch (e) {
+                    console.warn('Failed to close window during clear-all-sources:', e);
+                }
+                closedWindows.add(source.vid);
+            }
+        }
+    }
+
+    if (typeof stateManager.clearAllSourcesAndGroups === 'function') {
+        stateManager.clearAllSourcesAndGroups();
+    } else {
+        groupsSnapshot.forEach(group => group?.id && stateManager.removeGroup(group.id));
+        const remaining = stateManager.getSources();
+        remaining.forEach(src => src?.id && stateManager.removeSource(src.id));
+        if (typeof setRootOrder === 'function') {
+            try { setRootOrder([]); } catch (e) { /* ignore */ }
+        }
+    }
+    manageWelcomePage();
+
+    if (typeof Toast !== 'undefined' && Toast?.success) {
+        Toast.success('Sources Cleared', 'All sources and groups have been removed.');
+    }
 }
 
 
@@ -5454,10 +5551,14 @@ function processSettingsAndCreateSources() {
     });
 
     const standaloneSources = stateManager.getSources().filter(s => !s.groupId); 
-    console.log(`[Startup] Found ${standaloneSources.length} standalone sources`);
+    if (window.SSAPP_DEBUG_LOGS || standaloneSources.length > 0) {
+        console.log(`[Startup] Found ${standaloneSources.length} standalone sources`);
+    }
     standaloneSources.forEach(source => {
          if (!document.querySelector(`[data-source-id="${source.id}"]`)) {
-            console.log(`[Startup] Creating element for source ${source.id}: autoActivate=${source.autoActivate}`);
+            if (window.SSAPP_DEBUG_LOGS) {
+                console.log(`[Startup] Creating element for source ${source.id}: autoActivate=${source.autoActivate}`);
+            }
             const sourceElement = createSourceElement(source.id);
             if (sourceElement) {
                 sourcesContainer.appendChild(sourceElement);
@@ -5562,9 +5663,30 @@ class BetaToggle {
 		this.container.className = 'beta-toggle';
         const versions = document.createElement('div');
 		versions.className = 'beta-toggle-versions';
+
+        let desktopAppVersion = null;
+        if (ipcRenderer && typeof ipcRenderer.sendSync === 'function') {
+            try {
+                desktopAppVersion = ipcRenderer.sendSync('getVersion');
+            } catch (err) {
+                console.warn('Unable to read desktop app version for toggle display', err);
+            }
+        }
+
+        const formatVersion = (value) => value ? `v${value}` : 'N/A';
 		versions.innerHTML = `
-			<div>Production: v${this.mainVersion || 'N/A'}</div>
-			<div>Beta: v${this.betaVersion || 'N/A'}</div>
+            <div class="beta-version-row">
+                <span class="beta-version-label">Desktop App Engine</span>
+                <span class="beta-version-value">${formatVersion(desktopAppVersion)}</span>
+            </div>
+			<div class="beta-version-row">
+                <span class="beta-version-label">Embedded Core · Stable</span>
+                <span class="beta-version-value">${formatVersion(this.mainVersion)}</span>
+            </div>
+			<div class="beta-version-row">
+                <span class="beta-version-label">Embedded Core · Beta</span>
+                <span class="beta-version-value">${formatVersion(this.betaVersion)}</span>
+            </div>
 		`;
 
 		const toggleSwitchContainer = document.createElement('div');
@@ -5576,7 +5698,7 @@ class BetaToggle {
 
 		const label = document.createElement('span');
 		label.className = 'beta-toggle-label';
-		label.textContent = currentBetaMode ? 'Beta Active' : 'Production Active';
+		label.textContent = currentBetaMode ? 'Beta Core Active' : 'Stable Core Active';
 
 		this.container.appendChild(versions);
 		this.container.appendChild(toggleSwitchContainer);
@@ -5597,9 +5719,9 @@ class BetaToggle {
 		const toggle = this.container.querySelector('.beta-toggle-switch');
 		toggle.classList.toggle('active', newBetaState);
 		const label = this.container.querySelector('.beta-toggle-label');
-		label.textContent = newBetaState ? 'Beta Active' : 'Production Active';
+		label.textContent = newBetaState ? 'Beta Core Active' : 'Stable Core Active';
         
-        Toast.info("Mode Changed", `Switched to ${newBetaState ? 'Beta' : 'Production'} mode. Restart app or refresh page for full effect if issues arise.`);
+        Toast.info("Embedded Core Mode Changed", `Switched embedded core to ${newBetaState ? 'Beta' : 'Stable'} mode. Restart app or refresh page for full effect if issues arise.`);
 
 		if (!devmode && !sourcemode) {
             console.log(`Beta mode toggled. Now: ${newBetaState}. Re-initializing parts or consider app reload.`);

@@ -370,6 +370,32 @@ class StateManager {
         return true;
     }
 
+    // Remove every source and group
+    clearAllSourcesAndGroups() {
+        const groupIds = Array.from(this.state.groups.keys());
+        groupIds.forEach(groupId => {
+            if (this.state.groups.has(groupId)) {
+                this.removeGroup(groupId);
+            }
+        });
+
+        const remainingSourceIds = Array.from(this.state.sources.keys());
+        remainingSourceIds.forEach(sourceId => {
+            if (this.state.sources.has(sourceId)) {
+                this.removeSource(sourceId);
+            }
+        });
+
+        const hasRootOrderEntries = Array.isArray(this.state.global.rootOrder) && this.state.global.rootOrder.length > 0;
+        if (hasRootOrderEntries) {
+            this.updateGlobal({ rootOrder: [] });
+        } else {
+            this.persist();
+        }
+
+        this.emit('allSourcesCleared');
+    }
+
     // Update global settings
     updateGlobal(updates) {
         const oldState = { ...this.state.global };

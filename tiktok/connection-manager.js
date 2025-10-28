@@ -562,6 +562,7 @@ function createTikTokEnvironment(options = {}) {
         cleanupConnection,
         sendToBackground,
         sendBatchToBackground,
+        sendToTikTok,
         logTikTokForwardedMessage,
         connectionStates,
         usingLegacyConnector: usingLegacyTikTokConnector,

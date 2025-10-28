@@ -1032,6 +1032,21 @@ button.group-control {
   color: rgba(255, 255, 255, 0.8);
 }
 
+.beta-version-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.beta-version-label {
+  font-weight: 500;
+}
+
+.beta-version-value {
+  font-variant-numeric: tabular-nums;
+}
+
 .beta-toggle-switch {
   position: relative;
   width: 44px;

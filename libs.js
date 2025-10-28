@@ -406,6 +406,31 @@ function getDefaultConfig() {
 	}
 	return baseConfig;
 }
+
+async function loadWelcomeFrameContent(frame, url) {
+	if (!frame) return;
+	if (!url || url.startsWith('file://')) {
+		frame.src = url || '';
+		return;
+	}
+	try {
+		const response = await fetch(url, { credentials: 'omit' });
+		if (!response.ok) {
+			throw new Error(`Unexpected status ${response.status}`);
+		}
+		let html = await response.text();
+		html = html.replace(/allow="[^"]*"/gi, '');
+		const urlObject = new URL(url);
+		const baseHref = `${urlObject.origin}${urlObject.pathname.replace(/[^/]*$/, '')}`;
+		if (!/<base\s/i.test(html)) {
+			html = html.replace(/<head([^>]*)>/i, `<head$1><base href="${baseHref}">`);
+		}
+		frame.srcdoc = html;
+	} catch (err) {
+		frame.src = url;
+	}
+}
+
 function manageWelcomePage() {
   const hasEntries = document.querySelectorAll('#sources .entry:not(#sourceTemplate)').length > 0;
   let welcomeFrame = document.getElementById('welcomeFrame');
@@ -414,8 +439,7 @@ function manageWelcomePage() {
 	  welcomeFrame = document.createElement('iframe');
 	  welcomeFrame.style.cssText = 'width: 100%; height: calc(100vh - 130px); border: none; margin-top: 15px;';
 	  welcomeFrame.id = 'welcomeFrame';
-	  welcomeFrame.setAttribute("allowtransparency", "true");
-	  welcomeFrame.allow = "clipboard-write;document-domain;encrypted-media;sync-xhr;usb;web-share;cross-origin-isolated;accelerometer;midi *;geolocation;autoplay;camera;microphone;fullscreen;gyroscope;shared-array-buffer;";
+		  welcomeFrame.setAttribute("allowtransparency", "true");
 	  const welcomeURL =
 			sourcemode ?
 			`${sourcemode}/docs/ssapp.html` : devmode ?
@@ -423,7 +447,7 @@ function manageWelcomePage() {
 			isBetaMode ?
 			`https://socialstream.ninja/beta/docs/ssapp.html` :
 			`https://socialstream.ninja/docs/ssapp.html`;
-	  welcomeFrame.src = welcomeURL;
+	  loadWelcomeFrameContent(welcomeFrame, welcomeURL);
 	  welcomeFrame.onerror = ()=>{
 		  welcomeFrame.style.display = "none";
 	  }

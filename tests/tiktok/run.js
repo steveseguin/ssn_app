@@ -2,7 +2,8 @@ const path = require('path');
 const process = require('process');
 const tiktokConnector = require('tiktok-live-connector');
 const {
-  createTikTokEnvironment
+  createTikTokEnvironment,
+  installTikTokSignServerFallback
 } = require('../../tiktok/connection-manager');
 
 const args = process.argv.slice(2);
@@ -24,6 +25,8 @@ for (const arg of args) {
     }
   }
 }
+
+installTikTokSignServerFallback(tiktokConnector);
 
 const websocketConnections = {};
 const browserViews = {};

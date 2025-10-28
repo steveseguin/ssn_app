@@ -1,5 +1,29 @@
 var { ipcRenderer, contextBridge } = require('electron');
 
+const WARN_FILTER_PATTERNS = [
+    /Potential permissions policy violation/i,
+    /Unrecognized feature/i,
+    /Electron Security Warning/i
+];
+
+const originalConsoleWarn = console.warn.bind(console);
+console.warn = (...args) => {
+    try {
+        const message = args.map((part) => {
+            if (typeof part === 'string') return part;
+            if (part instanceof Error && part.message) return part.message;
+            return JSON.stringify(part);
+        }).join(' ');
+
+        if (WARN_FILTER_PATTERNS.some((pattern) => pattern.test(message))) {
+            return;
+        }
+    } catch (_) {
+        // Fall through to original handler on parsing issues
+    }
+    return originalConsoleWarn(...args);
+};
+
 // Debug flag for troubleshooting
 const PRELOAD_DEBUG = false; // Set to true for debugging
 

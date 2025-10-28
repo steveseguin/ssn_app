@@ -55,6 +55,8 @@ const {
 const Store = require("electron-store");
 const store = new Store();
 
+process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
+
 let connectionStates = new Map();
 let browserViews = {};
 
@@ -93,6 +95,7 @@ let cleanupConnection = () => {};
 let sendToBackground = () => {};
 let sendBatchToBackground = () => {};
 let logTikTokForwardedMessage = () => {};
+let sendToTikTok = () => {};
 let wssID = 0;
 // Track websocket connections globally for cleanup
 const websocketConnections = {};
@@ -109,16 +112,6 @@ try {
         browserViews,
         websocketConnections,
         log,
-        onStatus: (payload) => {
-            const targetWindow = mainWindow;
-            if (targetWindow && targetWindow.webContents) {
-                try {
-                    targetWindow.webContents.send('tiktokConnectionStatus', payload);
-                } catch (error) {
-                    console.warn('Failed to forward TikTok status:', error);
-                }
-            }
-        },
         getCachedSettings,
         isCaptureEventsEnabled,
         isCaptureJoinedEventEnabled,
@@ -132,6 +125,7 @@ try {
     sendToBackground = tikTokEnv.sendToBackground;
     sendBatchToBackground = tikTokEnv.sendBatchToBackground;
     logTikTokForwardedMessage = tikTokEnv.logTikTokForwardedMessage;
+    sendToTikTok = tikTokEnv.sendToTikTok;
     connectionStates = tikTokEnv.connectionStates;
     usingLegacyTikTokConnector = tikTokEnv.usingLegacyConnector;
     TikTokLiveConnectionClass = tikTokEnv.TikTokLiveConnectionClass;
@@ -1400,6 +1394,52 @@ async function clearAllData() {
             return false;
         }
 
+        // Preserve minimal cached state
+        const preservedStreamID = (cachedState && typeof cachedState === 'object' && 'streamID' in cachedState)
+            ? cachedState.streamID
+            : null;
+        const preservedPassword = (cachedState && typeof cachedState === 'object' && 'password' in cachedState)
+            ? cachedState.password
+            : null;
+
+        // Reset cached state while preserving stream credentials
+        cachedState = {};
+        if (preservedStreamID) {
+            cachedState.streamID = preservedStreamID;
+        }
+        if (preservedPassword !== null && preservedPassword !== undefined) {
+            cachedState.password = preservedPassword;
+        }
+        cachedState.state = false;
+
+        const savedSyncPath = path.join(folder, "savedSync.json");
+        try {
+            fs.writeFileSync(savedSyncPath, JSON.stringify(cachedState, null, 2));
+        } catch (writeError) {
+            console.error('Failed to rewrite cached state during reset:', writeError);
+        }
+
+        // Clear persisted application settings
+        try {
+            store.clear();
+        } catch (storeError) {
+            console.error('Failed to clear settings store during reset:', storeError);
+        }
+
+        sessions = {
+            default: {
+                name: 'Default Session (Original)',
+                created: Date.now(),
+                description: 'Your original settings and sources'
+            }
+        };
+        currentSessionName = 'default';
+        store.set('sessions', sessions);
+        store.set('currentSession', currentSessionName);
+        store.set('sessionSystemInitialized', true);
+
+        createdPartitions.clear();
+
         // Clear data from default session
         const defaultSession = session.defaultSession;
         await clearSessionData(defaultSession);
@@ -1463,6 +1503,14 @@ async function clearAllData() {
         }
 
         if (mainWindow && !mainWindow.isDestroyed()) {
+            try {
+                mainWindow.webContents.send('app:clear-all-sources');
+            } catch (error) {
+                console.error('Failed to dispatch source clear during reset:', error);
+            }
+        }
+
+        if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.reload();
             log('Main window refreshed');
         } else {
@@ -1474,6 +1522,34 @@ async function clearAllData() {
     } catch (error) {
         console.error("Error clearing all data:", error);
         return false;
+    }
+}
+
+async function promptClearAllSources() {
+    try {
+        if (!mainWindow || mainWindow.isDestroyed()) {
+            log('Clear all sources requested but main window is unavailable');
+            return;
+        }
+
+        const { response } = await dialog.showMessageBox({
+            type: 'warning',
+            buttons: ['Clear Sources', 'Cancel'],
+            defaultId: 1,
+            cancelId: 1,
+            title: 'Clear All Sources',
+            message: 'Remove every configured source and group from the Embedded Core?',
+            detail: 'This stops active source windows and connections but keeps app sessions, cookies, and other settings intact.'
+        });
+
+        if (response !== 0) {
+            log('Clear all sources cancelled by user');
+            return;
+        }
+
+        mainWindow.webContents.send('app:clear-all-sources');
+    } catch (error) {
+        console.error('Error sending clear-all-sources command:', error);
     }
 }
 
@@ -2295,7 +2371,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         } else if (TITLE === null) {
             counter += 1;
             if (counter === 1) {
-                currentTitle = "Social Stream Ninja v" + app.getVersion();
+                currentTitle = "Social Stream Ninja - Desktop App v" + app.getVersion();
             } else {
                 currentTitle = "Social Stream Ninja (" + counter.toString() + ")";
             }
@@ -2518,6 +2594,21 @@ async function createWindow(args, reuse = false, mainApp = false) {
             nodeIntegration: !webSecurity // this could be a security hazard, but useful for enabling screen sharing and global hotkeys
         },
         title: currentTitle,
+    });
+
+    const consoleFilterPatterns = [
+        /Potential permissions policy violation/i,
+        /Unrecognized feature/i,
+        /Electron Security Warning/i
+    ];
+
+    mainWindow.webContents.on('console-message', (event, level, message) => {
+        if (consoleFilterPatterns.some((pattern) => pattern.test(message))) {
+            if (typeof event?.preventDefault === 'function') {
+                event.preventDefault();
+            }
+            return;
+        }
     });
 
     mainWindow.args = args; // storing settings
@@ -6212,6 +6303,18 @@ ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
             fallbackError.payloadLength = 0;
             throw fallbackError;
         }
+
+        if (!ConnectionManager) {
+            console.warn('[TikTok] ConnectionManager unavailable (tiktok-live-connector missing); falling back to classic mode');
+            const fallbackError = new Error('SSAPP_TIKTOK_CONNECTOR_MISSING: TikTok WebSocket connector not installed');
+            fallbackError.code = 'SSAPP_TIKTOK_CONNECTOR_MISSING';
+            fallbackError.ssappFallback = true;
+            fallbackError.ssappFallbackMode = 'classic';
+            fallbackError.ssappFallbackMessage = 'TikTok WebSocket connector not installed';
+            fallbackError.payloadLength = 0;
+            throw fallbackError;
+        }
+
         wssID++;
         let username = args.username;
         if (username) {
@@ -8501,7 +8604,11 @@ function createMenu() {
                     role: 'quit'
                 },
                 {
-                    label: 'Reset everything',
+                    label: 'Clear All Sources',
+                    click: () => promptClearAllSources()
+                },
+                {
+                    label: 'Reset Everything (Full Reset)',
                     click: () => clearAllData()
                 },
                 {
