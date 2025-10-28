@@ -4001,7 +4001,8 @@ async function attemptActivationModes({ sourceId, entry, initialMode, tabid, reu
             break;
         }
 
-        if (fallbackInfo && fallbackInfo.mode === 'classic' && !sequence.includes('classic')) {
+        const allowClassicFallback = preferTikTokClassic || cliForcesTikTokClassic;
+        if (allowClassicFallback && fallbackInfo && fallbackInfo.mode === 'classic' && !sequence.includes('classic')) {
             sequence.push('classic');
         }
     }
@@ -4028,6 +4029,7 @@ async function attemptActivationModes({ sourceId, entry, initialMode, tabid, reu
 function buildTikTokFallbackSequence(initialMode, preferredMode) {
     const order = [];
     const seen = new Set();
+    const allowClassicFallback = preferTikTokClassic || cliForcesTikTokClassic;
     const pushMode = (mode) => {
         const normalized = normalizeTikTokMode(mode);
         if (!normalized || seen.has(normalized)) return;
@@ -4037,7 +4039,10 @@ function buildTikTokFallbackSequence(initialMode, preferredMode) {
 
     pushMode(initialMode);
     pushMode(preferredMode);
-    ['tiktok-websocket', 'tiktok-legacy', 'classic'].forEach(pushMode);
+    ['tiktok-websocket', 'tiktok-legacy'].forEach(pushMode);
+    if (allowClassicFallback) {
+        pushMode('classic');
+    }
     return order;
 }
 
@@ -4056,7 +4061,7 @@ function describeTikTokMode(mode) {
         case 'tiktok-legacy':
             return 'TikTok Legacy';
         case 'classic':
-            return 'Classic';
+            return 'TikTok Standard';
         default:
             return normalized || 'Unknown';
     }
@@ -4350,11 +4355,11 @@ function isTikTokFallbackError(error) {
 }
 
 async function handleTikTokFallbackToClassic({ sourceId, entryElement, tabid, originalError, pendingTikTokToken }) {
-    console.warn('[TikTok] Falling back to classic mode for source', sourceId, originalError);
+    console.warn('[TikTok] Falling back to standard mode for source', sourceId, originalError);
     const fallbackInfo = resolveTikTokFallbackInfo(originalError);
     const fallbackReason = (fallbackInfo && fallbackInfo.message)
         ? fallbackInfo.message
-        : 'TikTok WebSocket unavailable. Switching to classic mode...';
+        : 'TikTok WebSocket unavailable. Switching to standard mode...';
     const entry = entryElement;
     if (entry) {
         updateConnectionStatus(entry, 'info', fallbackReason);
@@ -4395,7 +4400,7 @@ async function handleTikTokFallbackToClassic({ sourceId, entryElement, tabid, or
         }
 
         const formattedReason = fallbackReason.endsWith('.') ? fallbackReason : `${fallbackReason}.`;
-        Toast.info('TikTok Fallback', `${formattedReason} Now using classic connection mode.`);
+        Toast.info('TikTok Fallback', `${formattedReason} Now using standard connection mode.`);
         return fallbackWindowId;
     } catch (fallbackErr) {
         console.error('TikTok classic fallback failed:', fallbackErr);

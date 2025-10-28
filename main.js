@@ -93,6 +93,9 @@ let cleanupConnection = () => {};
 let sendToBackground = () => {};
 let sendBatchToBackground = () => {};
 let logTikTokForwardedMessage = () => {};
+let wssID = 0;
+// Track websocket connections globally for cleanup
+const websocketConnections = {};
 
 try {
     const tiktokConnector = require('tiktok-live-connector');
@@ -420,9 +423,6 @@ process.on("exit", () => {
 
 // Track all created partitions for proper cleanup
 const createdPartitions = new Set();
-
-// Track websocket connections globally for cleanup
-const websocketConnections = {};
 
 // Helper function to get and track partition name
 function getTrackedPartition(sessionName) {
@@ -6441,89 +6441,6 @@ ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
             };
         }
     });
-
-    function sendToBackground(msg) {
-        // Per-connection reply-only filter (TikTok virtual tabs)
-        try {
-            if (msg && typeof msg === 'object' && typeof msg.tid === 'number') {
-                const tid = msg.tid;
-                if (tid >= 900001) { // TikTok virtual tab IDs = 900000 + wssID
-                    const wssID = tid - 900000;
-                    const conn = websocketConnections[wssID];
-                    if (conn && conn.replyOnly) {
-                        if (typeof conn.logDebug === 'function') {
-                            conn.logDebug('event.forwarded.skipped', {
-                                reason: 'reply_only',
-                                context: 'single'
-                            });
-                        }
-                        return; // drop captured message for reply-only connection
-                    }
-                }
-            }
-        } catch (_) { /* noop */ }
-
-        logTikTokForwardedMessage(msg);
-
-        if (mainWindow && mainWindow.webContents) {
-            mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (frame.url.split("?")[0].endsWith("background.html")) {
-                    frame.postMessage("fromMain", {
-                        message: msg
-                    });
-                }
-            });
-        }
-    }
-
-    function sendBatchToBackground(messages) {
-        // Filter out reply-only TikTok messages
-        try {
-            if (Array.isArray(messages)) {
-                messages = messages.filter(m => {
-                    try {
-                        if (!m || typeof m.tid !== 'number') return true;
-                        const tid = m.tid;
-                        if (tid >= 900001) {
-                            const wssID = tid - 900000;
-                            const conn = websocketConnections[wssID];
-                            if (conn && conn.replyOnly) {
-                                if (typeof conn.logDebug === 'function' && m && m.type === 'tiktok') {
-                                    conn.logDebug('event.forwarded.skipped', {
-                                        reason: 'reply_only',
-                                        context: 'batch'
-                                    });
-                                }
-                                return false;
-                            }
-                        }
-                    } catch(_){}
-                    return true;
-                });
-            }
-        } catch(_){}
-
-        if (Array.isArray(messages)) {
-            messages.forEach((m, idx) => {
-                logTikTokForwardedMessage(m, 'batch', {
-                    batchSize: messages.length,
-                    itemIndex: idx
-                });
-            });
-        }
-
-        if (mainWindow && mainWindow.webContents) {
-            mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (frame.url.split("?")[0].endsWith("background.html")) {
-                    frame.postMessage("fromMain", {
-                        messages: messages
-                    });
-                }
-            });
-        }
-    }
-
-    
 
     /* ipcMain.on('inject', function(eventRet,args) {
     	const view = browserViews[args.vid];

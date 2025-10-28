@@ -1821,21 +1821,21 @@ function resolveFirstImageUrl(candidates = []) {
             const totalDiamonds = perGiftDiamonds * count;
             const donationDisplay = totalDiamonds > 0 ? `${totalDiamonds} 💎` : null;
 
-            const giftPictureUrl = resolveFirstImageUrl([
-                data.giftPictureUrl,
-                giftData.giftPictureUrl,
-                giftData.iconUrl,
-                giftData.icon_url,
-                giftData.pictureUrl,
-                giftData.picture_url,
-                giftData.imageUrl,
-                giftData.image_url,
-                giftData.image,
-                giftDetails.icon,
-                giftDetails.giftImage,
-                extendedGiftInfo.icon,
-                extendedGiftInfo.image
-            ]);
+            // const giftPictureUrl = resolveFirstImageUrl([
+            //     data.giftPictureUrl,
+            //     giftData.giftPictureUrl,
+            //     giftData.iconUrl,
+            //     giftData.icon_url,
+            //     giftData.pictureUrl,
+            //     giftData.picture_url,
+            //     giftData.imageUrl,
+            //     giftData.image_url,
+            //     giftData.image,
+            //     giftDetails.icon,
+            //     giftDetails.giftImage,
+            //     extendedGiftInfo.icon,
+            //     extendedGiftInfo.image
+            // ]);
 
             const identity = extractTikTokIdentity(data);
             const resolvedUserId = resolveTikTokUserId(data, identity);
@@ -1872,9 +1872,9 @@ function resolveFirstImageUrl(candidates = []) {
                 msg.subtitle = donationDisplay;
                 msg.donoValue = totalDiamonds * 0.005;
             }
-            if (giftPictureUrl) {
-                msg.contentimg = giftPictureUrl;
-            }
+            // Suppress large art for standard gift notifications; legacy overlays already
+            // render the gift name/diamond value via text. If TikTok surfaces paid sticker
+            // gifts distinctly in the future, we can re-enable artwork selectively.
 
             const fanTicketCount = pickFirstPositiveNumber([
                 data.fanTicketCount,
