@@ -3,6 +3,7 @@ const electron = require("electron");
 const process = require("process");
 const prompt = require("electron-prompt");
 const fs = require("fs");
+const fsp = fs.promises;
 const path = require("path");
 const os = require("os");
 const {
@@ -599,6 +600,218 @@ function normalizeForLogging(value, seen = new WeakMap()) {
     }
 
     return value;
+}
+
+const SOCIAL_STREAM_CACHE_DIR = 'social_stream_cache';
+const SOCIAL_STREAM_FALLBACK_DIR = 'social_stream_fallback';
+const SOCIAL_STREAM_REMOTE_TIMEOUT_MS = 5000;
+const socialStreamLoadPromises = new Map();
+const pendingInjectorToasts = [];
+const seenInjectorToastKeys = new Set();
+let mainWindowReadyForInjectorToasts = false;
+
+function normalizeSocialStreamRelativePath(input) {
+    if (!input || typeof input !== 'string') return null;
+    const normalized = [];
+    const parts = input.replace(/\\/g, '/').split('/');
+    for (const part of parts) {
+        if (!part || part === '.') continue;
+        if (part === '..') {
+            if (normalized.length) normalized.pop();
+            continue;
+        }
+        normalized.push(part);
+    }
+    if (!normalized.length) return null;
+    return normalized.join(path.sep);
+}
+
+async function ensureDirectoryFor(filePath) {
+    try {
+        const dir = path.dirname(filePath);
+        await fsp.mkdir(dir, { recursive: true });
+    } catch (error) {
+        if (error && error.code !== 'EEXIST') {
+            console.warn('Failed to prepare directory for cache file:', error);
+        }
+    }
+}
+
+async function readTextIfExists(filePath) {
+    try {
+        return await fsp.readFile(filePath, 'utf8');
+    } catch (error) {
+        if (error && error.code === 'ENOENT') {
+            return null;
+        }
+        throw error;
+    }
+}
+
+function getSocialStreamCachePath(branch, relativePath) {
+    const sanitizedBranch = branch && typeof branch === 'string' ? branch : 'main';
+    const userDataPath = app.getPath('userData');
+    return path.join(userDataPath, SOCIAL_STREAM_CACHE_DIR, sanitizedBranch, relativePath);
+}
+
+function getCandidateBundledPaths(branch, relativePath) {
+    const candidates = [];
+    if (process.resourcesPath) {
+        candidates.push(path.join(process.resourcesPath, SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
+        candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
+    }
+    candidates.push(path.join(__dirname, 'resources', SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
+    candidates.push(path.join(__dirname, SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
+    return candidates;
+}
+
+async function loadBundledSocialStream(branch, relativePath) {
+    const attempts = getCandidateBundledPaths(branch, relativePath);
+    for (const candidate of attempts) {
+        try {
+            const text = await readTextIfExists(candidate);
+            if (typeof text === 'string') {
+                return { text, path: candidate };
+            }
+        } catch (error) {
+            console.warn('Failed to read bundled Social Stream script:', error);
+        }
+    }
+    return null;
+}
+
+async function fetchWithTimeout(url, timeoutMs = SOCIAL_STREAM_REMOTE_TIMEOUT_MS) {
+    const fetchPromise = fetch(url);
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`Request timed out after ${timeoutMs} ms`)), timeoutMs);
+    });
+    try {
+        const response = await Promise.race([fetchPromise, timeoutPromise]);
+        clearTimeout(timeoutId);
+        if (!response) {
+            throw new Error('No response received');
+        }
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const text = await response.text();
+        return { text };
+    } catch (error) {
+        fetchPromise.catch(() => {}); // Prevent unhandled rejection if timeout wins
+        clearTimeout(timeoutId);
+        throw error;
+    }
+}
+
+async function loadSocialStreamSource(remoteUrl, options = {}) {
+    const branch = options.branch || 'main';
+    const relativePath = normalizeSocialStreamRelativePath(options.relativePath || '');
+    const cacheKey = `${branch}::${remoteUrl || 'none'}::${relativePath || 'inline'}`;
+
+    if (socialStreamLoadPromises.has(cacheKey)) {
+        return socialStreamLoadPromises.get(cacheKey);
+    }
+
+    const promise = (async () => {
+        let remoteError = null;
+        let cachePath = null;
+
+        if (remoteUrl) {
+            try {
+                const { text } = await fetchWithTimeout(remoteUrl, options.timeoutMs || SOCIAL_STREAM_REMOTE_TIMEOUT_MS);
+                if (relativePath) {
+                    try {
+                        cachePath = getSocialStreamCachePath(branch, relativePath);
+                        await ensureDirectoryFor(cachePath);
+                        await fsp.writeFile(cachePath, text, 'utf8');
+                    } catch (cacheWriteError) {
+                        console.warn('Failed to update Social Stream cache:', cacheWriteError);
+                    }
+                }
+                return {
+                    text,
+                    origin: 'remote',
+                    meta: { url: remoteUrl }
+                };
+            } catch (error) {
+                remoteError = error;
+            }
+        }
+
+        if (relativePath) {
+            try {
+                cachePath = cachePath || getSocialStreamCachePath(branch, relativePath);
+                const cachedText = await readTextIfExists(cachePath);
+                if (typeof cachedText === 'string') {
+                    return {
+                        text: cachedText,
+                        origin: 'cache',
+                        meta: {
+                            path: cachePath,
+                            reason: remoteError ? remoteError.message : 'remote unavailable'
+                        }
+                    };
+                }
+            } catch (cacheReadError) {
+                console.warn('Failed to read Social Stream cache:', cacheReadError);
+            }
+
+            const bundled = await loadBundledSocialStream(branch, relativePath);
+            if (bundled && typeof bundled.text === 'string') {
+                return {
+                    text: bundled.text,
+                    origin: 'fallback',
+                    meta: {
+                        path: bundled.path,
+                        reason: remoteError ? remoteError.message : 'remote unavailable'
+                    }
+                };
+            }
+        }
+
+        const reasons = [];
+        if (remoteError) {
+            reasons.push(remoteError && remoteError.message ? remoteError.message : String(remoteError));
+        }
+        if (!relativePath) {
+            reasons.push('No relative path available for cache or fallback.');
+        } else {
+            reasons.push('No cached or bundled Social Stream script available.');
+        }
+        throw new Error(reasons.join(' | '));
+    })()
+    .finally(() => {
+        socialStreamLoadPromises.delete(cacheKey);
+    });
+
+    socialStreamLoadPromises.set(cacheKey, promise);
+    return promise;
+}
+
+function queueInjectorToast(level, title, message) {
+    if (!level || !title || !message) return;
+    const key = `${level}|${title}|${message}`;
+    if (seenInjectorToastKeys.has(key)) return;
+    seenInjectorToastKeys.add(key);
+    pendingInjectorToasts.push({ level, title, message });
+    flushInjectorToastQueue();
+}
+
+function flushInjectorToastQueue() {
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindowReadyForInjectorToasts) {
+        return;
+    }
+    while (pendingInjectorToasts.length) {
+        const toast = pendingInjectorToasts.shift();
+        try {
+            mainWindow.webContents.send('socialstream-injector-status', toast);
+        } catch (error) {
+            console.warn('Failed to send injector toast:', error);
+            pendingInjectorToasts.unshift(toast);
+            break;
+        }
+    }
 }
 
 function createTikTokLogWriter(username, wssID) {
@@ -2595,6 +2808,24 @@ async function createWindow(args, reuse = false, mainApp = false) {
         },
         title: currentTitle,
     });
+
+    mainWindowReadyForInjectorToasts = false;
+    if (mainWindow && mainWindow.webContents) {
+        const wc = mainWindow.webContents;
+        wc.on('did-finish-load', () => {
+            mainWindowReadyForInjectorToasts = true;
+            flushInjectorToastQueue();
+        });
+        wc.on('will-navigate', () => {
+            mainWindowReadyForInjectorToasts = false;
+        });
+        wc.on('did-start-navigation', () => {
+            mainWindowReadyForInjectorToasts = false;
+        });
+        wc.on('destroyed', () => {
+            mainWindowReadyForInjectorToasts = false;
+        });
+    }
 
     const consoleFilterPatterns = [
         /Potential permissions policy violation/i,
@@ -5965,20 +6196,36 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         });
                     }
                 } else if (args.source) {
-                    try {
-                        var jsSource = args.source.startsWith("https://") ? args.source : `https://raw.githubusercontent.com/steveseguin/social_stream/${isBetaMode ? 'beta' : 'main'}/${args.source}`;
+                    (async () => {
+                        try {
+                            const branch = isBetaMode ? 'beta' : 'main';
+                            const jsSource = args.source.startsWith("https://") ? args.source : `https://raw.githubusercontent.com/steveseguin/social_stream/${branch}/${args.source}`;
+                            const relativeSource = args.source.startsWith("https://") ? '' : args.source;
 
-                        log(jsSource);
+                            log(jsSource);
 
-                        fetch(jsSource)
-                            .then((response) => response.text())
-                            .then((text) => {
-                                try {
-                                    runWithWebContents("Remote script injection", (wc) => {
-                                        // Removed empty console-message handler to allow console logs to flow through
+                            const { text, origin, meta } = await loadSocialStreamSource(jsSource, {
+                                branch,
+                                relativePath: relativeSource,
+                                timeoutMs: SOCIAL_STREAM_REMOTE_TIMEOUT_MS
+                            });
 
-                                        var code =
-                                            `
+                            if (origin === 'cache') {
+                                const reason = meta && meta.reason ? meta.reason : 'remote fetch unavailable';
+                                console.warn(`Using cached Social Stream scripts for ${relativeSource || jsSource}: ${reason}`);
+                                queueInjectorToast('warning', 'Classic Mode Fallback', `Using cached Social Stream scripts (${reason}).`);
+                            } else if (origin === 'fallback') {
+                                const reason = meta && meta.reason ? meta.reason : 'remote fetch unavailable';
+                                console.warn(`Using bundled Social Stream scripts for ${relativeSource || jsSource}: ${reason}`);
+                                queueInjectorToast('warning', 'Classic Mode Fallback', `Using bundled Social Stream scripts (${reason}).`);
+                            }
+
+                            try {
+                                runWithWebContents("Remote script injection", (wc) => {
+                                    // Removed empty console-message handler to allow console logs to flow through
+
+                                    var code =
+                                        `
 										// Debug window.ninjafy availability
 										console.log("[Injection Remote] window.ninjafy:", window.ninjafy);
 										console.log("[Injection Remote] window.ninjafy._authToken:", window.ninjafy?._authToken);
@@ -6135,31 +6382,33 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                             })();
                                             `;
 
-                                        // Inject into main world (worldId: 0) to access contextBridge APIs
-                                        wc.executeJavaScriptInIsolatedWorld(0, [{ code }])
-                                            .catch(whenDestroyedReject("Remote script injection"));
-                                    });
-                                } catch (e) {
-                                    let options = {
-                                        title: "Could not inject required code.",
-                                        buttons: ["OK"],
-                                        message: "An error occured parsing or injecting the required js script.",
-                                    };
-                                    dialog.showMessageBoxSync(options);
-                                    console.error(e);
-                                }
-                            })
-                            .catch((e) => {
+                                    // Inject into main world (worldId: 0) to access contextBridge APIs
+                                    wc.executeJavaScriptInIsolatedWorld(0, [{ code }])
+                                        .catch(whenDestroyedReject("Remote script injection"));
+                                });
+                            } catch (e) {
+                                let options = {
+                                    title: "Could not inject required code.",
+                                    buttons: ["OK"],
+                                    message: "An error occured parsing or injecting the required js script.",
+                                };
+                                dialog.showMessageBoxSync(options);
                                 console.error(e);
-                            });
-                    } catch (e) {
-                        let options = {
-                            title: "Site not supported or injection script not found",
-                            buttons: ["OK"],
-                            message: args.source + " was not found.\n\njoin the Discord for support: \nhttps://discord.socialstream.ninja",
-                        };
-                        let response = dialog.showMessageBoxSync(options);
-                    }
+                            }
+                        } catch (e) {
+                            console.error('Failed to load Social Stream injector:', e);
+                            queueInjectorToast('error', 'Classic Mode Failed', `Could not load Social Stream scripts (${e && e.message ? e.message : 'unknown error'}).`);
+                            try {
+                                dialog.showMessageBoxSync({
+                                    title: "Site not supported or injection script not found",
+                                    buttons: ["OK"],
+                                    message: args.source + " was not found.\n\njoin the Discord for support: \nhttps://discord.socialstream.ninja",
+                                });
+                            } catch (dialogError) {
+                                console.error('Failed to show injector error dialog:', dialogError);
+                            }
+                        }
+                    })();
                 } else {
                     var code =
                         `
@@ -8118,8 +8367,15 @@ app.whenReady().then(function() {
         try {
             const savedLocalSource = store.get('localSourcePath');
             if (!Argv.filesource && savedLocalSource) {
-                Argv.filesource = savedLocalSource;
-                log(`Using saved local source: ${savedLocalSource}`);
+                const resolved = fsPathFromMaybeFileUrl(savedLocalSource) || savedLocalSource;
+                if (resolved && fs.existsSync(resolved)) {
+                    Argv.filesource = savedLocalSource;
+                    log(`Using saved local source: ${savedLocalSource}`);
+                } else {
+                    console.warn('Saved local Social Stream source missing, reverting to online assets:', savedLocalSource);
+                    try { store.delete('localSourcePath'); } catch (_) {}
+                    queueInjectorToast('warning', 'Local Social Stream Missing', 'Saved Social Stream files were not found. Reverting to the online version.');
+                }
             }
         } catch (e) {
             console.error('Error applying saved local source:', e);
@@ -8385,6 +8641,7 @@ function reloadWithLocalSource(localPath) {
         const src = localPath.startsWith('file://') ? localPath : pathToFileUrl(localPath);
         const indexUrl = `file://${path.join(__dirname, 'index.html')}`;
         const loadUrl = `${indexUrl}?sourcemode=${encodeURIComponent(src)}`;
+        mainWindowReadyForInjectorToasts = false;
         mainWindow.loadURL(loadUrl);
     } catch (e) {
         console.error('Failed to reload with local source:', e);
@@ -8397,7 +8654,9 @@ function clearLocalSourceAndReload() {
     try {
         if (mainWindow) {
             const indexUrl = `file://${path.join(__dirname, 'index.html')}`;
+            mainWindowReadyForInjectorToasts = false;
             mainWindow.loadURL(indexUrl);
+            queueInjectorToast('info', 'Classic Mode', 'Returned to online Social Stream scripts.');
         }
     } catch (e) {
         console.error('Failed to reload default index:', e);
@@ -8635,7 +8894,7 @@ function createMenu() {
                 { label: 'Load Social Stream From ZIP…', click: () => handleLoadFromZip() },
                 ...(store.get('localSourcePath') ? [
                     { label: 'Open Local Source Folder', click: async () => { const p = store.get('localSourcePath'); if (p) await shell.openPath(fsPathFromMaybeFileUrl(p)); } },
-                    { label: 'Clear Local Source Override', click: () => clearLocalSourceAndReload() },
+                    { label: 'Stop Using Local Social Stream Source', click: () => clearLocalSourceAndReload() },
                 ] : []),
                 { type: 'separator' },
                 {

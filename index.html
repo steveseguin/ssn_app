@@ -6497,6 +6497,23 @@ document.addEventListener('DOMContentLoaded', async function() {
     })();
 
     if (ipcRenderer) {
+        const handledInjectorStatusKeys = new Set();
+        ipcRenderer.on('socialstream-injector-status', (event, payload = {}) => {
+            try {
+                const level = payload.level || 'info';
+                const title = payload.title || 'Classic Mode';
+                const message = payload.message || '';
+                if (!message) return;
+                const key = `${level}|${title}|${message}`;
+                if (handledInjectorStatusKeys.has(key)) return;
+                handledInjectorStatusKeys.add(key);
+                const toastFn = (typeof Toast?.[level] === 'function') ? Toast[level].bind(Toast) : Toast.info.bind(Toast);
+                toastFn(title, message);
+            } catch (err) {
+                console.warn('Failed to apply socialstream-injector-status toast:', err);
+            }
+        });
+
         ipcRenderer.on('fromMainToIndex', (event, ...args) => { 
             log("FROM MAIN TO INDEX", args[0]);
             if (args[0] == "serverStarted") {
