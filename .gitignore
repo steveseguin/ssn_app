@@ -2,6 +2,7 @@
 /node_modules
 package-lock.json
 mac.sh
+resources/social_stream_fallback/
 
 # Certificates and keys
 certs/
