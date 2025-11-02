@@ -873,11 +873,34 @@ async function fetchYoutube(username, alt = false) {
 }
 
 async function fetchRumble(username, alt = false) { 
-    let urlToFetch = `https://rumble.com/c/${username}/livestreams`;
-    if (alt) { 
-        urlToFetch = `https://rumble.com/user/${username}/livestreams`; 
+    // Note: `alt` now indicates whether to prefer user-style URLs first (true) or channel-style first (false)
+    const channelPreferredUrls = [
+        `https://rumble.com/${username}/live`,
+        `https://rumble.com/c/${username}/live`,
+        `https://rumble.com/c/${username}/livestreams`,
+        `https://rumble.com/${username}/livestreams`
+    ];
+    const userPreferredUrls = [
+        `https://rumble.com/user/${username}/live`,
+        `https://rumble.com/user/${username}/livestreams`,
+        `https://rumble.com/${username}/live`,
+        `https://rumble.com/${username}/livestreams`
+    ];
+
+    const seenUrls = new Set();
+    const candidateUrls = (alt ? [...userPreferredUrls, ...channelPreferredUrls] : [...channelPreferredUrls, ...userPreferredUrls])
+        .filter(url => {
+            if (seenUrls.has(url)) return false;
+            seenUrls.add(url);
+            return true;
+        });
+
+    if (candidateUrls.length === 0) {
+        console.warn("No Rumble URL candidates generated for:", username);
+        return false;
     }
-    console.log("Fetching Rumble URL:", urlToFetch);
+    console.log("Rumble candidate URL order:", candidateUrls);
+
     try {
         if (!ipcRenderer) {
             console.warn("ipcRenderer not available for fetchRumble.");
@@ -892,84 +915,150 @@ async function fetchRumble(username, alt = false) {
             'Pragma': 'no-cache'
         };
 
-        // Try Node-side fetch first (explicit UA), then fallback to renderer fetch
-        let htmlData = null;
-        try {
-            const response = await ipcRenderer.invoke('nodefetch', {
-                url: urlToFetch,
-                headers: commonHeaders,
-                timeout: 15000
-            });
-            if (response && response.status >= 200 && response.status < 400 && typeof response.data === 'string') {
-                htmlData = response.data;
-            } else {
-                console.warn('Rumble nodefetch returned non-OK or non-text response:', response?.status);
-            }
-        } catch (e) {
-            console.warn('Rumble nodefetch failed, will try renderer fetch:', e?.message || e);
-        }
-
-        if (!htmlData) {
+        const tryFetchUrl = async (urlToFetch) => {
+            // Try Node-side fetch first (explicit UA), then fallback to renderer fetch
+            let htmlData = null;
+            let sawHardNotFound = false;
             try {
-                const res = await fetch(urlToFetch, {
-                    method: 'GET',
-                    headers: {
-                        // Cannot set User-Agent from renderer; rely on Chromium UA
-                        'Accept': commonHeaders['Accept'],
-                        'Accept-Language': commonHeaders['Accept-Language'],
-                        'Referer': commonHeaders['Referer'],
-                        'Cache-Control': commonHeaders['Cache-Control'],
-                        'Pragma': commonHeaders['Pragma']
-                    },
-                    credentials: 'omit',
-                    cache: 'no-store',
-                    redirect: 'follow'
+                const response = await ipcRenderer.invoke('nodefetch', {
+                    url: urlToFetch,
+                    headers: commonHeaders,
+                    timeout: 15000
                 });
-                if (res.ok) {
-                    htmlData = await res.text();
+                if (response && response.status >= 200 && response.status < 400 && typeof response.data === 'string') {
+                    htmlData = response.data;
                 } else {
-                    console.warn('Rumble renderer fetch returned non-OK status:', res.status);
+                    if (response && [404, 410].includes(response.status)) sawHardNotFound = true;
+                    console.warn('Rumble nodefetch returned non-OK or non-text response:', response?.status, 'for URL:', urlToFetch);
                 }
             } catch (e) {
-                console.warn('Rumble renderer fetch failed:', e?.message || e);
+                console.warn('Rumble nodefetch failed, will try renderer fetch:', e?.message || e);
             }
-        }
 
-        const htmlDataResolved = htmlData;
-		//console.log(htmlData);
-        if (htmlDataResolved && typeof htmlDataResolved === 'string') {
-            // Try new method first (looking for href pattern)
-            const altRegex = /videostream__status--live[\s\S]{0,500}?href=["']\/([^"']+\.html)/;
-            const altMatch = htmlDataResolved.match(altRegex);
-            
-            if (altMatch && altMatch[1]) {
-                // Extract just the video ID for compatibility, but also save the full path
-                const fullPath = altMatch[1];
-                const videoIdMatch = fullPath.match(/^(v[a-zA-Z0-9]+)/);
-                const videoId = videoIdMatch ? videoIdMatch[1] : fullPath.replace('.html', '');
-                
-                console.log("Found Rumble live video (new method):", { videoId, fullPath });
-                
-                // Return an object with both the video ID and full path
-                return { videoId, fullPath };
+            if (!htmlData) {
+                try {
+                    const res = await fetch(urlToFetch, {
+                        method: 'GET',
+                        headers: {
+                            // Cannot set User-Agent from renderer; rely on Chromium UA
+                            'Accept': commonHeaders['Accept'],
+                            'Accept-Language': commonHeaders['Accept-Language'],
+                            'Referer': commonHeaders['Referer'],
+                            'Cache-Control': commonHeaders['Cache-Control'],
+                            'Pragma': commonHeaders['Pragma']
+                        },
+                        credentials: 'omit',
+                        cache: 'no-store',
+                        redirect: 'follow'
+                    });
+                    if (res.ok) {
+                        htmlData = await res.text();
+                    } else {
+                        if ([404, 410].includes(res.status)) sawHardNotFound = true;
+                        console.warn('Rumble renderer fetch returned non-OK status:', res.status, 'for URL:', urlToFetch);
+                    }
+                } catch (e) {
+                    console.warn('Rumble renderer fetch failed:', e?.message || e);
+                }
             }
-            
-            // Fallback to old method (looking for data-video-id pattern)
-            console.log("Trying old rumble fetch method...");
-            try {
-                const oldMethodMatch = htmlDataResolved.split('data-video-id="').slice(1).find(segment => segment.includes("videostream__status--live"));
-                if (oldMethodMatch) {
-                    const videoId = oldMethodMatch.split('"')[0];
-                    if (videoId) {
-                        console.log("Found Rumble live video (old method):", videoId);
-                        // Return in same format as new method for consistency
-                        return { videoId, fullPath: `${videoId}.html` };
+
+            return { htmlData, sawHardNotFound };
+        };
+
+        const extractLiveVideo = (htmlDataResolved) => {
+            if (htmlDataResolved && typeof htmlDataResolved === 'string') {
+                // Try new method first (looking for href pattern)
+                const altRegex = /videostream__status--live[\s\S]{0,500}?href=["']\/([^"']+\.html)/;
+                const altMatch = htmlDataResolved.match(altRegex);
+                
+                if (altMatch && altMatch[1]) {
+                    // Extract just the video ID for compatibility, but also save the full path
+                    const fullPath = altMatch[1];
+                    const videoIdMatch = fullPath.match(/^(v[a-zA-Z0-9]+)/);
+                    const videoId = videoIdMatch ? videoIdMatch[1] : fullPath.replace('.html', '');
+                    
+                    console.log("Found Rumble live video (new method):", { videoId, fullPath });
+                    
+                    // Return an object with both the video ID and full path
+                    return { videoId, fullPath };
+                }
+                
+                // Fallback to old method (looking for data-video-id pattern)
+                console.log("Trying old rumble fetch method...");
+                try {
+                    const oldMethodMatch = htmlDataResolved.split('data-video-id="').slice(1).find(segment => segment.includes("videostream__status--live"));
+                    if (oldMethodMatch) {
+                        const videoId = oldMethodMatch.split('"')[0];
+                        if (videoId) {
+                            console.log("Found Rumble live video (old method):", videoId);
+                            // Return in same format as new method for consistency
+                            return { videoId, fullPath: `${videoId}.html` };
+                        }
+                    }
+                } catch (e) {
+                    console.warn("Old rumble fetch method failed:", e);
+                }
+
+                // Attempt to parse embedded JSON-like data
+                try {
+                    const jsonLikeMatches = [...htmlDataResolved.matchAll(/"hash_id":"(v[a-zA-Z0-9]+)"/g)];
+                    if (jsonLikeMatches.length > 0) {
+                        for (const match of jsonLikeMatches) {
+                            const surrounding = htmlDataResolved.slice(Math.max(0, match.index - 600), match.index + 600);
+                            if (/\b(is_live|isLive|isLivestream|is_livestream|livestream|live_status|status)\b[^<>{}]{0,80}?(true|"live"|'live'|1)/i.test(surrounding)) {
+                                const videoId = match[1];
+                                let fullPath = null;
+                                const urlMatch = surrounding.match(/"url":"\/([^"']+\.html)"/);
+                                if (urlMatch && urlMatch[1]) {
+                                    fullPath = urlMatch[1];
+                                } else {
+                                    const slugMatch = surrounding.match(/"slug":"([^"']+)"/);
+                                    if (slugMatch && slugMatch[1]) {
+                                        const slug = slugMatch[1].replace(/[^a-zA-Z0-9-]+/g, '-');
+                                        fullPath = `${videoId}-${slug}.html`;
+                                    }
+                                }
+                                if (!fullPath) {
+                                    fullPath = `${videoId}.html`;
+                                }
+                                console.log("Found Rumble live video (JSON heuristic):", { videoId, fullPath });
+                                return { videoId, fullPath };
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.warn("JSON heuristic for Rumble live video failed:", e);
+                }
+
+                // Fallback heuristic: scan hrefs for potential live videos
+                const hrefMatches = [...htmlDataResolved.matchAll(/href=["']\/((?:v|p)[^"']+\.html)["']/g)];
+                for (const hrefMatch of hrefMatches) {
+                    const fullPath = hrefMatch[1];
+                    const snippet = htmlDataResolved.slice(Math.max(0, hrefMatch.index - 400), hrefMatch.index + 400);
+                    if (/\blive\b/i.test(snippet) || /\bstatus\b[^<>{}]{0,80}?(?:live|LIVE)/.test(snippet)) {
+                        const videoIdMatch = fullPath.match(/^(v[a-zA-Z0-9]+)/);
+                        const videoId = videoIdMatch ? videoIdMatch[1] : fullPath.replace('.html', '');
+                        console.log("Found Rumble live video (href heuristic):", { videoId, fullPath });
+                        return { videoId, fullPath };
                     }
                 }
-            } catch (e) {
-                console.warn("Old rumble fetch method failed:", e);
+            }
+            return null;
+        };
+
+        for (let i = 0; i < candidateUrls.length; i++) {
+            const urlToFetch = candidateUrls[i];
+            console.log("Fetching Rumble URL:", urlToFetch);
+            const { htmlData, sawHardNotFound } = await tryFetchUrl(urlToFetch);
+            const videoInfo = extractLiveVideo(htmlData);
+            if (videoInfo) {
+                return videoInfo;
+            }
+            if (sawHardNotFound && i < candidateUrls.length - 1) {
+                console.warn("Rumble fetch returned not-found status, attempting alternate URL...");
             }
         }
+
         console.warn("No live video found on Rumble page for:", username);
         return false;
     } catch (e) {
