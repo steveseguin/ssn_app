@@ -6,6 +6,7 @@ const fs = require("fs");
 const fsp = fs.promises;
 const path = require("path");
 const os = require("os");
+const { pathToFileURL } = require("url");
 const {
     cleanVisibleString,
     firstNonEmptyVisibleString,
@@ -757,15 +758,28 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
                 console.warn('Failed to read Social Stream cache:', cacheReadError);
             }
 
-            const bundled = await loadBundledSocialStream(branch, relativePath);
+            let fallbackBranchUsed = null;
+            let bundled = await loadBundledSocialStream(branch, relativePath);
+            if ((!bundled || typeof bundled.text !== 'string') && branch !== 'main') {
+                bundled = await loadBundledSocialStream('main', relativePath);
+                if (bundled && typeof bundled.text === 'string') {
+                    fallbackBranchUsed = 'main';
+                }
+            }
             if (bundled && typeof bundled.text === 'string') {
+                const remoteReason = remoteError ? (remoteError.message || String(remoteError)) : null;
+                const meta = {
+                    path: bundled.path,
+                    reason: remoteReason || `Bundled ${branch} asset unavailable`
+                };
+                if (fallbackBranchUsed) {
+                    meta.fallbackBranch = fallbackBranchUsed;
+                    notifySocialStreamFallback(relativePath, branch, fallbackBranchUsed);
+                }
                 return {
                     text: bundled.text,
                     origin: 'fallback',
-                    meta: {
-                        path: bundled.path,
-                        reason: remoteError ? remoteError.message : 'remote unavailable'
-                    }
+                    meta
                 };
             }
         }
@@ -788,6 +802,131 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
     socialStreamLoadPromises.set(cacheKey, promise);
     return promise;
 }
+
+const bundledSocialStreamCache = new Map();
+const socialStreamFallbackNotified = new Set();
+
+function notifySocialStreamFallback(relativePath, fromBranch, toBranch) {
+    const key = `${fromBranch}->${toBranch}::${relativePath}`;
+    if (socialStreamFallbackNotified.has(key)) {
+        return;
+    }
+    socialStreamFallbackNotified.add(key);
+
+    const message = `Using ${toBranch} assets for ${relativePath.replace(/\\/g, '/')} (fallback from ${fromBranch}).`;
+    try {
+        queueInjectorToast('warning', 'Fallback Assets Active', message);
+    } catch (error) {
+        console.warn('Failed to queue injector toast for fallback:', error);
+    }
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+            mainWindow.webContents.send('ssapp:fallback-asset', {
+                relativePath,
+                fromBranch,
+                toBranch
+            });
+        } catch (error) {
+            console.warn('Failed to notify renderer of fallback asset usage:', error);
+        }
+    }
+}
+
+async function locateBundledSocialStreamFile(branch, relativePath, options = {}) {
+    const sanitizedBranch = (branch && typeof branch === 'string' && branch.trim()) ? branch.trim() : 'main';
+    const normalizedPath = normalizeSocialStreamRelativePath(relativePath);
+    if (!normalizedPath) {
+        return null;
+    }
+
+    const cacheKey = `${sanitizedBranch}::${normalizedPath}`;
+    if (!options.bypassCache && bundledSocialStreamCache.has(cacheKey)) {
+        return bundledSocialStreamCache.get(cacheKey);
+    }
+
+    const candidates = getCandidateBundledPaths(sanitizedBranch, normalizedPath);
+    for (const candidate of candidates) {
+        try {
+            await fsp.access(candidate, fs.constants.R_OK);
+            const descriptor = { path: candidate, branch: sanitizedBranch };
+            bundledSocialStreamCache.set(cacheKey, descriptor);
+            return descriptor;
+        } catch (error) {
+            if (error && error.code !== 'ENOENT') {
+                console.warn(`Failed to access bundled Social Stream file (${candidate}):`, error.message || error);
+            }
+        }
+    }
+
+    bundledSocialStreamCache.set(cacheKey, null);
+
+    if (options.fallbackToMain !== false && sanitizedBranch !== 'main') {
+        const fallback = await locateBundledSocialStreamFile('main', normalizedPath, { fallbackToMain: false });
+        if (fallback) {
+            bundledSocialStreamCache.set(cacheKey, fallback);
+            return fallback;
+        }
+    }
+
+    return null;
+}
+
+ipcMain.handle('socialstream:resolve-file-url', async (_event, relativePath, options = {}) => {
+    try {
+        const descriptor = await locateBundledSocialStreamFile(options.branch || 'main', relativePath);
+        if (!descriptor || !descriptor.path) {
+            return { success: false, error: 'NOT_FOUND' };
+        }
+        const fileUrl = pathToFileURL(descriptor.path).toString();
+        const baseUrl = pathToFileURL(path.dirname(descriptor.path)).toString();
+        return {
+            success: true,
+            url: fileUrl,
+            path: descriptor.path,
+            branch: descriptor.branch,
+            baseUrl
+        };
+    } catch (error) {
+        console.error('Failed to resolve Social Stream file URL:', error);
+        return { success: false, error: error && error.message ? error.message : 'UNKNOWN' };
+    }
+});
+
+ipcMain.handle('socialstream:read-file', async (_event, relativePath, options = {}) => {
+    const encoding = options.encoding || 'utf8';
+    try {
+        const descriptor = await locateBundledSocialStreamFile(options.branch || 'main', relativePath);
+        if (!descriptor || !descriptor.path) {
+            return { success: false, error: 'NOT_FOUND' };
+        }
+        const data = await fsp.readFile(descriptor.path, encoding);
+        return {
+            success: true,
+            data,
+            path: descriptor.path,
+            branch: descriptor.branch
+        };
+    } catch (error) {
+        console.error('Failed to read bundled Social Stream file:', error);
+        return { success: false, error: error && error.message ? error.message : 'UNKNOWN' };
+    }
+});
+
+ipcMain.handle('ssapp:get-environment', async () => {
+    let hasFallback = false;
+    try {
+        const descriptor = await locateBundledSocialStreamFile('main', 'popup.html', { bypassCache: true });
+        hasFallback = !!(descriptor && descriptor.path);
+    } catch (error) {
+        console.warn('Failed to verify Social Stream fallback availability:', error && error.message ? error.message : error);
+    }
+    return {
+        isPackaged: app.isPackaged,
+        preferLocalAssets: app.isPackaged && hasFallback,
+        hasFallbackBundle: hasFallback
+    };
+});
 
 function queueInjectorToast(level, title, message) {
     if (!level || !title || !message) return;

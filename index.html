@@ -151,10 +151,11 @@
                     <h1 data-i18n="app.newversion">NEW VERSION AVAILABLE</h1>
                     <a id="downloadlink" data-i18n="app.download">Download new version here</a>
                 </span>
+                <div id="fallback-indicator" class="hidden" style="margin: 0 0 10px 10px; color: #c77; font-size: 0.9em;"></div>
                 <p style="margin: 0 0 15px 10px; color: #9d8c8c;">Added Sources:</p>
             </div>
-			
-			<div id="link-overlay-page" style="min-width:400px;right:0;position:absolute;height:100%;width:35%">
+				
+				<div id="link-overlay-page" style="min-width:400px;right:0;position:absolute;height:100%;width:35%">
 				<!-- Subtle edge handle to collapse/expand the popup sidebar -->
 				<div id="popup-handle" class="overlay-handle" role="button" tabindex="0" aria-label="Toggle chat panel" title="Hide/Show chat panel">⯇</div>
 				<iframe id="frame1" class="loading" style="height:100%;width:100%" allow="autoplay *; camera *; clipboard-write *; encrypted-media *; fullscreen *; geolocation *; microphone *; midi *; usb *"></iframe>
@@ -466,6 +467,158 @@ let preferTikTokClassic = cliForcesTikTokClassic;
 let lastTikTokMode = 'tiktok-websocket';
 let tikTokClassicSilentUpdate = false;
 
+let cachedSsappEnvironment = (window.ssappEnvironment && typeof window.ssappEnvironment.getCached === 'function')
+    ? (window.ssappEnvironment.getCached() || null)
+    : null;
+let cachedBasePath = null;
+
+const activeFallbackAssets = new Map();
+function updateFallbackIndicator() {
+    const indicator = document.getElementById('fallback-indicator');
+    if (!indicator) return;
+    if (!activeFallbackAssets.size) {
+        indicator.classList.add('hidden');
+        indicator.textContent = '';
+        return;
+    }
+    const entries = Array.from(activeFallbackAssets.values());
+    const summary = entries.slice(0, 3).join(', ');
+    const remaining = entries.length > 3 ? ` +${entries.length - 3} more` : '';
+    indicator.textContent = `Fallback assets active (${entries.length}): ${summary}${remaining}`;
+    indicator.classList.remove('hidden');
+}
+function recordFallbackAsset(relativePath, fromBranch, toBranch) {
+    if (!relativePath) return;
+    const key = `${fromBranch || 'remote'}->${toBranch || 'main'}::${relativePath}`;
+    if (activeFallbackAssets.has(key)) return;
+    const readablePath = relativePath.replace(/\\/g, '/');
+    activeFallbackAssets.set(key, `${readablePath} (${fromBranch || 'remote'}->${toBranch || 'main'})`);
+    updateFallbackIndicator();
+}
+
+function getBasePath() {
+    if (cachedBasePath !== null) {
+        return cachedBasePath;
+    }
+    const href = window.location.href || '';
+    const markerIndex = href.indexOf('index.html');
+    if (markerIndex !== -1) {
+        cachedBasePath = href.substring(0, markerIndex);
+    } else {
+        try {
+            const url = new URL(href);
+            url.pathname = url.pathname.replace(/[^/]*$/, '');
+            cachedBasePath = url.toString();
+        } catch (_) {
+            cachedBasePath = href;
+        }
+    }
+    return cachedBasePath;
+}
+
+async function ensureSsappEnvironment() {
+    if (cachedSsappEnvironment) {
+        return cachedSsappEnvironment;
+    }
+    if (window.ssappEnvironment && typeof window.ssappEnvironment.get === 'function') {
+        try {
+            cachedSsappEnvironment = await window.ssappEnvironment.get();
+            return cachedSsappEnvironment || {};
+        } catch (error) {
+            console.warn('[SSAPP] Failed to load environment details:', error);
+        }
+    }
+    cachedSsappEnvironment = {};
+    return cachedSsappEnvironment;
+}
+
+function buildFrameQueryParams(extraParams = []) {
+    const params = ['ssapp=2'];
+    if (localServer) {
+        params.push('localserver');
+    }
+    params.push(`basePath=${encodeURIComponent(getBasePath())}`);
+    if (Array.isArray(extraParams) && extraParams.length) {
+        extraParams.forEach((entry) => {
+            if (entry && typeof entry === 'string') {
+                params.push(entry);
+            }
+        });
+    }
+    return params.join('&');
+}
+
+async function resolveSocialStreamPage(pageName, options = {}) {
+    const env = await ensureSsappEnvironment();
+    const branch = options.branch || (isBetaMode ? 'beta' : 'main');
+    const preferLocal = options.forceRemote ? false : (options.forceLocal ? true : !!env.preferLocalAssets);
+    const extraParams = Array.isArray(options.extraParams) ? options.extraParams.slice() : [];
+
+    if (sourcemode) {
+        let sourcemodeBase = sourcemode;
+        const needsSlash = sourcemodeBase && !sourcemodeBase.endsWith('/') && !sourcemodeBase.endsWith('\\');
+        if (needsSlash) {
+            sourcemodeBase += '/';
+        }
+        let queryParts = [`sourcemode=${encodeURIComponent(sourcemode)}`, buildFrameQueryParams(extraParams)];
+        if (devmode && options.includeDevFlag !== false) {
+            queryParts.push('devmode');
+        }
+        const query = queryParts.filter(Boolean).join('&');
+        return {
+            url: `${sourcemodeBase}${pageName}?${query}`,
+            origin: 'sourcemode',
+            baseUrl: sourcemodeBase
+        };
+    }
+
+    if (devmode) {
+        let devBase = 'file:///C:/Users/steve/Code/social_stream/';
+        const queryParts = ['devmode', buildFrameQueryParams(extraParams)];
+        const query = queryParts.filter(Boolean).join('&');
+        return {
+            url: `${devBase}${pageName}?${query}`,
+            origin: 'dev',
+            baseUrl: devBase
+        };
+    }
+
+    if (preferLocal && window.ssappFallback && typeof window.ssappFallback.resolveUrl === 'function') {
+        try {
+            const fallback = await window.ssappFallback.resolveUrl(pageName, { branch });
+            if (fallback && fallback.url) {
+                let localUrl = fallback.url;
+                if (options.versionParam) {
+                    const versionJoiner = localUrl.includes('?') ? '&' : '?';
+                    localUrl += `${versionJoiner}${options.versionParam}`;
+                }
+                const finalJoiner = localUrl.includes('?') ? '&' : '?';
+                localUrl += `${finalJoiner}${buildFrameQueryParams(extraParams)}`;
+                return {
+                    url: localUrl,
+                    origin: 'local',
+                    baseUrl: fallback.baseUrl || localUrl.substring(0, localUrl.lastIndexOf('/') + 1)
+                };
+            }
+        } catch (error) {
+            console.warn('[SSAPP] Failed to resolve local Social Stream asset:', error);
+        }
+    }
+
+    const remoteBase = branch === 'beta' ? 'https://socialstream.ninja/beta' : 'https://socialstream.ninja';
+    let remoteUrl = `${remoteBase}/${pageName}`;
+    if (options.versionParam) {
+        remoteUrl += `?${options.versionParam}`;
+    }
+    const finalJoiner = remoteUrl.includes('?') ? '&' : '?';
+    remoteUrl += `${finalJoiner}${buildFrameQueryParams(extraParams)}`;
+    return {
+        url: remoteUrl,
+        origin: 'remote',
+        baseUrl: remoteBase
+    };
+}
+
 // Check if contextBridge exposed electron API (for windows with contextIsolation: true)
 if (window.electron && window.electron.ipcRenderer) {
     console.log('[Electron] Found electron API via contextBridge');
@@ -480,6 +633,11 @@ if (ipcRenderer) {
         } catch (e) {
             console.error('Error clearing sources from menu command:', e);
         }
+    });
+    ipcRenderer.on('ssapp:fallback-asset', (_event, payload) => {
+        if (!payload || typeof payload !== 'object') return;
+        const { relativePath, fromBranch, toBranch } = payload;
+        recordFallbackAsset(relativePath, fromBranch, toBranch);
     });
 }
 
@@ -5872,43 +6030,77 @@ function applyTikTokClassicPreferenceToEntry(entry, forcedValue) {
 
 async function initializeConfig() { 
     configReady = false;
+	const os = getOperatingSystem();
+	const configFileName = getConfigFileName(os);
+	const currentBetaMode = stateManager.initialized ? stateManager.state.global.betaMode : (localStorage.getItem('betaMode') === 'true'); 
+    const env = await ensureSsappEnvironment();
+    const preferLocalAssets = !!(env && env.preferLocalAssets);
+    const branchName = currentBetaMode ? 'beta' : 'main';
+
 	try {
-		const os = getOperatingSystem();
-		const configFileName = getConfigFileName(os);
-		const currentBetaMode = stateManager.initialized ? stateManager.state.global.betaMode : (localStorage.getItem('betaMode') === 'true'); 
 
 		const configUrl =
 			sourcemode ? `${sourcemode}/settings/${configFileName}` :
 			devmode ? `file:///C:/Users/steve/Code/social_stream/settings/${configFileName}` :
 			currentBetaMode ? `https://socialstream.ninja/beta/settings/${configFileName}` :
 			`https://socialstream.ninja/settings/${configFileName}`;
-		
-		const response = await fetch(configUrl.trim());
-		const data = await response.json();
-		if (data) {
-			config = data;
-			localStorage.setItem('config', JSON.stringify(data));
-		}
+
+        if (preferLocalAssets && window.ssappFallback && typeof window.ssappFallback.readJson === 'function' && !sourcemode && !devmode) {
+            const bundledConfig = await window.ssappFallback.readJson(`settings/${configFileName}`, { branch: branchName });
+            if (bundledConfig) {
+                config = bundledConfig;
+                localStorage.setItem('config', JSON.stringify(bundledConfig));
+                configReady = true;
+                return config;
+            }
+        }
+
+        const response = await fetch(configUrl.trim());
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        if (data) {
+            config = data;
+            localStorage.setItem('config', JSON.stringify(data));
+        }
 	} catch (e) {
-        Toast.error("Error", 'Failed to load the user-agent config file.');
 		console.error('Failed to load remote config:', e);
-		const storedConfigTemp = localStorage.getItem('config'); 
-		if (storedConfigTemp) {
-			try {
-				const parsedConfig = JSON.parse(storedConfigTemp);
-				if (!parsedConfig || Object.keys(parsedConfig).length === 0) {
-					console.error('Parsed stored config is empty, using default.');
-					config = getDefaultConfig();
-				} else {
-					config = parsedConfig;
-				}
-			} catch (parseError) {
-				console.error('Failed to parse stored config, using default:', parseError);
-				config = getDefaultConfig();
-			}
-		} else { 
-			config = getDefaultConfig();
-		}
+        let fallbackApplied = false;
+        if (window.ssappFallback && typeof window.ssappFallback.readJson === 'function' && !sourcemode && !devmode) {
+            try {
+                const bundledConfig = await window.ssappFallback.readJson(`settings/${configFileName}`, { branch: branchName });
+                if (bundledConfig) {
+                    config = bundledConfig;
+                    localStorage.setItem('config', JSON.stringify(bundledConfig));
+                    fallbackApplied = true;
+                    Toast.warning("Offline Mode", "Using bundled user-agent configuration.");
+                }
+            } catch (fallbackError) {
+                console.error('Failed to apply bundled user-agent config:', fallbackError);
+            }
+        }
+
+        if (!fallbackApplied) {
+            Toast.error("Error", 'Failed to load the user-agent config file.');
+		    const storedConfigTemp = localStorage.getItem('config'); 
+		    if (storedConfigTemp) {
+			    try {
+				    const parsedConfig = JSON.parse(storedConfigTemp);
+				    if (!parsedConfig || Object.keys(parsedConfig).length === 0) {
+					    console.error('Parsed stored config is empty, using default.');
+					    config = getDefaultConfig();
+				    } else {
+					    config = parsedConfig;
+				    }
+			    } catch (parseError) {
+				    console.error('Failed to parse stored config, using default:', parseError);
+				    config = getDefaultConfig();
+			    }
+		    } else { 
+			    config = getDefaultConfig();
+		    }
+        }
 	}
 	configReady = true;
 	return config;
@@ -6328,7 +6520,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         if ('betaMode' in updates) {
             isBetaMode = updates.betaMode;
              console.log("Global betaMode updated, re-initializing application for full effect.");
-             initializeApplication(); 
+             initializeApplication().catch(err => console.error('Failed to re-initialize application after beta toggle:', err)); 
         }
         if (youtubeStatusManager && (
             'youtubeAutoAdd' in updates || 
@@ -6360,7 +6552,7 @@ document.addEventListener('DOMContentLoaded', async function() {
 	const frame2 = document.getElementById('frame2');
 	const frame3 = document.getElementById('frame3');
 
-	function switchToPage(pageId) { 
+	async function switchToPage(pageId) { 
         navigationLinks.forEach(link => {
 			link.classList.toggle('active', link.dataset.page === pageId);
 		});
@@ -6414,33 +6606,29 @@ document.addEventListener('DOMContentLoaded', async function() {
 		}
 
         if ((pageId === 'dashboard' || pageId === 'event-flow-editor') && frame2 && (!frame2.src || frame2.src === "about:blank")) {
-			setupIframeSource(); 
+			await setupIframeSource(); 
 		} else if (pageId === 'link-overlay' && frame1 && (!frame1.src || frame1.src === "about:blank")) {
-			let popupSrc = "";
-            if (sourcemode) {
-                popupSrc = `${sourcemode}popup.html?sourcemode=${encodeURIComponent(sourcemode)}&ssapp=2${localServer}&basePath=${encodeURIComponent(basePath)}`;
-                if (devmode) popupSrc += "&devmode";
-            } else if (devmode) {
-                popupSrc = `file:///C:/Users/steve/Code/social_stream/popup.html?devmode&ssapp=2${localServer}&basePath=${encodeURIComponent(basePath)}`;
-            } else {
-                const domain = isBetaMode ? 'https://socialstream.ninja/beta' : 'https://socialstream.ninja';
-                popupSrc = `${domain}/popup.html?v=2&ssapp=2${localServer}&basePath=${encodeURIComponent(basePath)}`;
+			try {
+                const resolved = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2' });
+                if (resolved && resolved.url) {
+			        frame1.src = resolved.url;
+                    frame1.dataset.ssappOrigin = resolved.origin;
+                    frame1.classList.add('loading');
+                }
+            } catch (error) {
+                console.error('Failed to resolve popup frame source:', error);
             }
-			frame1.src = popupSrc;
-            frame1.classList.add('loading');
 		} else if (pageId === 'vdo-ninja' && frame3 && (!frame3.src || frame3.src === "about:blank")) {
-			let vdoSrc = "";
-            if (sourcemode) {
-                vdoSrc = `${sourcemode}vdo.html?sourcemode=${encodeURIComponent(sourcemode)}&ssapp=2${localServer}&basePath=${encodeURIComponent(basePath)}`;
-                 if (devmode) vdoSrc += "&devmode";
-            } else if (devmode) {
-                vdoSrc = `file:///C:/Users/steve/Code/social_stream/vdo.html?devmode&ssapp=2${localServer}&basePath=${encodeURIComponent(basePath)}`;
-            } else {
-                const domain = isBetaMode ? 'https://socialstream.ninja/beta' : 'https://socialstream.ninja';
-    			vdoSrc = `${domain}/vdo.html?v=2&ssapp=2${localServer}&basePath=${encodeURIComponent(basePath)}`;
+			try {
+                const resolved = await resolveSocialStreamPage('vdo.html', { versionParam: 'v=2' });
+                if (resolved && resolved.url) {
+			        frame3.src = resolved.url;
+                    frame3.dataset.ssappOrigin = resolved.origin;
+                    frame3.classList.add('loading');
+                }
+            } catch (error) {
+                console.error('Failed to resolve vdo frame source:', error);
             }
-			frame3.src = vdoSrc;
-            frame3.classList.add('loading');
 		}
         stateManager.updateGlobal({ currentPage: pageId });
     }
@@ -6449,12 +6637,12 @@ document.addEventListener('DOMContentLoaded', async function() {
 		link.addEventListener('click', function(event) {
 			event.preventDefault();
 			const pageId = this.dataset.page;
-			switchToPage(pageId);
+			switchToPage(pageId).catch(err => console.error('Failed to switch page:', err));
 		});
 	});
 
     const initialPage = stateManager.state.global.currentPage || 'streams';
-	switchToPage(initialPage); 
+	switchToPage(initialPage).catch(err => console.error('Failed to switch to initial page:', err));
 
     // Popup sidebar show/hide toggle setup (subtle edge handle)
     (function setupPopupSidebarToggle() {
@@ -6514,27 +6702,24 @@ document.addEventListener('DOMContentLoaded', async function() {
             }
         });
 
-        ipcRenderer.on('fromMainToIndex', (event, ...args) => { 
+        ipcRenderer.on('fromMainToIndex', async (event, ...args) => { 
             log("FROM MAIN TO INDEX", args[0]);
             if (args[0] == "serverStarted") {
                 console.log("serverStarted");
                 localServer = "&localserver";
-                setupIframeSource(); 
+                await setupIframeSource(); 
             } else if (args[0] == "serverStopped") {
                 console.log("serverStopped");
                 localServer = "";
-                setupIframeSource(); 
+                await setupIframeSource(); 
             }
             const currentFrame1Src = document.getElementById("frame1")?.src;
             let expectedFrame1Src = "";
-             if (sourcemode) {
-                expectedFrame1Src = `${sourcemode}popup.html?sourcemode=${encodeURIComponent(sourcemode)}&ssapp=2${localServer}&basePath=${encodeURIComponent(basePath)}`;
-                if (devmode) expectedFrame1Src += "&devmode";
-            } else if (devmode) {
-                expectedFrame1Src = `file:///C:/Users/steve/Code/social_stream/popup.html?devmode&ssapp=2${localServer}&basePath=${encodeURIComponent(basePath)}`;
-            } else {
-                const domain = isBetaMode ? 'https://socialstream.ninja/beta' : 'https://socialstream.ninja';
-                expectedFrame1Src = `${domain}/popup.html?v=2&ssapp=2${localServer}&basePath=${encodeURIComponent(basePath)}`;
+            try {
+                const resolved = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2' });
+                expectedFrame1Src = resolved && resolved.url ? resolved.url : "";
+            } catch (error) {
+                console.error('Failed to resolve popup frame after main signal:', error);
             }
             if (document.getElementById("frame1") && currentFrame1Src !== expectedFrame1Src) {
                  document.getElementById("frame1").src = expectedFrame1Src;
@@ -6926,7 +7111,6 @@ var iframes = document.querySelectorAll('iframe');
 Array.prototype.forEach.call(iframes, function(iframe) {
 	iframe.onload = function() { this.classList.remove('loading'); };
 });
-const basePath = window.location.href.split('index.html')[0];
 function sleep(ms) { 
     return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
@@ -6979,7 +7163,7 @@ async function initializeApplication() {
 		return false;
 	}
 	config = newconfig;
-	setupIframeSource(); 
+	await setupIframeSource(); 
 
 	let loadedManifest = await loadManifest();
 	if (!loadedManifest) {
@@ -6997,36 +7181,35 @@ async function initializeApplication() {
 	console.log(config);
 	return true;
 }
-function setupIframeSource() { 
+async function setupIframeSource() { 
 	const frame2 = document.getElementById("frame2");
     if (!frame2) return;
-	let iframesrc = "";
+
 	// Get the language code for the URL
 	const langCode = currentLanguage === 'pt-BR' ? 'pt' : currentLanguage;
-	const langParam = `&ln=${langCode}`;
+	const langParam = `ln=${langCode}`;
 	
 	// Check if we should show the editor view initially
-	const viewParam = window.initialEditorView ? '&view=editor' : '';
-	
-	if (sourcemode) {
-		 if (devmode) {
-			document.getElementById("sources")?.classList.add("dev");
-			iframesrc = `${sourcemode}background.html?sourcemode=${encodeURIComponent(sourcemode)}&devmode&ssapp=2${localServer}${langParam}${viewParam}`;
-		 } else {
-			iframesrc = `${sourcemode}background.html?sourcemode=${encodeURIComponent(sourcemode)}&ssapp=2${localServer}${langParam}${viewParam}`;
-		}
-	} else if (devmode) {
+	const viewParam = window.initialEditorView ? 'view=editor' : null;
+
+	if (sourcemode || devmode) {
 		document.getElementById("sources")?.classList.add("dev");
-		iframesrc = `file:///C:/Users/steve/Code/social_stream/background.html?devmode&ssapp=2${localServer}${langParam}${viewParam}`;
-	} else if (isBetaMode) {
-		iframesrc = `https://socialstream.ninja/beta/background.html?v=2&ssapp=2${localServer}${langParam}${viewParam}`;
-	} else {
-		iframesrc = `https://socialstream.ninja/background.html?v=2&ssapp=2${localServer}${langParam}${viewParam}`;
 	}
 
-	if (!frame2.src || (iframesrc !== frame2.src)) {
-		frame2.src = iframesrc;
-        frame2.classList.add('loading');
+	try {
+		const resolved = await resolveSocialStreamPage('background.html', {
+			versionParam: 'v=2',
+			extraParams: [langParam, viewParam].filter(Boolean)
+		});
+		if (resolved && resolved.url) {
+			if (!frame2.src || (resolved.url !== frame2.src)) {
+				frame2.src = resolved.url;
+				frame2.dataset.ssappOrigin = resolved.origin;
+        		frame2.classList.add('loading');
+			}
+		}
+	} catch (error) {
+		console.error('Failed to resolve background frame source:', error);
 	}
 }
 async function checkForUpdates() { 

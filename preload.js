@@ -1,4 +1,81 @@
 var { ipcRenderer, contextBridge } = require('electron');
+let cachedEnvironment = null;
+const environmentPromise = (async () => {
+	try {
+		const env = await ipcRenderer.invoke('ssapp:get-environment');
+		cachedEnvironment = env || {};
+		return cachedEnvironment;
+	} catch (error) {
+		console.error('[Preload] Failed to retrieve SSAPP environment:', error);
+		cachedEnvironment = {};
+		return cachedEnvironment;
+	}
+})();
+
+async function resolveSocialStreamUrl(relativePath, options = {}) {
+	try {
+		const result = await ipcRenderer.invoke('socialstream:resolve-file-url', relativePath, options);
+		if (result && result.success) {
+			return result;
+		}
+		return null;
+	} catch (error) {
+		console.error('[Preload] resolveSocialStreamUrl failed:', error);
+		return null;
+	}
+}
+
+async function readSocialStreamFile(relativePath, options = {}) {
+	try {
+		const result = await ipcRenderer.invoke('socialstream:read-file', relativePath, options);
+		if (result && result.success) {
+			return result.data;
+		}
+		return null;
+	} catch (error) {
+		console.error('[Preload] readSocialStreamFile failed:', error);
+		return null;
+	}
+}
+
+async function readSocialStreamJson(relativePath, options = {}) {
+	const text = await readSocialStreamFile(relativePath, options);
+	if (!text) return null;
+	try {
+		return JSON.parse(text);
+	} catch (error) {
+		console.error('[Preload] Failed to parse Social Stream JSON asset:', error);
+		return null;
+	}
+}
+
+const ssappFallbackBridge = {
+	resolveUrl: resolveSocialStreamUrl,
+	readFile: readSocialStreamFile,
+	readJson: readSocialStreamJson,
+	isAvailable: async (relativePath, options = {}) => {
+		const result = await resolveSocialStreamUrl(relativePath, options);
+		return !!(result && result.url);
+	}
+};
+
+const ssappEnvironmentBridge = {
+	get: () => environmentPromise,
+	getCached: () => cachedEnvironment,
+	isPackaged: () => cachedEnvironment ? !!cachedEnvironment.isPackaged : undefined,
+	preferLocalAssets: () => cachedEnvironment ? !!cachedEnvironment.preferLocalAssets : undefined,
+	hasFallbackBundle: () => cachedEnvironment ? !!cachedEnvironment.hasFallbackBundle : undefined,
+	refresh: async () => {
+		try {
+			const env = await ipcRenderer.invoke('ssapp:get-environment');
+			cachedEnvironment = env || {};
+			return cachedEnvironment;
+		} catch (error) {
+			console.error('[Preload] Failed to refresh SSAPP environment:', error);
+			return cachedEnvironment || {};
+		}
+	}
+};
 
 const WARN_FILTER_PATTERNS = [
     /Potential permissions policy violation/i,
@@ -270,6 +347,8 @@ function configureContextBridge(){
 			getAcceptLanguage: () => acceptLanguageHeader,
 			getSource: () => localeSource
 		});
+		contextBridge.exposeInMainWorld('ssappFallback', ssappFallbackBridge);
+		contextBridge.exposeInMainWorld('ssappEnvironment', ssappEnvironmentBridge);
 	} catch(e){
 		// Silently fail if context isolation is disabled - this is expected
 		if (!e.message || !e.message.includes('contextBridge API can only be used when contextIsolation is enabled')) {
@@ -339,6 +418,8 @@ try {
 			getAcceptLanguage() { return this.acceptLanguage; },
 			getSource() { return this.source; }
 		};
+		window.ssappFallback = ssappFallbackBridge;
+		window.ssappEnvironment = ssappEnvironmentBridge;
 	} else {
 		console.error('[Preload] Unexpected error configuring context bridge:', e);
 	}
