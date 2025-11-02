@@ -548,10 +548,22 @@ function buildFrameQueryParams(extraParams = []) {
     return params.join('&');
 }
 
+function ensureTrailingSlash(input) {
+    if (!input || typeof input !== 'string') {
+        return input;
+    }
+    return (input.endsWith('/') || input.endsWith('\\')) ? input : `${input}/`;
+}
+
 async function resolveSocialStreamPage(pageName, options = {}) {
     const env = await ensureSsappEnvironment();
     const branch = options.branch || (isBetaMode ? 'beta' : 'main');
-    const preferLocal = options.forceRemote ? false : (options.forceLocal ? true : !!env.preferLocalAssets);
+    let preferLocal = !!(env && env.preferLocalAssets);
+    if (options.forceRemote) {
+        preferLocal = false;
+    } else if (typeof options.forceLocal === 'boolean') {
+        preferLocal = options.forceLocal;
+    }
     const extraParams = Array.isArray(options.extraParams) ? options.extraParams.slice() : [];
 
     if (sourcemode) {
@@ -617,6 +629,115 @@ async function resolveSocialStreamPage(pageName, options = {}) {
         origin: 'remote',
         baseUrl: remoteBase
     };
+}
+
+async function resolveWebSocketHtml(target, queryParams = {}, options = {}) {
+    const branch = options.branch || (isBetaMode ? 'beta' : 'main');
+    const relativePath = `sources/websocket/${target}.html`;
+    const params = new URLSearchParams();
+    Object.entries(queryParams || {}).forEach(([key, value]) => {
+        if (value === undefined || value === null) return;
+        if (value === '') {
+            params.append(key, '');
+        } else {
+            params.append(key, value);
+        }
+    });
+    const queryString = params.toString();
+    const appendQuery = (base) => {
+        if (!queryString) return base;
+        return `${base}${base.includes('?') ? '&' : '?'}${queryString}`;
+    };
+
+    if (sourcemode) {
+        const base = `${ensureTrailingSlash(sourcemode)}${relativePath}`;
+        return {
+            url: appendQuery(base),
+            origin: 'sourcemode',
+            branch,
+            relativePath
+        };
+    }
+
+    if (devmode) {
+        const base = `http://localhost:8080/${relativePath}`;
+        return {
+            url: appendQuery(base),
+            origin: 'dev',
+            branch,
+            relativePath
+        };
+    }
+
+    const tryRemote = async (remoteBranch) => {
+        const remoteBase = remoteBranch === 'beta' ? 'https://socialstream.ninja/beta/' : 'https://socialstream.ninja/';
+        const remoteUrl = appendQuery(`${remoteBase}${relativePath}`);
+        try {
+            const response = await fetchWithDeadline(remoteUrl, { timeoutMs: options.timeoutMs || 5000 });
+            if (response && response.ok) {
+                return {
+                    url: remoteUrl,
+                    origin: remoteBranch === branch ? 'remote' : 'remote-main',
+                    branch: remoteBranch,
+                    relativePath
+                };
+            }
+        } catch (error) {
+            console.warn(`Remote WSS HTML unavailable (${remoteBranch}):`, error && error.message ? error.message : error);
+        }
+        return null;
+    };
+
+    let remoteResult = await tryRemote(branch);
+    if (!remoteResult && branch === 'beta') {
+        remoteResult = await tryRemote('main');
+    }
+    if (remoteResult) {
+        return remoteResult;
+    }
+
+    const cacheResult = await ipcRenderer?.invoke?.('socialstream:resolve-cache-url', relativePath, { branch }).catch(() => null);
+    if (cacheResult && cacheResult.success) {
+        return {
+            url: appendQuery(cacheResult.url),
+            origin: 'cache',
+            branch,
+            relativePath
+        };
+    }
+
+    if (branch === 'beta') {
+        const cacheMain = await ipcRenderer?.invoke?.('socialstream:resolve-cache-url', relativePath, { branch: 'main' }).catch(() => null);
+        if (cacheMain && cacheMain.success) {
+            return {
+                url: appendQuery(cacheMain.url),
+                origin: 'cache-main',
+                branch: 'main',
+                relativePath
+            };
+        }
+    }
+
+    const fallbackBranches = branch === 'beta' ? ['beta', 'main'] : ['main'];
+    if (window.ssappFallback && typeof window.ssappFallback.resolveUrl === 'function') {
+        for (const fbBranch of fallbackBranches) {
+            try {
+                const fallback = await window.ssappFallback.resolveUrl(relativePath, { branch: fbBranch });
+                if (fallback && fallback.url) {
+                    return {
+                        url: appendQuery(fallback.url),
+                        origin: 'fallback',
+                        branch: fallback.branch || fbBranch,
+                        relativePath
+                    };
+                }
+            } catch (error) {
+                console.warn(`Failed to resolve packaged WSS HTML (${fbBranch}):`, error);
+            }
+        }
+    }
+
+    return null;
 }
 
 // Check if contextBridge exposed electron API (for windows with contextIsolation: true)
@@ -5061,16 +5182,44 @@ async function createWindowWSSFromSource(source, tabid = false) {
         console.log('[CreateWindowWSS] Using AUTO user agent from config:', conf.userAgent);
     }
 
-    let urlWSS;
-    if (devmode || sourcemode) {
-        const baseUrl = sourcemode || 'http://localhost:8080/';
-        urlWSS = `${baseUrl}sources/websocket/${source.target}.html?channel=${source.username}`;
-        if (devmode) urlWSS += '&devmode=';
-    } else {
-        const domain = isBetaMode ? 'https://socialstream.ninja/beta/' : 'https://socialstream.ninja/';
-        urlWSS = `${domain}sources/websocket/${source.target}.html?channel=${source.username}`;
+    const queryParams = {};
+    if (source.username) {
+        queryParams.channel = source.username;
     }
-    
+    if (devmode) {
+        queryParams.devmode = '';
+    }
+
+    const resolvedHtml = await resolveWebSocketHtml(source.target, queryParams, { branch: isBetaMode ? 'beta' : 'main' });
+    if (!resolvedHtml) {
+        Toast.error("WebSocket Error", "Unable to resolve the WebSocket page. Try again or check your network.");
+        return false;
+    }
+
+    const urlWSS = resolvedHtml.url;
+    const effectiveBranch = resolvedHtml.branch || (isBetaMode ? 'beta' : 'main');
+    if (resolvedHtml.origin === 'cache') {
+        Toast.warning("WebSocket Fallback", `Using cached ${source.target} websocket page.`);
+    } else if (resolvedHtml.origin === 'cache-main') {
+        Toast.warning("WebSocket Fallback", `Using cached main branch ${source.target} websocket page.`);
+        if (isBetaMode) {
+            recordFallbackAsset(resolvedHtml.relativePath, 'beta', 'main');
+        }
+    } else if (resolvedHtml.origin === 'fallback') {
+        const fromBranch = isBetaMode ? 'beta' : 'main';
+        const toBranch = resolvedHtml.branch || fromBranch;
+        if (fromBranch !== toBranch) {
+            Toast.warning("WebSocket Fallback", `Using packaged ${toBranch} ${source.target} websocket page.`);
+            recordFallbackAsset(resolvedHtml.relativePath, fromBranch, toBranch);
+        } else {
+            Toast.warning("WebSocket Fallback", `Using packaged ${source.target} websocket page.`);
+            recordFallbackAsset(resolvedHtml.relativePath, fromBranch, toBranch);
+        }
+    } else if (resolvedHtml.origin === 'remote-main' && isBetaMode) {
+        Toast.warning("WebSocket Fallback", `Beta websocket page unavailable; using main branch remote page.`);
+        recordFallbackAsset(resolvedHtml.relativePath, 'beta', 'main');
+    }
+
     const scriptPath = source.sourceFile || `sources/websocket/${source.target}.js`;
 
 
@@ -5087,7 +5236,8 @@ async function createWindowWSSFromSource(source, tabid = false) {
             wss: true,
             replyOnly: !!source.replyOnly,
             config: conf,
-            isBetaMode: isBetaMode
+            isBetaMode: isBetaMode,
+            assetBranch: effectiveBranch
         });
         console.log('[CreateWindowWSS] Created window/tab ID:', response, 'for', source.username || source.videoId);
         return response; 
@@ -5121,20 +5271,44 @@ async function createYoutubeWebSocketWindowFromSource(source, tabid = false) {
         return false;
     }
 
-    let baseUrl;
-    if (devmode || sourcemode) {
-        baseUrl = sourcemode ? `${sourcemode}sources/websocket/youtube.html` : `http://localhost:8080/sources/websocket/youtube.html`;
-        if (devmode && !queryParams.has('devmode')) queryParams.set('devmode','');
-    } else {
-        const domain = isBetaMode ? 'https://socialstream.ninja/beta/' : 'https://socialstream.ninja/';
-        baseUrl = `${domain}sources/websocket/youtube.html`;
+    if (devmode && !queryParams.has('devmode')) {
+        queryParams.set('devmode','');
     }
-    const urlWSS = `${baseUrl}?${queryParams.toString()}`;
+
+    const resolvedHtml = await resolveWebSocketHtml('youtube', Object.fromEntries(queryParams.entries()), { branch: isBetaMode ? 'beta' : 'main' });
+    if (!resolvedHtml) {
+        Toast.error("YouTube WSS Error", "Unable to resolve the YouTube WebSocket page.");
+        return false;
+    }
+
+    const urlWSS = resolvedHtml.url;
+    const effectiveBranch = resolvedHtml.branch || (isBetaMode ? 'beta' : 'main');
+    if (resolvedHtml.origin === 'cache') {
+        Toast.warning("YouTube WSS Fallback", "Using cached YouTube websocket page.");
+    } else if (resolvedHtml.origin === 'cache-main') {
+        Toast.warning("YouTube WSS Fallback", "Using cached main branch YouTube websocket page.");
+        if (isBetaMode) {
+            recordFallbackAsset(resolvedHtml.relativePath, 'beta', 'main');
+        }
+    } else if (resolvedHtml.origin === 'fallback') {
+        const fromBranch = isBetaMode ? 'beta' : 'main';
+        const toBranch = resolvedHtml.branch || fromBranch;
+        if (fromBranch !== toBranch) {
+            Toast.warning("YouTube WSS Fallback", "Using packaged main branch YouTube websocket page.");
+            recordFallbackAsset(resolvedHtml.relativePath, fromBranch, toBranch);
+        } else {
+            Toast.warning("YouTube WSS Fallback", "Using packaged YouTube websocket page.");
+            recordFallbackAsset(resolvedHtml.relativePath, fromBranch, toBranch);
+        }
+    } else if (resolvedHtml.origin === 'remote-main' && isBetaMode) {
+        Toast.warning("YouTube WSS Fallback", "Beta YouTube websocket page unavailable; using main branch remote page.");
+        recordFallbackAsset(resolvedHtml.relativePath, 'beta', 'main');
+    }
     
     // For YouTube WSS, the script path is specific
     const scriptPath = devmode || sourcemode ? 
                        (sourcemode ? `${sourcemode}sources/websocket/youtube.js` : `http://localhost:8080/sources/websocket/youtube.js`) : 
-                       (isBetaMode ? 'https://socialstream.ninja/beta/sources/websocket/youtube.js' : 'https://socialstream.ninja/sources/websocket/youtube.js');
+                       'sources/websocket/youtube.js';
 
     try {
         const response = ipcRenderer.sendSync('createWindow', {
@@ -5148,7 +5322,8 @@ async function createYoutubeWebSocketWindowFromSource(source, tabid = false) {
             wss: true,
             replyOnly: !!source.replyOnly,
             config: conf,
-            isBetaMode: isBetaMode
+            isBetaMode: isBetaMode,
+            assetBranch: effectiveBranch
         });
         console.log('[CreateYouTubeWSS] Created window/tab ID:', response, 'for', source.username || source.videoId);
          return response; 
@@ -6034,50 +6209,104 @@ async function initializeConfig() {
 	const configFileName = getConfigFileName(os);
 	const currentBetaMode = stateManager.initialized ? stateManager.state.global.betaMode : (localStorage.getItem('betaMode') === 'true'); 
     const env = await ensureSsappEnvironment();
-    const preferLocalAssets = !!(env && env.preferLocalAssets);
+    const hasFallbackBundle = !!(env && env.hasFallbackBundle);
     const branchName = currentBetaMode ? 'beta' : 'main';
 
 	try {
 
-		const configUrl =
-			sourcemode ? `${sourcemode}/settings/${configFileName}` :
-			devmode ? `file:///C:/Users/steve/Code/social_stream/settings/${configFileName}` :
-			currentBetaMode ? `https://socialstream.ninja/beta/settings/${configFileName}` :
-			`https://socialstream.ninja/settings/${configFileName}`;
+        const candidateUrls = [];
+        const normalizeBase = (base) => {
+            if (!base) return base;
+            const needsSlash = !base.endsWith('/') && !base.endsWith('\\');
+            return needsSlash ? `${base}/` : base;
+        };
 
-        if (preferLocalAssets && window.ssappFallback && typeof window.ssappFallback.readJson === 'function' && !sourcemode && !devmode) {
-            const bundledConfig = await window.ssappFallback.readJson(`settings/${configFileName}`, { branch: branchName });
-            if (bundledConfig) {
-                config = bundledConfig;
-                localStorage.setItem('config', JSON.stringify(bundledConfig));
-                configReady = true;
-                return config;
+        if (sourcemode) {
+            candidateUrls.push({
+                url: `${normalizeBase(sourcemode)}settings/${configFileName}`,
+                branch: branchName,
+                origin: 'sourcemode'
+            });
+        }
+
+        if (devmode) {
+            candidateUrls.push({
+                url: `file:///C:/Users/steve/Code/social_stream/settings/${configFileName}`,
+                branch: branchName,
+                origin: 'dev'
+            });
+        }
+
+        const resolveRemoteUrl = (branch) => branch === 'beta'
+            ? `https://socialstream.ninja/beta/settings/${configFileName}`
+            : `https://socialstream.ninja/settings/${configFileName}`;
+
+        candidateUrls.push({
+            url: resolveRemoteUrl(branchName),
+            branch: branchName,
+            origin: 'remote'
+        });
+
+        if (branchName === 'beta') {
+            candidateUrls.push({
+                url: resolveRemoteUrl('main'),
+                branch: 'main',
+                origin: 'remote-main'
+            });
+        }
+
+        let lastRemoteError = null;
+        for (const candidate of candidateUrls) {
+            if (!candidate || !candidate.url) continue;
+            try {
+                const response = await fetch(candidate.url.trim());
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const data = await response.json();
+                if (data) {
+                    config = data;
+                    localStorage.setItem('config', JSON.stringify(data));
+                    if (branchName === 'beta' && candidate.branch === 'main') {
+                        Toast.warning("Beta Config Fallback", "Beta configuration unavailable; using main branch config.");
+                        recordFallbackAsset(`settings/${configFileName}`, 'beta', 'main');
+                    }
+                    configReady = true;
+                    return config;
+                }
+            } catch (remoteError) {
+                lastRemoteError = remoteError;
+                console.error(`Failed to load config from ${candidate.url}:`, remoteError);
             }
         }
 
-        const response = await fetch(configUrl.trim());
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-        const data = await response.json();
-        if (data) {
-            config = data;
-            localStorage.setItem('config', JSON.stringify(data));
+        if (lastRemoteError) {
+            throw lastRemoteError;
         }
 	} catch (e) {
 		console.error('Failed to load remote config:', e);
         let fallbackApplied = false;
-        if (window.ssappFallback && typeof window.ssappFallback.readJson === 'function' && !sourcemode && !devmode) {
-            try {
-                const bundledConfig = await window.ssappFallback.readJson(`settings/${configFileName}`, { branch: branchName });
-                if (bundledConfig) {
-                    config = bundledConfig;
-                    localStorage.setItem('config', JSON.stringify(bundledConfig));
-                    fallbackApplied = true;
-                    Toast.warning("Offline Mode", "Using bundled user-agent configuration.");
+        if (hasFallbackBundle && window.ssappFallback && typeof window.ssappFallback.readJson === 'function') {
+            const fallbackBranches = branchName === 'beta' ? ['beta', 'main'] : ['main'];
+            for (const fbBranch of fallbackBranches) {
+                try {
+                    const bundledConfig = await window.ssappFallback.readJson(`settings/${configFileName}`, { branch: fbBranch });
+                    if (bundledConfig) {
+                        config = bundledConfig;
+                        localStorage.setItem('config', JSON.stringify(bundledConfig));
+                        fallbackApplied = true;
+                        if (fbBranch !== branchName) {
+                            Toast.warning("Beta Config Fallback", "Falling back to packaged main branch configuration.");
+                            recordFallbackAsset(`settings/${configFileName}`, branchName, fbBranch);
+                        } else {
+                            Toast.warning("Offline Mode", "Using bundled user-agent configuration.");
+                            recordFallbackAsset(`settings/${configFileName}`, branchName, fbBranch);
+                        }
+                        break;
+                    }
+                } catch (fallbackError) {
+                    console.error('Failed to apply bundled user-agent config:', fallbackError);
                 }
-            } catch (fallbackError) {
-                console.error('Failed to apply bundled user-agent config:', fallbackError);
             }
         }
 
@@ -7115,38 +7344,131 @@ function sleep(ms) {
     return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
+async function fetchWithDeadline(resource, options = {}) {
+    const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 5000;
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const response = await fetch(resource, {
+            ...options,
+            signal: controller.signal,
+            cache: 'no-store'
+        });
+        return response;
+    } finally {
+        clearTimeout(id);
+    }
+}
+
 async function loadManifest() {
-	const manifestUrl = getManifestUrl(); 
-	try {
-		const response = await fetch(manifestUrl);
-        if (!response.ok) {
-            throw new Error(`Manifest fetch failed: ${response.status} ${response.statusText}`);
-        }
-		const data = await response.json();
-		if (data) {
-			cachedManifest[manifestUrl] = data; 
-			log("Fetched and cached remote manifest", data.version);
-			localStorage.setItem('cachedManifest', JSON.stringify(data)); 
-			return data;
-		}
-	} catch (e) {
-		console.error('Error loading manifest from network:', e, manifestUrl);
-		const storedManifest = localStorage.getItem('cachedManifest');
-		if (storedManifest) {
-			try {
-				const parsedManifest = JSON.parse(storedManifest);
-                const tempManifestUrl = parsedManifest.url; 
-                if (tempManifestUrl === manifestUrl || !tempManifestUrl) { 
-    				log("Using cached manifest from local storage.", parsedManifest.version);
-	    			return parsedManifest;
-                } else {
-                    console.warn("Cached manifest URL does not match current mode's expected URL. Discarding old cache.");
+    const env = await ensureSsappEnvironment();
+    const hasFallbackBundle = !!(env && env.hasFallbackBundle);
+    const branchName = isBetaMode ? 'beta' : 'main';
+    const candidateUrls = [];
+    const normalizeBase = (base) => {
+        if (!base) return base;
+        const needsSlash = !base.endsWith('/') && !base.endsWith('\\');
+        return needsSlash ? `${base}/` : base;
+    };
+
+    if (sourcemode) {
+        candidateUrls.push({
+            url: `${normalizeBase(sourcemode)}manifest.json`,
+            branch: branchName,
+            origin: 'sourcemode'
+        });
+    }
+
+    if (devmode) {
+        candidateUrls.push({
+            url: "file:///C:/Users/steve/Code/social_stream/manifest.json",
+            branch: branchName,
+            origin: 'dev'
+        });
+    }
+
+    const resolveRemoteUrl = (branch) => branch === 'beta'
+        ? "https://socialstream.ninja/beta/manifest.json"
+        : "https://socialstream.ninja/manifest.json";
+
+    candidateUrls.push({
+        url: resolveRemoteUrl(branchName),
+        branch: branchName,
+        origin: 'remote'
+    });
+
+    if (branchName === 'beta') {
+        candidateUrls.push({
+            url: resolveRemoteUrl('main'),
+            branch: 'main',
+            origin: 'remote-main'
+        });
+    }
+
+    let lastError = null;
+    for (const candidate of candidateUrls) {
+        if (!candidate || !candidate.url) continue;
+        try {
+            const response = await fetch(candidate.url);
+            if (!response.ok) {
+                throw new Error(`Manifest fetch failed: ${response.status} ${response.statusText}`);
+            }
+            const data = await response.json();
+            if (data) {
+                cachedManifest[candidate.url] = data;
+                data.url = candidate.url;
+                log(`Fetched manifest from ${candidate.origin}`, data.version || '');
+                localStorage.setItem('cachedManifest', JSON.stringify(data));
+                if (branchName === 'beta' && candidate.branch === 'main') {
+                    Toast.warning("Beta Manifest Fallback", "Beta manifest unavailable; using main branch manifest.");
+                    recordFallbackAsset('manifest.json', 'beta', 'main');
                 }
-			} catch (parseError) {
-				console.error('Error parsing cached manifest:', parseError);
-			}
-		}
-	}
+                return data;
+            }
+        } catch (error) {
+            lastError = error;
+            console.error(`Error loading manifest from ${candidate.url}:`, error);
+        }
+    }
+
+    if (hasFallbackBundle && window.ssappFallback && typeof window.ssappFallback.readJson === 'function') {
+        const fallbackBranches = branchName === 'beta' ? ['beta', 'main'] : ['main'];
+        for (const fbBranch of fallbackBranches) {
+            try {
+                const bundledManifest = await window.ssappFallback.readJson('manifest.json', { branch: fbBranch });
+                if (bundledManifest) {
+                    bundledManifest.url = `bundled:${fbBranch}:manifest.json`;
+                    cachedManifest[bundledManifest.url] = bundledManifest;
+                    localStorage.setItem('cachedManifest', JSON.stringify(bundledManifest));
+                    if (fbBranch !== branchName) {
+                        Toast.warning("Beta Manifest Fallback", "Using packaged main branch manifest.");
+                        recordFallbackAsset('manifest.json', branchName, fbBranch);
+                    } else {
+                        Toast.warning("Offline Mode", "Using packaged manifest.");
+                        recordFallbackAsset('manifest.json', branchName, fbBranch);
+                    }
+                    return bundledManifest;
+                }
+            } catch (fallbackError) {
+                console.error('Failed to load packaged manifest:', fallbackError);
+            }
+        }
+    }
+
+    const storedManifest = localStorage.getItem('cachedManifest');
+    if (storedManifest) {
+        try {
+            const parsedManifest = JSON.parse(storedManifest);
+            log("Using cached manifest from local storage.", parsedManifest.version || '');
+            return parsedManifest;
+        } catch (parseError) {
+            console.error('Error parsing cached manifest:', parseError);
+        }
+    }
+
+    if (lastError) {
+        console.error('Manifest load ultimately failed:', lastError);
+    }
 	return null; 
 }
 function getManifestUrl() { 

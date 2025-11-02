@@ -772,10 +772,10 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
                     path: bundled.path,
                     reason: remoteReason || `Bundled ${branch} asset unavailable`
                 };
-                if (fallbackBranchUsed) {
-                    meta.fallbackBranch = fallbackBranchUsed;
-                    notifySocialStreamFallback(relativePath, branch, fallbackBranchUsed);
-                }
+                const toBranch = fallbackBranchUsed || branch;
+                const fromBranch = fallbackBranchUsed ? branch : (remoteError ? 'remote' : branch);
+                meta.fallbackBranch = toBranch;
+                notifySocialStreamFallback(relativePath, fromBranch, toBranch);
                 return {
                     text: bundled.text,
                     origin: 'fallback',
@@ -909,6 +909,35 @@ ipcMain.handle('socialstream:read-file', async (_event, relativePath, options = 
         };
     } catch (error) {
         console.error('Failed to read bundled Social Stream file:', error);
+        return { success: false, error: error && error.message ? error.message : 'UNKNOWN' };
+    }
+});
+
+ipcMain.handle('socialstream:resolve-cache-url', async (_event, relativePath, options = {}) => {
+    try {
+        const normalized = normalizeSocialStreamRelativePath(relativePath);
+        if (!normalized) {
+            return { success: false, error: 'INVALID_PATH' };
+        }
+        const branch = options.branch || 'main';
+        const cachePath = getSocialStreamCachePath(branch, normalized);
+        try {
+            await fsp.access(cachePath, fs.constants.R_OK);
+            return {
+                success: true,
+                url: pathToFileURL(cachePath).toString(),
+                path: cachePath,
+                branch
+            };
+        } catch (error) {
+            if (error && error.code === 'ENOENT') {
+                return { success: false, error: 'NOT_FOUND' };
+            }
+            console.warn('Failed to access cached Social Stream file:', error && error.message ? error.message : error);
+            return { success: false, error: error && error.message ? error.message : 'UNKNOWN' };
+        }
+    } catch (error) {
+        console.error('Failed to resolve Social Stream cache file:', error);
         return { success: false, error: error && error.message ? error.message : 'UNKNOWN' };
     }
 });
@@ -6337,7 +6366,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 } else if (args.source) {
                     (async () => {
                         try {
-                            const branch = isBetaMode ? 'beta' : 'main';
+                            const branch = (typeof args.assetBranch === 'string' && args.assetBranch.trim())
+                                ? args.assetBranch.trim()
+                                : (isBetaMode ? 'beta' : 'main');
                             const jsSource = args.source.startsWith("https://") ? args.source : `https://raw.githubusercontent.com/steveseguin/social_stream/${branch}/${args.source}`;
                             const relativeSource = args.source.startsWith("https://") ? '' : args.source;
 
