@@ -746,8 +746,12 @@ if (window.electron && window.electron.ipcRenderer) {
     ipcRenderer = window.electron.ipcRenderer;
 }
 var localServer = "";
+let ipcRendererListenersBound = false;
 
-if (ipcRenderer) {
+function bindRendererIpcEvents() {
+    if (!ipcRenderer || ipcRendererListenersBound) {
+        return;
+    }
     ipcRenderer.on('app:clear-all-sources', () => {
         try {
             clearAllSources();
@@ -760,6 +764,11 @@ if (ipcRenderer) {
         const { relativePath, fromBranch, toBranch } = payload;
         recordFallbackAsset(relativePath, fromBranch, toBranch);
     });
+    ipcRendererListenersBound = true;
+}
+
+if (ipcRenderer) {
+    bindRendererIpcEvents();
 }
 
 // Universal IPC Promise Handler
@@ -775,16 +784,32 @@ class UniversalIPCHandler {
             failed: 0,
             timedOut: 0
         };
+        this.boundHandleResponse = (event, data) => {
+            this.handleResponse(data);
+        };
+        this.currentRenderer = null;
         
         // Single listener for ALL IPC responses
-        if (ipcRenderer) {
-            ipcRenderer.on('ipc-response', (event, data) => {
-                this.handleResponse(data);
-            });
-        }
+        this.bindRenderer();
         
         // Periodic cleanup - more aggressive
         this.cleanupInterval = setInterval(() => this.cleanup(), 10000); // Every 10 seconds
+    }
+
+    bindRenderer(renderer = ipcRenderer) {
+        const target = renderer || ipcRenderer;
+        if (!target || typeof target.on !== 'function') {
+            return false;
+        }
+        if (this.currentRenderer === target) {
+            return true;
+        }
+        if (this.currentRenderer && typeof this.currentRenderer.removeListener === 'function') {
+            this.currentRenderer.removeListener('ipc-response', this.boundHandleResponse);
+        }
+        this.currentRenderer = target;
+        this.currentRenderer.on('ipc-response', this.boundHandleResponse);
+        return true;
     }
     
     // Send any IPC message with optional custom timeout
@@ -923,6 +948,11 @@ class UniversalIPCHandler {
             clearInterval(this.cleanupInterval);
             this.cleanupInterval = null;
         }
+
+        if (this.currentRenderer && typeof this.currentRenderer.removeListener === 'function') {
+            this.currentRenderer.removeListener('ipc-response', this.boundHandleResponse);
+            this.currentRenderer = null;
+        }
         
         // Clear all pending callbacks
         this.callbacks.forEach((callback, id) => {
@@ -948,6 +978,9 @@ class UniversalIPCHandler {
 
 // Create global instance
 window.ipc = new UniversalIPCHandler();
+if (window.ipc && typeof window.ipc.bindRenderer === 'function') {
+    window.ipc.bindRenderer();
+}
 
 // Function to rewrite old Kick URLs to new format
 function rewriteKickUrl(url) {
@@ -1777,6 +1810,16 @@ async function newSource(target, username, startup = false, initialState = {}, i
                         // For chat popup URLs, use newOtherSource instead
                         return newOtherSource('rumble', url.toString(), startup, initialState);
                     }
+				} else if (url.pathname.endsWith("/live") || url.pathname.endsWith("/livestream") || url.pathname.endsWith("/livestreams")) {
+                    // Extract channel name from channelname/livestreams
+                    const pathParts = url.pathname.split('/').filter(Boolean);
+                    if (pathParts.length >= 2) {
+                        username = pathParts[pathParts.length-2] ; // Get channel name
+                        target = 'rumble';
+						if (!url.pathname.includes("/user/")){
+							isChannelName = true; // This is a channel URL
+						}
+                    }
                 } else {
                     // Try to extract video ID from URL like /v6vpthn-...
                     const videoIdMatch = url.pathname.match(/^\/([vp]\w+)-/);
@@ -1821,9 +1864,9 @@ async function newSource(target, username, startup = false, initialState = {}, i
             else if (target === "parti") sourceUrl = `https://parti.com/popout-chat?id=${username}`;
             else if (target === "rumble") {
                 if (isChannelName) {
-                    sourceUrl = `https://rumble.com/c/${username}/livestreams`;
+                    sourceUrl = `https://rumble.com/c/${username}/live`;
                 } else {
-                    sourceUrl = `https://rumble.com/user/${username}/livestreams`;
+                    sourceUrl = `https://rumble.com/user/${username}/live`;
                 }
             } 
             else if (target === "tiktok") sourceUrl = `https://www.tiktok.com/@${username.replace('@','')}/live`;
@@ -4889,9 +4932,9 @@ function selectRumbleFallbackUrl({ primary, username, isChannel }) {
             if (isChannel === true) {
                 addCandidate(`https://rumble.com/c/${userSlug}/live`);
             } else if (isChannel === false) {
-                addCandidate(`https://rumble.com/${userSlug}/live`);
+                addCandidate(`https://rumble.com/user/${userSlug}/live`);
             } else {
-                addCandidate(`https://rumble.com/${userSlug}/live`);
+                addCandidate(`https://rumble.com/user/${userSlug}/live`);
                 addCandidate(`https://rumble.com/c/${userSlug}/live`);
             }
         }
@@ -4957,50 +5000,77 @@ async function createClassicWindowFromSource(source, tabid = false) {
         }
         
         if (videoInfo) {
+            const isLegacyFormat = typeof videoInfo === 'string';
+            const chatIdFromInfo = !isLegacyFormat && videoInfo?.chatId && /^\d+$/.test(videoInfo.chatId)
+                ? videoInfo.chatId
+                : null;
             // Handle both old format (string) and new format (object)
-            videoId = typeof videoInfo === 'string' ? videoInfo : videoInfo.videoId;
-            const fullPath = typeof videoInfo === 'string' ? `${videoInfo}.html` : videoInfo.fullPath;
+            videoId = isLegacyFormat ? videoInfo : videoInfo.videoId;
+            const fullPath = isLegacyFormat ? `${videoInfo}.html` : videoInfo.fullPath;
             
-            const chatLookupTarget = fullPath || videoId;
-            console.log(`Fetching Rumble chat ID for video: ${videoId} (path: ${chatLookupTarget})`);
-            
-            try {
-                const chatId = await getRumbleChatId(chatLookupTarget);
-                if (chatId) {
-                    console.log(`Found Rumble chat ID: ${chatId} for video: ${videoId}`);
-                    stateManager.updateSource(source.id, { videoId: videoId, chatId: chatId });
-                    urlToLoad = `https://rumble.com/chat/popup/${chatId}`;
-                    stateManager.updateSource(source.id, { url: urlToLoad });
-                } else {
-                    console.warn(`Could not find chat ID for Rumble video: ${videoId}`);
-                    const fallbackUrl = selectRumbleFallbackUrl({
-                        primary: chatLookupTarget,
-                        username: source.username,
-                        isChannel: source.isChannel
-                    });
-                    if (fallbackUrl) {
-                        Toast.warning("Rumble Fallback", "Could not open the chat popup; loading the live page instead.");
-                        urlToLoad = fallbackUrl;
-                        stateManager.updateSource(source.id, { url: urlToLoad, chatId: null });
+            if (chatIdFromInfo) {
+                console.log(`Using embedded Rumble chat ID ${chatIdFromInfo} for video: ${videoId || '(unknown)'}`);
+                const finalChatId = chatIdFromInfo;
+                urlToLoad = `https://rumble.com/chat/popup/${finalChatId}`;
+                const updates = { chatId: finalChatId, url: urlToLoad };
+                if (videoId) {
+                    updates.videoId = videoId;
+                }
+                stateManager.updateSource(source.id, updates);
+            } else {
+                const chatLookupTarget = fullPath || videoId;
+                console.log(`Fetching Rumble chat ID for video: ${videoId} (path: ${chatLookupTarget})`);
+                
+                try {
+                    const chatId = await getRumbleChatId(chatLookupTarget);
+                    if (chatId) {
+                        console.log(`Found Rumble chat ID: ${chatId} for video: ${videoId}`);
+                        stateManager.updateSource(source.id, { videoId: videoId, chatId: chatId });
+                        urlToLoad = `https://rumble.com/chat/popup/${chatId}`;
+                        stateManager.updateSource(source.id, { url: urlToLoad });
                     } else {
-                        Toast.error("Rumble Error", `Could not find chat ID for video ${videoId}`);
-                        return false;
+                        console.warn(`Could not find chat ID for Rumble video: ${videoId}`);
+                        const fallbackUrl = selectRumbleFallbackUrl({
+                            primary: chatLookupTarget,
+                            username: source.username,
+                            isChannel: source.isChannel
+                        });
+                        if (fallbackUrl) {
+                            Toast.warning("Rumble Fallback", "Could not open the chat popup; loading the live page instead.");
+                            urlToLoad = fallbackUrl;
+                            stateManager.updateSource(source.id, { url: urlToLoad, chatId: null });
+                        } else {
+                            Toast.error("Rumble Error", `Could not find chat ID for video ${videoId}`);
+                            return false;
+                        }
                     }
+                } catch (e) {
+                    console.error("Error fetching Rumble chat ID:", e);
+                    if (e?.message && e.message.includes("timeout")) {
+                        Toast.error("Rumble Error", "Connection timed out. Rumble might be slow or unreachable.");
+                    } else {
+                        Toast.error("Rumble Error", `Failed to get chat ID: ${e?.message || e}`);
+                    }
+                    return false;
                 }
-            } catch (e) {
-                console.error("Error fetching Rumble chat ID:", e);
-                if (e?.message && e.message.includes("timeout")) {
-                    Toast.error("Rumble Error", "Connection timed out. Rumble might be slow or unreachable.");
-                } else {
-                    Toast.error("Rumble Error", `Failed to get chat ID: ${e?.message || e}`);
-                }
-                return false;
             }
+        } else {
+            console.warn(`No live video found for ${source.username}; using fallback URL.`);
+            const fallbackUrl = selectRumbleFallbackUrl({
+                primary: source.url,
+                username: source.username,
+                isChannel: source.isChannel
+            });
+            if (fallbackUrl) {
+                Toast.warning("Rumble Fallback", "Could not open the chat popup; loading the live page instead.");
+                urlToLoad = fallbackUrl;
+                stateManager.updateSource(source.id, { url: urlToLoad, videoId: null, chatId: null });
             } else {
                 Toast.error("Rumble Error", `No live video found for ${source.username}.`);
                 return false;
             }
         }
+    }
     } else if (source.target === "rumble" && source.chatId) {
         // Direct chat ID provided
         console.log("Using provided chat ID:", source.chatId);
@@ -7253,6 +7323,10 @@ if (isElectron || window.electron) {
 			console.log('[Electron] Successfully loaded ipcRenderer:', !!ipcRenderer);
 		}
 		if (ipcRenderer) { 
+            bindRendererIpcEvents();
+            if (window.ipc && typeof window.ipc.bindRenderer === 'function') {
+                window.ipc.bindRenderer();
+            }
             window.prompt = function(title, val, message = "") {
 				log("window.prompt");
                 let options = {};

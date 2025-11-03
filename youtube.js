@@ -875,16 +875,11 @@ async function fetchYoutube(username, alt = false) {
 async function fetchRumble(username, alt = false) { 
     // Note: `alt` now indicates whether to prefer user-style URLs first (true) or channel-style first (false)
     const channelPreferredUrls = [
-        `https://rumble.com/${username}/live`,
-        `https://rumble.com/c/${username}/live`,
-        `https://rumble.com/c/${username}/livestreams`,
-        `https://rumble.com/${username}/livestreams`
+        `https://rumble.com/c/${username}/live`
     ];
     const userPreferredUrls = [
-        `https://rumble.com/user/${username}/live`,
-        `https://rumble.com/user/${username}/livestreams`,
-        `https://rumble.com/${username}/live`,
-        `https://rumble.com/${username}/livestreams`
+        `https://rumble.com/user/${username}/live`
+		
     ];
 
     const seenUrls = new Set();
@@ -967,6 +962,137 @@ async function fetchRumble(username, alt = false) {
 
         const extractLiveVideo = (htmlDataResolved) => {
             if (htmlDataResolved && typeof htmlDataResolved === 'string') {
+                const buildVideoInfoFromUrl = (candidate) => {
+                    if (!candidate || typeof candidate !== 'string') return null;
+                    try {
+                        const parsed = candidate.startsWith('http')
+                            ? new URL(candidate)
+                            : new URL(candidate, 'https://rumble.com');
+                        let pathname = (parsed.pathname || '').trim();
+                        if (!pathname) return null;
+                        const match = pathname.match(/\/((?:v|p)[a-zA-Z0-9]+[^\/]*\.html)/i);
+                        if (!match || !match[1]) return null;
+                        const fullPath = match[1];
+                        const idMatch = fullPath.match(/^((?:v|p)[a-zA-Z0-9]+)/);
+                        if (!idMatch || !idMatch[1]) return null;
+                        return { videoId: idMatch[1], fullPath };
+                    } catch (_) {
+                        return null;
+                    }
+                };
+
+                const hasChatMarkup = /chat\/popup\/\d+/i.test(htmlDataResolved) ||
+                    /<aside[^>]+media-page-chat-aside-chat/i.test(htmlDataResolved) ||
+                    /<[^>]+data-js=["']media_page_chat_aside_chat["']/i.test(htmlDataResolved);
+
+                const findChatId = () => {
+                    const directChatPatterns = [
+                        /chat\/popup\/(\d+)/i,
+                        /data-chat-id=["'](\d+)["']/i,
+                        /["']chatId["']\s*[:=]\s*["']?(\d+)/i
+                    ];
+                    for (const regex of directChatPatterns) {
+                        const match = htmlDataResolved.match(regex);
+                        if (match && match[1] && /^\d+$/.test(match[1])) {
+                            return match[1];
+                        }
+                    }
+                    if (!hasChatMarkup) {
+                        return null;
+                    }
+                    const fallbackPatterns = [
+                        /data-video-id=["'](\d+)["']/i,
+                        /["']video_id["']\s*[:=]\s*["']?(\d+)/i,
+                        /["']cvid["']\s*:\s*(\d+)/i
+                    ];
+                    for (const regex of fallbackPatterns) {
+                        const match = htmlDataResolved.match(regex);
+                        if (match && match[1] && /^\d+$/.test(match[1])) {
+                            return match[1];
+                        }
+                    }
+                    return null;
+                };
+
+                const detectedChatId = findChatId();
+                const withChatId = (info) => {
+                    if (!info) return null;
+                    if (hasChatMarkup && detectedChatId && /^\d+$/.test(detectedChatId)) {
+                        return { ...info, chatId: info.chatId || detectedChatId };
+                    }
+                    return info;
+                };
+
+                const canonicalRegex = /<link[^>]+rel=["']?canonical["']?[^>]*href=["']?([^"' >]+)/i;
+                const canonicalMatch = htmlDataResolved.match(canonicalRegex);
+                if (canonicalMatch && canonicalMatch[1]) {
+                    const videoInfo = buildVideoInfoFromUrl(canonicalMatch[1]);
+                    if (videoInfo) {
+                        if (!hasChatMarkup) {
+                            console.warn("Rumble page missing live chat markers; skipping canonical result.");
+                            return null;
+                        }
+                        const enriched = withChatId(videoInfo);
+                        console.log("Found Rumble live video (canonical):", enriched);
+                        return enriched;
+                    }
+                }
+
+                const metaPatterns = [
+                    { regex: /<meta[^>]+property=["']?og:url["']?[^>]*content=["']?([^"' >]+)/i, label: "og:url" },
+                    { regex: /<meta[^>]+name=["']?twitter:url["']?[^>]*content=["']?([^"' >]+)/i, label: "twitter:url" },
+                    { regex: /<meta[^>]+itemprop=["']?url["']?[^>]*content=["']?([^"' >]+)/i, label: "itemprop:url" }
+                ];
+                for (const { regex, label } of metaPatterns) {
+                    const metaMatch = htmlDataResolved.match(regex);
+                    if (metaMatch && metaMatch[1]) {
+                        const videoInfo = buildVideoInfoFromUrl(metaMatch[1]);
+                        if (videoInfo) {
+                            if (!hasChatMarkup) {
+                                console.warn(`Rumble page missing live chat markers; skipping ${label} result.`);
+                                continue;
+                            }
+                            const enriched = withChatId(videoInfo);
+                            console.log(`Found Rumble live video (${label}):`, enriched);
+                            return enriched;
+                        }
+                    }
+                }
+
+                const ldJsonRegex = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+                let ldJsonMatch;
+                while ((ldJsonMatch = ldJsonRegex.exec(htmlDataResolved))) {
+                    const jsonText = ldJsonMatch[1]?.trim();
+                    if (!jsonText) continue;
+                    try {
+                        const parsed = JSON.parse(jsonText);
+                        const entries = Array.isArray(parsed) ? parsed : [parsed];
+                        for (const entry of entries) {
+                            if (!entry || typeof entry !== 'object') continue;
+                            const type = entry['@type'];
+                            const isVideoObject = Array.isArray(type)
+                                ? type.includes('VideoObject')
+                                : type === 'VideoObject';
+                            if (!isVideoObject) continue;
+                            const candidateUrls = [entry.url, entry.mainEntityOfPage, entry.embedUrl];
+                            for (const candidateUrl of candidateUrls) {
+                                const videoInfo = buildVideoInfoFromUrl(candidateUrl);
+                                if (videoInfo) {
+                                    if (!hasChatMarkup) {
+                                        console.warn("Rumble page missing live chat markers; skipping ld+json result.");
+                                        continue;
+                                    }
+                                    const enriched = withChatId(videoInfo);
+                                    console.log("Found Rumble live video (ld+json):", enriched);
+                                    return enriched;
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.warn("Failed to parse ld+json while searching for Rumble live video:", e);
+                    }
+                }
+
                 // Try new method first (looking for href pattern)
                 const altRegex = /videostream__status--live[\s\S]{0,500}?href=["']\/([^"']+\.html)/;
                 const altMatch = htmlDataResolved.match(altRegex);
@@ -976,11 +1102,16 @@ async function fetchRumble(username, alt = false) {
                     const fullPath = altMatch[1];
                     const videoIdMatch = fullPath.match(/^(v[a-zA-Z0-9]+)/);
                     const videoId = videoIdMatch ? videoIdMatch[1] : fullPath.replace('.html', '');
+                    if (!hasChatMarkup) {
+                        console.warn("Rumble page missing live chat markers; skipping new-method result.");
+                        return null;
+                    }
                     
-                    console.log("Found Rumble live video (new method):", { videoId, fullPath });
+                    const enriched = withChatId({ videoId, fullPath });
+                    console.log("Found Rumble live video (new method):", enriched);
                     
                     // Return an object with both the video ID and full path
-                    return { videoId, fullPath };
+                    return enriched;
                 }
                 
                 // Fallback to old method (looking for data-video-id pattern)
@@ -990,9 +1121,14 @@ async function fetchRumble(username, alt = false) {
                     if (oldMethodMatch) {
                         const videoId = oldMethodMatch.split('"')[0];
                         if (videoId) {
-                            console.log("Found Rumble live video (old method):", videoId);
+                            if (!hasChatMarkup) {
+                                console.warn("Rumble page missing live chat markers; skipping old-method result.");
+                                return null;
+                            }
+                            const enriched = withChatId({ videoId, fullPath: `${videoId}.html` });
+                            console.log("Found Rumble live video (old method):", enriched);
                             // Return in same format as new method for consistency
-                            return { videoId, fullPath: `${videoId}.html` };
+                            return enriched;
                         }
                     }
                 } catch (e) {
@@ -1021,8 +1157,13 @@ async function fetchRumble(username, alt = false) {
                                 if (!fullPath) {
                                     fullPath = `${videoId}.html`;
                                 }
-                                console.log("Found Rumble live video (JSON heuristic):", { videoId, fullPath });
-                                return { videoId, fullPath };
+                                if (!hasChatMarkup) {
+                                    console.warn("Rumble page missing live chat markers; skipping JSON heuristic result.");
+                                    continue;
+                                }
+                                const enriched = withChatId({ videoId, fullPath });
+                                console.log("Found Rumble live video (JSON heuristic):", enriched);
+                                return enriched;
                             }
                         }
                     }
@@ -1038,9 +1179,20 @@ async function fetchRumble(username, alt = false) {
                     if (/\blive\b/i.test(snippet) || /\bstatus\b[^<>{}]{0,80}?(?:live|LIVE)/.test(snippet)) {
                         const videoIdMatch = fullPath.match(/^(v[a-zA-Z0-9]+)/);
                         const videoId = videoIdMatch ? videoIdMatch[1] : fullPath.replace('.html', '');
-                        console.log("Found Rumble live video (href heuristic):", { videoId, fullPath });
-                        return { videoId, fullPath };
+                        if (!hasChatMarkup) {
+                            console.warn("Rumble page missing live chat markers; skipping href heuristic result.");
+                            continue;
+                        }
+                        const enriched = withChatId({ videoId, fullPath });
+                        console.log("Found Rumble live video (href heuristic):", enriched);
+                        return enriched;
                     }
+                }
+
+                if (detectedChatId && hasChatMarkup) {
+                    const fallbackInfo = { videoId: detectedChatId, fullPath: null, chatId: detectedChatId };
+                    console.log("Falling back to chat-id-only Rumble detection:", fallbackInfo);
+                    return fallbackInfo;
                 }
             }
             return null;
