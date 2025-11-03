@@ -328,6 +328,32 @@ function configureContextBridge(){
 			  
 			  closeStream: (streamId) => {},
 			  
+			  startYouTubeLiveChatGrpcStream: async (options) => {
+				return await ipcRenderer.invoke('youtube-livechat-grpc:start', options);
+			  },
+			  
+			  stopYouTubeLiveChatGrpcStream: async (streamId) => {
+				return await ipcRenderer.invoke('youtube-livechat-grpc:stop', streamId);
+			  },
+			  
+			  onYouTubeLiveChatGrpcEvent: (callback) => {
+				if (typeof callback !== 'function') {
+					return () => {};
+				}
+				const channel = 'youtube-livechat-grpc:event';
+				const handler = (_event, payload) => {
+					try {
+						callback(payload);
+					} catch (error) {
+						console.warn('[Preload] YouTube gRPC event handler failed', error);
+					}
+				};
+				ipcRenderer.on(channel, handler);
+				return () => {
+					ipcRenderer.removeListener(channel, handler);
+				};
+			  },
+			  
 			  // Performance monitoring
 			  requestPerformanceData: async () => {
 				return await ipcRenderer.invoke('getPerformanceMetrics');

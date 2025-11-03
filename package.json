@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.3.64",
+  "version": "0.3.65",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "main": "main.js",
@@ -169,6 +169,8 @@
     "tsx": "^4.20.5"
   },
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.0",
+    "@grpc/proto-loader": "^0.7.15",
     "@huggingface/transformers": "git+https://github.com/steveseguin/transformers.js",
     "app-builder-lib": "^26.0.12",
     "bufferutil": "^4.0.9",

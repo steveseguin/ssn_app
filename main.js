@@ -42,6 +42,7 @@ const Yargs = require("yargs");
 const fetch = require("electron-fetch").default;
 const TikTokAuth = require('./tiktok-auth');
 const { setupWebSocketMonitor } = require('./websocket-monitor');
+const youTubeGrpcStreamManager = require('./youtube-grpc-client');
 
 const {
     fetch: undiciFetch
@@ -955,6 +956,30 @@ ipcMain.handle('ssapp:get-environment', async () => {
         preferLocalAssets: app.isPackaged && hasFallback,
         hasFallbackBundle: hasFallback
     };
+});
+
+ipcMain.handle('youtube-livechat-grpc:start', async (event, options = {}) => {
+    try {
+        const result = youTubeGrpcStreamManager.startStream(options, event.sender);
+        return { success: true, streamId: result.streamId };
+    } catch (error) {
+        console.warn('[YouTube][gRPC] Failed to start live chat stream:', error && error.message ? error.message : error);
+        return {
+            success: false,
+            error: {
+                message: error && error.message ? error.message : 'Failed to start YouTube live chat gRPC stream.',
+                code: typeof error?.code === 'number' ? error.code : null
+            }
+        };
+    }
+});
+
+ipcMain.handle('youtube-livechat-grpc:stop', async (_event, streamId) => {
+    if (typeof streamId !== 'string' || !streamId) {
+        return { success: false, error: { message: 'streamId is required.' } };
+    }
+    const stopped = youTubeGrpcStreamManager.stopStream(streamId);
+    return { success: stopped };
 });
 
 function queueInjectorToast(level, title, message) {

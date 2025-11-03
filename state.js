@@ -14,7 +14,8 @@ class StateManager {
                 youtubeCheckInterval: 300000,
                 currentPage: 'streams',
                 // Order of top-level entries in #sources: ["g:<groupId>", "s:<sourceId>"]
-                rootOrder: []
+                rootOrder: [],
+                sessionBindings: {}
             }
         };
         
@@ -71,6 +72,10 @@ class StateManager {
                 }
                 if (parsed.global) {
                     this.state.global = { ...this.state.global, ...parsed.global };
+                }
+
+                if (!this.state.global.sessionBindings || typeof this.state.global.sessionBindings !== 'object') {
+                    this.state.global.sessionBindings = {};
                 }
 
                 const allowedLastModes = new Set(['classic', 'tiktok-websocket', 'tiktok-legacy']);
@@ -206,6 +211,136 @@ class StateManager {
         return `${source.target}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     }
 
+    ensureSessionBindings() {
+        if (!this.state.global.sessionBindings || typeof this.state.global.sessionBindings !== 'object') {
+            this.state.global.sessionBindings = {};
+        }
+        return this.state.global.sessionBindings;
+    }
+
+    normalizeUrlForSession(url) {
+        try {
+            const parsed = new URL(url);
+            const normalizedPath = parsed.pathname.replace(/\/+$/, '') || '/';
+            return `${parsed.origin.toLowerCase()}${normalizedPath}`;
+        } catch (_) {
+            return (url || '').trim().toLowerCase();
+        }
+    }
+
+    buildSessionBindingKeys(source) {
+        if (!source || typeof source !== 'object') return [];
+
+        const keys = [];
+        const target = typeof source.target === 'string' ? source.target.trim().toLowerCase() : '';
+        if (!target) return keys;
+
+        const append = (type, value) => {
+            if (!value) return;
+            keys.push(`${target}::${type}::${value}`);
+        };
+
+        const groupId = typeof source.groupId === 'string' ? source.groupId.trim().toLowerCase() : '';
+        if (groupId) append('group', groupId);
+
+        const username = typeof source.username === 'string' ? source.username.trim().toLowerCase() : '';
+        if (username) append('user', username);
+
+        const channelId = typeof source.channelId === 'string' ? source.channelId.trim().toLowerCase() : '';
+        if (channelId) append('channel', channelId);
+
+        const videoId = typeof source.videoId === 'string' ? source.videoId.trim() : '';
+        if (videoId) append('video', videoId);
+
+        const normalizedUrl = typeof source.url === 'string' && source.url.trim()
+            ? this.normalizeUrlForSession(source.url.trim())
+            : '';
+        if (normalizedUrl) append('url', normalizedUrl);
+
+        // Include explicit sessionBindingKey hint when available
+        const explicitKey = typeof source.sessionBindingKey === 'string' ? source.sessionBindingKey.trim().toLowerCase() : '';
+        if (explicitKey) append('explicit', explicitKey);
+
+        // Ensure uniqueness while preserving order
+        return Array.from(new Set(keys));
+    }
+
+    getRememberedSessionForSource(source) {
+        const bindings = this.ensureSessionBindings();
+        const keys = this.buildSessionBindingKeys(source);
+        for (const key of keys) {
+            const value = bindings[key];
+            if (typeof value === 'string' && value.trim()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    applyRememberedSessionToSource(source) {
+        if (!source || typeof source !== 'object') return;
+        const hasMeaningfulSession = typeof source.customSession === 'string'
+            && source.customSession.trim()
+            && source.customSession.trim() !== 'AUTO';
+        if (hasMeaningfulSession) return;
+
+        const remembered = this.getRememberedSessionForSource(source);
+        if (typeof remembered === 'string' && remembered.trim()) {
+            source.customSession = remembered;
+        }
+    }
+
+    sessionBindingKeysChanged(newSource, oldSource) {
+        if (!oldSource) return true;
+        const newKeys = this.buildSessionBindingKeys(newSource);
+        const oldKeys = this.buildSessionBindingKeys(oldSource);
+        if (newKeys.length !== oldKeys.length) return true;
+
+        const newSet = new Set(newKeys);
+        if (newSet.size !== oldKeys.length) return true;
+
+        for (const key of oldKeys) {
+            if (!newSet.has(key)) return true;
+        }
+        return false;
+    }
+
+    updateSessionBindingsForSource(source, sessionValue, previousState = null) {
+        const bindings = this.ensureSessionBindings();
+        const trimmedValue = typeof sessionValue === 'string' ? sessionValue.trim() : '';
+        const newKeys = this.buildSessionBindingKeys(source);
+
+        if (!trimmedValue || trimmedValue === 'AUTO') {
+            newKeys.forEach(key => {
+                delete bindings[key];
+            });
+        } else {
+            newKeys.forEach(key => {
+                bindings[key] = trimmedValue;
+            });
+        }
+
+        if (previousState) {
+            const oldKeys = this.buildSessionBindingKeys(previousState);
+            const previousValue = typeof previousState.customSession === 'string'
+                ? previousState.customSession.trim()
+                : '';
+
+            oldKeys.forEach(oldKey => {
+                if (newKeys.includes(oldKey)) {
+                    return;
+                }
+                if (!trimmedValue || trimmedValue === 'AUTO') {
+                    if (!previousValue || previousValue === 'AUTO' || bindings[oldKey] === previousValue) {
+                        delete bindings[oldKey];
+                    }
+                } else if (previousValue && bindings[oldKey] === previousValue) {
+                    delete bindings[oldKey];
+                }
+            });
+        }
+    }
+
     // Add a new source
     addSource(sourceData) {
         let id = sourceData.id || this.generateSourceId(sourceData);
@@ -236,6 +371,12 @@ class StateManager {
         }
         if (source.disableTikTokAutoFallback === undefined) {
             source.disableTikTokAutoFallback = false;
+        }
+
+        this.applyRememberedSessionToSource(source);
+        const initialSession = typeof source.customSession === 'string' ? source.customSession.trim() : '';
+        if (initialSession && initialSession !== 'AUTO') {
+            this.updateSessionBindingsForSource(source, initialSession);
         }
 
         // Ensure unique ID when duplicates exist (allow multiple entries for same videoId/URL)
@@ -275,6 +416,12 @@ class StateManager {
         
         const oldState = { ...source };
         Object.assign(source, updates);
+
+        const sessionUpdated = Object.prototype.hasOwnProperty.call(updates, 'customSession');
+        const keysChanged = this.sessionBindingKeysChanged(source, oldState);
+        if (sessionUpdated || (keysChanged && typeof source.customSession === 'string')) {
+            this.updateSessionBindingsForSource(source, source.customSession, oldState);
+        }
         
         this.emit('sourceUpdated', { sourceId, updates, oldState });
         this.persist();

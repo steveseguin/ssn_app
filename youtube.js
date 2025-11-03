@@ -359,7 +359,7 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
             let activatedCount = 0;
             for (const stream of combinedStreams) {
                 const streamStatus = stream.statusDisplay; // Use pre-calculated statusDisplay
-                // Only consider live or upcoming-within-60m
+                // Only consider live or upcoming within the next 180 minutes
                 if (streamStatus === 'ended') continue;
                 let shouldActivate = streamStatus === 'live';
                 if (!shouldActivate && streamStatus === 'upcoming' && stream.scheduledStartTime) {
@@ -370,7 +370,7 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
                     const now = new Date();
                     const diffMs = startTime - now;
                     const diffMins = diffMs / (1000 * 60);
-                    if (diffMins >= 0 && diffMins <= 60) {
+                    if (diffMins >= 0 && diffMins <= 180) {
                         shouldActivate = true;
                     }
                 }
