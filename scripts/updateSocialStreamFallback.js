@@ -26,6 +26,7 @@ const BASE_PATTERNS = [
     '/js/**',
     '/libs/**',
     '/media/**',
+    '/providers/**',
     '/settings/**',
     '/sources/**',
     '/translations/**',

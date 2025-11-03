@@ -873,6 +873,21 @@ async function locateBundledSocialStreamFile(branch, relativePath, options = {})
     return null;
 }
 
+async function resolveBundledSocialStreamRoot(branch = 'main') {
+    try {
+        const descriptor = await locateBundledSocialStreamFile(branch, 'manifest.json', {
+            bypassCache: true,
+            fallbackToMain: branch !== 'main'
+        });
+        if (descriptor && descriptor.path) {
+            return path.dirname(descriptor.path);
+        }
+    } catch (error) {
+        console.warn('Failed to resolve bundled Social Stream root:', error && error.message ? error.message : error);
+    }
+    return null;
+}
+
 ipcMain.handle('socialstream:resolve-file-url', async (_event, relativePath, options = {}) => {
     try {
         const descriptor = await locateBundledSocialStreamFile(options.branch || 'main', relativePath);
@@ -8452,7 +8467,7 @@ if (!fs.existsSync(folder)) {
 app.setPath("userData", folder);
 log("folder: " + folder);
 
-app.whenReady().then(function() {
+app.whenReady().then(async function() {
         //app.allowRendererProcessReuse = false;
         log("APP READY");
         
@@ -8569,7 +8584,7 @@ app.whenReady().then(function() {
         // If no --filesource provided, use saved local source path (if any)
         try {
             const savedLocalSource = store.get('localSourcePath');
-            if (!Argv.filesource && savedLocalSource) {
+            if (!Argv.filesource && !preferLocalAssetsFlag && savedLocalSource) {
                 const resolved = fsPathFromMaybeFileUrl(savedLocalSource) || savedLocalSource;
                 if (resolved && fs.existsSync(resolved)) {
                     Argv.filesource = savedLocalSource;
@@ -8582,6 +8597,21 @@ app.whenReady().then(function() {
             }
         } catch (e) {
             console.error('Error applying saved local source:', e);
+        }
+
+        if (preferLocalAssetsFlag && !Argv.filesource) {
+            try {
+                const fallbackRoot = await resolveBundledSocialStreamRoot('main');
+                if (fallbackRoot) {
+                    const fileUrl = pathToFileUrl(ensureTrailingSep(fallbackRoot));
+                    Argv.filesource = fileUrl;
+                    console.info('[SSAPP] Prefer-local assets enabled. Using bundled Social Stream from', fileUrl);
+                } else {
+                    console.warn('[SSAPP] Prefer-local assets requested, but bundled resources were not found. Falling back to remote assets.');
+                }
+            } catch (error) {
+                console.error('[SSAPP] Failed to enable prefer-local assets:', error && error.message ? error.message : error);
+            }
         }
 
         createWindow(Argv, false, true);
