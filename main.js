@@ -87,7 +87,7 @@ if (!isDebugLoggingEnabled) {
 
 const forceTikTokLogging = process.argv.includes('--enable-tiktok-logs') || process.env.SSAPP_TIKTOK_LOGS === '1';
 const disableTikTokLogging = process.argv.includes('--disable-tiktok-logs') || process.env.SSAPP_TIKTOK_LOGS === '0';
-const shouldEnableTikTokLogging = !disableTikTokLogging && (forceTikTokLogging || isDevMode);
+const shouldEnableTikTokLogging = !disableTikTokLogging && (forceTikTokLogging); // !disableTikTokLogging && (forceTikTokLogging || isDevMode);
 
 let TikTokLiveConnectionClass = null;
 let TikTokPollingFallbackClass = null;

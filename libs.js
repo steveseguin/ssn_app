@@ -83,15 +83,62 @@ async function getRumbleVideoId(url) {
 }
 
 async function getRumbleChatId(videoId) {
-	// Convert video ID to full URL if needed
-	const url = videoId.startsWith('http') ? videoId : `https://rumble.com/${videoId}.html`;
-	
+    if (!videoId) return null;
+
+    let target = typeof videoId === 'string' ? videoId.trim() : '';
+    if (!target) return null;
+
+    const popupMatch = target.match(/chat\/popup\/(\d+)/i);
+    if (popupMatch && popupMatch[1]) {
+        return popupMatch[1];
+    }
+    if (/^\d+$/.test(target)) {
+        return target;
+    }
+
+    let url;
+    if (target.startsWith('http')) {
+        url = target;
+    } else {
+        target = target.replace(/^https?:\/\//i, '').replace(/^rumble\.com\/+/i, '');
+        if (target.startsWith('/')) target = target.slice(1);
+
+        let hash = '';
+        const hashIndex = target.indexOf('#');
+        if (hashIndex !== -1) {
+            hash = target.slice(hashIndex);
+            target = target.slice(0, hashIndex);
+        }
+
+        let query = '';
+        const queryIndex = target.indexOf('?');
+        if (queryIndex !== -1) {
+            query = target.slice(queryIndex);
+            target = target.slice(0, queryIndex);
+        }
+
+        if (target && !target.endsWith('.html')) {
+            const hasExtension = /\.[a-z0-9]+$/i.test(target);
+            if (!hasExtension) target += '.html';
+        }
+
+        url = `https://rumble.com/${target}${query}${hash}`;
+    }
+
+    const headers = {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': SSAPP_ACCEPT_LANGUAGE,
+        'Referer': 'https://rumble.com/',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+    };
+    
     try {
         // Prefer main-process fetch
         if (typeof ipcRenderer !== 'undefined' && ipcRenderer) {
             const response = await ipcRenderer.invoke('nodefetch', {
                 url,
-                headers: { 'User-Agent': (config?.global?.userAgent || 'Mozilla/5.0'), 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8', 'Accept-Language': SSAPP_ACCEPT_LANGUAGE, 'Referer': 'https://rumble.com/', 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+                headers: { ...headers, 'User-Agent': (config?.global?.userAgent || 'Mozilla/5.0') },
                 timeout: 15000
             });
             const html = response?.data || '';
@@ -105,7 +152,11 @@ async function getRumbleChatId(videoId) {
         console.warn('nodefetch getRumbleChatId failed, falling back to renderer fetch:', e?.message || e);
     }
     try {
-        const res = await fetch(url, { headers: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8', 'Accept-Language': SSAPP_ACCEPT_LANGUAGE, 'Referer': 'https://rumble.com/', 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }, credentials: 'omit', cache: 'no-store' });
+        const res = await fetch(url, {
+            headers,
+            credentials: 'omit',
+            cache: 'no-store'
+        });
         const html = await res.text();
         const match = html.match(/video_id:\s*(\d+)/);
         if (match && match[1]) {

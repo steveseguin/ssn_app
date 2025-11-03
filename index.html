@@ -4840,6 +4840,66 @@ async function fetchWithRetry(url, options = {}, maxRetries = 3) {
     throw lastError;
 }
 
+function selectRumbleFallbackUrl({ primary, username, isChannel }) {
+    const candidates = [];
+
+    const normalizeRumbleUrl = (value) => {
+        if (!value || typeof value !== 'string') return null;
+        let target = value.trim();
+        if (!target) return null;
+        if (/^https?:\/\//i.test(target)) return target;
+
+        target = target.replace(/^https?:\/\//i, '').replace(/^rumble\.com\/+/i, '');
+        if (target.startsWith('/')) target = target.slice(1);
+
+        let hash = '';
+        const hashIndex = target.indexOf('#');
+        if (hashIndex !== -1) {
+            hash = target.slice(hashIndex);
+            target = target.slice(0, hashIndex);
+        }
+
+        let query = '';
+        const queryIndex = target.indexOf('?');
+        if (queryIndex !== -1) {
+            query = target.slice(queryIndex);
+            target = target.slice(0, queryIndex);
+        }
+
+        if (target && !target.endsWith('.html') && !/\.[a-z0-9]+$/i.test(target)) {
+            target += '.html';
+        }
+
+        if (!target) return null;
+        return `https://rumble.com/${target}${query}${hash}`;
+    };
+
+    const addCandidate = (value) => {
+        const normalized = normalizeRumbleUrl(value);
+        if (normalized && !candidates.includes(normalized)) {
+            candidates.push(normalized);
+        }
+    };
+
+    addCandidate(primary);
+
+    if (username) {
+        const userSlug = username.trim().replace(/^\/+/, '');
+        if (userSlug) {
+            if (isChannel === true) {
+                addCandidate(`https://rumble.com/c/${userSlug}/live`);
+            } else if (isChannel === false) {
+                addCandidate(`https://rumble.com/${userSlug}/live`);
+            } else {
+                addCandidate(`https://rumble.com/${userSlug}/live`);
+                addCandidate(`https://rumble.com/c/${userSlug}/live`);
+            }
+        }
+    }
+
+    return candidates[0] || null;
+}
+
 async function createClassicWindowFromSource(source, tabid = false) {
     if (!ipcRenderer) return false;
     let urlToLoad = source.url;
@@ -4901,93 +4961,38 @@ async function createClassicWindowFromSource(source, tabid = false) {
             videoId = typeof videoInfo === 'string' ? videoInfo : videoInfo.videoId;
             const fullPath = typeof videoInfo === 'string' ? `${videoInfo}.html` : videoInfo.fullPath;
             
-            // Fetch the chat ID from the video page
-            console.log(`Fetching Rumble chat ID for video: ${videoId} (path: ${fullPath})`);
-            const videoUrl = `https://rumble.com/${fullPath}`;
+            const chatLookupTarget = fullPath || videoId;
+            console.log(`Fetching Rumble chat ID for video: ${videoId} (path: ${chatLookupTarget})`);
             
             try {
-                const response = await fetchWithRetry(videoUrl, {
-                    headers: {
-                        'User-Agent': config?.global?.userAgent || 'Mozilla/5.0',
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                        'Accept-Language': APP_ACCEPT_LANGUAGE,
-                        'Referer': 'https://rumble.com/',
-                        'Cache-Control': 'no-cache',
-                        'Pragma': 'no-cache'
-                    },
-                    timeout: 15000
-                }, 2); // Only 2 retries for Rumble to prevent long freezes
-                
-                if (response.status && response.status !== 200) {
-                    console.error(`Rumble fetch returned status ${response.status}`);
-                    if (response.status === 404) {
-                        Toast.error("Rumble Error", `Video not found: ${videoUrl}`);
+                const chatId = await getRumbleChatId(chatLookupTarget);
+                if (chatId) {
+                    console.log(`Found Rumble chat ID: ${chatId} for video: ${videoId}`);
+                    stateManager.updateSource(source.id, { videoId: videoId, chatId: chatId });
+                    urlToLoad = `https://rumble.com/chat/popup/${chatId}`;
+                    stateManager.updateSource(source.id, { url: urlToLoad });
+                } else {
+                    console.warn(`Could not find chat ID for Rumble video: ${videoId}`);
+                    const fallbackUrl = selectRumbleFallbackUrl({
+                        primary: chatLookupTarget,
+                        username: source.username,
+                        isChannel: source.isChannel
+                    });
+                    if (fallbackUrl) {
+                        Toast.warning("Rumble Fallback", "Could not open the chat popup; loading the live page instead.");
+                        urlToLoad = fallbackUrl;
+                        stateManager.updateSource(source.id, { url: urlToLoad, chatId: null });
                     } else {
-                        Toast.error("Rumble Error", `Rumble returned error ${response.status}`);
-                    }
-                    return false;
-                }
-                
-                const htmlData = response?.data || response;
-                if (htmlData && typeof htmlData === 'string') {
-                    
-                    // Try multiple patterns to find the numeric video/chat ID
-                    let chatId = null;
-                    
-                    // Pattern 1: data-video-id attribute
-                    const dataVideoIdMatch = htmlData.match(/data-video-id=["'](\d+)["']/);
-                    if (dataVideoIdMatch && dataVideoIdMatch[1]) {
-                        chatId = dataVideoIdMatch[1];
-                    }
-                    
-                    // Pattern 2: content_id in hx-vals
-                    if (!chatId) {
-                        const contentIdMatch = htmlData.match(/&#34;content_id&#34;:(\d+)/);
-                        if (contentIdMatch && contentIdMatch[1]) {
-                            chatId = contentIdMatch[1];
-                        }
-                    }
-                    
-                    // Pattern 3: video_id in JavaScript
-                    if (!chatId) {
-                        const videoIdMatch = htmlData.match(/video_id:\s*(\d+)/);
-                        if (videoIdMatch && videoIdMatch[1]) {
-                            chatId = videoIdMatch[1];
-                        }
-                    }
-                    
-                    // Pattern 4: cvid in window.rads
-                    if (!chatId) {
-                        const cvidMatch = htmlData.match(/cvid:(\d+)/);
-                        if (cvidMatch && cvidMatch[1]) {
-                            chatId = cvidMatch[1];
-                        }
-                    }
-                    
-                    if (chatId) {
-                        console.log(`Found Rumble chat ID: ${chatId} for video: ${videoId}`);
-                        stateManager.updateSource(source.id, { videoId: videoId, chatId: chatId });
-                        urlToLoad = `https://rumble.com/chat/popup/${chatId}`;
-                        stateManager.updateSource(source.id, { url: urlToLoad });
-                    } else {
-                        // Debug: look for any numeric IDs
-                        const numericIds = htmlData.match(/\b\d{9,10}\b/g);
-                        if (numericIds) {
-                        }
-                        console.warn(`Could not find chat ID for Rumble video: ${videoId}`);
                         Toast.error("Rumble Error", `Could not find chat ID for video ${videoId}`);
                         return false;
                     }
-                } else {
-                    console.error("Invalid response when fetching Rumble video page");
-                    return false;
                 }
             } catch (e) {
                 console.error("Error fetching Rumble chat ID:", e);
-                if (e.message.includes("timeout")) {
+                if (e?.message && e.message.includes("timeout")) {
                     Toast.error("Rumble Error", "Connection timed out. Rumble might be slow or unreachable.");
                 } else {
-                    Toast.error("Rumble Error", `Failed to get chat ID: ${e.message}`);
+                    Toast.error("Rumble Error", `Failed to get chat ID: ${e?.message || e}`);
                 }
                 return false;
             }
@@ -5017,93 +5022,36 @@ async function createClassicWindowFromSource(source, tabid = false) {
                 // We need to fetch the chat ID
                 console.log(`Direct video ID entry needs chat ID, fetching...`);
                 try {
-                    let videoUrl;
-                    
-                    // Check if this is a full path or just a video ID
-                    if (source.videoId.includes('-') || source.videoId.includes('.html')) {
-                        // This looks like a full path
-                        videoUrl = `https://rumble.com/${source.videoId}`;
-                    } else if (/^[vp]\w+$/.test(source.videoId)) {
-                        // This is just a video ID, we need to construct a URL
-                        // Unfortunately, we can't know the full path without additional info
-                        // Let's try the simple format first
-                        videoUrl = `https://rumble.com/${source.videoId}.html`;
-                    } else {
-                        // Unknown format, try as-is
-                        videoUrl = `https://rumble.com/${source.videoId}`;
-                    }
-                    
-                    console.log(`Fetching Rumble page: ${videoUrl}`);
-                    const response = await fetchWithRetry(videoUrl, {
-                        headers: {'User-Agent': config?.global?.userAgent || 'Mozilla/5.0'},
-                        timeout: 10000
-                    }, 2); // Only 2 retries for Rumble to prevent long freezes
-                
-                if (response.status && response.status !== 200) {
-                    console.error(`Rumble fetch returned status ${response.status}`);
-                    if (response.status === 404) {
-                        Toast.error("Rumble Error", `Video not found: ${videoUrl}`);
-                    } else {
-                        Toast.error("Rumble Error", `Rumble returned error ${response.status}`);
-                    }
-                    return false;
-                }
-                
-                const htmlData = response?.data || response;
-                if (htmlData && typeof htmlData === 'string') {
-                    
-                    // Try multiple patterns to find the numeric video/chat ID
-                    let chatId = null;
-                    
-                    // Pattern 1: data-video-id attribute
-                    const dataVideoIdMatch = htmlData.match(/data-video-id=["'](\d+)["']/);
-                    if (dataVideoIdMatch && dataVideoIdMatch[1]) {
-                        chatId = dataVideoIdMatch[1];
-                    }
-                    
-                    // Pattern 2: content_id in hx-vals
-                    if (!chatId) {
-                        const contentIdMatch = htmlData.match(/&#34;content_id&#34;:(\d+)/);
-                        if (contentIdMatch && contentIdMatch[1]) {
-                            chatId = contentIdMatch[1];
-                        }
-                    }
-                    
-                    // Pattern 3: video_id in JavaScript
-                    if (!chatId) {
-                        const videoIdMatch = htmlData.match(/video_id:\s*(\d+)/);
-                        if (videoIdMatch && videoIdMatch[1]) {
-                            chatId = videoIdMatch[1];
-                        }
-                    }
-                    
-                    // Pattern 4: cvid in window.rads
-                    if (!chatId) {
-                        const cvidMatch = htmlData.match(/cvid:(\d+)/);
-                        if (cvidMatch && cvidMatch[1]) {
-                            chatId = cvidMatch[1];
-                        }
-                    }
-                    
+                    const chatId = await getRumbleChatId(source.videoId);
                     if (chatId) {
                         console.log(`Found Rumble chat ID: ${chatId} for video: ${source.videoId}`);
                         stateManager.updateSource(source.id, { chatId: chatId });
                         urlToLoad = `https://rumble.com/chat/popup/${chatId}`;
                         stateManager.updateSource(source.id, { url: urlToLoad });
                     } else {
-                        Toast.error("Rumble Error", `Could not find chat ID for video ${source.videoId}`);
-                        return false;
+                        const fallbackUrl = selectRumbleFallbackUrl({
+                            primary: source.videoId,
+                            username: source.username,
+                            isChannel: source.isChannel
+                        });
+                        if (fallbackUrl) {
+                            Toast.warning("Rumble Fallback", "Could not open the chat popup; loading the live page instead.");
+                            urlToLoad = fallbackUrl;
+                            stateManager.updateSource(source.id, { url: urlToLoad, chatId: null });
+                        } else {
+                            Toast.error("Rumble Error", `Could not find chat ID for video ${source.videoId}`);
+                            return false;
+                        }
                     }
+                } catch (e) {
+                    console.error("Error fetching Rumble chat ID:", e);
+                    if (e?.message && e.message.includes("timeout")) {
+                        Toast.error("Rumble Error", "Connection timed out. Rumble might be slow or unreachable.");
+                    } else {
+                        Toast.error("Rumble Error", `Failed to get chat ID: ${e?.message || e}`);
+                    }
+                    return false;
                 }
-            } catch (e) {
-                console.error("Error fetching Rumble chat ID:", e);
-                if (e.message.includes("timeout")) {
-                    Toast.error("Rumble Error", "Connection timed out. Rumble might be slow or unreachable.");
-                } else {
-                    Toast.error("Rumble Error", `Failed to get chat ID: ${e.message}`);
-                }
-                return false;
-            }
             }
         }
     }
@@ -6031,7 +5979,7 @@ class BetaToggle {
 
 		const label = document.createElement('span');
 		label.className = 'beta-toggle-label';
-		label.textContent = currentBetaMode ? 'Beta Core Active' : 'Stable Core Active';
+		label.textContent = currentBetaMode ? 'Beta Mode Active' : 'Enable Beta Mode';
 
 		this.container.appendChild(versions);
 		this.container.appendChild(toggleSwitchContainer);
@@ -6052,7 +6000,7 @@ class BetaToggle {
 		const toggle = this.container.querySelector('.beta-toggle-switch');
 		toggle.classList.toggle('active', newBetaState);
 		const label = this.container.querySelector('.beta-toggle-label');
-		label.textContent = newBetaState ? 'Beta Core Active' : 'Stable Core Active';
+		label.textContent = newBetaState ? 'Beta Mode Active' : 'Enable Beta Mode';
         
         Toast.info("Embedded Core Mode Changed", `Switched embedded core to ${newBetaState ? 'Beta' : 'Stable'} mode. Restart app or refresh page for full effect if issues arise.`);
 

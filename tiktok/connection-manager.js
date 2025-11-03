@@ -979,11 +979,11 @@ function resolveTikTokSubscriberStatus(data = {}) {
             // Refresh position when we see a duplicate id
             if (this.messageIds.has(msgId)) {
                 this.messageIds.delete(msgId);
-                this.messageIds.set(msgId, Date.now());
+                this.messageIds.set(msgId, true);
                 return;
             }
 
-            this.messageIds.set(msgId, Date.now());
+            this.messageIds.set(msgId, true);
 
             // Enforce max size with simple LRU eviction
             while (this.messageIds.size > this.maxSize) {
@@ -1373,18 +1373,20 @@ function resolveFirstImageUrl(candidates = []) {
             this.manager = manager;
             // Use CircularBuffer if available, otherwise fallback to array
             if (CircularBuffer) {
-                this.queue = new CircularBuffer(CONFIG.CHAT.MAX_QUEUE_SIZE);
-            } else {
-                this.queue = [];
-            }
-            this.isProcessing = false;
-            this.pendingBatch = [];
-            this.batchTimer = null;
-            this.lastSendTime = Date.now();
-            this.lastProcessedTimestamp = 0;
-            this.highWaterLoggedAt = 0;
-            this.droppedSinceHighWater = 0;
+            this.queue = new CircularBuffer(CONFIG.CHAT.MAX_QUEUE_SIZE);
+        } else {
+            this.queue = [];
         }
+        this.isProcessing = false;
+        this.pendingBatch = [];
+        this.batchTimer = null;
+        this.processTimer = null;
+        this.pendingProcessInterval = null;
+        this.lastSendTime = Date.now();
+        this.lastProcessedTimestamp = 0;
+        this.highWaterLoggedAt = 0;
+        this.droppedSinceHighWater = 0;
+    }
 
         addToQueue(data) {
 
@@ -1421,22 +1423,28 @@ function resolveFirstImageUrl(candidates = []) {
             let qSize = getSize();
             if (qSize >= capacity) {
                 const dropsNeeded = Math.max(1, qSize - capacity + 1);
-                const droppedEntries = [];
-                let droppedCount = 0;
-                while (droppedCount < dropsNeeded) {
-                    let removed;
-                    if (typeof this.queue.shift === 'function') {
-                        removed = this.queue.shift();
-                    } else if (typeof this.queue.splice === 'function') {
-                        const spliced = this.queue.splice(0, 1);
-                        removed = Array.isArray(spliced) && spliced.length > 0 ? spliced[0] : undefined;
-                    }
-                    if (typeof removed === 'undefined') {
-                        break;
-                    }
-                    droppedEntries.push(removed);
-                    droppedCount++;
-                }
+                const dropChunk = Math.max(10, Math.ceil(capacity * 0.01));
+                const totalToDrop = dropsNeeded <= dropChunk
+                    ? dropsNeeded
+                    : Math.min(qSize, dropsNeeded + dropChunk);
+                const droppedEntries = typeof this.queue.splice === 'function'
+                    ? this.queue.splice(0, Math.min(totalToDrop, qSize))
+                    : (() => {
+                        const removed = [];
+                        const limit = Math.min(totalToDrop, qSize);
+                        for (let i = 0; i < limit; i++) {
+                            const next = typeof this.queue.shift === 'function'
+                                ? this.queue.shift()
+                                : this.queue.length ? this.queue[i] : undefined;
+                            if (typeof next === 'undefined') break;
+                            removed.push(next);
+                        }
+                        if (!this.queue.splice && Array.isArray(this.queue) && removed.length) {
+                            this.queue.splice(0, removed.length);
+                        }
+                        return removed;
+                    })();
+
                 if (droppedEntries.length > 0) {
                     if (cache && typeof cache.remove === 'function') {
                         for (const entry of droppedEntries) {
@@ -1531,10 +1539,32 @@ function resolveFirstImageUrl(candidates = []) {
             return msg;
         }
 
+        scheduleProcessing(interval) {
+            if (this.isProcessing) {
+                return;
+            }
+            const delay = Number.isFinite(interval) && interval >= 0 ? interval : 0;
+            if (this.processTimer) {
+                if (typeof this.pendingProcessInterval === 'number' && delay >= this.pendingProcessInterval) {
+                    return;
+                }
+                clearTimeout(this.processTimer);
+            }
+            this.pendingProcessInterval = delay;
+            this.processTimer = setTimeout(() => {
+                this.processTimer = null;
+                this.pendingProcessInterval = null;
+                this.processQueue();
+            }, delay);
+        }
+
         startProcessing() {
             if (!this.isProcessing) {
                 // Get queue size properly for both CircularBuffer and array
                 const queueSize = this.queue.getSize ? this.queue.getSize() : this.queue.length;
+                if (queueSize === 0) {
+                    return;
+                }
                 // Use faster processing when queue is large
                 const interval = queueSize >= CONFIG.CHAT.HIGH_WATER_THRESHOLD
                     ? CONFIG.CHAT.HIGH_WATER_INTERVAL
@@ -1543,11 +1573,16 @@ function resolveFirstImageUrl(candidates = []) {
                         : (queueSize < 10
                             ? 20
                             : CONFIG.CHAT.PROCESSING_INTERVAL));
-                setTimeout(() => this.processQueue(), interval);
+                this.scheduleProcessing(interval);
             }
         }
 
         processQueue() {
+            if (this.processTimer) {
+                clearTimeout(this.processTimer);
+                this.processTimer = null;
+                this.pendingProcessInterval = null;
+            }
             // Check if queue is empty properly for both CircularBuffer and array
             const getSize = () => (this.queue.getSize ? this.queue.getSize() : this.queue.length);
             const queueSize = getSize();
@@ -1626,7 +1661,7 @@ function resolveFirstImageUrl(candidates = []) {
                         : (remaining < 10
                             ? 20
                             : CONFIG.CHAT.PROCESSING_INTERVAL));
-                setTimeout(() => this.processQueue(), nextInterval);
+                this.scheduleProcessing(nextInterval);
             } else if (this.pendingBatch.length > 0) {
                 // Ensure pending batch is sent
                 this.flushPendingBatch();
