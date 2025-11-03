@@ -953,7 +953,7 @@ ipcMain.handle('ssapp:get-environment', async () => {
     }
     return {
         isPackaged: app.isPackaged,
-        preferLocalAssets: app.isPackaged && hasFallback,
+        preferLocalAssets: !!(preferLocalAssetsFlag && hasFallback),
         hasFallbackBundle: hasFallback
     };
 });
@@ -1298,6 +1298,11 @@ function createYargs() {
         type: "string",
         default: null,
     });
+    addOption("preferlocalassets", {
+        describe: "Force bundled Social Stream assets to load before remote copies",
+        type: "boolean",
+        default: false,
+    });
     addOption("tiktokclassic", {
         alias: "tc",
         describe: "Force TikTok sources to use classic (HTTP) mode instead of WebSockets.",
@@ -1322,6 +1327,9 @@ function createYargs() {
 
 var Args = createYargs();
 var Argv = Args.argv;
+const cliPreferLocalAssets = Argv.preferlocalassets === true;
+const envPreferLocalAssets = process.env.SSAPP_PREFER_LOCAL_ASSETS === '1';
+const preferLocalAssetsFlag = cliPreferLocalAssets || envPreferLocalAssets;
 
 const envForceTikTokClassic = process.env.SSAPP_FORCE_TIKTOK_CLASSIC === '1';
 const CLI_FORCE_TIKTOK_CLASSIC = Argv.tiktokclassic === true;

@@ -465,6 +465,8 @@ async function loadWelcomeFrameContent(frame, url) {
 		return;
 	}
 	try {
+		frame.src = url;
+	} catch (err) {
 		const response = await fetch(url, { credentials: 'omit' });
 		if (!response.ok) {
 			throw new Error(`Unexpected status ${response.status}`);
@@ -477,8 +479,6 @@ async function loadWelcomeFrameContent(frame, url) {
 			html = html.replace(/<head([^>]*)>/i, `<head$1><base href="${baseHref}">`);
 		}
 		frame.srcdoc = html;
-	} catch (err) {
-		frame.src = url;
 	}
 }
 

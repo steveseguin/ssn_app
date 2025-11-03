@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const { randomUUID } = require('crypto');
 const grpc = require('@grpc/grpc-js');
 const protoLoader = require('@grpc/proto-loader');
@@ -29,14 +30,26 @@ function loadServiceConstructor() {
     return liveChatServiceCtor;
   }
 
-  const packageDefinition = protoLoader.loadSync(PROTO_PATH, loaderOptions);
-  const descriptor = grpc.loadPackageDefinition(packageDefinition);
-  const service = descriptor?.youtube?.api?.v3?.V3DataLiveChatMessageService;
-  if (!service) {
-    throw new Error('Failed to load YouTube live chat gRPC service definition.');
+  if (!fs.existsSync(PROTO_PATH)) {
+    console.warn('[YouTube][gRPC] Proto definitions missing. Run `npm run update:fallback` or bundle Social Stream fallback assets.');
+    liveChatServiceCtor = null;
+    return null;
   }
-  liveChatServiceCtor = service;
-  return liveChatServiceCtor;
+
+  try {
+    const packageDefinition = protoLoader.loadSync(PROTO_PATH, loaderOptions);
+    const descriptor = grpc.loadPackageDefinition(packageDefinition);
+    const service = descriptor?.youtube?.api?.v3?.V3DataLiveChatMessageService;
+    if (!service) {
+      throw new Error('Failed to load YouTube live chat gRPC service definition.');
+    }
+    liveChatServiceCtor = service;
+    return liveChatServiceCtor;
+  } catch (error) {
+    console.error('[YouTube][gRPC] Failed to load proto definitions:', error && error.message ? error.message : error);
+    liveChatServiceCtor = null;
+    return null;
+  }
 }
 
 function toPlainObject(data) {
@@ -84,11 +97,16 @@ function normalizeGrpcError(error) {
 class YouTubeGrpcStreamManager {
   constructor() {
     const Service = loadServiceConstructor();
-    this.client = new Service('youtube.googleapis.com:443', grpc.credentials.createSsl());
+    this.client = Service
+      ? new Service('youtube.googleapis.com:443', grpc.credentials.createSsl())
+      : null;
     this.streams = new Map();
   }
 
   startStream(rawOptions, webContents) {
+    if (!this.client) {
+      throw new Error('YouTube live chat gRPC support is unavailable (proto files missing).');
+    }
     if (!webContents || webContents.isDestroyed()) {
       throw new Error('Invalid renderer target for YouTube live chat stream.');
     }
