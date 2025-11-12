@@ -13,6 +13,19 @@ const {
 } = require('../tiktok-badges');
 const giftMapping = require('./gift-mapping.json');
 
+let SendRoomChatRoute = null;
+try {
+    ({ SendRoomChatRoute } = require('tiktok-live-connector/dist/lib/web/routes/send-room-chat.js'));
+} catch (error) {
+    SendRoomChatRoute = null;
+    if (process.env.SSAPP_DISABLE_DIRECT_TIKTOK_CHAT !== '1') {
+        console.info('[TikTok] Direct room/chat route unavailable; continuing to use Euler chat endpoint.');
+    }
+}
+
+const isDirectChatRouteSupported = typeof SendRoomChatRoute === 'function';
+const disableDirectChatRoute = process.env.SSAPP_DISABLE_DIRECT_TIKTOK_CHAT === '1';
+
 const env = {
     shouldEnableTikTokLogging: false,
     resolveLogDirectory: null,
@@ -53,9 +66,39 @@ function getMainWindow() {
     }
 }
 
-function emitStatus(payload) {
+function resolveSourceIdForPayload(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    if (payload.sourceId) return payload.sourceId;
+    const wssId = typeof payload.wssID === 'number' ? payload.wssID : null;
+    if (!wssId) return null;
     try {
-        env.onStatus(payload);
+        const connections = env.websocketConnections || {};
+        const manager = connections[wssId];
+        if (manager && manager.sourceId) {
+            return manager.sourceId;
+        }
+    } catch (_) {}
+    return null;
+}
+
+function normalizeStatusPayload(payload) {
+    if (payload && typeof payload === 'object') {
+        return payload;
+    }
+    return { message: payload };
+}
+
+function emitStatus(payload) {
+    const normalizedPayload = normalizeStatusPayload(payload);
+    if (!normalizedPayload.sourceId) {
+        const resolvedSourceId = resolveSourceIdForPayload(normalizedPayload);
+        if (resolvedSourceId) {
+            normalizedPayload.sourceId = resolvedSourceId;
+        }
+    }
+
+    try {
+        env.onStatus(normalizedPayload);
     } catch (error) {
         console.warn('Failed to emit TikTok status update:', error);
     }
@@ -63,7 +106,7 @@ function emitStatus(payload) {
     const mainWindow = getMainWindow();
     if (mainWindow && mainWindow.webContents) {
         try {
-            mainWindow.webContents.send('tiktokConnectionStatus', payload);
+            mainWindow.webContents.send('tiktokConnectionStatus', normalizedPayload);
         } catch (error) {
             console.warn('Failed to forward TikTok status to renderer:', error);
         }
@@ -2007,6 +2050,10 @@ function resolveFirstImageUrl(candidates = []) {
                     TikTokPollingFallbackClass &&
                     TikTokPollingFallbackClass !== TikTokLiveConnectionClass);
             this.connectionStrategy = this.preferredStrategy;
+            this.enableDirectChatRoute = isDirectChatRouteSupported && !disableDirectChatRoute;
+            this.directChatRoute = null;
+            this.directChatRouteClient = null;
+            this.pendingRoomIdPromise = null;
         }
 
         getLogContext() {
@@ -2122,6 +2169,9 @@ function resolveFirstImageUrl(candidates = []) {
         }
 
         async teardownConnection({ silent = false } = {}) {
+            this.directChatRoute = null;
+            this.directChatRouteClient = null;
+            this.pendingRoomIdPromise = null;
             if (!this.connection) {
                 return;
             }
@@ -3830,6 +3880,197 @@ function resolveFirstImageUrl(candidates = []) {
             sendToBackground(payload);
         }
 
+        shouldUseDirectChatRoute() {
+            if (!(this.enableDirectChatRoute && SendRoomChatRoute)) {
+                return false;
+            }
+            return !!(this.connection && this.connection.webClient);
+        }
+
+        ensureDirectChatRoute() {
+            if (!this.shouldUseDirectChatRoute()) {
+                return null;
+            }
+            const connection = this.connection;
+            if (!connection || !connection.webClient) {
+                return null;
+            }
+            const webClient = connection.webClient;
+            if (this.directChatRoute && this.directChatRouteClient === webClient) {
+                return this.directChatRoute;
+            }
+            try {
+                this.directChatRoute = new SendRoomChatRoute(webClient);
+                this.directChatRouteClient = webClient;
+                this.logDebug('chat.send.direct.route_ready', {
+                    roomId: webClient.roomId || null
+                });
+                return this.directChatRoute;
+            } catch (error) {
+                console.warn('Failed to initialize TikTok direct chat route:', error);
+                this.logDebug('chat.send.direct.route_error', {
+                    message: error?.message || String(error)
+                });
+                this.directChatRoute = null;
+                this.directChatRouteClient = null;
+                return null;
+            }
+        }
+
+        async ensureRoomIdForChat() {
+            const connectionForFetch = this.connection;
+            if (!connectionForFetch) {
+                return null;
+            }
+            if (connectionForFetch.roomId) {
+                return connectionForFetch.roomId;
+            }
+            if (this.pendingRoomIdPromise) {
+                try {
+                    await this.pendingRoomIdPromise;
+                } catch (_) {
+                    return null;
+                }
+                return this.connection ? this.connection.roomId : null;
+            }
+            if (typeof connectionForFetch.fetchRoomId !== 'function') {
+                return null;
+            }
+            this.pendingRoomIdPromise = connectionForFetch.fetchRoomId()
+                .then((resolvedRoomId) => {
+                    const normalizedId = resolvedRoomId ? String(resolvedRoomId) : null;
+                    if (!normalizedId) {
+                        return null;
+                    }
+                    if (this.connection !== connectionForFetch) {
+                        return null;
+                    }
+                    connectionForFetch.roomId = normalizedId;
+                    if (connectionForFetch.webClient) {
+                        connectionForFetch.webClient.roomId = normalizedId;
+                    }
+                    return normalizedId;
+                })
+                .catch((error) => {
+                    console.warn('Failed to fetch TikTok roomId for chat send:', error);
+                    return null;
+                })
+                .finally(() => {
+                    this.pendingRoomIdPromise = null;
+                });
+            try {
+                const resolved = await this.pendingRoomIdPromise;
+                if (resolved) {
+                    return resolved;
+                }
+            } catch (_) {
+                return null;
+            }
+            return this.connection ? this.connection.roomId : null;
+        }
+
+        async sendChatMessageViaDirectRoute(content) {
+            const route = this.ensureDirectChatRoute();
+            if (!route) {
+                return {
+                    success: false,
+                    error: 'Direct TikTok chat route unavailable',
+                    routeUnavailable: true
+                };
+            }
+            const roomId = await this.ensureRoomIdForChat();
+            if (!roomId) {
+                console.warn('Unable to resolve TikTok roomId for direct chat send.');
+                this.logDebug('chat.send.direct.missing_room');
+                return {
+                    success: false,
+                    error: 'Unable to resolve TikTok room for chat send'
+                };
+            }
+            const normalizedRoomId = typeof roomId === 'string' ? roomId : String(roomId);
+            try {
+                const response = await route.call({
+                    roomId: normalizedRoomId,
+                    content
+                });
+                const statusCode = Number.isFinite(response?.status_code) ? response.status_code
+                    : Number.isFinite(response?.statusCode) ? response.statusCode
+                    : null;
+                const errCode = Number.isFinite(response?.err_code) ? response.err_code : null;
+                const statusFlag = typeof response?.status === 'string' ? response.status.toLowerCase() : null;
+                const statusMessage = typeof response?.status_msg === 'string' && response.status_msg.trim()
+                    ? response.status_msg.trim()
+                    : typeof response?.statusMessage === 'string' && response.statusMessage.trim()
+                        ? response.statusMessage.trim()
+                        : typeof response?.message === 'string' && response.message.trim()
+                            ? response.message.trim()
+                            : null;
+                const isSuccess = (statusCode === null || statusCode === 0) &&
+                    (errCode === null || errCode === 0) &&
+                    (statusFlag === null || statusFlag === 'success');
+                if (!isSuccess) {
+                    const detail = statusMessage || `TikTok chat API returned status ${statusCode ?? errCode ?? statusFlag ?? 'unknown'}`;
+                    this.logDebug('chat.send.direct.rejected', {
+                        statusCode,
+                        errCode,
+                        statusFlag,
+                        detail
+                    });
+                    console.warn('TikTok direct chat send rejected:', detail);
+                    return {
+                        success: false,
+                        error: detail
+                    };
+                }
+                console.log('Message sent to TikTok chat via direct room/chat endpoint.');
+                this.logDebug('chat.send.direct.success', {
+                    roomId: normalizedRoomId
+                });
+                return {
+                    success: true
+                };
+            } catch (error) {
+                const status = typeof error?.response?.status === 'number' ? error.response.status : null;
+                const detail = typeof error?.message === 'string' && error.message.trim()
+                    ? error.message.trim()
+                    : 'TikTok direct chat send failed';
+                this.logDebug('chat.send.direct.error', {
+                    statusCode: status,
+                    message: detail
+                });
+                console.error('Direct TikTok chat send failed:', error);
+                if (status === 401 || status === 403) {
+                    return {
+                        success: false,
+                        error: 'TikTok rejected the provided session for chat send'
+                    };
+                }
+                return {
+                    success: false,
+                    error: detail
+                };
+            }
+        }
+
+        async sendChatMessageViaEuler(content) {
+            try {
+                await this.connection.sendMessage(content);
+                console.log('Message sent to TikTok chat via Euler endpoint.');
+                return {
+                    success: true
+                };
+            } catch (error) {
+                console.error('Failed to send TikTok message:', error);
+                const detail = typeof error?.message === 'string' && error.message.trim()
+                    ? error.message.trim()
+                    : 'Failed to send message';
+                return {
+                    success: false,
+                    error: detail
+                };
+            }
+        }
+
         async sendChatMessage(message) {
             if (typeof message !== 'string' || !message.trim()) {
                 return {
@@ -3860,23 +4101,28 @@ function resolveFirstImageUrl(candidates = []) {
             }
 
             const trimmedMessage = message.trim();
+            if (this.shouldUseDirectChatRoute()) {
+                const directResult = await this.sendChatMessageViaDirectRoute(trimmedMessage);
+                if (directResult?.success) {
+                    return directResult;
+                }
 
-            try {
-                await this.connection.sendMessage(trimmedMessage);
-                console.log('Message sent to TikTok chat.');
-                return {
-                    success: true
-                };
-            } catch (error) {
-                console.error('Failed to send TikTok message:', error);
-                const detail = typeof error?.message === 'string' && error.message.trim()
-                    ? error.message.trim()
-                    : 'Failed to send message';
-                return {
-                    success: false,
-                    error: detail
-                };
+                const routeUnavailable = !!directResult?.routeUnavailable;
+                const fallbackReason = directResult?.error || (routeUnavailable ? 'route_unavailable' : 'direct_route_failed');
+
+                if (routeUnavailable) {
+                    console.info('Direct TikTok chat route unavailable, falling back to Euler endpoint.');
+                } else {
+                    console.warn('Direct TikTok chat send failed, falling back to Euler endpoint:', fallbackReason);
+                }
+
+                this.logDebug('chat.send.direct.fallback', {
+                    reason: fallbackReason || null,
+                    routeUnavailable
+                });
             }
+
+            return this.sendChatMessageViaEuler(trimmedMessage);
         }
     }
 

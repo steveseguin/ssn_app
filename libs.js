@@ -444,7 +444,8 @@ function getDefaultConfig() {
 				"size": {
 					"width": 600,
 					"height": 600
-				}
+				},
+				"enforceSigninCSP": true
 			}
 		}
 	};
@@ -460,25 +461,88 @@ function getDefaultConfig() {
 
 async function loadWelcomeFrameContent(frame, url) {
 	if (!frame) return;
+	const resetToSrc = (targetUrl) => {
+		try {
+			frame.removeAttribute('srcdoc');
+		} catch (_) {
+			// Ignore if attribute is absent.
+		}
+		frame.src = targetUrl || '';
+	};
 	if (!url || url.startsWith('file://')) {
-		frame.src = url || '';
+		resetToSrc(url || '');
 		return;
 	}
+	const currentOrigin = typeof window !== 'undefined' && window.location ? window.location.origin : null;
+	const shouldInlineResponse = (response, resolvedUrl) => {
+		const normalized = (value) => (value || '').trim().toLowerCase();
+		const xFrameOptions = normalized(response.headers.get('x-frame-options'));
+		if (xFrameOptions.includes('deny')) {
+			return true;
+		}
+		if (xFrameOptions.includes('sameorigin')) {
+			if (!resolvedUrl || !currentOrigin || resolvedUrl.origin !== currentOrigin) {
+				return true;
+			}
+		}
+		const csp = response.headers.get('content-security-policy');
+		if (csp) {
+			const frameAncestorsMatch = csp.toLowerCase().match(/frame-ancestors([^;]*)/);
+			if (frameAncestorsMatch) {
+				const directive = frameAncestorsMatch[1].trim();
+				if (!directive || directive === "'none'" || directive === "none") {
+					return true;
+				}
+				const tokens = directive
+					.split(/\s+/)
+					.filter(Boolean)
+					.map((token) => token.replace(/^'+|'+$/g, '').toLowerCase());
+				if (tokens.includes('*')) {
+					return false;
+				}
+				if (tokens.includes('self')) {
+					if (!resolvedUrl || !currentOrigin || resolvedUrl.origin !== currentOrigin) {
+						return true;
+					}
+					return false;
+				}
+				if (!currentOrigin) {
+					return true;
+				}
+				return !tokens.includes(currentOrigin.toLowerCase());
+			}
+		}
+		return false;
+	};
 	try {
-		frame.src = url;
-	} catch (err) {
 		const response = await fetch(url, { credentials: 'omit' });
 		if (!response.ok) {
 			throw new Error(`Unexpected status ${response.status}`);
 		}
+		const resolvedUrl = (() => {
+			try {
+				return new URL(response.url || url, window.location ? window.location.href : undefined);
+			} catch (_) {
+				return null;
+			}
+		})();
+		const forceInline = shouldInlineResponse(response, resolvedUrl);
+		if (!forceInline) {
+			resetToSrc((resolvedUrl && resolvedUrl.href) || url);
+			return;
+		}
 		let html = await response.text();
 		html = html.replace(/allow="[^"]*"/gi, '');
-		const urlObject = new URL(url);
-		const baseHref = `${urlObject.origin}${urlObject.pathname.replace(/[^/]*$/, '')}`;
-		if (!/<base\s/i.test(html)) {
-			html = html.replace(/<head([^>]*)>/i, `<head$1><base href="${baseHref}">`);
+		if (resolvedUrl) {
+			const baseHref = `${resolvedUrl.origin}${resolvedUrl.pathname.replace(/[^/]*$/, '')}`;
+			if (!/<base\s/i.test(html)) {
+				html = html.replace(/<head([^>]*)>/i, `<head$1><base href="${baseHref}">`);
+			}
 		}
 		frame.srcdoc = html;
+	} catch (err) {
+		console.warn('Failed to fetch welcome frame content; falling back to iframe src.', err);
+		resetToSrc(url);
 	}
 }
 

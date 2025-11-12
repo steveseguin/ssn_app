@@ -433,10 +433,20 @@ var config = getDefaultConfig();
 const APP_ACCEPT_LANGUAGE = window.SSAPP_ACCEPT_LANGUAGE || (window.ssappLocale && window.ssappLocale.acceptLanguage) || 'en-US,en;q=0.9';
 window.SSAPP_ACCEPT_LANGUAGE = APP_ACCEPT_LANGUAGE;
 let configReady = false;
+function tagConfigSource(source, meta = null) {
+	if (!config || typeof config !== 'object') return;
+	try {
+		config.__configSource = source || 'unknown';
+		config.__configMeta = meta;
+	} catch (err) {
+		console.warn('Failed to tag config source:', err);
+	}
+}
 const storedConfig = localStorage.getItem('config');
 if (storedConfig) {
 	try {
 		config = JSON.parse(storedConfig);
+		tagConfigSource('localStorage', { timestamp: Date.now() });
 	} catch (e) {
 		console.warn("Failed to parse stored config, using default.");
 		config = getDefaultConfig();
@@ -558,6 +568,7 @@ function ensureTrailingSlash(input) {
 async function resolveSocialStreamPage(pageName, options = {}) {
     const env = await ensureSsappEnvironment();
     const branch = options.branch || (isBetaMode ? 'beta' : 'main');
+    const hasFallbackBundle = !!(env && env.hasFallbackBundle);
     let preferLocal = !!(env && env.preferLocalAssets);
     if (options.forceRemote) {
         preferLocal = false;
@@ -565,6 +576,92 @@ async function resolveSocialStreamPage(pageName, options = {}) {
         preferLocal = options.forceLocal;
     }
     const extraParams = Array.isArray(options.extraParams) ? options.extraParams.slice() : [];
+    const appendFrameParams = (baseUrl) => {
+        if (!baseUrl) {
+            return baseUrl;
+        }
+        let finalUrl = baseUrl;
+        if (options.versionParam) {
+            finalUrl += finalUrl.includes('?') ? `&${options.versionParam}` : `?${options.versionParam}`;
+        }
+        const frameParams = buildFrameQueryParams(extraParams);
+        finalUrl += finalUrl.includes('?') ? `&${frameParams}` : `?${frameParams}`;
+        return finalUrl;
+    };
+    const fallbackBranches = branch === 'beta' ? ['beta', 'main'] : ['main'];
+    const remoteBranches = branch === 'beta' ? ['beta', 'main'] : [branch];
+    const remoteTimeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 5000;
+
+    const resolvePackaged = async () => {
+        if (!hasFallbackBundle || !window.ssappFallback || typeof window.ssappFallback.resolveUrl !== 'function') {
+            return null;
+        }
+        for (const fbBranch of fallbackBranches) {
+            try {
+                const fallback = await window.ssappFallback.resolveUrl(pageName, { branch: fbBranch });
+                if (fallback && fallback.url) {
+                    const baseUrl = fallback.baseUrl || fallback.url.substring(0, fallback.url.lastIndexOf('/') + 1);
+                    return {
+                        url: appendFrameParams(fallback.url),
+                        origin: 'local',
+                        baseUrl: baseUrl || fallback.url,
+                        branch: fallback.branch || fbBranch
+                    };
+                }
+            } catch (error) {
+                console.warn(`[SSAPP] Failed to resolve packaged Social Stream asset (${fbBranch}):`, error);
+            }
+        }
+        return null;
+    };
+
+    const resolveCache = async () => {
+        if (!ipcRenderer || typeof ipcRenderer.invoke !== 'function') {
+            return null;
+        }
+        for (const cacheBranch of remoteBranches) {
+            try {
+                const cacheResult = await ipcRenderer.invoke('socialstream:resolve-cache-url', pageName, { branch: cacheBranch });
+                if (cacheResult && cacheResult.success && cacheResult.url) {
+                    const baseUrl = cacheResult.url.substring(0, cacheResult.url.lastIndexOf('/') + 1);
+                    return {
+                        url: appendFrameParams(cacheResult.url),
+                        origin: cacheBranch === branch ? 'cache' : `cache-${cacheBranch}`,
+                        baseUrl: baseUrl || cacheResult.url,
+                        branch: cacheBranch
+                    };
+                }
+            } catch (error) {
+                console.warn(`[SSAPP] Failed to resolve cached Social Stream asset (${cacheBranch}):`, error);
+            }
+        }
+        return null;
+    };
+
+    const resolveRemote = async () => {
+        const remoteBaseFor = (targetBranch) => targetBranch === 'beta'
+            ? 'https://socialstream.ninja/beta'
+            : 'https://socialstream.ninja';
+        for (const remoteBranch of remoteBranches) {
+            const baseUrl = remoteBaseFor(remoteBranch);
+            const rawUrl = `${baseUrl}/${pageName}`;
+            try {
+                const response = await fetchWithDeadline(rawUrl, { timeoutMs: remoteTimeoutMs });
+                if (!response || !response.ok) {
+                    continue;
+                }
+                return {
+                    url: appendFrameParams(rawUrl),
+                    origin: remoteBranch === branch ? 'remote' : 'remote-main',
+                    baseUrl,
+                    branch: remoteBranch
+                };
+            } catch (error) {
+                console.warn(`[SSAPP] Remote Social Stream page unavailable (${remoteBranch}):`, error && error.message ? error.message : error);
+            }
+        }
+        return null;
+    };
 
     if (sourcemode) {
         let sourcemodeBase = sourcemode;
@@ -595,40 +692,29 @@ async function resolveSocialStreamPage(pageName, options = {}) {
         };
     }
 
-    if (preferLocal && window.ssappFallback && typeof window.ssappFallback.resolveUrl === 'function') {
-        try {
-            const fallback = await window.ssappFallback.resolveUrl(pageName, { branch });
-            if (fallback && fallback.url) {
-                let localUrl = fallback.url;
-                if (options.versionParam) {
-                    const versionJoiner = localUrl.includes('?') ? '&' : '?';
-                    localUrl += `${versionJoiner}${options.versionParam}`;
-                }
-                const finalJoiner = localUrl.includes('?') ? '&' : '?';
-                localUrl += `${finalJoiner}${buildFrameQueryParams(extraParams)}`;
-                return {
-                    url: localUrl,
-                    origin: 'local',
-                    baseUrl: fallback.baseUrl || localUrl.substring(0, localUrl.lastIndexOf('/') + 1)
-                };
-            }
-        } catch (error) {
-            console.warn('[SSAPP] Failed to resolve local Social Stream asset:', error);
+    if (preferLocal) {
+        const localPreferred = await resolvePackaged();
+        if (localPreferred) {
+            return localPreferred;
         }
     }
 
-    const remoteBase = branch === 'beta' ? 'https://socialstream.ninja/beta' : 'https://socialstream.ninja';
-    let remoteUrl = `${remoteBase}/${pageName}`;
-    if (options.versionParam) {
-        remoteUrl += `?${options.versionParam}`;
+    const remoteResult = await resolveRemote();
+    if (remoteResult) {
+        return remoteResult;
     }
-    const finalJoiner = remoteUrl.includes('?') ? '&' : '?';
-    remoteUrl += `${finalJoiner}${buildFrameQueryParams(extraParams)}`;
-    return {
-        url: remoteUrl,
-        origin: 'remote',
-        baseUrl: remoteBase
-    };
+
+    const cachedResult = await resolveCache();
+    if (cachedResult) {
+        return cachedResult;
+    }
+
+    const localFallback = await resolvePackaged();
+    if (localFallback) {
+        return localFallback;
+    }
+
+    return null;
 }
 
 async function resolveWebSocketHtml(target, queryParams = {}, options = {}) {
@@ -1039,9 +1125,52 @@ function getEffectiveConnectionMode(source) {
     return source.connectionMode || null;
 }
 
+function normalizeNumericId(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    }
+    if (typeof value === 'string' && value.trim()) {
+        const parsed = Number(value);
+        return Number.isNaN(parsed) ? null : parsed;
+    }
+    return null;
+}
+
+function getTikTokWssId(source) {
+    if (!source || source.target !== 'tiktok') return null;
+    return normalizeNumericId(source.tiktokWssId);
+}
+
+function getSourceWssHandle(source) {
+    if (!source) return null;
+    if (source.target === 'tiktok') {
+        return getTikTokWssId(source);
+    }
+    return normalizeNumericId(source.wssId);
+}
+
+function hasConnectionHandles(source) {
+    if (!source) return false;
+    return !!(source.vid || getSourceWssHandle(source));
+}
+
+function findTikTokSourceByWssId(wssId) {
+    if (typeof wssId !== 'number' || !stateManager) return null;
+    try {
+        const directMatches = stateManager.getSources({ tiktokWssId: wssId }) || [];
+        const preferred = directMatches.find(src => src && src.target === 'tiktok');
+        if (preferred) return preferred;
+        const legacyMatches = stateManager.getSources({ wssId: wssId }) || [];
+        return legacyMatches.find(src => src && src.target === 'tiktok') || null;
+    } catch (_) {
+        return null;
+    }
+}
+
 // --- Core UI Update Functions ---
 function updateSourceUI(element, source) {
     if (!element || !source) return;
+    const activeWssHandle = getSourceWssHandle(source);
 
     // Update data-target attribute
     element.dataset.target = source.target;
@@ -1151,7 +1280,7 @@ function updateSourceUI(element, source) {
 
     const wsStatusElement = element.querySelector('.ws-status');
     if (source.connectionMode === 'websocket' || source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy') {
-        if (source.status === 'active' && source.wssId) {
+        if (source.status === 'active' && activeWssHandle) {
             updateConnectionStatus(element, 'connected');
         } else if (source.status === 'activating') {
             // Show connecting for supported WSS (YouTube/TikTok)
@@ -1180,7 +1309,7 @@ function updateSourceUI(element, source) {
         setActivateButtonConnecting(element);
         stopButton?.classList.add('hidden');
         if (reloadButton) reloadButton.classList.add('hidden');
-    } else if (source.status === 'active' && (source.vid || source.wssId)) {
+    } else if (source.status === 'active' && (source.vid || activeWssHandle)) {
         activateButton?.classList.add('hidden');
         stopButton?.classList.remove('hidden');
         
@@ -1955,12 +2084,12 @@ async function newSource(target, username, startup = false, initialState = {}, i
     if (elementToReturn && startup && (initialState.togglelock === "true" || initialState.autoActivate)) {
         if (elementToReturn.dataset.sourceId) { 
             const source = stateManager.getSource(elementToReturn.dataset.sourceId);
-            if (source && source.autoActivate && !source.vid && !source.wssId) {
+            if (source && source.autoActivate && !source.vid && !source.wssId && !source.tiktokWssId) {
                  setTimeout(async () => {
                     const latest = stateManager.getSource(source.id);
                     if (!latest || !latest.autoActivate) return;
                     const activateButton = elementToReturn.querySelector('[data-activatehtml]');
-                    if (activateButton && !latest.vid && !latest.wssId) { 
+                    if (activateButton && !latest.vid && !latest.wssId && !latest.tiktokWssId) { 
                         await createWindow(activateButton);
                     }
                 }, 2000 + Math.random() * 1000);
@@ -2045,12 +2174,12 @@ async function newSourceVideoID(target, videoID, startup = false, initialState =
 
     if (sourceElement && startup && (initialState.togglelock === "true" || initialState.autoActivate)) {
         const source = stateManager.getSource(sourceId);
-         if (source && source.autoActivate && !source.vid && !source.wssId) {
+        if (source && source.autoActivate && !source.vid && !source.wssId && !source.tiktokWssId) {
             setTimeout(async () => {
                 const latest = stateManager.getSource(source.id);
                 if (!latest || !latest.autoActivate) return;
                 const activateButton = sourceElement.querySelector('[data-activatehtml]');
-                if (activateButton && !latest.vid && !latest.wssId) {
+                if (activateButton && !latest.vid && !latest.wssId && !latest.tiktokWssId) {
                     await createWindow(activateButton);
                 }
             }, 2000 + Math.random() * 1000);
@@ -2167,12 +2296,12 @@ async function newOtherSource(target, URL, startup = false, initialState = {}) {
 
      if (sourceElement && startup && (initialState.togglelock === "true" || initialState.autoActivate)) {
         const source = stateManager.getSource(sourceId);
-         if (source && source.autoActivate && !source.vid && !source.wssId) {
+        if (source && source.autoActivate && !source.vid && !source.wssId && !source.tiktokWssId) {
             setTimeout(async () => {
                 const latest = stateManager.getSource(source.id);
                 if (!latest || !latest.autoActivate) return;
                 const activateButton = sourceElement.querySelector('[data-activatehtml]');
-                if (activateButton && !latest.vid && !latest.wssId) {
+                if (activateButton && !latest.vid && !latest.wssId && !latest.tiktokWssId) {
                     await createWindow(activateButton);
                 }
             }, 2000 + Math.random() * 1000);
@@ -2414,7 +2543,7 @@ function setGroupConnectionMode(groupElement, mode) {
     const sources = stateManager.getSourcesByGroup(groupId);
     let skipped = 0;
     sources.forEach(source => {
-        const isActive = !!(source.vid || source.wssId);
+        const isActive = hasConnectionHandles(source);
         if (isActive) { skipped++; return; }
         stateManager.updateSource(source.id, { connectionMode: mode, activeConnectionMode: null });
 
@@ -2458,7 +2587,7 @@ function stopAllStreamsInGroup(buttonElement) {
     if (!group) return;
     group.streams.forEach(sourceId => {
         const source = stateManager.getSource(sourceId);
-        if (source && (source.vid || source.wssId)) {
+        if (source && hasConnectionHandles(source)) {
             const sourceElement = document.querySelector(`[data-source-id="${sourceId}"]`);
             const stopButton = sourceElement?.querySelector('[data-stophtml]');
             if (stopButton) stopThis(stopButton); 
@@ -2522,7 +2651,7 @@ function startYouTubeGroupAutoCheck(groupId) {
     // Skip auto-check entirely if any source in the group is already active
     const hasActive = (group.streams || []).some(sid => {
         const s = stateManager.getSource(sid);
-        return s && s.status === 'active' && (s.vid || s.wssId);
+        return s && s.status === 'active' && (s.vid || s.wssId || s.tiktokWssId);
     });
     if (hasActive) {
         console.log(`YouTube group ${group.username} already has an active stream; skipping auto-check.`);
@@ -2556,7 +2685,7 @@ async function checkYouTubeGroupForNewStreamsWithBackoff(groupId) {
     const groupPre = stateManager.getGroup(groupId);
     if (groupPre && (groupPre.streams || []).some(sid => {
         const s = stateManager.getSource(sid);
-        return s && s.status === 'active' && (s.vid || s.wssId);
+        return s && s.status === 'active' && (s.vid || s.wssId || s.tiktokWssId);
     })) {
         console.log(`YouTube group ${groupPre.username} has an active stream; stopping auto-check.`);
         stopYouTubeGroupAutoCheck(groupId);
@@ -2933,24 +3062,21 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
         const isWebsocketMode = signinMode === 'websocket' || signinMode === 'tiktok-websocket' || signinMode === 'tiktok-legacy';
         
         if (target === 'tiktok' && (signinMode === 'tiktok-websocket' || signinMode === 'tiktok-legacy')) {
-            // Allow users to supply credentials even in read-only mode
-            const hasSession = !!(source && typeof source.tiktokSessionId === 'string' && source.tiktokSessionId.trim());
-            signinButton.classList.remove("hidden");
+            // Hide TikTok WebSocket session controls until the feature is re-enabled
             signinButton.setAttribute('data-tiktok-signin', 'true');
-            signinButton.innerHTML = hasSession ? '✓ TikTok Session Saved' : '🔐 Add TikTok Session ID';
-            signinButton.classList.toggle('authenticated', hasSession);
-            signinButton.style.cursor = '';
-            signinButton.title = 'Provide your TikTok session cookie to enable chat replies and authenticated features.';
-            signinButton.onclick = function() {
-                showTikTokSignInMenu(sourceId);
-            };
-            applySigninPolicy(signinButton, source);
+            signinButton.classList.add('hidden');
+            signinButton.style.display = 'none';
+            signinButton.onclick = null;
+            signinButton.title = 'TikTok WebSocket session sign-in temporarily disabled';
+            signinButton.classList.remove('authenticated');
         } else if (isWebsocketMode) {
             // Hide for other websocket modes
             signinButton.classList.add("hidden");
+            signinButton.style.display = '';
         } else {
             // Regular sign-in button
             signinButton.classList.remove("hidden");
+            signinButton.style.display = '';
             signinButton.removeAttribute('data-tiktok-signin');
             signinButton.innerHTML = '🔑 Sign-in';
             signinButton.onclick = function() { signin(this); };
@@ -3021,7 +3147,7 @@ async function setSourceConnectionMode(sourceElement, mode, clickedMenuItemOrPan
     console.log(`[Mode Switch] Setting connection mode for ${sourceId} from ${source.connectionMode} to ${mode}`);
 
     // If source is active, block changing modes until stopped
-    if (source.vid || source.wssId) {
+    if (hasConnectionHandles(source)) {
         if (clickedMenuItemOrPanelButton) {
             try { clickedMenuItemOrPanelButton.title = 'Stop source to change mode'; } catch (e) {}
         }
@@ -3293,7 +3419,7 @@ function setupSourceControls(sourceElement) {
         }
 
         const currentSource = sourceId ? stateManager.getSource(sourceId) : null;
-        const isActive = currentSource ? (!!currentSource.vid || !!currentSource.wssId) : false;
+        const isActive = currentSource ? hasConnectionHandles(currentSource) : false;
         const currentMode = currentSource ? currentSource.connectionMode : (sourceElement.dataset.lastConnectionMode || 'classic');
         const forcedClassic = (preferTikTokClassic || cliForcesTikTokClassic) && target === 'tiktok';
 
@@ -3388,7 +3514,7 @@ async function toggleReplyOnly(menuItem) {
     menuItem.classList.toggle('active', enabled);
     menuItem.textContent = (enabled ? '✅ ' : '🤖 ') + 'Bot reply-only (no capture)';
     
-    const wasActive = !!(source.vid || source.wssId);
+    const wasActive = hasConnectionHandles(source);
     if (wasActive) {
         Toast.info('Restarting', 'Applying reply-only setting…');
         // Stop current connection/window
@@ -3542,7 +3668,7 @@ async function activateSource(ele) {
     }
     const sourceId = parentElement.dataset.sourceId;
     const source = sourceId ? stateManager.getSource(sourceId) : null;
-    const isTikTokWebsocketAttempt = !!(source && source.target === 'tiktok' && (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy') && !source.wssId);
+    const isTikTokWebsocketAttempt = !!(source && source.target === 'tiktok' && (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy') && !source.tiktokWssId);
 
     if (isTikTokWebsocketAttempt) {
         updateConnectionStatus(parentElement, 'connecting');
@@ -3671,9 +3797,10 @@ async function deleteThis(ele) {
     if (sourceId) { 
         const source = stateManager.getSource(sourceId);
         if (source) {
-            if (source.wssId && source.target === 'tiktok') {
+            const tikTokWssId = getTikTokWssId(source);
+            if (tikTokWssId && source.target === 'tiktok') {
                 try {
-                    if (ipcRenderer) await ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: source.wssId });
+                    if (ipcRenderer) await ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: tikTokWssId });
                 } catch (e) { console.warn('Error disconnecting TikTok WSS during delete:', e); }
             } else if (source.vid) { 
                 try {
@@ -3708,14 +3835,15 @@ async function clearAllSources() {
         const closedWindows = new Set();
         const disconnectedWss = new Set();
         for (const source of sourcesSnapshot) {
-            if (!source) continue;
-            if (source.target === 'tiktok' && source.wssId && !disconnectedWss.has(source.wssId)) {
-                try {
-                    ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: source.wssId });
-                } catch (e) {
-                    console.warn('Failed to disconnect TikTok connection during clear-all-sources:', e);
-                }
-                disconnectedWss.add(source.wssId);
+        if (!source) continue;
+        const tikTokWssId = getTikTokWssId(source);
+        if (source.target === 'tiktok' && tikTokWssId && !disconnectedWss.has(tikTokWssId)) {
+            try {
+                ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: tikTokWssId });
+            } catch (e) {
+                console.warn('Failed to disconnect TikTok connection during clear-all-sources:', e);
+            }
+            disconnectedWss.add(tikTokWssId);
             }
             if (source.vid && !closedWindows.has(source.vid)) {
                 try {
@@ -3955,12 +4083,13 @@ async function stopThis(ele) {
     const source = stateManager.getSource(sourceId);
     if (!source) return;
     const effectiveMode = getEffectiveConnectionMode(source) || source.connectionMode;
+    const tikTokWssId = getTikTokWssId(source);
     
     if (ele.dataset.connecting === "true" && source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy')) {
         cancelPendingTikTokActivation(sourceId);
-        if (source.wssId && ipcRenderer) { 
+        if (tikTokWssId && ipcRenderer) { 
             try {
-                await ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: source.wssId });
+                await ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: tikTokWssId });
             } catch (e) { console.warn("Error stopping TikTok connection attempt:", e); }
         }
         // Clear any local countdown and UI
@@ -3971,7 +4100,7 @@ async function stopThis(ele) {
         entry._tiktokRetryEndAt = null;
         entry._tiktokRetryAttempt = null;
         entry._tiktokRetryMax = null;
-        stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, activeConnectionMode: null });
+        stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, tiktokWssId: null, activeConnectionMode: null });
         // Update UI status
         updateConnectionStatus(entry, 'stopped', "Stopping...");
         setTimeout(() => updateConnectionStatus(entry, 'clear'), 500);
@@ -3982,17 +4111,17 @@ async function stopThis(ele) {
         return;
     }
 
-    if (source.vid || source.wssId) {
+    if (hasConnectionHandles(source)) {
         try {
-            if (source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy') && source.wssId && ipcRenderer) {
-                await ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: source.wssId });
+            if (source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy') && tikTokWssId && ipcRenderer) {
+                await ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: tikTokWssId });
             } else if (source.vid && ipcRenderer) { 
                 await ipcRenderer.sendSync('closeWindow', { vid: source.vid });
             }
         } catch (error) {
             console.error('Error in stopThis during IPC call:', error);
         }
-        stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, activeConnectionMode: null });
+        stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, tiktokWssId: null, activeConnectionMode: null });
         if (source.target === 'tiktok') updateConnectionStatus(entry, 'clear');
 
         // Restore activate button for any stop
@@ -4192,12 +4321,15 @@ async function createWindow(ele, tabid = false) {
     if (!source) { console.error("Source not found in stateManager:", sourceId); return false; }
 
     const target = source.target; // Move this declaration up before it's used
+    const currentTikTokWssId = getTikTokWssId(source);
 
-	if (source.vid || source.wssId) {
-		console.log('Window/connection already active for this entry:', source.vid || source.wssId);
-		console.log(`[Window Mapping Debug] Source ${sourceId} state:`, {
-			vid: source.vid,
-			wssId: source.wssId,
+    if (hasConnectionHandles(source)) {
+        const existingHandle = source.vid || getSourceWssHandle(source);
+        console.log('Window/connection already active for this entry:', existingHandle);
+        console.log(`[Window Mapping Debug] Source ${sourceId} state:`, {
+            vid: source.vid,
+            wssId: source.wssId,
+            tiktokWssId: source.tiktokWssId,
 			connectionMode: source.connectionMode,
 			target: source.target,
 			username: source.username
@@ -4209,41 +4341,41 @@ async function createWindow(ele, tabid = false) {
 			(((currentMode === 'tiktok-websocket' || currentMode === 'tiktok-legacy') && source.vid && source.vid < 900000) || // Was classic, now websocket
 			 (currentMode === 'classic' && source.vid && source.vid > 900000)); // Was websocket, now classic
 		
-		if (isTikTokModeSwitch) {
-			console.log(`[Mode Switch] Switching TikTok from ${source.vid > 900000 ? 'websocket' : 'classic'} to ${currentMode}`);
-			// Close the old connection/window
-			try {
-				if (source.vid > 900000 && source.wssId) {
-					// Close websocket connection
-					await ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: source.wssId });
-				} else if (source.vid) {
-					// Close classic window
-					await ipcRenderer.sendSync('closeWindow', { vid: source.vid });
-				}
-			} catch (e) {
+        if (isTikTokModeSwitch) {
+            console.log(`[Mode Switch] Switching TikTok from ${source.vid > 900000 ? 'websocket' : 'classic'} to ${currentMode}`);
+            // Close the old connection/window
+            try {
+                if (source.vid > 900000 && currentTikTokWssId) {
+                    // Close websocket connection
+                    await ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: currentTikTokWssId });
+                } else if (source.vid) {
+                    // Close classic window
+                    await ipcRenderer.sendSync('closeWindow', { vid: source.vid });
+                }
+            } catch (e) {
 				console.warn('Error closing old connection during mode switch:', e);
 			}
 			// Clear the old IDs
-			stateManager.updateSource(sourceId, { vid: null, wssId: null, status: 'inactive', activeConnectionMode: null });
-		} else {
-			// Verify the window actually exists before reusing the ID
-			if (source.vid && ipcRenderer) {
-				const windowExists = await ipcRenderer.invoke('checkWindowExists', { vid: source.vid });
-				if (!windowExists) {
-					stateManager.updateSource(sourceId, { vid: null, wssId: null, status: 'inactive', activeConnectionMode: null });
-				} else {
-					return source.vid;
-				}
-			} else if (source.wssId && target === 'tiktok' && (currentMode === 'tiktok-websocket' || currentMode === 'tiktok-legacy')) {
-				// For TikTok websocket, we need to check if the connection still exists
-				// The wssId alone doesn't mean the connection is active
-				// Clear the stale wssId and allow new connection
-				stateManager.updateSource(sourceId, { vid: null, wssId: null, status: 'inactive', activeConnectionMode: null });
-				return false;
-			} else if (source.wssId) {
-				return source.wssId;
-			}
-		}
+            stateManager.updateSource(sourceId, { vid: null, wssId: null, tiktokWssId: null, status: 'inactive', activeConnectionMode: null });
+        } else {
+            // Verify the window actually exists before reusing the ID
+            if (source.vid && ipcRenderer) {
+                const windowExists = await ipcRenderer.invoke('checkWindowExists', { vid: source.vid });
+                if (!windowExists) {
+                    stateManager.updateSource(sourceId, { vid: null, wssId: null, tiktokWssId: null, status: 'inactive', activeConnectionMode: null });
+                } else {
+                    return source.vid;
+                }
+            } else if (currentTikTokWssId && target === 'tiktok' && (currentMode === 'tiktok-websocket' || currentMode === 'tiktok-legacy')) {
+                // For TikTok websocket, we need to check if the connection still exists
+                // The wssId alone doesn't mean the connection is active
+                // Clear the stale wssId and allow new connection
+                stateManager.updateSource(sourceId, { vid: null, wssId: null, tiktokWssId: null, status: 'inactive', activeConnectionMode: null });
+                return false;
+            } else if (source.wssId) {
+                return source.wssId;
+            }
+        }
 	}
 
     let mode = source.connectionMode;
@@ -4665,6 +4797,7 @@ async function performActivationAttempt({ sourceId, entry, tabid, mode, target }
                 status: 'inactive',
                 vid: null,
                 wssId: null,
+                tiktokWssId: null,
                 activeConnectionMode: null
             });
             return { success: false, error: new Error('Activation canceled') };
@@ -4686,7 +4819,8 @@ async function performActivationAttempt({ sourceId, entry, tabid, mode, target }
 
             stateManager.updateSource(sourceId, {
                 vid: windowId,
-                wssId: actualWssId,
+                wssId: resolvedTarget === 'tiktok' ? null : actualWssId,
+                tiktokWssId: resolvedTarget === 'tiktok' ? actualWssId : null,
                 status: statusValue,
                 activeConnectionMode: normalizedMode,
                 error: null
@@ -4703,7 +4837,7 @@ async function performActivationAttempt({ sourceId, entry, tabid, mode, target }
             return { success: true, windowId };
         }
 
-        stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, activeConnectionMode: null });
+        stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, tiktokWssId: null, activeConnectionMode: null });
         if (pendingTikTokToken) {
             markPendingTikTokActivationComplete(sourceId, pendingTikTokToken);
         }
@@ -4720,6 +4854,7 @@ async function performActivationAttempt({ sourceId, entry, tabid, mode, target }
             error: error.message,
             vid: null,
             wssId: null,
+            tiktokWssId: null,
             activeConnectionMode: null
         });
         if (entry) {
@@ -4789,6 +4924,7 @@ async function handleTikTokFallbackToClassic({ sourceId, entryElement, tabid, or
         status: 'activating',
         vid: null,
         wssId: null,
+        tiktokWssId: null,
         error: null,
         activeConnectionMode: 'classic'
     });
@@ -4804,6 +4940,7 @@ async function handleTikTokFallbackToClassic({ sourceId, entryElement, tabid, or
         stateManager.updateSource(sourceId, {
             vid: fallbackWindowId,
             wssId: null,
+            tiktokWssId: null,
             status: 'active',
             activeConnectionMode: 'classic',
             error: null
@@ -4828,6 +4965,7 @@ async function handleTikTokFallbackToClassic({ sourceId, entryElement, tabid, or
             error: fallbackErr.message || 'Classic fallback failed',
             vid: null,
             wssId: null,
+            tiktokWssId: null,
             activeConnectionMode: null
         });
         if (entry) {
@@ -5383,7 +5521,8 @@ async function createTikTokWSSFromSource(source, strategy = 'websocket') {
             sessionId: sessionId,
             ttTargetIdc: ttTargetIdc,
             replyOnly: !!source.replyOnly,
-            strategy: strategy
+            strategy: strategy,
+            sourceId: source.id
         });
 
         if (wssID === null || typeof wssID === 'undefined') {
@@ -5853,7 +5992,7 @@ function processSettingsAndCreateSources() {
                     // AND there is no active stream in the group.
                     const hasActive = (group.streams || []).some(sid => {
                         const s = stateManager.getSource(sid);
-                        return s && s.status === 'active' && (s.vid || s.wssId);
+                        return s && s.status === 'active' && (s.vid || s.wssId || s.tiktokWssId);
                     });
                     const shouldAttemptImmediate = (!group.streams || group.streams.length === 0) && !hasActive;
                     if (shouldAttemptImmediate) {
@@ -5862,7 +6001,7 @@ function processSettingsAndCreateSources() {
                             const freshGroup = stateManager.getGroup(group.id);
                             const freshHasActive = (freshGroup?.streams || []).some(sid => {
                                 const s = stateManager.getSource(sid);
-                                return s && s.status === 'active' && (s.vid || s.wssId);
+                                return s && s.status === 'active' && (s.vid || s.wssId || s.tiktokWssId);
                             });
                             if (freshHasActive) {
                                 console.log('Skipping processSettings auto-activate; group already has active stream:', freshGroup.username);
@@ -5913,11 +6052,11 @@ function processSettingsAndCreateSources() {
             const sourceElement = createSourceElement(source.id);
             if (sourceElement) {
                 sourcesContainer.appendChild(sourceElement);
-                if (source.autoActivate && !source.vid && !source.wssId) { 
+                if (source.autoActivate && !source.vid && !source.wssId && !source.tiktokWssId) { 
                     setTimeout(async () => {
                         const activateButton = sourceElement.querySelector('[data-activatehtml]');
                         const currentSrcState = stateManager.getSource(source.id); 
-                        if (activateButton && currentSrcState && !currentSrcState.vid && !currentSrcState.wssId) {
+                        if (activateButton && currentSrcState && !currentSrcState.vid && !currentSrcState.wssId && !currentSrcState.tiktokWssId) {
                             await createWindow(activateButton);
                         }
                     }, 2000 + Math.random() * 1000);
@@ -6139,13 +6278,15 @@ function applyTikTokClassicPreferenceToAllEntries(newValue, previousValue, optio
         if (src.target !== 'tiktok') return;
         if (src.connectionMode === 'tiktok-websocket' || src.connectionMode === 'tiktok-legacy') {
             const updates = { connectionMode: 'classic' };
-            if (src.wssId && ipcRenderer) {
+            const tikTokWssId = getTikTokWssId(src);
+            if (tikTokWssId && ipcRenderer) {
                 try {
-                    ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: src.wssId });
+                    ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: tikTokWssId });
                 } catch (e) {
                     console.warn('Error disconnecting TikTok WebSocket during classic fallback:', e);
                 }
                 updates.wssId = null;
+                updates.tiktokWssId = null;
                 updates.vid = null;
                 updates.status = 'inactive';
             }
@@ -6282,13 +6423,17 @@ async function initializeConfig() {
                     throw new Error(`HTTP ${response.status}`);
                 }
                 const data = await response.json();
-                if (data) {
-                    config = data;
-                    localStorage.setItem('config', JSON.stringify(data));
-                    if (branchName === 'beta' && candidate.branch === 'main') {
-                        Toast.warning("Beta Config Fallback", "Beta configuration unavailable; using main branch config.");
-                        recordFallbackAsset(`settings/${configFileName}`, 'beta', 'main');
-                    }
+	                if (data) {
+	                    config = data;
+						tagConfigSource(candidate.origin || 'remote', {
+							url: candidate.url,
+							branch: candidate.branch || null
+						});
+	                    localStorage.setItem('config', JSON.stringify(data));
+	                    if (branchName === 'beta' && candidate.branch === 'main') {
+	                        Toast.warning("Beta Config Fallback", "Beta configuration unavailable; using main branch config.");
+	                        recordFallbackAsset(`settings/${configFileName}`, 'beta', 'main');
+	                    }
                     configReady = true;
                     return config;
                 }
@@ -6385,13 +6530,15 @@ document.addEventListener('DOMContentLoaded', async function() {
         }
         
         // Clean up websocket IDs on startup - websocket connections don't persist across app restarts
-        if (source.wssId) {
-            console.log(`Clearing stale wssId ${source.wssId} for ${source.id} on startup`);
-            stateManager.updateSource(source.id, { vid: null, wssId: null, status: 'inactive', activeConnectionMode: null });
+        const staleTikTokWssId = getTikTokWssId(source);
+        if (source.wssId || staleTikTokWssId) {
+            const staleIdLabel = staleTikTokWssId || source.wssId;
+            console.log(`Clearing stale wssId ${staleIdLabel} for ${source.id} on startup`);
+            stateManager.updateSource(source.id, { vid: null, wssId: null, tiktokWssId: null, status: 'inactive', activeConnectionMode: null });
         }
 
         // Normalize any lingering activating/active states when nothing is connected
-        const hasActiveWindow = !!(source.vid || source.wssId);
+        const hasActiveWindow = hasConnectionHandles(source);
         if (!hasActiveWindow && STALE_CONNECTION_STATUSES.has(source.status)) {
             stateManager.updateSource(source.id, { status: 'inactive', error: null, activeConnectionMode: null });
         }
@@ -6588,7 +6735,10 @@ document.addEventListener('DOMContentLoaded', async function() {
             updateSourceUI(element, source);
         }
 
-        if ('wssId' in updates && updates.wssId) {
+        const newTikTokWssId = 'tiktokWssId' in updates ? normalizeNumericId(updates.tiktokWssId) : null;
+        if (newTikTokWssId) {
+            drainPendingTikTokStatuses(newTikTokWssId, sourceId, element);
+        } else if ('wssId' in updates && updates.wssId && source?.target === 'tiktok') {
             drainPendingTikTokStatuses(updates.wssId, sourceId, element);
         }
 
@@ -6652,8 +6802,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     stateManager.on('sourceRemoved', ({ sourceId, source }) => {
         const element = document.querySelector(`[data-source-id="${sourceId}"]`);
         element?.remove();
-        if (source && source.wssId) {
-            pendingTikTokStatusQueue.delete(source.wssId);
+        const tikTokWssId = getTikTokWssId(source);
+        if (tikTokWssId) {
+            pendingTikTokStatusQueue.delete(tikTokWssId);
         }
         // Stop any platform-specific auto-checkers for this source
         try {
@@ -7017,6 +7168,33 @@ document.addEventListener('DOMContentLoaded', async function() {
 
         
         // Generic WebSocket status updates from WSS windows (YouTube, etc.)
+        function isRecoverableYoutubeStatus(payload) {
+            if (!payload || payload.platform !== 'youtube') return false;
+            if (payload.recoverable === true) return true;
+            const code = typeof payload.code === 'string' ? payload.code.toLowerCase() : '';
+            if (code && (code.includes('timeout') || code.includes('abort'))) return true;
+            const message = (payload.message || '').toLowerCase();
+            if (!message) return false;
+            return (
+                message.includes('timed out') ||
+                message.includes('signal is aborted') ||
+                message.includes('network error')
+            );
+        }
+
+        function handleRecoverableYoutubeError(source, entryElement, payload, message) {
+            if (!source || !entryElement || !isRecoverableYoutubeStatus(payload)) return false;
+            const infoMessage = message || 'Temporary YouTube network issue — retrying automatically.';
+            const preservedStatus = (source.status === 'active' || source.status === 'activating') ? source.status : 'active';
+            stateManager.updateSource(source.id, { status: preservedStatus, error: null });
+            updateConnectionStatus(entryElement, 'info', infoMessage);
+            setTimeout(() => {
+                const latestEntry = document.querySelector(`[data-source-id="${source.id}"]`);
+                if (latestEntry) updateConnectionStatus(latestEntry, 'connected');
+            }, 4000);
+            return true;
+        }
+
         ipcRenderer.on('wssStatus', (event, payload) => {
             try {
                 const tabId = payload && payload.tabID;
@@ -7028,6 +7206,9 @@ document.addEventListener('DOMContentLoaded', async function() {
 
                 const status = payload.status;
                 const message = payload.message || null;
+                if (status === 'error' && handleRecoverableYoutubeError(source, entryElement, payload, message)) {
+                    return;
+                }
                 switch (status) {
                     case 'signin_required':
                         stateManager.updateSource(source.id, { status: 'error' });
@@ -7101,7 +7282,7 @@ document.addEventListener('DOMContentLoaded', async function() {
                 if (entryElement) restoreActivateButton(entryElement);
             };
 
-            if (currentState.status === 'inactive' && !currentState.vid && !currentState.wssId && (data.status === 'error' || data.status === 'failed' || data.status === 'disconnected')) {
+            if (currentState.status === 'inactive' && !currentState.vid && !currentState.wssId && !currentState.tiktokWssId && (data.status === 'error' || data.status === 'failed' || data.status === 'disconnected')) {
                 return;
             }
 
@@ -7206,7 +7387,7 @@ document.addEventListener('DOMContentLoaded', async function() {
                         entryElement._tiktokRetryAttempt = null;
                         entryElement._tiktokRetryMax = null;
                     }
-                    stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection failed', vid: null, wssId: null, tiktokFallbackMode: null });
+                    stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection failed', vid: null, wssId: null, tiktokWssId: null, tiktokFallbackMode: null });
                     if (entryElement) {
                         updateConnectionStatus(entryElement, 'error', data.error || 'Connection failed');
                         if (entryElement._tiktokFallback) {
@@ -7265,7 +7446,7 @@ document.addEventListener('DOMContentLoaded', async function() {
                     }
                     break;
                 case 'stopped_by_user':
-                    stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, activeConnectionMode: null });
+                    stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, tiktokWssId: null, activeConnectionMode: null });
                     if (entryElement) {
                         updateConnectionStatus(entryElement, 'stopped', 'Connection stopped by user.');
                         entryElement._tiktokFallback = null;
@@ -7280,14 +7461,49 @@ document.addEventListener('DOMContentLoaded', async function() {
         }
 
         ipcRenderer.on('tiktokConnectionStatus', (event, data) => {
-            if (!data || typeof data.wssID !== 'number') return;
-            const source = stateManager.getSources({ wssId: data.wssID })[0];
+            if (!data || (typeof data.wssID !== 'number' && !data.sourceId)) return;
+
+            const hasWssId = typeof data.wssID === 'number';
+            let source = null;
+
+            if (hasWssId) {
+                source = findTikTokSourceByWssId(data.wssID);
+                if (!source && data.sourceId) {
+                    const candidate = stateManager.getSource(data.sourceId);
+                    if (candidate && candidate.target === 'tiktok') {
+                        source = candidate;
+                    }
+                }
+                if (!source) {
+                    enqueuePendingTikTokStatus(data);
+                    return;
+                }
+            } else if (data.sourceId) {
+                const candidate = stateManager.getSource(data.sourceId);
+                if (!candidate || candidate.target !== 'tiktok') {
+                    return;
+                }
+                source = candidate;
+            }
+
             if (!source) {
-                enqueuePendingTikTokStatus(data);
                 return;
             }
 
-            drainPendingTikTokStatuses(data.wssID, source.id);
+            if (hasWssId) {
+                const currentWssId = getTikTokWssId(source);
+                if (typeof currentWssId === 'number' && currentWssId !== data.wssID) {
+                    console.warn('Ignoring TikTok status for stale connection', {
+                        sourceId: source.id,
+                        incoming: data.wssID,
+                        current: currentWssId
+                    });
+                    return;
+                }
+            }
+
+            const drainKey = hasWssId ? data.wssID : getTikTokWssId(source);
+            drainPendingTikTokStatuses(drainKey, source.id);
             applyTikTokStatusUpdate(data, source.id);
         });
     } 
@@ -8992,7 +9208,7 @@ async function toggleYouTubeType(button) {
         }
         
         // Don't allow toggle if source is active
-        if (source.status === 'active' || source.vid || source.wssId) {
+        if (source.status === 'active' || hasConnectionHandles(source)) {
             alert("Cannot change type while source is active. Please stop the source first.");
             return;
         }

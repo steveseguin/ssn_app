@@ -142,7 +142,8 @@ class StateManager {
                         isMuted: source.state?.togglemute === "true",
                         autoActivate: source.state?.togglelock === "true",
                         vid: null, // Window ID when active
-                        wssId: null, // WebSocket ID when active
+                        wssId: null, // Generic WebSocket ID when active
+                        tiktokWssId: null,
                         status: 'inactive',
                         supportsWSS: this.checkWebSocketSupport(source.target),
                         activeConnectionMode: null,
@@ -271,6 +272,10 @@ class StateManager {
         for (const key of keys) {
             const value = bindings[key];
             if (typeof value === 'string' && value.trim()) {
+                if (this.isAutoOrDefaultSession(value)) {
+                    delete bindings[key];
+                    continue;
+                }
                 return value;
             }
         }
@@ -281,11 +286,11 @@ class StateManager {
         if (!source || typeof source !== 'object') return;
         const hasMeaningfulSession = typeof source.customSession === 'string'
             && source.customSession.trim()
-            && source.customSession.trim() !== 'AUTO';
+            && !this.isAutoOrDefaultSession(source.customSession);
         if (hasMeaningfulSession) return;
 
         const remembered = this.getRememberedSessionForSource(source);
-        if (typeof remembered === 'string' && remembered.trim()) {
+        if (typeof remembered === 'string' && remembered.trim() && !this.isAutoOrDefaultSession(remembered)) {
             source.customSession = remembered;
         }
     }
@@ -305,12 +310,19 @@ class StateManager {
         return false;
     }
 
+    isAutoOrDefaultSession(value) {
+        if (typeof value !== 'string') return false;
+        const normalized = value.trim().toLowerCase();
+        if (!normalized) return true;
+        return normalized === 'auto' || normalized === 'default';
+    }
+
     updateSessionBindingsForSource(source, sessionValue, previousState = null) {
         const bindings = this.ensureSessionBindings();
         const trimmedValue = typeof sessionValue === 'string' ? sessionValue.trim() : '';
         const newKeys = this.buildSessionBindingKeys(source);
 
-        if (!trimmedValue || trimmedValue === 'AUTO') {
+        if (!trimmedValue || this.isAutoOrDefaultSession(trimmedValue)) {
             newKeys.forEach(key => {
                 delete bindings[key];
             });
@@ -330,8 +342,8 @@ class StateManager {
                 if (newKeys.includes(oldKey)) {
                     return;
                 }
-                if (!trimmedValue || trimmedValue === 'AUTO') {
-                    if (!previousValue || previousValue === 'AUTO' || bindings[oldKey] === previousValue) {
+                if (!trimmedValue || this.isAutoOrDefaultSession(trimmedValue)) {
+                    if (!previousValue || this.isAutoOrDefaultSession(previousValue) || bindings[oldKey] === previousValue) {
                         delete bindings[oldKey];
                     }
                 } else if (previousValue && bindings[oldKey] === previousValue) {
@@ -360,6 +372,7 @@ class StateManager {
             autoActivate: sourceData.autoActivate || false,
             vid: null,
             wssId: null,
+            tiktokWssId: null,
             status: 'inactive',
             groupId: sourceData.groupId || null,
             // New: reply-only mode (do not capture messages)

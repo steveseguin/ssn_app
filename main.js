@@ -43,6 +43,10 @@ const fetch = require("electron-fetch").default;
 const TikTokAuth = require('./tiktok-auth');
 const { setupWebSocketMonitor } = require('./websocket-monitor');
 const youTubeGrpcStreamManager = require('./youtube-grpc-client');
+const {
+    setupSpotifyOAuthWithLocalServer,
+    setupSpotifyOAuthWithIntercept
+} = require('./resources/social_stream_fallback/main/electron-spotify-handler');
 
 const {
     fetch: undiciFetch
@@ -57,6 +61,48 @@ const {
 
 const Store = require("electron-store");
 const store = new Store();
+
+const spotifyOAuthMode = (() => {
+    if (process.argv.includes('--spotify-oauth-intercept')) {
+        return 'intercept';
+    }
+    if (process.argv.includes('--spotify-oauth-loopback')) {
+        return 'loopback';
+    }
+    const envMode = (process.env.SSAPP_SPOTIFY_OAUTH_MODE || '').trim().toLowerCase();
+    if (envMode === 'intercept' || envMode === 'loopback') {
+        return envMode;
+    }
+    return 'auto';
+})();
+
+const spotifyOAuthAllowInterceptFallback = (
+    process.argv.includes('--spotify-oauth-allow-intercept-fallback') ||
+    (process.env.SSAPP_SPOTIFY_OAUTH_FALLBACK || '').trim().toLowerCase() === 'intercept'
+);
+
+function configureSpotifyOAuthHandlers() {
+    if (spotifyOAuthMode === 'intercept') {
+        setupSpotifyOAuthWithIntercept();
+        return;
+    }
+
+    try {
+        setupSpotifyOAuthWithLocalServer({
+            fallbackToIntercept: spotifyOAuthAllowInterceptFallback
+        });
+    } catch (error) {
+        console.error('[Spotify OAuth] Failed to initialize loopback handler:', error);
+        if (spotifyOAuthMode !== 'loopback') {
+            console.warn('[Spotify OAuth] Falling back to intercept handler.');
+            setupSpotifyOAuthWithIntercept();
+        } else {
+            throw error;
+        }
+    }
+}
+
+configureSpotifyOAuthHandlers();
 
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
 
@@ -360,7 +406,7 @@ app.commandLine.appendSwitch('ignore-gpu-blocklist');
 // app.commandLine.appendSwitch('user-data-dir', path.join(app.getPath('userData'), 'ChromeProfile'));
 // User agent override at app level - this will be overridden by config if available
 // Set platform-specific user agent with simplified Chrome version
-const CHROME_UA_VERSION = '140.0.0.0';  // Chrome shows simplified version in UA string
+const CHROME_UA_VERSION = '142.0.0.0';  // Chrome shows simplified version in UA string
 if (isMac) {
     app.userAgentFallback = app.userAgentFallback || `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
 } else if (process.platform === 'linux') {
@@ -1324,6 +1370,12 @@ function createYargs() {
         type: "boolean",
         default: false
     });
+    addOption("multiinstance", {
+        alias: ["standalone"],
+        describe: "Opt-out of the single-instance lock so this launch runs as its own process.",
+        type: "boolean",
+        default: false
+    });
 
 
     const options = argv.getOptions();
@@ -1345,6 +1397,7 @@ var Argv = Args.argv;
 const cliPreferLocalAssets = Argv.preferlocalassets === true;
 const envPreferLocalAssets = process.env.SSAPP_PREFER_LOCAL_ASSETS === '1';
 const preferLocalAssetsFlag = cliPreferLocalAssets || envPreferLocalAssets;
+const allowMultipleInstances = Argv.multiinstance === true || Argv.standalone === true;
 
 const envForceTikTokClassic = process.env.SSAPP_FORCE_TIKTOK_CLASSIC === '1';
 const CLI_FORCE_TIKTOK_CLASSIC = Argv.tiktokclassic === true;
@@ -1421,9 +1474,13 @@ function generateArgHTML(argInfo) {
     return html;
 }
 
-if (!app.requestSingleInstanceLock(Argv)) {
-    log("requestSingleInstanceLock");
-    quitApp();
+if (!allowMultipleInstances) {
+    if (!app.requestSingleInstanceLock(Argv)) {
+        log("requestSingleInstanceLock");
+        quitApp();
+    }
+} else {
+    log("Multi-instance mode enabled; skipping single-instance lock.");
 }
 
 function getDirectories(path) {
@@ -4389,6 +4446,28 @@ async function createWindow(args, reuse = false, mainApp = false) {
         log("IPC CREATE WINDOW - SIGN IN");
         var args = Object.assign({}, Argv, args2);
 
+        if (isDevMode) {
+            try {
+                const configPreview = {
+                    url: args?.url || null,
+                    platformConfigKeys: args?.config ? Object.keys(args.config) : [],
+                    session: args?.customSession || 'AUTO',
+                    userAgent: args?.config?.userAgent || null,
+                    mockUserAgentData: args?.config?.mockUserAgentData ? {
+                        brands: args.config.mockUserAgentData.brands || [],
+                        fullVersionList: args.config.mockUserAgentData.fullVersionList || [],
+                        platform: args.config.mockUserAgentData.platform || null,
+                        uaFullVersion: args.config.mockUserAgentData.uaFullVersion || null
+                    } : null,
+                    configSource: args?.config?.__configSource || null,
+                    configMeta: args?.config?.__configMeta || null
+                };
+                console.log('[SignIn Config]', JSON.stringify(configPreview, null, 2));
+            } catch (logError) {
+                console.error('[SignIn Config] Failed to log config preview:', logError?.message || logError);
+            }
+        }
+
         if (!args.url) {
             log("No URL; can't load");
             eventRet.returnValue = null;
@@ -4445,7 +4524,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     }
 
-    
+    function shouldEnforceSignInCSP(args) {
+        const sources = [
+            args?.config?.signin,
+            args?.config,
+            args?.configs?.global?.signin,
+            args?.configs?.global
+        ];
+
+        for (const source of sources) {
+            if (source && typeof source.enforceSigninCSP === 'boolean') {
+                return source.enforceSigninCSP;
+            }
+        }
+
+        return true;
+    }
 
     async function createSignInWindow(args) {
         try {
@@ -4769,8 +4863,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             view.setMenuBarVisibility(true);
 
-            // Set Content-Security-Policy once per session to avoid listener accumulation (skip for Kasada)
-            if (preloadScript !== 'preload-kasada.js') {
+            const enforceSignInCSP = shouldEnforceSignInCSP(args);
+
+            // Set Content-Security-Policy once per session to avoid listener accumulation (skip for Kasada or when disabled)
+            if (enforceSignInCSP && preloadScript !== 'preload-kasada.js') {
                 const ses = view.webContents.session;
                 if (ses && !cspConfiguredSessions.has(ses)) {
                     ses.webRequest.onHeadersReceived((details, callback) => {
@@ -4787,6 +4883,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     });
                     cspConfiguredSessions.add(ses);
                 }
+            } else if (!enforceSignInCSP) {
+                log('Sign-in CSP override disabled via config');
             }
 
             // Store window configuration
@@ -5254,7 +5352,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             log(`Loading URL with configured user agent for kasada: ${userAgent}`);
                         } else {
                             // Use platform-specific fallback
-                            const CHROME_UA_VERSION = '140.0.0.0';
+                            const CHROME_UA_VERSION = '142.0.0.0';
                             if (isMac) {
                                 userAgent = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
                             } else if (process.platform === 'linux') {
@@ -6077,7 +6175,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 							values.platformVersion = "${mockData.platformVersion || '19.0.0'}";
 						  }
 						  if (hints.includes('uaFullVersion')) {
-							values.uaFullVersion = "${mockData.uaFullVersion || '140.0.7339.41'}";
+                            values.uaFullVersion = "${mockData.uaFullVersion || '142.0.7444.163'}";
 						  }
 						  if (hints.includes('wow64')) {
 							values.wow64 = ${mockData.wow64 || false};
@@ -6783,6 +6881,7 @@ ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
         }
 
         wssID++;
+        const sourceIdFromRenderer = typeof args.sourceId === 'string' ? args.sourceId : null;
         let username = args.username;
         if (username) {
             username = username.replace("@", "").toLowerCase().trim();
@@ -6815,6 +6914,7 @@ ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
         if (args && args.replyOnly === true) {
             manager.replyOnly = true;
         }
+        manager.sourceId = sourceIdFromRenderer || null;
         websocketConnections[wssID] = manager;
 
         connectionStates.set(wssID, {
@@ -6830,6 +6930,7 @@ ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
         browserViews[virtualTabId] = {
             isTikTokVirtual: true,
             wssID: wssID,
+            sourceId: sourceIdFromRenderer || null,
             username: username,
             args: {
                 url: `https://www.tiktok.com/@${username}/live`
@@ -6893,11 +6994,14 @@ ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
         }
 
         try {
+            const managerMeta = websocketConnections[args.wssID];
+            const sourceId = managerMeta && managerMeta.sourceId ? managerMeta.sourceId : null;
             try {
                 // Notify renderer to clear UI/countdowns
                 mainWindow.webContents.send('tiktokConnectionStatus', {
                     wssID: args.wssID,
-                    status: 'stopped_by_user'
+                    status: 'stopped_by_user',
+                    sourceId
                 });
             } catch (_) {}
             cleanupConnection(args.wssID);
@@ -8477,8 +8581,8 @@ app.whenReady().then(async function() {
 
         // Set a global fallback user agent WITHOUT Electron to avoid detection
         // Chrome shows simplified version in UA string
-        const CHROME_UA_VERSION = '140.0.0.0';  // For user agent string
-        const CHROME_UA_FULL_VERSION = '140.0.7339.41'; // For Client Hints full version
+        const CHROME_UA_VERSION = '142.0.0.0';  // For user agent string
+        const CHROME_UA_FULL_VERSION = '142.0.7444.163'; // For Client Hints full version
         let CHROME_UA;
         if (isMac) {
             CHROME_UA = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
