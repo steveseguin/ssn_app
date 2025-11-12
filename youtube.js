@@ -872,7 +872,7 @@ async function fetchYoutube(username, alt = false) {
 		}
 }
 
-async function fetchRumble(username, alt = false) { 
+async function fetchRumble(username, alt = false, diagnostics = null) { 
     // Note: `alt` now indicates whether to prefer user-style URLs first (true) or channel-style first (false)
     const channelPreferredUrls = [
         `https://rumble.com/c/${username}/live`
@@ -895,6 +895,26 @@ async function fetchRumble(username, alt = false) {
         return false;
     }
     console.log("Rumble candidate URL order:", candidateUrls);
+
+    const diag = diagnostics && typeof diagnostics === 'object' ? diagnostics : null;
+    const recordFetchOutcome = ({ url, success, sawHardNotFound = false }) => {
+        if (!diag) return;
+        diag.totalRequests = (diag.totalRequests || 0) + 1;
+        if (success) {
+            diag.successfulResponses = (diag.successfulResponses || 0) + 1;
+        } else {
+            diag.failedResponses = (diag.failedResponses || 0) + 1;
+            if (sawHardNotFound) {
+                diag.hardNotFoundResponses = (diag.hardNotFoundResponses || 0) + 1;
+            }
+            if (url) {
+                if (!Array.isArray(diag.failedUrls)) {
+                    diag.failedUrls = [];
+                }
+                diag.failedUrls.push(url);
+            }
+        }
+    };
 
     try {
         if (!ipcRenderer) {
@@ -1202,6 +1222,7 @@ async function fetchRumble(username, alt = false) {
             const urlToFetch = candidateUrls[i];
             console.log("Fetching Rumble URL:", urlToFetch);
             const { htmlData, sawHardNotFound } = await tryFetchUrl(urlToFetch);
+            recordFetchOutcome({ url: urlToFetch, success: !!htmlData, sawHardNotFound });
             const videoInfo = extractLiveVideo(htmlData);
             if (videoInfo) {
                 return videoInfo;
@@ -1215,6 +1236,10 @@ async function fetchRumble(username, alt = false) {
         return false;
     } catch (e) {
         console.error("Error fetching Rumble data for " + username + ":", e);
+        if (diag) {
+            diag.encounteredException = true;
+            diag.lastException = e;
+        }
         return false;
     }
 }

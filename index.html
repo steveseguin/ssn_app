@@ -2641,6 +2641,31 @@ const youtubeGroupBackoffState = new Map();
 // Store interval IDs for Rumble auto-checking
 const rumbleIntervals = new Map();
 
+// Track recent manual activation attempts so we can distinguish them from auto-activations
+const MANUAL_ACTIVATION_WINDOW_MS = 15000;
+const manualActivationTracker = new Map();
+
+function markManualActivation(sourceId) {
+    if (!sourceId) return;
+    manualActivationTracker.set(sourceId, Date.now());
+}
+
+function clearManualActivationFlag(sourceId) {
+    if (!sourceId) return;
+    manualActivationTracker.delete(sourceId);
+}
+
+function wasManualActivation(sourceId) {
+    if (!sourceId) return false;
+    const timestamp = manualActivationTracker.get(sourceId);
+    if (!timestamp) return false;
+    if (Date.now() - timestamp > MANUAL_ACTIVATION_WINDOW_MS) {
+        manualActivationTracker.delete(sourceId);
+        return false;
+    }
+    return true;
+}
+
 function startYouTubeGroupAutoCheck(groupId) {
     // Clear any existing interval for this group
     stopYouTubeGroupAutoCheck(groupId);
@@ -3677,6 +3702,7 @@ async function activateSource(ele) {
     }
 
     let windowId;
+    markManualActivation(sourceId);
     try {
         windowId = await createWindow(ele);
     } catch (err) {
@@ -3685,6 +3711,8 @@ async function activateSource(ele) {
             restoreActivateButton(parentElement);
         }
         throw err;
+    } finally {
+        clearManualActivationFlag(sourceId);
     }
 
     if (isTikTokWebsocketAttempt && !windowId) {
@@ -5112,11 +5140,7 @@ async function createClassicWindowFromSource(source, tabid = false) {
             }
         }
     } else if (source.target === "rumble" && source.username && !source.chatId && !source.isDirectUrl) {
-        // Skip fetching if we already have a chat popup URL
-        if (source.url && source.url.includes('/chat/popup/')) {
-            console.log("Already have chat popup URL, skipping fetch");
-            urlToLoad = source.url;
-        } else if (/^\d+$/.test(source.username)) {
+        if (/^\d+$/.test(source.username)) {
             // Check if the username is actually a numeric chat ID
             console.log(`Username appears to be a numeric chat ID: ${source.username}`);
             const chatId = source.username;
@@ -5126,83 +5150,100 @@ async function createClassicWindowFromSource(source, tabid = false) {
             // For username-based Rumble sources, always fetch fresh video ID
             console.log("Attempting to fetch video ID for Rumble:", source.username);
             let videoId = null;
+            const rumbleFetchDiagnostics = {
+                totalRequests: 0,
+                successfulResponses: 0,
+                failedResponses: 0
+            };
         
-        // Try the primary option first (channel if isChannel is true, user otherwise)
-        const tryChannelFirst = source.isChannel !== false; // Default to channel if not specified
-        let videoInfo = await fetchRumble(source.username, !tryChannelFirst);
-        
-        // If not found, try the alternate option
-        if (!videoInfo) {
-            console.log("Rumble video not found with primary option, trying alternate...");
-            videoInfo = await fetchRumble(source.username, tryChannelFirst);
-        }
-        
-        if (videoInfo) {
-            const isLegacyFormat = typeof videoInfo === 'string';
-            const chatIdFromInfo = !isLegacyFormat && videoInfo?.chatId && /^\d+$/.test(videoInfo.chatId)
-                ? videoInfo.chatId
-                : null;
-            // Handle both old format (string) and new format (object)
-            videoId = isLegacyFormat ? videoInfo : videoInfo.videoId;
-            const fullPath = isLegacyFormat ? `${videoInfo}.html` : videoInfo.fullPath;
+            // Try the primary option first (channel if isChannel is true, user otherwise)
+            const tryChannelFirst = source.isChannel !== false; // Default to channel if not specified
+            let videoInfo = await fetchRumble(source.username, !tryChannelFirst, rumbleFetchDiagnostics);
             
-            if (chatIdFromInfo) {
-                console.log(`Using embedded Rumble chat ID ${chatIdFromInfo} for video: ${videoId || '(unknown)'}`);
-                const finalChatId = chatIdFromInfo;
-                urlToLoad = `https://rumble.com/chat/popup/${finalChatId}`;
-                const updates = { chatId: finalChatId, url: urlToLoad };
-                if (videoId) {
-                    updates.videoId = videoId;
-                }
-                stateManager.updateSource(source.id, updates);
-            } else {
-                const chatLookupTarget = fullPath || videoId;
-                console.log(`Fetching Rumble chat ID for video: ${videoId} (path: ${chatLookupTarget})`);
+            // If not found, try the alternate option
+            if (!videoInfo) {
+                console.log("Rumble video not found with primary option, trying alternate...");
+                videoInfo = await fetchRumble(source.username, tryChannelFirst, rumbleFetchDiagnostics);
+            }
+            
+            if (videoInfo) {
+                const isLegacyFormat = typeof videoInfo === 'string';
+                const chatIdFromInfo = !isLegacyFormat && videoInfo?.chatId && /^\d+$/.test(videoInfo.chatId)
+                    ? videoInfo.chatId
+                    : null;
+                // Handle both old format (string) and new format (object)
+                videoId = isLegacyFormat ? videoInfo : videoInfo.videoId;
+                const fullPath = isLegacyFormat ? `${videoInfo}.html` : videoInfo.fullPath;
                 
-                try {
-                    const chatId = await getRumbleChatId(chatLookupTarget);
-                    if (chatId) {
-                        console.log(`Found Rumble chat ID: ${chatId} for video: ${videoId}`);
-                        stateManager.updateSource(source.id, { videoId: videoId, chatId: chatId });
-                        urlToLoad = `https://rumble.com/chat/popup/${chatId}`;
-                        stateManager.updateSource(source.id, { url: urlToLoad });
-                    } else {
-                        console.warn(`Could not find chat ID for Rumble video: ${videoId}`);
-                        const fallbackUrl = selectRumbleFallbackUrl({
-                            primary: chatLookupTarget,
-                            username: source.username,
-                            isChannel: source.isChannel
-                        });
-                        if (fallbackUrl) {
-                            Toast.warning("Rumble Fallback", "Could not open the chat popup; loading the live page instead.");
-                            urlToLoad = fallbackUrl;
-                            stateManager.updateSource(source.id, { url: urlToLoad, chatId: null });
+                if (chatIdFromInfo) {
+                    console.log(`Using embedded Rumble chat ID ${chatIdFromInfo} for video: ${videoId || '(unknown)'}`);
+                    const finalChatId = chatIdFromInfo;
+                    urlToLoad = `https://rumble.com/chat/popup/${finalChatId}`;
+                    const updates = { chatId: finalChatId, url: urlToLoad };
+                    if (videoId) {
+                        updates.videoId = videoId;
+                    }
+                    stateManager.updateSource(source.id, updates);
+                } else {
+                    const chatLookupTarget = fullPath || videoId;
+                    console.log(`Fetching Rumble chat ID for video: ${videoId} (path: ${chatLookupTarget})`);
+                    
+                    try {
+                        const chatId = await getRumbleChatId(chatLookupTarget);
+                        if (chatId) {
+                            console.log(`Found Rumble chat ID: ${chatId} for video: ${videoId}`);
+                            stateManager.updateSource(source.id, { videoId: videoId, chatId: chatId });
+                            urlToLoad = `https://rumble.com/chat/popup/${chatId}`;
+                            stateManager.updateSource(source.id, { url: urlToLoad });
                         } else {
-                            Toast.error("Rumble Error", `Could not find chat ID for video ${videoId}`);
-                            return false;
+                            console.warn(`Could not find chat ID for Rumble video: ${videoId}`);
+                            const fallbackUrl = selectRumbleFallbackUrl({
+                                primary: chatLookupTarget,
+                                username: source.username,
+                                isChannel: source.isChannel
+                            });
+                            if (fallbackUrl) {
+                                Toast.warning("Rumble Fallback", "Could not open the chat popup; loading the live page instead.");
+                                urlToLoad = fallbackUrl;
+                                stateManager.updateSource(source.id, { url: urlToLoad, chatId: null });
+                            } else {
+                                Toast.error("Rumble Error", `Could not find chat ID for video ${videoId}`);
+                                return false;
+                            }
                         }
+                    } catch (e) {
+                        console.error("Error fetching Rumble chat ID:", e);
+                        if (e?.message && e.message.includes("timeout")) {
+                            Toast.error("Rumble Error", "Connection timed out. Rumble might be slow or unreachable.");
+                        } else {
+                            Toast.error("Rumble Error", `Failed to get chat ID: ${e?.message || e}`);
+                        }
+                        return false;
                     }
-                } catch (e) {
-                    console.error("Error fetching Rumble chat ID:", e);
-                    if (e?.message && e.message.includes("timeout")) {
-                        Toast.error("Rumble Error", "Connection timed out. Rumble might be slow or unreachable.");
-                    } else {
-                        Toast.error("Rumble Error", `Failed to get chat ID: ${e?.message || e}`);
-                    }
+                }
+            } else {
+            const manualAttempt = wasManualActivation(source.id);
+            const totalRequests = rumbleFetchDiagnostics.totalRequests || 0;
+            const successfulRequests = rumbleFetchDiagnostics.successfulResponses || 0;
+            const failedRequests = rumbleFetchDiagnostics.failedResponses || 0;
+            const allFetchesFailed = totalRequests > 0 && successfulRequests === 0 && failedRequests === totalRequests;
+            const allowFallback = manualAttempt && allFetchesFailed;
+
+            if (allowFallback) {
+                console.warn(`Rumble chat lookup failed for ${source.username}; attempting fallback URL.`);
+                const fallbackUrl = selectRumbleFallbackUrl({
+                    primary: source.url,
+                    username: source.username,
+                    isChannel: source.isChannel
+                });
+                if (fallbackUrl) {
+                    Toast.warning("Rumble Fallback", "Rumble request failed; loading the live page instead.");
+                    urlToLoad = fallbackUrl;
+                    stateManager.updateSource(source.id, { url: urlToLoad, videoId: null, chatId: null });
+                } else {
+                    Toast.error("Rumble Error", `No live video found for ${source.username}.`);
                     return false;
                 }
-            }
-        } else {
-            console.warn(`No live video found for ${source.username}; using fallback URL.`);
-            const fallbackUrl = selectRumbleFallbackUrl({
-                primary: source.url,
-                username: source.username,
-                isChannel: source.isChannel
-            });
-            if (fallbackUrl) {
-                Toast.warning("Rumble Fallback", "Could not open the chat popup; loading the live page instead.");
-                urlToLoad = fallbackUrl;
-                stateManager.updateSource(source.id, { url: urlToLoad, videoId: null, chatId: null });
             } else {
                 Toast.error("Rumble Error", `No live video found for ${source.username}.`);
                 return false;
