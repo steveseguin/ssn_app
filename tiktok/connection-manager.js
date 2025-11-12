@@ -496,6 +496,34 @@ function installTikTokSignServerFallback(connector) {
     console.info('[TikTok] Sign server fallback patch installed (clientEnter retry enabled)');
 }
 
+function installTikTokProtoFetchTap(connector) {
+    if (!connector || typeof connector !== 'object') {
+        return;
+    }
+
+    const tapClass = (ClassRef) => {
+        if (!ClassRef || !ClassRef.prototype || ClassRef.prototype.__ssappProtoFetchPatched) {
+            return;
+        }
+        const original = ClassRef.prototype.processProtoMessageFetchResult;
+        if (typeof original !== 'function') {
+            return;
+        }
+        ClassRef.prototype.processProtoMessageFetchResult = async function patchedProtoFetch(result, ...args) {
+            try {
+                if (result && typeof this.emit === 'function') {
+                    this.emit('ssappProtoFetch', result);
+                }
+            } catch (_) { /* noop */ }
+            return original.call(this, result, ...args);
+        };
+        ClassRef.prototype.__ssappProtoFetchPatched = true;
+    };
+
+    tapClass(connector.TikTokLiveConnection);
+    tapClass(connector.WebcastPushConnection);
+}
+
 /**
  * Build a TikTok connection environment that mirrors the logic used inside the Electron app.
  * This exposes the ConnectionManager class so that other entrypoints (like test harnesses)
@@ -544,6 +572,7 @@ function createTikTokEnvironment(options = {}) {
     usingLegacyTikTokConnector = false;
 
     if (connector && typeof connector === 'object') {
+        installTikTokProtoFetchTap(connector);
         if (typeof connector.WebcastPushConnection === 'function') {
             TikTokPollingFallbackClass = connector.WebcastPushConnection;
         }
@@ -1006,50 +1035,6 @@ function resolveTikTokSubscriberStatus(data = {}) {
         sendToBackground(msg);
     }
 
-    class MessageCache {
-        constructor(maxSize) {
-            this.maxSize = Math.max(1, maxSize || 0);
-            this.messageIds = new Map(); // Maintains insertion order for LRU trimming
-        }
-
-        has(msgId) {
-            return this.messageIds.has(msgId);
-        }
-
-        add(msgId) {
-            if (!msgId) return;
-
-            // Refresh position when we see a duplicate id
-            if (this.messageIds.has(msgId)) {
-                this.messageIds.delete(msgId);
-                this.messageIds.set(msgId, true);
-                return;
-            }
-
-            this.messageIds.set(msgId, true);
-
-            // Enforce max size with simple LRU eviction
-            while (this.messageIds.size > this.maxSize) {
-                const oldestKey = this.messageIds.keys().next().value;
-                if (typeof oldestKey === 'undefined') break;
-                this.messageIds.delete(oldestKey);
-            }
-        }
-
-        clear() {
-            this.messageIds.clear();
-        }
-
-        destroy() {
-            this.clear();
-        }
-
-        remove(msgId) {
-            if (!msgId) return false;
-            return this.messageIds.delete(msgId);
-        }
-    }
-
     let wssID = 0;
 
     // Function to send messages to TikTok chat
@@ -1131,8 +1116,6 @@ function resolveTikTokSubscriberStatus(data = {}) {
             PROCESSING_INTERVAL: 100,
             // Hard cap for total queued messages across TikTok chat processing
             MAX_QUEUE_SIZE: 10000,
-            // Dedup cache size for TikTok message IDs
-            MESSAGE_CACHE_SIZE: 30000,
             // Drop stale messages that fall outside this trailing window
             STALE_MESSAGE_GRACE_MS: 3 * 60 * 1000,
             HIGH_LOAD_THRESHOLD: 5000,
@@ -1205,12 +1188,6 @@ function resolveTikTokSubscriberStatus(data = {}) {
                 if (manager.reconnectTimer) {
                     clearTimeout(manager.reconnectTimer);
                     manager.reconnectTimer = null;
-                }
-                if (manager.messageCache) {
-                    try {
-                        manager.messageCache.destroy();
-                    } catch (_) { /* noop */ }
-                    manager.messageCache = null;
                 }
                 if (manager.activityBuckets instanceof Map) {
                     manager.activityBuckets.clear();
@@ -1433,7 +1410,9 @@ function resolveFirstImageUrl(candidates = []) {
 
         addToQueue(data) {
 
-            const cache = this.manager?.messageCache;
+            if (this.manager?.isReplayActive && this.manager.isReplayActive()) {
+                return;
+            }
 
             const timestamp = this.extractMessageTimestamp(data);
             const graceWindow = CONFIG.CHAT.STALE_MESSAGE_GRACE_MS || (3 * 60 * 1000);
@@ -1444,16 +1423,6 @@ function resolveFirstImageUrl(candidates = []) {
                     log(`Dropping stale TikTok message: ${identifier}`);
                     return;
                 }
-            }
-
-            if (cache && data.msgId && cache.has(data.msgId)) {
-                log(`Skipping duplicate message: ${data.msgId}`);
-                return;
-            }
-
-            // Add to message cache if it has an ID
-            if (cache && data.msgId) {
-                cache.add(data.msgId);
             }
 
             if (timestamp !== null) {
@@ -1489,14 +1458,6 @@ function resolveFirstImageUrl(candidates = []) {
                     })();
 
                 if (droppedEntries.length > 0) {
-                    if (cache && typeof cache.remove === 'function') {
-                        for (const entry of droppedEntries) {
-                            const droppedId = entry && entry.msgId;
-                            if (droppedId) {
-                                cache.remove(droppedId);
-                            }
-                        }
-                    }
                     this.droppedSinceHighWater += droppedEntries.length;
                     const now = Date.now();
                     if (!this.highWaterLoggedAt || (now - this.highWaterLoggedAt) > 5000) {
@@ -1763,6 +1724,10 @@ function resolveFirstImageUrl(candidates = []) {
                 return;
             }
 
+            if (this.manager?.isReplayActive && this.manager.isReplayActive()) {
+                return;
+            }
+
             const repeatCount = Number(data.repeatCount) || 0;
             const comboCount = Number(data.comboCount) || 0;
             const groupCount = Number(data.groupCount) || 0;
@@ -1791,17 +1756,6 @@ function resolveFirstImageUrl(candidates = []) {
             }
             if (isComboStarter) {
                 return;
-            }
-
-            const cache = this.manager?.messageCache;
-            if (cache && data.msgId && cache.has(data.msgId)) {
-                log(`Skipping duplicate gift: ${data.msgId}`);
-                return;
-            }
-
-            // Add to message cache if it has an ID
-            if (cache && data.msgId) {
-                cache.add(data.msgId);
             }
 
             const aggregatedCount = Math.max(
@@ -2006,7 +1960,6 @@ function resolveFirstImageUrl(candidates = []) {
             this.lastViewerCount = 0;
             this.messageProcessor = new MessageProcessor(this);
             this.giftProcessor = new GiftProcessor(this);
-            this.messageCache = new MessageCache(CONFIG.CHAT.MESSAGE_CACHE_SIZE);
             this.activityBuckets = new Map();
             this.recentShoppingEvents = new Map();
             // Live shopping events rely on 2.x payloads; the Map sticks around harmlessly until we upgrade.
@@ -2054,6 +2007,9 @@ function resolveFirstImageUrl(candidates = []) {
             this.directChatRoute = null;
             this.directChatRouteClient = null;
             this.pendingRoomIdPromise = null;
+            this.resumeCursorState = null;
+            this.previousRoomId = null;
+            this.replayActive = false;
         }
 
         getLogContext() {
@@ -2064,6 +2020,10 @@ function resolveFirstImageUrl(candidates = []) {
                 ttTargetIdcProvided: !!this.ttTargetIdc,
                 virtualTabId: this.virtualTabId || null
             };
+        }
+
+        isReplayActive() {
+            return !!this.replayActive;
         }
 
         logDebug(eventName, payload) {
@@ -2152,6 +2112,7 @@ function resolveFirstImageUrl(candidates = []) {
                 : (useLegacyConnector ? 'WebcastPushConnection' : 'TikTokLiveConnection');
 
             this.connection = new ConnectorClass(this.username, connectionOptions);
+            this.applyResumeCursorToConnection();
             this.applySignRequestTimeout(this.signRequestTimeoutMs);
             this.logDebug('lifecycle.initialize.signTimeoutConfigured', {
                 timeoutMs: this.signRequestTimeoutMs,
@@ -2166,6 +2127,33 @@ function resolveFirstImageUrl(candidates = []) {
                 forceLegacy: useLegacyConnector
             });
             this.setupEventHandlers();
+        }
+
+        applyResumeCursorToConnection() {
+            const state = this.resumeCursorState;
+            if (!state || !state.cursor || !this.connection) {
+                return;
+            }
+            if (state.roomId && this.previousRoomId && state.roomId !== this.previousRoomId) {
+                return;
+            }
+            const setCursor = (params) => {
+                if (!params || typeof params !== 'object') {
+                    return;
+                }
+                params.cursor = state.cursor;
+                if (state.internalExt) {
+                    params.internal_ext = state.internalExt;
+                }
+            };
+            setCursor(this.connection.webClient && this.connection.webClient.clientParams);
+            setCursor(this.connection.options && this.connection.options.clientParams);
+            setCursor(this.connection.options && this.connection.options.webClientParams);
+            setCursor(this.connection.options && this.connection.options.wsClientParams);
+            this.logDebug('lifecycle.cursor.resume_applied', {
+                roomId: state.roomId || null,
+                hasInternalExt: !!state.internalExt
+            });
         }
 
         async teardownConnection({ silent = false } = {}) {
@@ -2710,6 +2698,9 @@ function resolveFirstImageUrl(candidates = []) {
                 'WebcastLinkMicFanTicketMethod',
                 'WebcastLinkMicMethod'
             ]);
+            if (typeof this.connection.on === 'function') {
+                this.connection.on('ssappProtoFetch', (result) => this.handleProtoFetch(result));
+            }
             this.connection.on('websocketData', (buffer) => {
                 let preview = null;
                 let length = null;
@@ -3185,6 +3176,46 @@ function resolveFirstImageUrl(candidates = []) {
             });
         }
 
+        handleProtoFetch(fetchResult) {
+            if (!fetchResult || typeof fetchResult !== 'object') {
+                return;
+            }
+            try {
+                const roomId = this.connection?.roomId || this.connection?.webClient?.roomId || null;
+                if (roomId) {
+                    if (this.previousRoomId && roomId !== this.previousRoomId && this.resumeCursorState && this.resumeCursorState.roomId !== roomId) {
+                        this.resumeCursorState = null;
+                    }
+                    this.previousRoomId = roomId;
+                }
+
+                const isFirst = fetchResult.isFirst === true;
+                const historyNoMore = fetchResult.historyNoMore === true;
+
+                if (isFirst) {
+                    this.replayActive = true;
+                }
+                if (!isFirst || historyNoMore) {
+                    this.replayActive = false;
+                }
+
+                if ((!isFirst || historyNoMore) && fetchResult.cursor && roomId) {
+                    this.resumeCursorState = {
+                        cursor: fetchResult.cursor,
+                        internalExt: fetchResult.internalExt || null,
+                        roomId,
+                        capturedAt: Date.now()
+                    };
+                    this.logDebug('lifecycle.cursor.captured', {
+                        roomId,
+                        hasInternalExt: !!fetchResult.internalExt
+                    });
+                }
+            } catch (error) {
+                console.warn('Failed to process TikTok proto fetch metadata:', error);
+            }
+        }
+
         startHealthCheck() {
             if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
             
@@ -3508,6 +3539,7 @@ function resolveFirstImageUrl(candidates = []) {
 
         handleDisconnect() {
             console.info('Disconnect detected');
+            this.replayActive = false;
             connectionStates.set(this.wssID, {
                 isConnected: false,
                 lastAttempt: Date.now(),
@@ -3646,6 +3678,9 @@ function resolveFirstImageUrl(candidates = []) {
 
         handleStreamEnd() {
             console.info('Stream ended');
+            this.replayActive = false;
+            this.resumeCursorState = null;
+            this.previousRoomId = null;
             // Broadcast zero viewers when the stream ends so overlays reset
             this.lastViewerCount = 0;
             if (isViewerUpdateAllowed()) {
