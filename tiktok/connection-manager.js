@@ -39,7 +39,8 @@ const env = {
     isViewerUpdateAllowed: () => false,
     isTextOnlyModeEnabled: () => false,
     getCachedSettings: () => ({}),
-    onEvent: () => {}
+    onEvent: () => {},
+    isDevMode: () => false
 };
 
 const TIKTOK_LOG_SUBDIR = 'tiktok-logs';
@@ -54,6 +55,14 @@ function log(...args) {
         env.log(...args);
     } catch (_) {
         console.log(...args);
+    }
+}
+
+function isDevBuild() {
+    try {
+        return typeof env.isDevMode === 'function' && !!env.isDevMode();
+    } catch (_) {
+        return false;
     }
 }
 
@@ -558,6 +567,7 @@ function createTikTokEnvironment(options = {}) {
         isViewerUpdateAllowed: viewerUpdateAllowedFn = () => false,
         isTextOnlyModeEnabled: textOnlyModeFn = () => false,
         connectionStates: sharedConnectionStates,
+        isDevMode: isDevModeOverride = () => false,
         resolveLogDirectory,
         getMainWindow: getMainWindowOverride,
         mainWindow: staticMainWindow = null,
@@ -620,6 +630,7 @@ function createTikTokEnvironment(options = {}) {
     env.isTextOnlyModeEnabled = typeof textOnlyModeFn === 'function' ? textOnlyModeFn : () => false;
     env.log = typeof logFn === 'function' ? logFn : env.log;
     env.onEvent = typeof onEventOverride === 'function' ? onEventOverride : () => {};
+    env.isDevMode = typeof isDevModeOverride === 'function' ? isDevModeOverride : () => false;
 
     cachedTikTokLogDir = null;
 
@@ -816,6 +827,89 @@ function resolveTikTokDisplayName(data = {}, identity = null, fallbackUserId = n
 
     if (resolved) return resolved;
     return fallbackUserId || 'Unknown';
+}
+
+const SOCIAL_SUPPRESSED_DISPLAY_TYPES = new Set([
+    'pm_main_follow_message_viewer_2',
+    'pm_mt_guidance_share',
+    'pm_mt_guidance_social_action'
+]);
+
+const SOCIAL_GIFT_KEYWORDS = ['gift', 'donat', 'present', 'rose', 'lion', 'whale', 'galaxy', 'jet', 'train', 'castle'];
+const SOCIAL_REDUNDANT_KEYWORDS = ['follow', 'follower', 'subscrib', 'member'];
+
+const SOCIAL_EVENT_MATCHERS = [
+    {
+        event: 'shared',
+        message: 'shared the live stream',
+        match: (meta) => !!meta.shareTypeLower ||
+            /share|forward/.test(meta.displayTypeLower) ||
+            /share|forward/.test(meta.labelLower)
+    },
+    {
+        event: 'pinned',
+        message: 'pinned the stream',
+        match: (meta) => /pin/.test(meta.displayTypeLower) || /pin/.test(meta.labelLower)
+    },
+    {
+        event: 'liked',
+        message: 'liked the stream',
+        match: (meta) => /like|thumb/.test(meta.displayTypeLower) || /like|thumb/.test(meta.labelLower)
+    }
+];
+
+function normalizeSocialMeta(data = {}) {
+    const displayType = firstNonEmptyVisibleString([
+        data.displayType,
+        data?.common?.displayText?.displayType,
+        data?.publicAreaMessageCommon?.eventDetails?.displayType,
+        data?.action
+    ]) || '';
+    const label = firstNonEmptyVisibleString([
+        data.label,
+        data?.common?.displayText?.defaultPattern,
+        data?.publicAreaMessageCommon?.eventDetails?.label
+    ]) || '';
+    const shareType = firstNonEmptyVisibleString([
+        data.shareType,
+        data.shareTarget,
+        data.shareDisplayStyle
+    ]) || '';
+
+    return {
+        baseDisplayType: typeof data.displayType === 'string' ? data.displayType : '',
+        displayType,
+        displayTypeLower: displayType.toLowerCase(),
+        label,
+        labelLower: label.toLowerCase(),
+        shareType,
+        shareTypeLower: shareType.toLowerCase()
+    };
+}
+
+function isGenericSocialLabel(meta) {
+    return !meta.label || /performed a social action/i.test(meta.label);
+}
+
+function isRedundantFollowOrSub(meta) {
+    return SOCIAL_REDUNDANT_KEYWORDS.some(keyword =>
+        meta.displayTypeLower.includes(keyword) || meta.labelLower.includes(keyword)
+    );
+}
+
+function isSocialGiftEcho(meta) {
+    return SOCIAL_GIFT_KEYWORDS.some(keyword =>
+        meta.displayTypeLower.includes(keyword) || meta.labelLower.includes(keyword)
+    );
+}
+
+function classifySocialEvent(meta) {
+    for (const matcher of SOCIAL_EVENT_MATCHERS) {
+        if (typeof matcher.match === 'function' && matcher.match(meta)) {
+            return matcher;
+        }
+    }
+    return null;
 }
 
 function coerceTikTokBoolean(value) {
@@ -2793,21 +2887,51 @@ function resolveFirstImageUrl(candidates = []) {
                     if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
                     this.sendEventMessage(data, "subscribed", `${displayName} subscribed!`);
                 },
-                social: (data) => {
+                social: (data = {}) => {
                     this.recordActivity();
-                    if (data.displayType !== "pm_main_follow_message_viewer_2" &&
-                        data.displayType !== "pm_mt_guidance_share") {
-                        const identity = extractTikTokIdentity(data);
-                        const displayName = identity.nickname || identity.uniqueId || 'Someone';
-                        if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
-                        if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
-                        let label = data.label || `${displayName} performed a social action!`;
-                        // Replace {0:user} placeholder with actual username
-                        if (label.includes('{0:user}')) {
-                            label = label.replace('{0:user}', displayName);
+                    const devMode = isDevBuild();
+                    const meta = normalizeSocialMeta(data);
+
+                    if (SOCIAL_SUPPRESSED_DISPLAY_TYPES.has(meta.baseDisplayType)) {
+                        if (devMode) {
+                            console.debug('[TikTok] suppressed placeholder social event', { meta });
                         }
-                        this.sendEventMessage(data, "SOCIAL", label);
+                        return;
                     }
+                    if (isRedundantFollowOrSub(meta)) {
+                        if (devMode) {
+                            console.debug('[TikTok] suppressed redundant follow/sub social event', { meta });
+                        }
+                        return;
+                    }
+                    if (isSocialGiftEcho(meta)) {
+                        if (devMode) {
+                            console.debug('[TikTok] suppressed social gift echo', { meta });
+                        }
+                        return;
+                    }
+                    if (isGenericSocialLabel(meta)) {
+                        if (devMode) {
+                            console.debug('[TikTok] suppressed generic social label', { meta });
+                        }
+                        return;
+                    }
+
+                    const classification = classifySocialEvent(meta);
+                    if (!classification) {
+                        if (devMode) {
+                            console.debug('[TikTok] unknown social event (dev log only)', { meta, raw: data });
+                        }
+                        return;
+                    }
+
+                    const identity = extractTikTokIdentity(data);
+                    const displayName = identity.nickname || identity.uniqueId || 'Viewer';
+                    if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
+                    if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
+
+                    const message = `${displayName} ${classification.message}!`;
+                    this.sendEventMessage(data, classification.event, message);
                 },
                 member: (data = {}) => {
                     this.recordActivity();

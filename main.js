@@ -156,6 +156,7 @@ try {
     const tikTokEnv = createTikTokEnvironment({
         connector: tiktokConnector,
         shouldEnableTikTokLogging,
+        isDevMode: () => isDevMode,
         resolveLogDirectory: () => app.getPath('userData'),
         getMainWindow: () => mainWindow,
         browserViews,
