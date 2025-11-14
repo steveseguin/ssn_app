@@ -43,12 +43,17 @@ const env = {
     isDevMode: () => false
 };
 
+const SIGNING_SERVICE_HELP_URL = (process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL && process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL.trim())
+    ? process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL.trim()
+    : 'https://github.com/SocialStreamNinja/ssapp/wiki/TikTok-Signing';
+
 const TIKTOK_LOG_SUBDIR = 'tiktok-logs';
 let cachedTikTokLogDir = null;
 let connectionStates = new Map();
 let TikTokLiveConnectionClass = null;
 let TikTokPollingFallbackClass = null;
 let usingLegacyTikTokConnector = false;
+let EulerSignerClass = null;
 
 function log(...args) {
     try {
@@ -73,6 +78,40 @@ function getMainWindow() {
     } catch (_) {
         return null;
     }
+}
+
+function normalizeSigningServiceUrlInput(rawValue) {
+    if (!rawValue || typeof rawValue !== 'string') {
+        return null;
+    }
+    let value = rawValue.trim();
+    if (!value) {
+        return null;
+    }
+    if (!/^https?:\/\//i.test(value)) {
+        value = `https://${value}`;
+    }
+    try {
+        const parsed = new URL(value);
+        return `${parsed.protocol}//${parsed.host}`.replace(/\/+$/, '');
+    } catch (_) {
+        return value.replace(/\/+$/, '');
+    }
+}
+
+function normalizeSigningConfig(signing) {
+    if (!signing || typeof signing !== 'object') {
+        return null;
+    }
+    const apiKey = typeof signing.apiKey === 'string' ? signing.apiKey.trim() : '';
+    const serviceUrl = normalizeSigningServiceUrlInput(typeof signing.serviceUrl === 'string' ? signing.serviceUrl : '');
+    if (!apiKey && !serviceUrl) {
+        return null;
+    }
+    return {
+        apiKey: apiKey || null,
+        serviceUrl: serviceUrl || null
+    };
 }
 
 function resolveSourceIdForPayload(payload) {
@@ -583,6 +622,11 @@ function createTikTokEnvironment(options = {}) {
 
     if (connector && typeof connector === 'object') {
         installTikTokProtoFetchTap(connector);
+        if (typeof connector.EulerSigner === 'function') {
+            EulerSignerClass = connector.EulerSigner;
+        } else if (connector.web && typeof connector.web.EulerSigner === 'function') {
+            EulerSignerClass = connector.web.EulerSigner;
+        }
         if (typeof connector.WebcastPushConnection === 'function') {
             TikTokPollingFallbackClass = connector.WebcastPushConnection;
         }
@@ -2045,7 +2089,7 @@ function resolveFirstImageUrl(candidates = []) {
             const normalizedTtTargetIdc = typeof ttTargetIdc === 'string' ? ttTargetIdc.trim() : null;
             this.sessionId = normalizedSessionId || null;
             this.ttTargetIdc = normalizedTtTargetIdc || null;
-            const { forceLegacyConnector = false } = options || {};
+            const { forceLegacyConnector = false, signing = null } = options || {};
             this.preferredStrategy = (usingLegacyTikTokConnector || forceLegacyConnector) ? 'legacy' : 'websocket';
             this.connection = null;
             this.lastMessageTime = Date.now();
@@ -2068,6 +2112,8 @@ function resolveFirstImageUrl(candidates = []) {
             this.tiktokLogWriter = createTikTokLogWriter(this.username, this.wssID);
             this.tiktokLogFilePath = this.tiktokLogWriter ? this.tiktokLogWriter.filePath : null;
             this.warnedMissingTtTargetIdc = false;
+            this.signingConfig = normalizeSigningConfig(signing);
+            this.signServerFailureCount = 0;
             this.signRequestTimeoutMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_MS || 25000;
             this.signRequestTimeoutBaseMs = this.signRequestTimeoutMs;
             this.signRequestTimeoutStepMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_STEP_MS || 10000;
@@ -2159,6 +2205,9 @@ function resolveFirstImageUrl(candidates = []) {
                         device_platform: "web"
                     }
                 };
+                if (this.signingConfig?.apiKey) {
+                    legacyOptions.signApiKey = this.signingConfig.apiKey;
+                }
                 return legacyOptions;
             }
 
@@ -2177,7 +2226,39 @@ function resolveFirstImageUrl(candidates = []) {
                 wsClientParams: { ...clientParams },
                 clientParams: { ...clientParams }
             };
+            if (this.signingConfig?.apiKey) {
+                options.signApiKey = this.signingConfig.apiKey;
+            }
             return options;
+        }
+
+        createCustomSigner() {
+            if (!this.signingConfig || (!this.signingConfig.apiKey && !this.signingConfig.serviceUrl)) {
+                return null;
+            }
+            if (!EulerSignerClass || typeof EulerSignerClass !== 'function') {
+                this.logDebug('sign.config.custom_signer_unavailable', { reason: 'missing_class' });
+                return null;
+            }
+            const overrides = {};
+            if (this.signingConfig.apiKey) {
+                overrides.apiKey = this.signingConfig.apiKey;
+            }
+            if (this.signingConfig.serviceUrl) {
+                overrides.basePath = this.signingConfig.serviceUrl;
+            }
+            if (!Object.keys(overrides).length) {
+                return null;
+            }
+            try {
+                return new EulerSignerClass(overrides);
+            } catch (error) {
+                console.warn('Failed to instantiate custom Euler signer:', error?.message || error);
+                this.logDebug('sign.config.custom_signer_failed', {
+                    error: error?.message || String(error)
+                });
+                return null;
+            }
         }
 
         initializeConnectionInstance({ forceLegacy = false, context = 'primary' } = {}) {
@@ -2205,7 +2286,16 @@ function resolveFirstImageUrl(candidates = []) {
                 ? ConnectorClass.name
                 : (useLegacyConnector ? 'WebcastPushConnection' : 'TikTokLiveConnection');
 
-            this.connection = new ConnectorClass(this.username, connectionOptions);
+            const customSigner = this.createCustomSigner();
+            if (customSigner) {
+                this.connection = new ConnectorClass(this.username, connectionOptions, customSigner);
+                this.logDebug('sign.config.custom_signer_applied', {
+                    hasApiKey: !!this.signingConfig?.apiKey,
+                    hasServiceUrl: !!this.signingConfig?.serviceUrl
+                });
+            } else {
+                this.connection = new ConnectorClass(this.username, connectionOptions);
+            }
             this.applyResumeCursorToConnection();
             this.applySignRequestTimeout(this.signRequestTimeoutMs);
             this.logDebug('lifecycle.initialize.signTimeoutConfigured', {
@@ -2440,6 +2530,39 @@ function resolveFirstImageUrl(candidates = []) {
             });
             this.applySignRequestTimeout(nextTimeout);
             return true;
+        }
+
+        handleSignServerRejection(primaryError) {
+            this.signServerFailureCount++;
+            const helpMessage = this.getSigningServiceHelpMessage();
+            this.logDebug('sign.error.rejected_session', {
+                message: helpMessage,
+                attempts: this.signServerFailureCount,
+                errorName: primaryError?.name || null,
+                reason: primaryError?.reason || null
+            });
+            this.logConsoleFailure(helpMessage, primaryError instanceof Error ? primaryError : null);
+            try {
+                connectionStates.set(this.wssID, {
+                    isConnected: false,
+                    lastAttempt: Date.now(),
+                    isReconnecting: false,
+                    attemptInProgress: false
+                });
+            } catch (_) { /* noop */ }
+            this.offlineRetry = false;
+            this.offlineReason = null;
+            try {
+                emitStatus({
+                    wssID: this.wssID,
+                    status: 'failed',
+                    error: helpMessage,
+                    signServer: true,
+                    sessionRejected: true
+                });
+            } catch (notifyErr) {
+                console.warn('Failed to send TikTok sign-in rejection status:', notifyErr);
+            }
         }
 
         handleSignServerFailure(primaryError, rawMessage = '', userFacingMessage = '') {
@@ -3467,29 +3590,38 @@ function resolveFirstImageUrl(candidates = []) {
                     return false;
                 }
 
-                if (isSignServerIssue && !this.pollingFallbackActivated) {
-                    const fallbackHandled = await this.tryFallbackToPolling(primaryError, 'connect_sign_error');
-                    if (fallbackHandled) {
+                if (isSignServerIssue) {
+                    if (this.sessionId) {
+                        const fallbackHandled = await this.tryFallbackToPolling(primaryError, 'connect_sign_error_session');
+                        if (fallbackHandled) {
+                            return this.connect();
+                        }
+                        this.handleSignServerRejection(primaryError instanceof Error ? primaryError : err);
+                        return false;
+                    }
+
+                    if (!this.pollingFallbackActivated) {
+                        const fallbackHandled = await this.tryFallbackToPolling(primaryError, 'connect_sign_error');
+                        if (fallbackHandled) {
+                            return this.connect();
+                        }
+                    }
+
+                    if (this.maybeBoostSignRequestTimeout(primaryError, errorMessage)) {
+                        this.logDebug('lifecycle.connect.retryImmediate', {
+                            reason: 'sign_server_timeout',
+                            timeoutMs: this.signRequestTimeoutMs,
+                            maxTimeoutMs: this.signRequestTimeoutMaxMs
+                        });
+
+                        const retryDelay = this.signRequestImmediateRetryDelayMs || 0;
+                        if (retryDelay > 0) {
+                            await ConnectionManager.delay(retryDelay);
+                        }
+
                         return this.connect();
                     }
-                }
 
-                if (isSignServerIssue && this.maybeBoostSignRequestTimeout(primaryError, errorMessage)) {
-                    this.logDebug('lifecycle.connect.retryImmediate', {
-                        reason: 'sign_server_timeout',
-                        timeoutMs: this.signRequestTimeoutMs,
-                        maxTimeoutMs: this.signRequestTimeoutMaxMs
-                    });
-
-                    const retryDelay = this.signRequestImmediateRetryDelayMs || 0;
-                    if (retryDelay > 0) {
-                        await ConnectionManager.delay(retryDelay);
-                    }
-
-                    return this.connect();
-                }
-
-                if (isSignServerIssue) {
                     this.handleSignServerFailure(primaryError instanceof Error ? primaryError : err, errorMessage, userFacingMessage);
                     return false;
                 }
@@ -3569,6 +3701,14 @@ function resolveFirstImageUrl(candidates = []) {
             return trimmed;
         }
 
+        getSigningServiceHelpMessage() {
+            const base = 'Sign in failed. Get an API key to use the Euler signing service';
+            if (SIGNING_SERVICE_HELP_URL) {
+                return `${base}: ${SIGNING_SERVICE_HELP_URL}`;
+            }
+            return `${base}.`;
+        }
+
         isSignServerError(primaryError, rawMessage = '') {
             const reason = typeof primaryError?.reason === 'string'
                 ? primaryError.reason.toLowerCase()
@@ -3609,6 +3749,14 @@ function resolveFirstImageUrl(candidates = []) {
 
             const firstLine = message.split(/\r?\n/).find(line => line.trim().length) || message;
             const normalized = firstLine.toLowerCase();
+
+            const isPremiumError = primaryError && primaryError.name === 'PremiumFeatureError';
+            const isSignRateLimited = primaryError && primaryError.name === 'SignatureRateLimitError';
+            const mentionsPaywall = normalized.includes('payment required') || normalized.includes('premium feature');
+
+            if (this.sessionId && (isPremiumError || isSignRateLimited || mentionsPaywall)) {
+                return this.getSigningServiceHelpMessage();
+            }
 
             if (normalized.includes('unexpected sign server status 524') || normalized.includes('524: a timeout occurred')) {
                 return 'Euler sign server timed out (524). Please try again later or switch TikTok to standard mode.';

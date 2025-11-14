@@ -476,6 +476,43 @@ const cliForcesTikTokClassic = envForcesTikTokClassic;
 let preferTikTokClassic = cliForcesTikTokClassic;
 let lastTikTokMode = 'tiktok-websocket';
 let tikTokClassicSilentUpdate = false;
+const ssappSigningGuideEnv = (typeof process !== 'undefined' && process?.env?.SSAPP_TIKTOK_SIGNING_GUIDE_URL)
+    ? String(process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL).trim()
+    : '';
+const defaultSigningGuideUrl = ssappSigningGuideEnv || 'https://github.com/SocialStreamNinja/ssapp/wiki/TikTok-Signing';
+window.SSAPP_SIGNING_HELP_URL = defaultSigningGuideUrl;
+
+function ssappEscapeHtml(value) {
+    if (value === null || value === undefined) {
+        return '';
+    }
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function ssappNormalizeSigningServiceUrl(rawValue) {
+    if (!rawValue || typeof rawValue !== 'string') {
+        return '';
+    }
+    let value = rawValue.trim();
+    if (!value) {
+        return '';
+    }
+    if (!/^https?:\/\//i.test(value)) {
+        value = `https://${value}`;
+    }
+    try {
+        const parsed = new URL(value);
+        const normalized = `${parsed.protocol}//${parsed.host}`;
+        return normalized.replace(/\/+$/, '');
+    } catch (_) {
+        return value.replace(/\/+$/, '');
+    }
+}
 
 let cachedSsappEnvironment = (window.ssappEnvironment && typeof window.ssappEnvironment.getCached === 'function')
     ? (window.ssappEnvironment.getCached() || null)
@@ -5556,6 +5593,7 @@ async function createTikTokWSSFromSource(source, strategy = 'websocket') {
     try {
         const sessionId = source.tiktokSessionId || null;
         const ttTargetIdc = source.tiktokTtTargetIdc || null;
+        const signing = resolveTikTokSigningConfigForIPC(source);
 
         const wssID = await ipcRenderer.invoke('createTikTokConnection', {
             username: cleanUsername,
@@ -5563,7 +5601,8 @@ async function createTikTokWSSFromSource(source, strategy = 'websocket') {
             ttTargetIdc: ttTargetIdc,
             replyOnly: !!source.replyOnly,
             strategy: strategy,
-            sourceId: source.id
+            sourceId: source.id,
+            signing
         });
 
         if (wssID === null || typeof wssID === 'undefined') {
@@ -5625,6 +5664,41 @@ function showTikTokSignInMenu(sourceId) {
     if (!source) return;
     
     const isAuthenticated = source.tiktokSessionId ? true : false;
+    const signingHelpUrl = typeof window.SSAPP_SIGNING_HELP_URL === 'string' ? window.SSAPP_SIGNING_HELP_URL : '';
+    const existingSigningApiKey = typeof source.tiktokSigningApiKey === 'string' ? source.tiktokSigningApiKey : '';
+    const existingSigningServiceUrl = typeof source.tiktokSigningServiceUrl === 'string' ? source.tiktokSigningServiceUrl : '';
+    const hasCustomSigning = !!(existingSigningApiKey || existingSigningServiceUrl);
+    const apiKeyInputId = `tiktok-signing-api-key-${sourceId}`;
+    const serviceUrlInputId = `tiktok-signing-service-url-${sourceId}`;
+    const signingHelpBlock = signingHelpUrl
+        ? `<p style="margin: 8px 0 0 0; color: #cbd5f5; font-size: 13px;">
+                Need an Euler signing API key?
+                <a href="${signingHelpUrl}" target="_blank" style="color: #93c5fd;">Follow this guide</a> to request and enter the community key.
+            </p>`
+        : '';
+    const signingSettingsBlock = `
+        <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
+            <h4 style="margin: 0 0 10px 0; font-size: 15px;">Euler signing (optional)</h4>
+            <p style="margin: 0 0 12px 0; font-size: 13px; color: #e2e8f0;">
+                Provide your Euler API key and signing service URL to keep TikTok WebSocket mode authenticated even when Euler enforces API limits.
+            </p>
+            <label for="${apiKeyInputId}" style="display: block; font-size: 13px; color: #cbd5f5; margin-bottom: 4px;">API key</label>
+            <input id="${apiKeyInputId}" type="password" autocomplete="off" spellcheck="false" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #f8fafc;" value="${ssappEscapeHtml(existingSigningApiKey)}" placeholder="Euler API key">
+            <small style="display: block; color: #94a3b8; margin: 4px 0 12px 0;">Stored locally on this device.</small>
+            <label for="${serviceUrlInputId}" style="display: block; font-size: 13px; color: #cbd5f5; margin-bottom: 4px;">Signing service URL</label>
+            <input id="${serviceUrlInputId}" type="text" autocomplete="off" spellcheck="false" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #f8fafc;" value="${ssappEscapeHtml(existingSigningServiceUrl)}" placeholder="https://tiktok.eulerstream.com">
+            ${signingHelpBlock}
+            <div style="display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;">
+                <button onclick="saveTikTokSigningConfig('${sourceId}')" class="button" style="background: #2563eb;">
+                    💾 Save signing settings
+                </button>
+                ${hasCustomSigning ? `
+                    <button onclick="clearTikTokSigningConfig('${sourceId}')" class="button" style="background: #475569;">
+                        ♻️ Clear signing settings
+                    </button>` : ''}
+            </div>
+        </div>
+    `;
     
     let menuContent = `
         <div style="padding: 20px; background: #2a2a2a; border-radius: 8px;">
@@ -5657,6 +5731,7 @@ function showTikTokSignInMenu(sourceId) {
                     Only the <code>sessionid</code> cookie is required to send chat replies. The <code>tt-target-idc</code> cookie is optional but can improve routing.
                 </p>
             </div>
+            ${signingSettingsBlock}
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                 <button onclick="tiktokSignIn('${sourceId}')" class="button" style="background: #6366f1;">
                     🌐 Sign in with Browser
@@ -5798,6 +5873,58 @@ async function tiktokManualSignIn(sourceId) {
         console.error('TikTok manual sign-in error:', error);
         Toast.error("TikTok Sign-in", error.message || "Failed to add credentials");
     }
+}
+
+function saveTikTokSigningConfig(sourceId) {
+    if (!stateManager) return;
+    const source = stateManager.getSource(sourceId);
+    if (!source) return;
+    const apiKeyInput = document.getElementById(`tiktok-signing-api-key-${sourceId}`);
+    const serviceUrlInput = document.getElementById(`tiktok-signing-service-url-${sourceId}`);
+    const apiKeyValue = typeof apiKeyInput?.value === 'string' ? apiKeyInput.value.trim() : '';
+    const rawServiceUrl = typeof serviceUrlInput?.value === 'string' ? serviceUrlInput.value.trim() : '';
+    const normalizedServiceUrl = ssappNormalizeSigningServiceUrl(rawServiceUrl);
+    stateManager.updateSource(sourceId, {
+        tiktokSigningApiKey: apiKeyValue || null,
+        tiktokSigningServiceUrl: normalizedServiceUrl || null
+    });
+    Toast.success("TikTok Signing", "Signing settings saved.");
+}
+
+function clearTikTokSigningConfig(sourceId) {
+    if (!stateManager) return;
+    const source = stateManager.getSource(sourceId);
+    if (!source) return;
+    stateManager.updateSource(sourceId, {
+        tiktokSigningApiKey: null,
+        tiktokSigningServiceUrl: null
+    });
+    const apiKeyInput = document.getElementById(`tiktok-signing-api-key-${sourceId}`);
+    const serviceUrlInput = document.getElementById(`tiktok-signing-service-url-${sourceId}`);
+    if (apiKeyInput) {
+        apiKeyInput.value = '';
+    }
+    if (serviceUrlInput) {
+        serviceUrlInput.value = '';
+    }
+    Toast.info("TikTok Signing", "Signing settings cleared.");
+}
+
+function resolveTikTokSigningConfigForIPC(source) {
+    if (!source || source.target !== 'tiktok') {
+        return null;
+    }
+    const apiKey = typeof source.tiktokSigningApiKey === 'string' ? source.tiktokSigningApiKey.trim() : '';
+    const serviceUrlRaw = typeof source.tiktokSigningServiceUrl === 'string' ? source.tiktokSigningServiceUrl.trim() : '';
+    const normalizedServiceUrl = ssappNormalizeSigningServiceUrl(serviceUrlRaw);
+    const payload = {};
+    if (apiKey) {
+        payload.apiKey = apiKey;
+    }
+    if (normalizedServiceUrl) {
+        payload.serviceUrl = normalizedServiceUrl;
+    }
+    return Object.keys(payload).length ? payload : null;
 }
 
 function cleanupTikTokConnection(entry, errorMessage = null) {
@@ -7403,18 +7530,39 @@ document.addEventListener('DOMContentLoaded', async function() {
                     }
                     break;
                 case 'failed':
-                    stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection failed', vid: null, tiktokFallbackMode: null });
-                    if (entryElement) {
-                        if (entryElement._tiktokRetryEndAt) {
-                            const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
-                            const secs = Math.ceil(remainingMs / 1000);
-                            const attemptInfo = entryElement._tiktokRetryAttempt ? ` (attempt ${entryElement._tiktokRetryAttempt}${entryElement._tiktokRetryMax ? '/' + entryElement._tiktokRetryMax : ''})` : '';
-                            const msg = `${data.error || 'Connection failed'} - retrying in ${secs}s...${attemptInfo}`;
-                            updateConnectionStatus(entryElement, 'retry', msg);
-                            setConnectingStopUI();
-                        } else {
-                            updateConnectionStatus(entryElement, 'error', data.error || 'Connection failed');
-                            restoreActivateUI();
+                    {
+                        const isSigningIssue = data.sessionRejected === true;
+                        if (isSigningIssue && entryElement) {
+                            if (entryElement._tiktokRetryTimer) {
+                                clearInterval(entryElement._tiktokRetryTimer);
+                                entryElement._tiktokRetryTimer = null;
+                            }
+                            entryElement._tiktokRetryEndAt = null;
+                            entryElement._tiktokRetryAttempt = null;
+                            entryElement._tiktokRetryMax = null;
+                        }
+                        const defaultMessage = isSigningIssue
+                            ? 'TikTok sign-in failed. Provide your Euler API key.'
+                            : 'Connection failed';
+                        const errorMessage = data.error || defaultMessage;
+                        stateManager.updateSource(sourceId, { status: 'error', error: errorMessage, vid: null, tiktokFallbackMode: null });
+                        if (entryElement) {
+                            if (!isSigningIssue && entryElement._tiktokRetryEndAt) {
+                                const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
+                                const secs = Math.ceil(remainingMs / 1000);
+                                const attemptInfo = entryElement._tiktokRetryAttempt ? ` (attempt ${entryElement._tiktokRetryAttempt}${entryElement._tiktokRetryMax ? '/' + entryElement._tiktokRetryMax : ''})` : '';
+                                const msg = `${errorMessage} - retrying in ${secs}s...${attemptInfo}`;
+                                updateConnectionStatus(entryElement, 'retry', msg);
+                                setConnectingStopUI();
+                            } else {
+                                updateConnectionStatus(entryElement, 'error', errorMessage);
+                                restoreActivateUI();
+                            }
+                        }
+                        if (isSigningIssue) {
+                            const guide = typeof window.SSAPP_SIGNING_HELP_URL === 'string' ? window.SSAPP_SIGNING_HELP_URL : '';
+                            const toastMessage = guide ? `${errorMessage} Visit ${guide} for setup steps.` : errorMessage;
+                            Toast.warning('TikTok Signing', toastMessage);
                         }
                     }
                     break;

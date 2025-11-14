@@ -6858,7 +6858,42 @@ ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
         process.env.SSAPP_FORCE_TIKTOK_CLASSIC = next ? '1' : '0';
     });
 
-    ipcMain.handle("createTikTokConnection", async function(_event, args) {
+function normalizeTikTokSigningServiceUrl(rawValue) {
+    if (!rawValue || typeof rawValue !== 'string') {
+        return null;
+    }
+    let value = rawValue.trim();
+    if (!value) {
+        return null;
+    }
+    if (!/^https?:\/\//i.test(value)) {
+        value = `https://${value}`;
+    }
+    try {
+        const parsed = new URL(value);
+        return `${parsed.protocol}//${parsed.host}`.replace(/\/+$/, '');
+    } catch (_) {
+        return value.replace(/\/+$/, '');
+    }
+}
+
+function normalizeTikTokSigningArgs(input) {
+    if (!input || typeof input !== 'object') {
+        return null;
+    }
+    const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
+    const serviceUrl = normalizeTikTokSigningServiceUrl(typeof input.serviceUrl === 'string' ? input.serviceUrl : '');
+    const payload = {};
+    if (apiKey) {
+        payload.apiKey = apiKey;
+    }
+    if (serviceUrl) {
+        payload.serviceUrl = serviceUrl;
+    }
+    return Object.keys(payload).length ? payload : null;
+}
+
+ipcMain.handle("createTikTokConnection", async function(_event, args) {
         if (runtimeForceTikTokClassic) {
             console.info('[TikTok] Skipping WebSocket connection - classic mode is forced.');
             const fallbackError = new Error('SSAPP_TIKTOK_FORCED_CLASSIC: TikTok WebSocket disabled by classic mode preference');
@@ -6903,6 +6938,7 @@ ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
         const rawTtTargetIdc = typeof args.ttTargetIdc === 'string' ? args.ttTargetIdc.trim() : '';
         const sessionId = rawSessionId || null;
         const ttTargetIdc = rawTtTargetIdc || null;
+        const signing = normalizeTikTokSigningArgs(args?.signing);
 
         const requestedStrategy = args && args.strategy === 'legacy' ? 'legacy' : 'websocket';
         const manager = new ConnectionManager(
@@ -6910,7 +6946,7 @@ ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
             wssID,
             sessionId,
             ttTargetIdc,
-            { forceLegacyConnector: requestedStrategy === 'legacy' }
+            { forceLegacyConnector: requestedStrategy === 'legacy', signing }
         );
         if (args && args.replyOnly === true) {
             manager.replyOnly = true;

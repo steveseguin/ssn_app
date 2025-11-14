@@ -56,17 +56,23 @@ class StateManager {
                     this.state.sources = new Map(parsed.sources);
                     // Add supportsWSS to existing sources if missing
                     this.state.sources.forEach((source, id) => {
-                        if (source.supportsWSS === undefined) {
-                            source.supportsWSS = this.checkWebSocketSupport(source.target);
-                        }
-                        if (source.activeConnectionMode === undefined) {
-                            source.activeConnectionMode = null;
-                        }
-                        if (source.disableTikTokAutoFallback === undefined) {
-                            source.disableTikTokAutoFallback = false;
-                        }
-                    });
+                if (source.supportsWSS === undefined) {
+                    source.supportsWSS = this.checkWebSocketSupport(source.target);
                 }
+                if (source.activeConnectionMode === undefined) {
+                    source.activeConnectionMode = null;
+                }
+                if (source.disableTikTokAutoFallback === undefined) {
+                    source.disableTikTokAutoFallback = false;
+                }
+                if (source.tiktokSigningApiKey === undefined) {
+                    source.tiktokSigningApiKey = null;
+                }
+                if (source.tiktokSigningServiceUrl === undefined) {
+                    source.tiktokSigningServiceUrl = null;
+                }
+            });
+        }
                 if (parsed.groups) {
                     this.state.groups = new Map(parsed.groups);
                 }
@@ -384,6 +390,12 @@ class StateManager {
         }
         if (source.disableTikTokAutoFallback === undefined) {
             source.disableTikTokAutoFallback = false;
+        }
+        if (source.tiktokSigningApiKey === undefined) {
+            source.tiktokSigningApiKey = null;
+        }
+        if (source.tiktokSigningServiceUrl === undefined) {
+            source.tiktokSigningServiceUrl = null;
         }
 
         this.applyRememberedSessionToSource(source);
