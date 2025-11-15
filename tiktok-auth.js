@@ -29,7 +29,7 @@ class TikTokAuth {
         width: 500,
         height: 700,
         parent: this.mainWindow,
-        modal: true,
+        modal: false,
         webPreferences: {
           nodeIntegration: false,
           contextIsolation: true,
@@ -67,9 +67,6 @@ class TikTokAuth {
             if (sessionId) {
               resolved = true;
               resolve({ sessionId, ttTargetIdc: ttTargetIdc || null });
-              if (this.authWindow && !this.authWindow.isDestroyed()) {
-                this.authWindow.close();
-              }
             }
           } catch (error) {
             console.error('Error getting cookies:', error);
@@ -154,3 +151,4 @@ class TikTokAuth {
 }
 
 module.exports = TikTokAuth;
+module.exports.AUTH_PARTITION = AUTH_PARTITION;

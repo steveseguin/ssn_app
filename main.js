@@ -40,7 +40,15 @@ const Yargs = require("yargs");
 
 
 const fetch = require("electron-fetch").default;
-const TikTokAuth = require('./tiktok-auth');
+const TikTokAuthModule = require('./tiktok-auth');
+const TikTokAuth = TikTokAuthModule;
+const TIKTOK_AUTH_PARTITION = TikTokAuthModule.AUTH_PARTITION || 'persist:tiktok-auth';
+let tikTokSignerHelper = null;
+try {
+    tikTokSignerHelper = require('./tiktok-signing/electron-signer');
+} catch (error) {
+    console.warn('[TikTok] Signing helper unavailable:', error && error.message ? error.message : error);
+}
 const { setupWebSocketMonitor } = require('./websocket-monitor');
 const youTubeGrpcStreamManager = require('./youtube-grpc-client');
 const {
@@ -146,6 +154,8 @@ let sendBatchToBackground = () => {};
 let logTikTokForwardedMessage = () => {};
 let sendToTikTok = () => {};
 let wssID = 0;
+let tiktokSigningWindow = null;
+let detachSigningWindowHook = null;
 // Track websocket connections globally for cleanup
 const websocketConnections = {};
 
@@ -2398,6 +2408,35 @@ function handleZoom(window) {
 // Handler to get the injected script flag
 ipcMain.handle('get-injected-script-flag', () => {
     return INJECTED_SCRIPT_FLAG;
+});
+
+ipcMain.handle('ssapp:choose-ticker-file', async (_event, options = {}) => {
+    try {
+        const dialogOpts = {
+            title: options.title || 'Select ticker source file',
+            properties: ['openFile'],
+            filters: Array.isArray(options.filters) && options.filters.length
+                ? options.filters
+                : [
+                    { name: 'Text Files', extensions: ['txt', 'csv', 'md'] },
+                    { name: 'All Files', extensions: ['*'] }
+                ]
+        };
+        const result = await dialog.showOpenDialog(dialogOpts);
+        if (result.canceled || !result.filePaths || !result.filePaths.length) {
+            return { canceled: true };
+        }
+        return {
+            canceled: false,
+            filePath: result.filePaths[0]
+        };
+    } catch (error) {
+        console.error('[SSAPP] Failed to open ticker file dialog:', error);
+        return {
+            canceled: true,
+            error: error?.message || 'Unable to open file picker'
+        };
+    }
 });
 
 ipcMain.handle("show-save-dialog", async (event, opts) => {
@@ -6877,6 +6916,85 @@ function normalizeTikTokSigningServiceUrl(rawValue) {
     }
 }
 
+const DEFAULT_TIKTOK_SIGNING_URL = 'https://www.tiktok.com/';
+
+function normalizeTikTokLandingUrl(rawValue) {
+    if (!rawValue || typeof rawValue !== 'string') {
+        return DEFAULT_TIKTOK_SIGNING_URL;
+    }
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+        return DEFAULT_TIKTOK_SIGNING_URL;
+    }
+    try {
+        return new URL(trimmed).toString();
+    } catch (_) {
+        try {
+            return new URL(trimmed, DEFAULT_TIKTOK_SIGNING_URL).toString();
+        } catch (__error) {
+            return DEFAULT_TIKTOK_SIGNING_URL;
+        }
+    }
+}
+
+function attachSigningWindow(win) {
+    if (!win || win.isDestroyed()) {
+        return;
+    }
+    if (detachSigningWindowHook && typeof detachSigningWindowHook === 'function') {
+        try {
+            detachSigningWindowHook();
+        } catch (_) {}
+        detachSigningWindowHook = null;
+    }
+    const handleClosed = () => {
+        if (tiktokSigningWindow === win) {
+            tiktokSigningWindow = null;
+        }
+    };
+    win.once('closed', handleClosed);
+    detachSigningWindowHook = () => {
+        try {
+            win.removeListener('closed', handleClosed);
+        } catch (_) {}
+    };
+}
+
+async function ensureTikTokSigningWindow(targetUrl) {
+    const landingUrl = normalizeTikTokLandingUrl(targetUrl);
+    if (!tiktokSigningWindow || tiktokSigningWindow.isDestroyed()) {
+        tiktokSigningWindow = new BrowserWindow({
+            show: true,
+            width: 1100,
+            height: 720,
+            webPreferences: {
+                nodeIntegration: false,
+                contextIsolation: true,
+                partition: TIKTOK_AUTH_PARTITION
+            }
+        });
+        try {
+            tiktokSigningWindow.setMenuBarVisibility(false);
+        } catch (_) {}
+        attachSigningWindow(tiktokSigningWindow);
+        await tiktokSigningWindow.loadURL(landingUrl);
+    } else if (typeof targetUrl === 'string' && targetUrl.trim()) {
+        await tiktokSigningWindow.loadURL(landingUrl);
+    }
+    try {
+        tiktokSigningWindow.show();
+        tiktokSigningWindow.focus();
+    } catch (_) {}
+    return tiktokSigningWindow;
+}
+
+function disposeTikTokSigningWindow() {
+    if (tiktokSigningWindow && !tiktokSigningWindow.isDestroyed()) {
+        tiktokSigningWindow.destroy();
+    }
+    tiktokSigningWindow = null;
+}
+
 function normalizeTikTokSigningArgs(input) {
     if (!input || typeof input !== 'object') {
         return null;
@@ -7054,6 +7172,14 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
         try {
             const auth = new TikTokAuth(mainWindow);
             const credentials = await auth.authenticate();
+            if (auth.authWindow && !auth.authWindow.isDestroyed()) {
+                tiktokSigningWindow = auth.authWindow;
+                attachSigningWindow(tiktokSigningWindow);
+                try {
+                    tiktokSigningWindow.show();
+                    tiktokSigningWindow.focus();
+                } catch (_) {}
+            }
             return {
                 success: true,
                 credentials
@@ -7063,6 +7189,19 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
             return {
                 success: false,
                 error: error.message
+            };
+        }
+    });
+
+    ipcMain.handle("tiktokShowSigningWindow", async () => {
+        try {
+            await ensureTikTokSigningWindow();
+            return { success: true };
+        } catch (error) {
+            console.error('[TikTok] Failed to show signing window:', error);
+            return {
+                success: false,
+                error: error && error.message ? error.message : 'Unable to show the TikTok window.'
             };
         }
     });
@@ -7104,6 +7243,75 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
             return {
                 success: false,
                 error: error.message
+            };
+        }
+    });
+
+    ipcMain.handle("tiktokGenerateSigningParameters", async (_event, args = {}) => {
+        if (!tikTokSignerHelper || typeof tikTokSignerHelper.injectCrawlerBundle !== 'function' || typeof tikTokSignerHelper.generateSigningParameters !== 'function') {
+            return {
+                success: false,
+                error: 'TikTok signing helper is not available in this build.'
+            };
+        }
+
+        const {
+            pathWithQuery,
+            urlToSign,
+            landingUrl,
+            browserName,
+            browserVersion,
+            userAgent,
+            msToken,
+            deviceId
+        } = args;
+
+        const resolvedLanding = typeof landingUrl === 'string' && landingUrl.trim()
+            ? landingUrl.trim()
+            : DEFAULT_TIKTOK_SIGNING_URL;
+
+        try {
+            const signingWindow = await ensureTikTokSigningWindow(resolvedLanding);
+            await tikTokSignerHelper.injectCrawlerBundle(signingWindow);
+            const parameters = await tikTokSignerHelper.generateSigningParameters(signingWindow, {
+                browserName: typeof browserName === 'string' && browserName.trim() ? browserName.trim() : 'Electron',
+                browserVersion: typeof browserVersion === 'string' && browserVersion.trim() ? browserVersion.trim() : process.versions.electron,
+                userAgent: typeof userAgent === 'string' && userAgent.trim() ? userAgent.trim() : signingWindow.webContents.getUserAgent(),
+                pathWithQuery: typeof pathWithQuery === 'string' && pathWithQuery.trim() ? pathWithQuery.trim() : null,
+                urlToSign: typeof urlToSign === 'string' && urlToSign.trim() ? urlToSign.trim() : null,
+                msToken: typeof msToken === 'string' && msToken.trim() ? msToken.trim() : null,
+                deviceId: typeof deviceId === 'string' && deviceId.trim() ? deviceId.trim() : undefined
+            });
+            const sanitized = {
+                device_id: parameters?.device_id || null,
+                msToken: parameters?.msToken || '',
+                "X-Bogus": parameters?.["X-Bogus"] || '',
+                "X-Gnarly": parameters?.["X-Gnarly"] || '',
+                browserName: parameters?.browserName || 'Electron',
+                browserVersion: parameters?.browserVersion || process.versions.electron,
+                userAgent: parameters?.userAgent || signingWindow.webContents.getUserAgent(),
+                pathWithQuery: parameters?.pathWithQuery || (typeof pathWithQuery === 'string' ? pathWithQuery : null)
+            };
+            const warnings = [];
+            if (!sanitized.msToken) {
+                warnings.push('msToken cookie not found. Stay signed into TikTok in the helper window and reload the live room.');
+            }
+            if (!sanitized["X-Bogus"]) {
+                warnings.push('X-Bogus signature is empty. Ensure the helper window is on the same path or API URL you plan to call.');
+            }
+            if (!sanitized["X-Gnarly"]) {
+                warnings.push('X-Gnarly signature was not returned. TikTok sometimes omits it, but double-check before relying on this payload.');
+            }
+            return {
+                success: true,
+                parameters: sanitized,
+                warnings
+            };
+        } catch (error) {
+            console.error('Failed to generate TikTok signing parameters:', error?.stack || error);
+            return {
+                success: false,
+                error: error && error.message ? error.message : 'Failed to generate signing parameters.'
             };
         }
     });
@@ -8592,6 +8800,13 @@ app.on("before-quit", (event) => {
     }
     if (tray) {
         tray.destroy();
+    }
+    if (typeof disposeTikTokSigningWindow === 'function') {
+        try {
+            disposeTikTokSigningWindow();
+        } catch (error) {
+            console.warn('[TikTok] Failed to dispose signing window during quit:', error);
+        }
     }
 });
 
