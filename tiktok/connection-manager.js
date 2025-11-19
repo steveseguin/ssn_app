@@ -13,6 +13,13 @@ const {
 } = require('../tiktok-badges');
 const giftMapping = require('./gift-mapping.json');
 
+let connectorDeserializeMessage = null;
+try {
+    ({ deserializeMessage: connectorDeserializeMessage } = require('tiktok-live-connector/dist/lib/utilities'));
+} catch (_) {
+    connectorDeserializeMessage = null;
+}
+
 let SendRoomChatRoute = null;
 try {
     ({ SendRoomChatRoute } = require('tiktok-live-connector/dist/lib/web/routes/send-room-chat.js'));
@@ -55,6 +62,7 @@ let TikTokPollingFallbackClass = null;
 let usingLegacyTikTokConnector = false;
 let EulerSignerClass = null;
 const SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD = 3;
+const DEFAULT_TIKTOK_WEB_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 function log(...args) {
     try {
@@ -615,8 +623,11 @@ function createTikTokEnvironment(options = {}) {
         websocketConnections = null,
         log: logFn = null,
         onEvent: onEventOverride = () => { },
-        signerHelper: signerHelperOverride = null
+        signerHelper: signerHelperOverride = null,
+        localSigner: localSignerOverride = null
     } = options;
+
+    env.localSigner = localSignerOverride;
 
     TikTokPollingFallbackClass = null;
     TikTokLiveConnectionClass = null;
@@ -2117,6 +2128,7 @@ class ConnectionManager {
         this.warnedMissingTtTargetIdc = false;
         this.signingConfig = normalizeSigningConfig(signing);
         this.signingProvider = options.signingProvider || 'auto';
+        this.localSigner = env.localSigner || null;
         this.signServerFailureCount = 0;
         this.signRequestTimeoutMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_MS || 25000;
         this.signRequestTimeoutBaseMs = this.signRequestTimeoutMs;
@@ -2235,13 +2247,288 @@ class ConnectionManager {
             wsClientParams: { ...clientParams },
             clientParams: { ...clientParams }
         };
-        if (this.signingConfig?.apiKey) {
+        const usingLocalSigner = this.shouldUseLocalSigner();
+        if (this.signingConfig?.apiKey && !usingLocalSigner && this.signingProvider !== 'local') {
             options.signApiKey = this.signingConfig.apiKey;
         }
+
+        const localProvider = usingLocalSigner
+            ? this.createLocalSignedWebSocketProvider()
+            : null;
+        if (localProvider) {
+            options.signedWebSocketProvider = localProvider;
+        }
+
         return options;
     }
 
+    shouldUseLocalSigner() {
+        if (!this.localSigner || typeof this.localSigner.sign !== 'function') {
+            return false;
+        }
+        if (this.signingProvider === 'local') {
+            return true;
+        }
+        return this.signingProvider === 'auto' && !this.signingConfig;
+    }
+
+    createLocalSignedWebSocketProvider() {
+        if (!this.shouldUseLocalSigner()) {
+            return null;
+        }
+        return async (requestPayload = {}) => {
+            return this.fetchSignedWebSocketViaLocalSigner(requestPayload);
+        };
+    }
+
+    async fetchSignedWebSocketViaLocalSigner(requestPayload = {}) {
+        if (!this.localSigner || typeof this.localSigner.sign !== 'function') {
+            throw new Error('Local signer unavailable for TikTok connection.');
+        }
+        const targetRoomId = requestPayload.roomId || this.connection?.clientParams?.room_id || this.connection?.roomId || null;
+        const uniqueId = requestPayload.uniqueId || this.username;
+        const signOptions = {
+            roomId: targetRoomId,
+            uniqueId,
+            sessionId: this.sessionId || undefined,
+            ttTargetIdc: this.ttTargetIdc || undefined,
+            activeUrl: `https://www.tiktok.com/@${uniqueId || this.username}/live`,
+            landingUrl: `https://www.tiktok.com/@${uniqueId || this.username}/live`,
+            performFetch: true
+        };
+
+        let signerPayload;
+        try {
+            signerPayload = await this.localSigner.sign('https://webcast.tiktok.com/webcast/im/fetch/', signOptions);
+        } catch (error) {
+            console.error('[TikTok] Local signer invocation failed:', error);
+            throw error;
+        }
+
+        if (!signerPayload || typeof signerPayload !== 'object') {
+            throw new Error('Local signer returned an invalid payload.');
+        }
+
+        // Update credentials immediately so we persist the session even if we return early
+        this.updateSessionCredentialsFromSigner(signerPayload);
+
+        // If we have a fetch result from the window, use it
+        if (signerPayload.fetchResult && signerPayload.fetchResult.bodyBase64) {
+            try {
+                console.log('[TikTok] Received fetch result from local signer. Status:', signerPayload.fetchResult.status);
+
+                if (signerPayload.fetchResult.status !== 200) {
+                    throw new Error(`Fetch failed with status ${signerPayload.fetchResult.status}: ${signerPayload.fetchResult.statusText}`);
+                }
+
+                const bytes = Buffer.from(signerPayload.fetchResult.bodyBase64, 'base64');
+                console.log('[TikTok] Body length:', bytes.length);
+
+                if (typeof connectorDeserializeMessage === 'function') {
+                    try {
+                        return connectorDeserializeMessage('ProtoMessageFetchResult', bytes);
+                    } catch (decodeError) {
+                        console.warn('[TikTok] Failed to decode fetch result via connector utilities:', decodeError?.message || decodeError);
+                    }
+                }
+
+                // Helper to find property recursively
+                const findProperty = (obj, key, depth = 0, maxDepth = 3, visited = new Set()) => {
+                    if (!obj || depth > maxDepth || visited.has(obj)) return null;
+                    visited.add(obj);
+
+                    if (obj[key]) return obj[key];
+
+                    // Check prototype
+                    const proto = Object.getPrototypeOf(obj);
+                    if (proto && proto !== Object.prototype) {
+                        const found = findProperty(proto, key, depth + 1, maxDepth, visited);
+                        if (found) return found;
+                    }
+
+                    // Check properties
+                    for (const prop of Object.keys(obj)) {
+                        if (typeof obj[prop] === 'object' && obj[prop] !== null) {
+                            const found = findProperty(obj[prop], key, depth + 1, maxDepth, visited);
+                            if (found) return found;
+                        }
+                    }
+                    return null;
+                };
+
+                // Try to find 'protobuf' or 'deserializeMessage'
+                let protobufHandler = this.connection?.webClient?.protobuf || this.connection?.protobuf;
+
+                if (!protobufHandler) {
+                    // Try deep search for 'protobuf'
+                    protobufHandler = findProperty(this.connection, 'protobuf');
+                }
+
+                if (protobufHandler && typeof protobufHandler.deserializeMessage === 'function') {
+                    return protobufHandler.deserializeMessage('ProtoMessageFetchResult', bytes);
+                }
+
+                // Try to find 'deserializeMessage' directly
+                const deserializer = findProperty(this.connection, 'deserializeMessage');
+                if (typeof deserializer === 'function') {
+                    // We need to bind it to the correct context? 
+                    // Or maybe it's a method on webClient?
+                    // If found on webClient prototype, call it on webClient
+                    if (typeof this.connection.webClient.deserializeMessage === 'function') {
+                        return this.connection.webClient.deserializeMessage('ProtoMessageFetchResult', bytes);
+                    }
+                }
+
+                // Try requiring internal modules
+                try {
+                    const { TikTokHttpClient } = require('tiktok-live-connector/dist/lib/web/lib/http-client');
+                    if (TikTokHttpClient && TikTokHttpClient.prototype.deserializeMessage) {
+                        console.log('[TikTok] Found deserializeMessage on TikTokHttpClient prototype');
+                        // Call it using our webClient instance
+                        return TikTokHttpClient.prototype.deserializeMessage.call(this.connection.webClient, 'ProtoMessageFetchResult', bytes);
+                    }
+                } catch (e) {
+                    console.error('[TikTok] Failed to require TikTokHttpClient:', e);
+                }
+
+                console.error('[TikTok] Could not find protobuf handler.');
+                throw new Error('Could not find deserialization method on webClient');
+            } catch (err) {
+                console.error('[TikTok] Failed to deserialize fetch result from local signer:', err);
+                // If deserialization fails, we might want to fall through to manual fetch, 
+                // but manual fetch is likely to fail too. 
+                // However, if the error is just "deserialization failed", maybe the manual fetch 
+                // (which uses the library's internal method) might work if it does something special?
+                // But we know manual fetch fails with 403.
+                // So we should probably throw here.
+                throw err;
+            }
+        } else {
+            console.warn('[TikTok] No fetchResult in signer payload. performFetch was requested.');
+            if (signerPayload.fetchError) {
+                console.error('[TikTok] Signer reported fetch error:', signerPayload.fetchError);
+            }
+        }
+
+        if (!signerPayload.pathWithQuery || typeof signerPayload.pathWithQuery !== 'string') {
+            throw new Error('Local signer payload missing path/query information. Make sure the signing window is on a live room.');
+        }
+
+        const { params } = this.parseSignedFetchParams(signerPayload.pathWithQuery, targetRoomId);
+        const headers = this.buildLocalSignerHeaders(signerPayload);
+
+        try {
+            // Fallback to manual fetch if performFetch failed or wasn't supported (though it should be now)
+            return await this.connection.webClient.getDeserializedObjectFromWebcastApi(
+                'im/fetch/',
+                params,
+                'ProtoMessageFetchResult',
+                false,
+                { headers }
+            );
+        } catch (error) {
+            console.error('[TikTok] Failed to fetch signed WebSocket payload via local signer:', error);
+            throw error;
+        }
+    }
+
+    updateSessionCredentialsFromSigner(payload) {
+        const nextSessionId = payload?.sessionid || payload?.session_id || null;
+        const nextTtTargetIdc = payload?.tt_target_idc || payload?.ttTargetIdc || null;
+        if (nextSessionId && !this.sessionId) {
+            this.sessionId = nextSessionId;
+            if (this.connection && this.connection.options) {
+                this.connection.options.sessionId = nextSessionId;
+            }
+        }
+        if (nextTtTargetIdc && !this.ttTargetIdc) {
+            this.ttTargetIdc = nextTtTargetIdc;
+            if (this.connection && this.connection.options) {
+                this.connection.options.ttTargetIdc = nextTtTargetIdc;
+            }
+        }
+        if (this.connection && this.connection.webClient && typeof this.connection.webClient.cookieJar?.setSession === 'function') {
+            const sessionToStore = this.sessionId || nextSessionId || null;
+            const ttTargetToStore = this.ttTargetIdc || nextTtTargetIdc || null;
+            if (sessionToStore) {
+                try {
+                    this.connection.webClient.cookieJar.setSession(sessionToStore, ttTargetToStore);
+                } catch (_) {
+                    // ignore cookie jar errors
+                }
+            }
+        }
+    }
+
+    parseSignedFetchParams(pathWithQuery, fallbackRoomId) {
+        let parsed;
+        try {
+            parsed = new URL(pathWithQuery, 'https://webcast.tiktok.com');
+        } catch (_) {
+            throw new Error('Local signer returned malformed fetch URL.');
+        }
+        const params = {};
+        for (const [key, value] of parsed.searchParams.entries()) {
+            params[key] = value;
+        }
+        if (!params.room_id && fallbackRoomId) {
+            params.room_id = String(fallbackRoomId);
+        }
+        if (!params.resp_content_type) {
+            params.resp_content_type = 'protobuf';
+        }
+        return { params, pathname: parsed.pathname };
+    }
+
+    buildLocalSignerHeaders(payload) {
+        const headers = {};
+        const userAgent = payload?.userAgent
+            || payload?.user_agent
+            || this.connection?.webClient?.clientParams?.user_agent
+            || DEFAULT_TIKTOK_WEB_USER_AGENT;
+        headers['User-Agent'] = userAgent;
+        const referer = payload?.referer || payload?.activeUrl || `https://www.tiktok.com/@${this.username}/live`;
+        headers['Referer'] = referer;
+        try {
+            const refererUrl = new URL(referer);
+            headers['Origin'] = `${refererUrl.protocol}//${refererUrl.host}`;
+        } catch {
+            headers['Origin'] = 'https://www.tiktok.com';
+        }
+        const cookieHeader = this.buildLocalSignerCookieHeader(payload);
+        if (cookieHeader) {
+            headers['Cookie'] = cookieHeader;
+        }
+        return headers;
+    }
+
+    buildLocalSignerCookieHeader(payload) {
+        if (payload?.allCookies && typeof payload.allCookies === 'string') {
+            const trimmed = payload.allCookies.trim();
+            if (trimmed) {
+                return trimmed;
+            }
+        }
+        const cookies = [];
+        const msToken = payload?.msToken || payload?.ms_token;
+        const sessionId = payload?.sessionid || payload?.session_id;
+        const ttTargetIdc = payload?.tt_target_idc || payload?.ttTargetIdc;
+        if (msToken) {
+            cookies.push(`msToken=${msToken}`);
+        }
+        if (sessionId) {
+            cookies.push(`sessionid=${sessionId}`);
+        }
+        if (ttTargetIdc) {
+            cookies.push(`tt_target_idc=${ttTargetIdc}`);
+        }
+        return cookies.length ? cookies.join('; ') : null;
+    }
+
     createCustomSigner() {
+        if (this.signingProvider === 'local') {
+            return null;
+        }
         if (!this.signingConfig || (!this.signingConfig.apiKey && !this.signingConfig.serviceUrl)) {
             return null;
         }
@@ -3569,30 +3856,13 @@ class ConnectionManager {
                     });
                 } catch (_) { /* renderer may be gone */ }
 
-                // Setup signedWebSocketProvider if we have a local signer helper and no explicit signing config
-                // This allows us to use the local electron-signer without an external URL
-                // Determine signing strategy
+                // Determine signing strategy for logging/cleanup
                 const isLocalSignerExplicit = this.signingProvider === 'local';
                 const isAuto = this.signingProvider === 'auto';
                 const isCustom = this.signingProvider === 'custom';
 
-                // If we have a signer helper and:
-                // 1. Local is explicitly requested OR
-                // 2. Auto is requested AND we don't have a custom signing config (API key)
-                // Then use the local signer.
-                if (this.signerHelper && (isLocalSignerExplicit || (isAuto && !this.signingConfig))) {
-                    if (!this.connection.signedWebSocketProvider) {
-                        this.logDebug('lifecycle.connect.setup_signer', { provider: 'local' });
-                        this.connection.signedWebSocketProvider = async (url, params) => {
-                            try {
-                                const signedParams = await this.signerHelper.signWebcastRequest(url, params, this.wssID);
-                                return signedParams;
-                            } catch (err) {
-                                console.error('[TikTok] Local signing failed:', err);
-                                throw err;
-                            }
-                        };
-                    }
+                if (this.shouldUseLocalSigner()) {
+                    this.logDebug('lifecycle.connect.setup_signer', { provider: 'local' });
                 } else if (isCustom || (isAuto && this.signingConfig)) {
                     if (isCustom && this.connection.signedWebSocketProvider) {
                         this.connection.signedWebSocketProvider = null;

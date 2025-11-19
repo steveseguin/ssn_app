@@ -5717,8 +5717,16 @@
             await waitForNextRender();
 
             try {
-                const sessionId = source.tiktokSessionId || null;
+                let sessionId = source.tiktokSessionId || null;
                 const ttTargetIdc = source.tiktokTtTargetIdc || null;
+
+                // Safety check: If sessionId is present but ttTargetIdc is missing, we must not send sessionId
+                // or the connector will crash. We should warn the user.
+                if (sessionId && !ttTargetIdc) {
+                    Toast.warning('TikTok Authentication Incomplete', 'Missing tt_target_idc cookie. Connecting anonymously. Please regenerate signing keys.');
+                    console.warn('[TikTok] Missing tt_target_idc cookie despite having sessionId. Falling back to anonymous connection.');
+                    sessionId = null;
+                }
                 const signing = resolveTikTokSigningConfigForIPC(source);
                 const signingProvider = source.tiktokSigningProvider || 'auto';
 
@@ -5777,6 +5785,8 @@
         align-items: center;
         justify-content: center;
         z-index: 10000;
+        padding: 20px;
+        box-sizing: border-box;
     `;
             modal.innerHTML = content;
 
@@ -5797,173 +5807,6 @@
             }
         }
 
-        function showTikTokSignInMenu(sourceId) {
-            const source = stateManager.getSource(sourceId);
-            if (!source) return;
-
-            const isAuthenticated = source.tiktokSessionId ? true : false;
-            const signingHelpUrl = typeof window.SSAPP_SIGNING_HELP_URL === 'string' ? window.SSAPP_SIGNING_HELP_URL : '';
-            const existingSigningApiKey = typeof source.tiktokSigningApiKey === 'string' ? source.tiktokSigningApiKey : '';
-            const existingSigningServiceUrl = typeof source.tiktokSigningServiceUrl === 'string' ? source.tiktokSigningServiceUrl : '';
-            const hasCustomSigning = !!(existingSigningApiKey || existingSigningServiceUrl);
-            const signingState = source.tiktokSigningParameters || null;
-            const apiKeyInputId = `tiktok-signing-api-key-${sourceId}`;
-            const serviceUrlInputId = `tiktok-signing-service-url-${sourceId}`;
-            const signingHelpBlock = signingHelpUrl
-                ? `<p style="margin: 8px 0 0 0; color: #cbd5f5; font-size: 13px;">
-                Need an Euler signing API key?
-                <a href="${signingHelpUrl}" target="_blank" style="color: #93c5fd;">Follow this guide</a> to request and enter the community key.
-            </p>`
-                : '';
-            const roomIdInputId = `tiktok-signing-room-id-${sourceId}`;
-            const emailInputId = `tiktok-signing-email-${sourceId}`;
-            const autoValidateInputId = `tiktok-signing-auto-validate-${sourceId}`;
-            const existingRoomId = typeof source.tiktokSigningRoomId === 'string' ? source.tiktokSigningRoomId : '';
-            const existingEmail = typeof source.tiktokSigningEmail === 'string' ? source.tiktokSigningEmail : '';
-            const autoValidateEnabled = !!source.tiktokSigningAutoValidate;
-            const signingSettingsBlock = `
-        <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
-            <h4 style="margin: 0 0 10px 0; font-size: 15px;">Euler signing (optional)</h4>
-            <p style="margin: 0 0 12px 0; font-size: 13px; color: #e2e8f0;">
-                Provide your Euler API key and signing service URL to keep TikTok WebSocket mode authenticated even when Euler enforces API limits.
-            </p>
-            <label for="${apiKeyInputId}" style="display: block; font-size: 13px; color: #cbd5f5; margin-bottom: 4px;">API key</label>
-            <input id="${apiKeyInputId}" type="password" autocomplete="off" spellcheck="false" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #f8fafc;" value="${ssappEscapeHtml(existingSigningApiKey)}" placeholder="Euler API key">
-            <small style="display: block; color: #94a3b8; margin: 4px 0 12px 0;">Stored locally on this device.</small>
-            <label for="${serviceUrlInputId}" style="display: block; font-size: 13px; color: #cbd5f5; margin-bottom: 4px;">Signing service URL</label>
-            <input id="${serviceUrlInputId}" type="text" autocomplete="off" spellcheck="false" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #f8fafc;" value="${ssappEscapeHtml(existingSigningServiceUrl)}" placeholder="https://tiktok.eulerstream.com">
-            ${signingHelpBlock}
-            <div style="display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;">
-                <button onclick="saveTikTokSigningConfig('${sourceId}')" class="button" style="background: #2563eb;">
-                    💾 Save signing settings
-                </button>
-                ${hasCustomSigning ? `
-                    <button onclick="clearTikTokSigningConfig('${sourceId}')" class="button" style="background: #475569;">
-                        ♻️ Clear signing settings
-                    </button>` : ''}
-            </div>
-        </div>
-    `;
-            const signingCollectorBlock = `
-        <div style="background: rgba(15, 23, 42, 0.65); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
-            <h4 style="margin: 0 0 10px 0; font-size: 15px;">Generate signing parameters</h4>
-            <p style="margin: 0 0 12px 0; font-size: 13px; color: #e2e8f0;">
-                Stay signed in using the button below, open the live room you care about, then click <em>Generate signing keys</em> to pull the latest <code>msToken</code>, <code>X-Bogus</code>, and <code>X-Gnarly</code> from the hidden TikTok window.
-            </p>
-            <div style="display: grid; gap: 10px; margin-bottom: 10px;">
-                <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #e2e8f0; margin-top: 4px;">
-                    <input id="${autoValidateInputId}" type="checkbox" ${autoValidateEnabled ? 'checked' : ''} style="accent-color: #0ea5e9;">
-                    After generating, ping TikTok's fetch endpoint to confirm the signatures work
-                </label>
-            </div>
-            <div style="display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;">
-                <button id="tiktok-signing-generate-${sourceId}" onclick="tiktokGenerateSigningParameters('${sourceId}')" class="button" style="background: #0ea5e9;">
-                    🔐 Generate signing keys
-                </button>
-                <button onclick="tiktokShowSigningWindow('${sourceId}')" class="button" style="background: #475569;">
-                    🪟 Show TikTok window
-                </button>
-                <button onclick="copyTikTokSigningPayload('${sourceId}')" class="button" style="background: #334155;">
-                    📋 Copy last payload
-                </button>
-            </div>
-            <div id="tiktok-signing-result-${sourceId}" style="margin-top: 12px; font-size: 12px; color: #e2e8f0;"></div>
-        </div>
-    `;
-
-            let menuContent = `
-        <div style="padding: 20px; background: #2a2a2a; border-radius: 8px;">
-            <h3 style="margin-bottom: 15px;">TikTok Authentication</h3>
-            <p style="margin: 0 0 14px 0; color: #facc15;">
-                Experimental option — these sign-in and session workflows may not work reliably yet. Please share feedback or bug reports at
-                <a href="https://discord.socialstream.ninja" target="_blank" style="color: #fde68a;">discord.socialstream.ninja</a>.
-            </p>
-            
-            <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
-                <h4 style="margin: 0 0 10px 0; font-size: 15px;">Local Signer Status</h4>
-                <div id="tiktok-signin-status-${sourceId}" style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px;">
-                    <span style="color: #94a3b8;">Checking status...</span>
-                </div>
-                <button onclick="tiktokShowSigningWindow('${sourceId}')" class="button" style="background: #2563eb; width: 100%; justify-content: center;">
-                    Open Sign-in Window
-                </button>
-                <p style="margin: 8px 0 0 0; font-size: 12px; color: #94a3b8;">
-                    Opens a hidden browser window. Sign in to TikTok there, then close it (or leave it open).
-                </p>
-            </div>
-
-            ${isAuthenticated ?
-                    `<p style="color: #4ade80; margin-bottom: 15px;">✓ TikTok session cookie manually saved for this source.</p>` :
-                    `<p style="margin-bottom: 15px;">Or manually add your TikTok session cookie:</p>`
-                }
-            
-            <div style="background: rgba(148, 163, 184, 0.12); border-radius: 6px; padding: 12px 14px; margin-bottom: 18px;">
-                <h4 style="margin: 0 0 10px 0; font-size: 15px;">Manual session cookie (Advanced)</h4>
-                <ol style="margin: 0 0 10px 18px; padding: 0; line-height: 1.4;">
-                    <li>Open <strong>tiktok.com</strong> in your browser and sign in.</li>
-                    <li>Press <strong>F12</strong> (or right-click → Inspect) to open Developer Tools.</li>
-                    <li>Navigate to <strong>Application → Storage → Cookies → https://www.tiktok.com</strong>.</li>
-                    <li>Copy the value of the <code>sessionid</code> cookie. Optionally note <code>tt-target-idc</code> if it exists.</li>
-                </ol>
-                <p style="margin: 0; font-size: 13px; color: #e2e8f0;">
-                    Only the <code>sessionid</code> cookie is required to send chat replies. The <code>tt-target-idc</code> cookie is optional but can improve routing.
-                </p>
-            </div>
-            ${signingCollectorBlock}
-            ${signingSettingsBlock}
-            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                <button onclick="tiktokSignIn('${sourceId}')" class="button" style="background: #6366f1;">
-                    🌐 Sign in with Browser
-                </button>
-                <button onclick="tiktokManualSignIn('${sourceId}')" class="button" style="background: #6b7280;">
-                    📝 Enter Session ID
-                </button>
-                ${isAuthenticated ? `
-                    <button onclick="clearTikTokAuth('${sourceId}')" class="button" style="background: #ef4444;">
-                        🗑️ Clear Authentication
-                    </button>` : ''}
-                <button onclick="closeModal()" class="button" style="background: #374151;">
-                    Close
-                </button>
-            </div>
-        </div>
-    `;
-
-            showModal(menuContent);
-            renderTikTokSigningResults(sourceId);
-        }
-
-        function clearTikTokAuth(sourceId) {
-            const source = stateManager.getSource(sourceId);
-            if (source) {
-                stateManager.updateSource(sourceId, {
-                    tiktokSessionId: null,
-                    tiktokTtTargetIdc: null,
-                    tiktokSigningParameters: null
-                });
-
-                // Update UI
-                const entry = document.querySelector(`[data-source-id="${sourceId}"]`);
-                if (entry) {
-                    const signInBtn = entry.querySelector('[data-tiktok-signin]') || entry.querySelector('[data-signin]');
-                    if (signInBtn) {
-                        if (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy') {
-                            signInBtn.innerHTML = '🔐 Manage TikTok Signing';
-                            signInBtn.title = 'Provide your TikTok session cookie to enable chat replies and authenticated features.';
-                        } else {
-                            const defaultLabel = typeof translate === 'function' ? translate('btn.signin') : '🔑 Sign-in';
-                            signInBtn.innerHTML = defaultLabel;
-                            signInBtn.title = '';
-                        }
-                        signInBtn.classList.remove('authenticated');
-                    }
-                }
-
-                Toast.success("TikTok Sign-in", "Authentication cleared");
-                closeModal();
-            }
-        }
-
         // Helper to check status
         async function checkTikTokSignInStatus(sourceId) {
             const statusEl = document.getElementById(`tiktok-signin-status-${sourceId}`);
@@ -5972,10 +5815,22 @@
             try {
                 const result = await ipcRenderer.invoke('getTikTokSignInStatus');
                 if (result && result.signedIn) {
-                    statusEl.innerHTML = `
-                        <span style="color: #4ade80; font-size: 16px;">●</span>
-                        <span style="color: #f8fafc; font-weight: 500;">Signed In</span>
-                    `;
+                    if (result.hasTtTargetIdc === false) {
+                        statusEl.innerHTML = `
+                            <div style="display: flex; flex-direction: column; gap: 4px;">
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <span style="color: #fbbf24; font-size: 16px;">●</span>
+                                    <span style="color: #f8fafc; font-weight: 500;">Partially Signed In</span>
+                                </div>
+                                <span style="color: #fbbf24; font-size: 11px;">Missing tt_target_idc cookie. Reload page?</span>
+                            </div>
+                        `;
+                    } else {
+                        statusEl.innerHTML = `
+                            <span style="color: #4ade80; font-size: 16px;">●</span>
+                            <span style="color: #f8fafc; font-weight: 500;">Signed In</span>
+                        `;
+                    }
                 } else {
                     statusEl.innerHTML = `
                         <span style="color: #94a3b8; font-size: 16px;">○</span>
@@ -5990,11 +5845,11 @@
 
         // Poll while menu is open
         let tiktokStatusInterval = null;
-        const startTikTokStatusPolling = (sourceId) => {
+        function startTikTokStatusPolling(sourceId) {
             if (tiktokStatusInterval) clearInterval(tiktokStatusInterval);
             checkTikTokSignInStatus(sourceId);
             tiktokStatusInterval = setInterval(() => checkTikTokSignInStatus(sourceId), 2000);
-        };
+        }
 
         // Hook into modal close to stop polling
         const originalCloseModal = window.closeModal;
@@ -6006,8 +5861,136 @@
             if (originalCloseModal) originalCloseModal();
         };
 
-        // Start polling immediately after render
-        setTimeout(() => startTikTokStatusPolling(sourceId), 100);
+        function showTikTokSignInMenu(sourceId) {
+            const source = stateManager.getSource(sourceId);
+            if (!source) return;
+
+            const isAuthenticated = source.tiktokSessionId ? true : false;
+            const signingHelpUrl = typeof window.SSAPP_SIGNING_HELP_URL === 'string' ? window.SSAPP_SIGNING_HELP_URL : '';
+            const existingSigningApiKey = typeof source.tiktokSigningApiKey === 'string' ? source.tiktokSigningApiKey : '';
+            const existingSigningServiceUrl = typeof source.tiktokSigningServiceUrl === 'string' ? source.tiktokSigningServiceUrl : '';
+            const hasCustomSigning = !!(existingSigningApiKey || existingSigningServiceUrl);
+            const apiKeyInputId = `tiktok-signing-api-key-${sourceId}`;
+            const serviceUrlInputId = `tiktok-signing-service-url-${sourceId}`;
+            const signingHelpBlock = signingHelpUrl
+                ? `<p style="margin: 8px 0 0 0; color: #cbd5f5; font-size: 13px;">
+                Need an Euler signing API key?
+                <a href="${signingHelpUrl}" target="_blank" style="color: #93c5fd;">Follow this guide</a> to request and enter the community key.
+            </p>`
+                : '';
+            const autoValidateInputId = `tiktok-signing-auto-validate-${sourceId}`;
+            const autoValidateEnabled = !!source.tiktokSigningAutoValidate;
+
+            // Determine active provider display
+            // Note: The actual provider logic is in connection-manager.js, but we can infer based on settings.
+            // If API key is set, it's likely "Custom/Euler". If not, it's "Auto" (which might use Euler or Local).
+            // The "Local Signer Status" block is relevant if we are using Local OR if we need to generate keys for manual fallback.
+
+            const signingSettingsBlock = `
+        <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
+            <h4 style="margin: 0 0 10px 0; font-size: 15px;">Euler signing (optional)</h4>
+            <p style="margin: 0 0 12px 0; font-size: 13px; color: #e2e8f0;">
+                Provide your Euler API key and signing service URL to keep TikTok WebSocket mode authenticated even when Euler enforces API limits.
+            </p>
+            <label for="${apiKeyInputId}" style="display: block; font-size: 13px; color: #cbd5f5; margin-bottom: 4px;">API key</label>
+            <input id="${apiKeyInputId}" type="password" autocomplete="off" spellcheck="false" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #f8fafc;" value="${ssappEscapeHtml(existingSigningApiKey)}" placeholder="Euler API key">
+            <small style="display: block; color: #94a3b8; margin: 4px 0 12px 0;">Stored locally on this device.</small>
+            <label for="${serviceUrlInputId}" style="display: block; font-size: 13px; color: #cbd5f5; margin-bottom: 4px;">Signing service URL</label>
+            <input id="${serviceUrlInputId}" type="text" autocomplete="off" spellcheck="false" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #f8fafc;" value="${ssappEscapeHtml(existingSigningServiceUrl)}" placeholder="https://tiktok.eulerstream.com">
+            ${signingHelpBlock}
+            <div style="display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;">
+                <button onclick="saveTikTokSigningConfig('${sourceId}')" class="button" style="background: #2563eb;">
+                    💾 Save
+                </button>
+                ${hasCustomSigning ? `
+                    <button onclick="clearTikTokSigningConfig('${sourceId}')" class="button" style="background: #475569;">
+                        ♻️ Clear
+                    </button>` : ''}
+            </div>
+        </div>
+        `;
+
+            let menuContent = `
+        <div style="padding: 20px; background: #2a2a2a; border-radius: 8px; max-height: 90vh; overflow-y: auto; width: 100%; max-width: 600px;">
+            <h3 style="margin-bottom: 15px;">Manage TikTok Signing</h3>
+            
+            <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
+                <h4 style="margin: 0 0 10px 0; font-size: 15px;">Local Signer Status</h4>
+                <div id="tiktok-signin-status-${sourceId}" style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px;">
+                    <span style="color: #94a3b8;">Checking status...</span>
+                </div>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;">
+                    <button onclick="tiktokShowSigningWindow('${sourceId}')" class="button" style="background: #2563eb; flex: 1; justify-content: center;">
+                        Open Sign-in Window
+                    </button>
+                    <button id="tiktok-signing-generate-${sourceId}" onclick="tiktokGenerateSigningParameters('${sourceId}')" class="button" style="background: #0ea5e9; flex: 1; justify-content: center;">
+                        🔐 Generate Keys
+                    </button>
+                </div>
+                <div style="background: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6; padding: 8px 12px; margin: 12px 0; font-size: 13px; color: #dbeafe;">
+                    <strong>Important:</strong> Keep the sign-in window OPEN to allow the app to send chat replies.
+                </div>
+                <p style="margin: 8px 0 0 0; font-size: 12px; color: #94a3b8;">
+                    1. <strong>Open Sign-in Window</strong> &rarr; Sign in to TikTok.<br>
+                    2. Navigate to the live room (optional but recommended).<br>
+                    3. Click <strong>Generate Keys</strong> to capture the session.
+                </p>
+                <div id="tiktok-signing-result-${sourceId}" style="margin-top: 12px; font-size: 12px; color: #e2e8f0;"></div>
+            </div>
+
+            <details style="background: rgba(0, 0, 0, 0.2); border-radius: 8px; overflow: hidden;">
+                <summary style="padding: 12px 16px; cursor: pointer; font-weight: 500; user-select: none; color: #cbd5f5;">
+                    Advanced Options
+                </summary>
+                <div style="padding: 16px; border-top: 1px solid rgba(255, 255, 255, 0.1);">
+                    
+                    <div style="margin-bottom: 18px;">
+                        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #e2e8f0;">Manual Session Cookie</h4>
+                        <p style="margin: 0 0 10px 0; font-size: 13px; color: #94a3b8;">
+                            If the local signer fails, you can manually extract the <code>sessionid</code> cookie.
+                        </p>
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <button onclick="tiktokManualSignIn('${sourceId}')" class="button" style="background: #475569; font-size: 13px;">
+                                📝 Enter Session ID
+                            </button>
+                            ${isAuthenticated ? `
+                            <button onclick="clearTikTokAuth('${sourceId}')" class="button" style="background: #ef4444; font-size: 13px;">
+                                🗑️ Clear Authentication
+                            </button>` : ''}
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 18px;">
+                        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #e2e8f0;">Debug Tools</h4>
+                        <div style="margin-bottom: 10px;">
+                            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #e2e8f0;">
+                                <input id="${autoValidateInputId}" type="checkbox" ${autoValidateEnabled ? 'checked' : ''} style="accent-color: #0ea5e9;">
+                                Ping TikTok's fetch endpoint after generating
+                            </label>
+                        </div>
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <button onclick="copyTikTokSigningPayload('${sourceId}')" class="button" style="background: #334155; font-size: 13px;">
+                                📋 Copy Payload
+                            </button>
+                        </div>
+                    </div>
+
+                    ${signingSettingsBlock}
+                </div>
+            </details>
+
+            <div style="display: flex; justify-content: flex-end; margin-top: 20px;">
+                <button onclick="closeModal()" class="button" style="background: #374151;">
+                    Close
+                </button>
+            </div>
+        </div>
+        `;
+
+            showModal(menuContent);
+            renderTikTokSigningResults(sourceId);
+            startTikTokStatusPolling(sourceId);
+        }
 
         function renderTikTokSigningResults(sourceId) {
             const container = document.getElementById(`tiktok-signing-result-${sourceId}`);
@@ -6015,7 +5998,8 @@
             const source = stateManager.getSource(sourceId);
             const signingState = source?.tiktokSigningParameters || null;
             if (!signingState || !signingState.payload) {
-                container.innerHTML = '<p style="margin: 0; color: #94a3b8;">Generate signing keys to preview the payload here.</p>';
+                // Don't show empty state message if we are in the main block, as it takes up space.
+                // container.innerHTML = '<p style="margin: 0; color: #94a3b8;">Generate signing keys to preview the payload here.</p>';
                 return;
             }
             const timestamp = signingState.fetchedAt ? new Date(signingState.fetchedAt).toLocaleString() : 'Unknown';
@@ -6044,12 +6028,16 @@
                     : `Failed${validation.status ? ` (HTTP ${validation.status})` : ''}${validation.error ? ` – ${ssappEscapeHtml(validation.error)}` : ''}`}
             </div>`
                 : '';
+
             container.innerHTML = `
         <div style="background: rgba(15, 23, 42, 0.4); border-radius: 6px; padding: 10px;">
             <div style="font-size: 12px; color: #cbd5f5; margin-bottom: 4px;">Last updated ${timestamp}</div>
             ${warningsBlock}
             ${validationBlock}
-            <pre style="white-space: pre-wrap; word-break: break-word; background: #0f172a; border-radius: 4px; padding: 8px; max-height: 220px; overflow-y: auto;">${ssappEscapeHtml(payloadJson)}</pre>
+            <details>
+                <summary style="cursor: pointer; font-size: 12px; color: #93c5fd; user-select: none; margin-bottom: 4px;">Show generated payload</summary>
+                <pre style="white-space: pre-wrap; word-break: break-word; background: #0f172a; border-radius: 4px; padding: 8px; max-height: 220px; overflow-y: auto; margin-top: 4px;">${ssappEscapeHtml(payloadJson)}</pre>
+            </details>
         </div>
     `;
         }
@@ -6128,14 +6116,29 @@
                         Toast.warning("TikTok Signing", warning);
                     });
                 }
-                stateManager.updateSource(sourceId, {
+                const updates = {
                     tiktokSigningParameters: {
                         payload: response.parameters,
                         warnings,
                         validation: response.validation || null,
                         fetchedAt: new Date().toISOString()
                     }
-                });
+                };
+
+                // If session credentials were captured, update them too
+                if (response.parameters.sessionid) {
+                    updates.tiktokSessionId = response.parameters.sessionid;
+                }
+                if (response.parameters.tt_target_idc) {
+                    updates.tiktokTtTargetIdc = response.parameters.tt_target_idc;
+                }
+
+                // If the user successfully generated keys via the local signer, 
+                // they almost certainly want to use the local signer for the connection.
+                // We auto-switch the provider to 'local' to avoid "Euler" errors (500/504).
+                updates.tiktokSigningProvider = 'local';
+
+                stateManager.updateSource(sourceId, updates);
                 renderTikTokSigningResults(sourceId);
                 const validationResult = response.validation;
                 if (validationResult && validationResult.attempted) {

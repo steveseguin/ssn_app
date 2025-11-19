@@ -406,7 +406,8 @@ async function generateSigningParameters(win, options = {}) {
     urlToSign = null,
     pathWithQuery: explicitPath = null,
     msToken: msTokenOverride = null,
-    activeUrl: activeUrlOverride = null
+    activeUrl: activeUrlOverride = null,
+    performFetch = false
   } = options;
 
   const pathWithQuery = deriveSigningPath(win, roomId, urlToSign, explicitPath);
@@ -445,7 +446,8 @@ async function generateSigningParameters(win, options = {}) {
         const requestConfig = ${JSON.stringify({
       url: "https://webcast.tiktok.com/webcast/im/fetch/",
       referer: activeUrl,
-      params: fetchParams
+      params: fetchParams,
+      includeBody: Boolean(performFetch)
     })};
         try {
           const requestUrl = new URL(requestConfig.url);
@@ -457,13 +459,41 @@ async function generateSigningParameters(win, options = {}) {
             headers: {
               "Referer": requestConfig.referer || window.location.href
             }
-          }).then((response) => {
-            return {
+          }).then(async (response) => {
+            const summary = {
               ok: Boolean(response && response.ok),
               status: response ? response.status : null,
               statusText: response ? response.statusText : null,
               url: response && response.url ? response.url : requestUrl.toString()
             };
+            try {
+              if (response && typeof response.headers?.forEach === "function") {
+                const headers = {};
+                response.headers.forEach((value, key) => {
+                  headers[key] = value;
+                });
+                summary.headers = headers;
+              }
+            } catch (_) {
+              summary.headers = null;
+            }
+            if (response && requestConfig.includeBody && response.ok) {
+              try {
+                const buf = await response.arrayBuffer();
+                let binary = "";
+                const bytes = new Uint8Array(buf);
+                for (let i = 0; i < bytes.byteLength; i++) {
+                  binary += String.fromCharCode(bytes[i]);
+                }
+                summary.bodyBase64 = window.btoa(binary);
+              } catch (bodyError) {
+                summary.bodyError =
+                  bodyError && (bodyError.stack || bodyError.message)
+                    ? bodyError.stack || bodyError.message
+                    : String(bodyError);
+              }
+            }
+            return summary;
           }).catch((error) => ({
             ok: false,
             status: null,
@@ -518,21 +548,36 @@ async function generateSigningParameters(win, options = {}) {
       "";
     const finalDeviceId = searchParams.get("device_id") || deviceId;
     const normalizedPath = parsedUrl.pathname + parsedUrl.search;
+    const payload = {
+      device_id: finalDeviceId,
+      msToken: finalMsToken,
+      "X-Bogus": xBogus,
+      "X-Gnarly": xGnarly,
+      _signature: signature,
+      browserName,
+      browserVersion,
+      userAgent,
+      pathWithQuery: normalizedPath,
+      room_id: searchParams.get("room_id") || roomId,
+      cursor: searchParams.get("cursor") || "",
+      notice: searchParams.get("notice") || fetchParams.notice
+    };
+    const fetchResultPayload =
+      fetchResult && fetchResult.bodyBase64
+        ? {
+            status: fetchResult.status || null,
+            statusText: fetchResult.statusText || null,
+            headers: fetchResult.headers || null,
+            bodyBase64: fetchResult.bodyBase64
+          }
+        : null;
+    if (fetchResultPayload) {
+      payload.fetchResult = fetchResultPayload;
+    } else if (fetchResult && fetchResult.bodyError) {
+      payload.fetchError = fetchResult.bodyError;
+    }
     return {
-      payload: {
-        device_id: finalDeviceId,
-        msToken: finalMsToken,
-        "X-Bogus": xBogus,
-        "X-Gnarly": xGnarly,
-        _signature: signature,
-        browserName,
-        browserVersion,
-        userAgent,
-        pathWithQuery: normalizedPath,
-        room_id: searchParams.get("room_id") || roomId,
-        cursor: searchParams.get("cursor") || "",
-        notice: searchParams.get("notice") || fetchParams.notice
-      },
+      payload,
       meta: {
         status: fetchResult.status || null,
         statusText: fetchResult.statusText || null
@@ -541,8 +586,9 @@ async function generateSigningParameters(win, options = {}) {
   }
 
   const fetchedResult = await tryFetchFromWebcast().catch(() => null);
-  if (fetchedResult && fetchedResult.payload) {
-    return fetchedResult.payload;
+  const fallbackPayload = fetchedResult && fetchedResult.payload ? fetchedResult.payload : null;
+  if (fallbackPayload && !performFetch) {
+    return fallbackPayload;
   }
 
   const payloadScript = `
@@ -572,10 +618,28 @@ async function generateSigningParameters(win, options = {}) {
         const browserVersion = ${JSON.stringify(browserVersion)};
         const providedPath = ${JSON.stringify(pathWithQuery)};
         const msTokenFallback = ${JSON.stringify(msTokenFromSession || "")};
+        const performFetch = ${JSON.stringify(options.performFetch || false)};
 
         const activeUrl = new URL(window.location.href);
-        if (roomId && providedPath && !/(?:^|[?&])room_id=/.test(providedPath)) {
-          activeUrl.searchParams.set("room_id", roomId);
+        
+        // Attempt to scrape roomId from SIGI_STATE if not provided
+        let scrapedRoomId = null;
+        if (!roomId) {
+            try {
+                if (window.SIGI_STATE) {
+                    // Common paths for roomId in SIGI_STATE
+                    scrapedRoomId = window.SIGI_STATE.liveRoom?.liveRoomUserInfo?.liveRoom?.roomId ||
+                                    window.SIGI_STATE.appContext?.state?.room?.roomId ||
+                                    window.SIGI_STATE.room?.roomId;
+                }
+            } catch (_) {
+                // Ignore scraping errors
+            }
+        }
+        const finalRoomId = roomId || scrapedRoomId;
+
+        if (finalRoomId && providedPath && !/(?:^|[?&])room_id=/.test(providedPath)) {
+          activeUrl.searchParams.set("room_id", finalRoomId);
         }
         const pathWithQuery = providedPath || (activeUrl.pathname + activeUrl.search);
 
@@ -640,7 +704,7 @@ async function generateSigningParameters(win, options = {}) {
           __success: true,
           payload: {
             device_id: deviceId,
-            room_id: roomId,
+            room_id: finalRoomId,
             "X-Bogus": xBogus,
             msToken: msTokenFallback || ensureMsToken(),
             "X-Gnarly": xGnarly,
@@ -653,6 +717,7 @@ async function generateSigningParameters(win, options = {}) {
         if (typeof window === "object" && window.location) {
           basePayload.payload._signature = "";
         }
+
         return basePayload;
       } catch (error) {
         const message = error && (error.stack || error.message) ? (error.stack || error.message) : String(error);
@@ -663,10 +728,14 @@ async function generateSigningParameters(win, options = {}) {
 
   const result = await exec(win, payloadScript);
   if (!result || result.__success !== true) {
+    if (fallbackPayload) {
+      return fallbackPayload;
+    }
     const reason = result && result.__error ? result.__error : "Failed to execute TikTok signing script.";
     throw new Error(reason);
   }
-  return result.payload;
+  const resultPayload = result.payload || {};
+  return fallbackPayload ? { ...fallbackPayload, ...resultPayload } : resultPayload;
 }
 
 module.exports = {

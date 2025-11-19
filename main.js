@@ -164,10 +164,59 @@ try {
     const tiktokConnector = require('tiktok-live-connector');
     installTikTokSignServerFallback(tiktokConnector);
 
+    const localSignerImplementation = {
+        sign: async (url, options) => {
+            if (!tikTokSignerHelper) {
+                throw new Error('TikTok signer helper not available');
+            }
+            console.log('[TikTok] localSigner.sign called. Options:', JSON.stringify(options));
+            const targetUrl = options?.activeUrl || options?.landingUrl || null;
+            const win = await ensureTikTokSigningWindow(targetUrl, { allowNavigation: true });
+            const parameters = await tikTokSignerHelper.generateSigningParameters(win, {
+                urlToSign: url,
+                ...options
+            });
+
+            const enriched = { ...(parameters || {}) };
+            if (targetUrl && !enriched.referer) {
+                enriched.referer = targetUrl;
+            }
+            if (targetUrl && !enriched.activeUrl) {
+                enriched.activeUrl = targetUrl;
+            }
+            try {
+                if (!enriched.sessionid && typeof tikTokSignerHelper.readSessionIdFromSession === 'function') {
+                    const sessionId = await tikTokSignerHelper.readSessionIdFromSession(win);
+                    if (sessionId) {
+                        enriched.sessionid = sessionId;
+                    }
+                }
+
+                const cookies = await win.webContents.session.cookies.get({ url: 'https://www.tiktok.com/' });
+                if (cookies && cookies.length) {
+                    if (!enriched.tt_target_idc) {
+                        const ttCookie = cookies.find(c => c.name === 'tt_target_idc' || c.name === 'tt-target-idc');
+                        if (ttCookie?.value) {
+                            enriched.tt_target_idc = ttCookie.value;
+                        }
+                    }
+                    if (!enriched.allCookies) {
+                        enriched.allCookies = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+                    }
+                }
+            } catch (cookieError) {
+                console.warn('[TikTok] Failed to collect cookies for local signer payload:', cookieError);
+            }
+
+            return enriched;
+        }
+    };
+
     const tikTokEnv = createTikTokEnvironment({
         connector: tiktokConnector,
         shouldEnableTikTokLogging,
         signerHelper: tikTokSignerHelper,
+        localSigner: localSignerImplementation,
         isDevMode: () => isDevMode,
         resolveLogDirectory: () => app.getPath('userData'),
         getMainWindow: () => mainWindow,
@@ -7311,7 +7360,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 const hasSession = !!manager?.sessionId;
 
                 if (!manager || !isConnected || !hasSession) {
-                    log("TikTok virtual tab - connection not ready for outbound send");
+                    log(`TikTok virtual tab - connection not ready for outbound send. Manager: ${!!manager}, Connected: ${isConnected}, Session: ${hasSession}`);
                     eventRet.returnValue = false;
                     return;
                 }
@@ -9329,7 +9378,7 @@ function normalizeTikTokSigningServiceUrl(rawValue) {
     }
 }
 
-const DEFAULT_TIKTOK_SIGNING_URL = 'https://www.tiktok.com/';
+const DEFAULT_TIKTOK_SIGNING_URL = 'https://livecenter.tiktok.com/realtime';
 
 function normalizeTikTokLandingUrl(rawValue) {
     if (!rawValue || typeof rawValue !== 'string') {
@@ -9484,12 +9533,14 @@ function attachSigningWindow(win) {
 }
 
 async function ensureTikTokSigningWindow(targetUrl, options = {}) {
+    console.log('[TikTok] ensureTikTokSigningWindow called. targetUrl:', targetUrl, 'options:', options);
     const normalizedTarget = typeof targetUrl === 'string' && targetUrl.trim()
         ? normalizeTikTokLandingUrl(targetUrl.trim())
         : null;
-    // Use feedback page as it's lighter but still loads necessary SDKs
-    const DEFAULT_TIKTOK_SIGNING_URL = "https://www.tiktok.com/feedback";
+
     const landingUrl = normalizedTarget || DEFAULT_TIKTOK_SIGNING_URL;
+    console.log('[TikTok] normalizedTarget:', normalizedTarget, 'landingUrl:', landingUrl);
+
     if (!tiktokSigningWindow || tiktokSigningWindow.isDestroyed()) {
         tiktokSigningWindow = new BrowserWindow({
             show: true,
@@ -9506,8 +9557,15 @@ async function ensureTikTokSigningWindow(targetUrl, options = {}) {
         } catch (_) { }
         attachSigningWindow(tiktokSigningWindow);
         await tiktokSigningWindow.loadURL(landingUrl);
-    } else if (normalizedTarget && options.allowNavigation !== false) {
-        await tiktokSigningWindow.loadURL(normalizedTarget);
+    } else {
+        // If window exists, check if we need to navigate
+        const currentUrl = tiktokSigningWindow.webContents.getURL();
+        console.log('[TikTok] Existing window currentUrl:', currentUrl);
+        // If a specific target is requested and it's different from current, or if allowNavigation is explicitly true
+        if (normalizedTarget && (options.allowNavigation === true || currentUrl !== normalizedTarget)) {
+            console.log('[TikTok] Navigating signing window to:', normalizedTarget);
+            await tiktokSigningWindow.loadURL(normalizedTarget);
+        }
     }
     try {
         tiktokSigningWindow.show();
@@ -9791,7 +9849,23 @@ ipcMain.handle("getTikTokSignInStatus", async () => {
     }
     try {
         const sessionId = await tikTokSignerHelper.readSessionIdFromSession(tiktokSigningWindow);
-        return { signedIn: !!sessionId };
+
+        let ttTargetIdc = null;
+        try {
+            let cookies = await tiktokSigningWindow.webContents.session.cookies.get({ url: 'https://www.tiktok.com/', name: 'tt_target_idc' });
+            if (!cookies || cookies.length === 0) {
+                cookies = await tiktokSigningWindow.webContents.session.cookies.get({ url: 'https://www.tiktok.com/', name: 'tt-target-idc' });
+            }
+            if (cookies && cookies.length > 0 && cookies[0].value) {
+                ttTargetIdc = cookies[0].value;
+            }
+        } catch (_) { }
+
+        return {
+            signedIn: !!sessionId,
+            hasTtTargetIdc: !!ttTargetIdc,
+            username: null
+        };
     } catch (error) {
         console.error('Failed to check TikTok sign-in status:', error);
         return { signedIn: false, error: error.message };
@@ -9817,7 +9891,8 @@ ipcMain.handle("tiktokGenerateSigningParameters", async (_event, args = {}) => {
         deviceId,
         roomId,
         email,
-        validate
+        validate,
+        performFetch
     } = args;
 
     const normalizedLanding = typeof landingUrl === 'string' && landingUrl.trim()
@@ -9866,7 +9941,8 @@ ipcMain.handle("tiktokGenerateSigningParameters", async (_event, args = {}) => {
             deviceId: typeof deviceId === 'string' && deviceId.trim() ? deviceId.trim() : undefined,
             roomId: normalizedRoomId,
             email: normalizedEmail,
-            activeUrl: activeUrl || null
+            activeUrl: activeUrl || null,
+            performFetch: !!performFetch
         });
         const sanitized = {
             device_id: parameters?.device_id || null,
@@ -9879,6 +9955,35 @@ ipcMain.handle("tiktokGenerateSigningParameters", async (_event, args = {}) => {
             userAgent: parameters?.userAgent || signingWindow.webContents.getUserAgent(),
             pathWithQuery: parameters?.pathWithQuery || (typeof pathWithQuery === 'string' ? pathWithQuery : null)
         };
+
+        // Attempt to extract session credentials from the signing window
+        try {
+            if (typeof tikTokSignerHelper.readSessionIdFromSession === 'function') {
+                const sessionId = await tikTokSignerHelper.readSessionIdFromSession(signingWindow);
+                if (sessionId) {
+                    sanitized.sessionid = sessionId;
+                }
+            }
+
+            // Also try to get tt_target_idc
+            let cookies = await signingWindow.webContents.session.cookies.get({ url: 'https://www.tiktok.com/', name: 'tt_target_idc' });
+            if (!cookies || cookies.length === 0) {
+                cookies = await signingWindow.webContents.session.cookies.get({ url: 'https://www.tiktok.com/', name: 'tt-target-idc' });
+            }
+            if (cookies && cookies.length > 0 && cookies[0].value) {
+                sanitized.tt_target_idc = cookies[0].value;
+            }
+
+            // Retrieve ALL cookies for the fallback fetch
+            const allCookies = await signingWindow.webContents.session.cookies.get({ url: 'https://www.tiktok.com/' });
+            if (allCookies && allCookies.length > 0) {
+                sanitized.allCookies = allCookies.map(c => `${c.name}=${c.value}`).join('; ');
+            }
+
+            console.log('[TikTok] Generated signing parameters. SessionID present:', !!sanitized.sessionid, 'tt_target_idc present:', !!sanitized.tt_target_idc, 'allCookies length:', sanitized.allCookies ? sanitized.allCookies.length : 0);
+        } catch (cookieError) {
+            console.warn('[TikTok] Failed to read session cookies during signing generation:', cookieError);
+        }
         if (parameters?.room_id) {
             sanitized.room_id = parameters.room_id;
         }
@@ -9887,6 +9992,12 @@ ipcMain.handle("tiktokGenerateSigningParameters", async (_event, args = {}) => {
         }
         if (parameters?.notice) {
             sanitized.notice = parameters.notice;
+        }
+        if (parameters?.fetchResult) {
+            sanitized.fetchResult = parameters.fetchResult;
+        }
+        if (parameters?.fetchError) {
+            sanitized.fetchError = parameters.fetchError;
         }
         const warnings = [];
         if (!sanitized.msToken) {
@@ -9902,9 +10013,9 @@ ipcMain.handle("tiktokGenerateSigningParameters", async (_event, args = {}) => {
             warnings.push('_signature parameter missing from TikTok response.');
         }
         let validation = null;
-        if (validate && normalizedRoomId) {
+        if (validate) {
             validation = await validateTikTokFetch(sanitized, {
-                roomId: normalizedRoomId,
+                roomId: normalizedRoomId || sanitized.room_id,
                 email: normalizedEmail,
                 referer: activeUrl
             }).catch(error => ({
