@@ -54,6 +54,7 @@ let TikTokLiveConnectionClass = null;
 let TikTokPollingFallbackClass = null;
 let usingLegacyTikTokConnector = false;
 let EulerSignerClass = null;
+const SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD = 3;
 
 function log(...args) {
     try {
@@ -2143,6 +2144,7 @@ function resolveFirstImageUrl(candidates = []) {
                     TikTokPollingFallbackClass &&
                     TikTokPollingFallbackClass !== TikTokLiveConnectionClass);
             this.connectionStrategy = this.preferredStrategy;
+            this.activeConnectPromise = null;
             this.enableDirectChatRoute = isDirectChatRouteSupported && !disableDirectChatRoute;
             this.directChatRoute = null;
             this.directChatRouteClient = null;
@@ -2395,6 +2397,7 @@ function resolveFirstImageUrl(candidates = []) {
             }
             const fallbackMessage = this.getSanitizedFallbackMessage(primaryError, 'TikTok signer unavailable. Switching to legacy connector.');
             this.pollingFallbackActivated = true;
+            this.signServerFailureCount = 0;
             this.logDebug('lifecycle.fallback.polling.begin', {
                 stage,
                 message: fallbackMessage,
@@ -2533,7 +2536,6 @@ function resolveFirstImageUrl(candidates = []) {
         }
 
         handleSignServerRejection(primaryError) {
-            this.signServerFailureCount++;
             const helpMessage = this.getSigningServiceHelpMessage();
             this.logDebug('sign.error.rejected_session', {
                 message: helpMessage,
@@ -2574,7 +2576,8 @@ function resolveFirstImageUrl(candidates = []) {
             console.warn(`[TikTok] Sign server issue detected (${displayMessage}). Retrying silently.`);
             this.logDebug('sign.error.retry', {
                 message: displayMessage,
-                detail: detail || null
+                detail: detail || null,
+                attempts: this.signServerFailureCount
             });
 
             // Attempt to notify renderer without surfacing an error banner
@@ -3513,158 +3516,168 @@ function resolveFirstImageUrl(candidates = []) {
         async connect() {
             if (this.isStopped) return false;
 
-            // Check if already connected
             if (this.connection && this.connection.isConnected) {
                 console.info('Already connected, skipping reconnect');
                 return true;
             }
 
-            try {
-                this.logDebug('lifecycle.connect.start');
+            if (this.activeConnectPromise) {
+                this.logDebug('lifecycle.connect.pending', { reason: 'promise_in_flight' });
+                return this.activeConnectPromise;
+            }
+
+            const runConnect = async () => {
                 try {
-                    emitStatus( {
-                        wssID: this.wssID,
-                        status: 'connecting'
-                    });
-                } catch (_) { /* renderer may be gone */ }
-                await this.connection.connect();
-                console.info('Connected successfully');
-                this.logDebug('lifecycle.connect.success');
-                
-                // Clear any pending reconnect timer
-                if (this.reconnectTimer) {
-                    clearTimeout(this.reconnectTimer);
-                    this.reconnectTimer = null;
-                }
-                
-                // Reset offline retry mode on successful connect
-                this.offlineRetry = false;
-                this.offlineReason = null;
-                return true;
-            } catch (err) {
-                const primaryError = err instanceof Error ? err : (err && err.exception instanceof Error ? err.exception : err);
-                const errorName = primaryError && primaryError.name;
-                const errorMessage = primaryError && primaryError.message ? primaryError.message : '';
-                if (primaryError?.ssappFallback) {
-                    const fallbackHandled = await this.tryFallbackToPolling(primaryError, 'connect');
-                    if (fallbackHandled) {
-                        return this.connect();
+                    this.logDebug('lifecycle.connect.start');
+                    try {
+                        emitStatus({
+                            wssID: this.wssID,
+                            status: 'connecting'
+                        });
+                    } catch (_) { /* renderer may be gone */ }
+                    await this.connection.connect();
+                    console.info('Connected successfully');
+                    this.logDebug('lifecycle.connect.success');
+                    this.signServerFailureCount = 0;
+
+                    if (this.reconnectTimer) {
+                        clearTimeout(this.reconnectTimer);
+                        this.reconnectTimer = null;
                     }
-                }
 
-                if (errorName === 'AlreadyConnectingError') {
-                    console.warn('Connect request ignored because a connection attempt is already in progress');
-                    this.logDebug('lifecycle.connect.alreadyConnecting', {
-                        message: errorMessage || null
-                    });
-                    return false;
-                }
-
-                const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, errorMessage);
-                const isSignServerIssue = this.isSignServerError(primaryError, errorMessage);
-
-                this.logDebug('lifecycle.connect.error', {
-                    errorName: primaryError?.name || null,
-                    errorReason: primaryError?.reason || null,
-                    rawMessage: errorMessage || null,
-                    userMessage: userFacingMessage
-                });
-
-                // Treat user offline / ended stream as non-fatal and retry on a safe fixed interval
-                const isOffline = primaryError && (
-                    primaryError.name === 'UserOfflineError' ||
-                    (errorMessage && (errorMessage.includes('LIVE has ended') || errorMessage.includes('Live stream has ended') || errorMessage.includes('live has ended')))
-                );
-
-                // Fatal if user likely doesn't exist or room cannot be retrieved
-                const isLikelyFatal = errorMessage && (
-                    errorMessage.includes("User doesn't exist") ||
-                    errorMessage.includes('Failed to retrieve room_id')
-                );
-
-                const isRateLimited = errorMessage && (errorMessage.includes('429') || errorMessage.toLowerCase().includes('too many requests'));
-
-                if (isLikelyFatal) {
-                    console.error('Fatal error - user might not exist or might be a display name:', this.username);
-                    this.handleFatalError(primaryError || err);
-                    return false;
-                }
-
-                if (isSignServerIssue) {
-                    if (this.sessionId) {
-                        const fallbackHandled = await this.tryFallbackToPolling(primaryError, 'connect_sign_error_session');
+                    this.offlineRetry = false;
+                    this.offlineReason = null;
+                    return true;
+                } catch (err) {
+                    const primaryError = err instanceof Error ? err : (err && err.exception instanceof Error ? err.exception : err);
+                    const errorName = primaryError && primaryError.name;
+                    const errorMessage = primaryError && primaryError.message ? primaryError.message : '';
+                    if (primaryError?.ssappFallback) {
+                        const fallbackHandled = await this.tryFallbackToPolling(primaryError, 'connect');
                         if (fallbackHandled) {
                             return this.connect();
                         }
-                        this.handleSignServerRejection(primaryError instanceof Error ? primaryError : err);
+                    }
+
+                    if (errorName === 'AlreadyConnectingError') {
+                        console.warn('Connect request ignored because a connection attempt is already in progress');
+                        this.logDebug('lifecycle.connect.alreadyConnecting', {
+                            message: errorMessage || null
+                        });
                         return false;
                     }
 
-                    if (!this.pollingFallbackActivated) {
-                        const fallbackHandled = await this.tryFallbackToPolling(primaryError, 'connect_sign_error');
-                        if (fallbackHandled) {
+                    const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, errorMessage);
+                    const isSignServerIssue = this.isSignServerError(primaryError, errorMessage);
+
+                    this.logDebug('lifecycle.connect.error', {
+                        errorName: primaryError?.name || null,
+                        errorReason: primaryError?.reason || null,
+                        rawMessage: errorMessage || null,
+                        userMessage: userFacingMessage
+                    });
+
+                    const isOffline = primaryError && (
+                        primaryError.name === 'UserOfflineError' ||
+                        (errorMessage && (errorMessage.includes('LIVE has ended') || errorMessage.includes('Live stream has ended') || errorMessage.includes('live has ended')))
+                    );
+                    const isLikelyFatal = errorMessage && (
+                        errorMessage.includes("User doesn't exist") ||
+                        errorMessage.includes('Failed to retrieve room_id')
+                    );
+                    const isRateLimited = errorMessage && (errorMessage.includes('429') || errorMessage.toLowerCase().includes('too many requests'));
+
+                    if (isLikelyFatal) {
+                        console.error('Fatal error - user might not exist or might be a display name:', this.username);
+                        this.handleFatalError(primaryError || err);
+                        return false;
+                    }
+
+                    if (isSignServerIssue) {
+                        this.signServerFailureCount = (this.signServerFailureCount || 0) + 1;
+                        const fallbackThresholdReached = this.signServerFailureCount >= SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD;
+
+                        if (this.sessionId || (fallbackThresholdReached && !this.pollingFallbackActivated)) {
+                            const fallbackStage = this.sessionId ? 'connect_sign_error_session' : 'connect_sign_error_threshold';
+                            const fallbackHandled = await this.tryFallbackToPolling(primaryError, fallbackStage);
+                            if (fallbackHandled) {
+                                return this.connect();
+                            }
+                            if (this.sessionId) {
+                                this.handleSignServerRejection(primaryError instanceof Error ? primaryError : err);
+                                return false;
+                            }
+                        }
+
+                        if (this.maybeBoostSignRequestTimeout(primaryError, errorMessage)) {
+                            this.logDebug('lifecycle.connect.retryImmediate', {
+                                reason: 'sign_server_timeout',
+                                timeoutMs: this.signRequestTimeoutMs,
+                                maxTimeoutMs: this.signRequestTimeoutMaxMs
+                            });
+
+                            const retryDelay = this.signRequestImmediateRetryDelayMs || 0;
+                            if (retryDelay > 0) {
+                                await ConnectionManager.delay(retryDelay);
+                            }
+
                             return this.connect();
                         }
+
+                        this.handleSignServerFailure(primaryError instanceof Error ? primaryError : err, errorMessage, userFacingMessage);
+                        return false;
+                    } else {
+                        this.signServerFailureCount = 0;
                     }
 
-                    if (this.maybeBoostSignRequestTimeout(primaryError, errorMessage)) {
-                        this.logDebug('lifecycle.connect.retryImmediate', {
-                            reason: 'sign_server_timeout',
-                            timeoutMs: this.signRequestTimeoutMs,
-                            maxTimeoutMs: this.signRequestTimeoutMaxMs
+                    this.logConsoleFailure(userFacingMessage, primaryError instanceof Error ? primaryError : null);
+
+                    try {
+                        emitStatus({
+                            wssID: this.wssID,
+                            status: 'failed',
+                            error: userFacingMessage
                         });
-
-                        const retryDelay = this.signRequestImmediateRetryDelayMs || 0;
-                        if (retryDelay > 0) {
-                            await ConnectionManager.delay(retryDelay);
-                        }
-
-                        return this.connect();
+                    } catch (sendErr) {
+                        console.warn('Failed to send TikTok connection failure status:', sendErr);
                     }
 
-                    this.handleSignServerFailure(primaryError instanceof Error ? primaryError : err, errorMessage, userFacingMessage);
+                    if (!this.isStopped) {
+                        try {
+                            connectionStates.set(this.wssID, {
+                                isConnected: false,
+                                lastAttempt: Date.now(),
+                                isReconnecting: false,
+                                attemptInProgress: false
+                            });
+                        } catch (_) { /* noop */ }
+
+                        if (isRateLimited) {
+                            this.offlineRetry = false;
+                            this.offlineReason = 'Rate limited by TikTok';
+                            this.attemptReconnect(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS, { fixed: true, offline: false });
+                        } else if (isOffline) {
+                            this.offlineRetry = true;
+                            this.offlineReason = userFacingMessage || 'User is not live';
+                            this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
+                        } else {
+                            this.offlineRetry = false;
+                            this.offlineReason = null;
+                            this.attemptReconnect();
+                        }
+                    }
                     return false;
                 }
+            };
 
-                this.logConsoleFailure(userFacingMessage, primaryError instanceof Error ? primaryError : null);
-
-                try {
-                    emitStatus( {
-                        wssID: this.wssID,
-                        status: 'failed',
-                        error: userFacingMessage
-                    });
-                } catch (sendErr) {
-                    console.warn('Failed to send TikTok connection failure status:', sendErr);
+            const connectPromise = runConnect();
+            this.activeConnectPromise = connectPromise;
+            connectPromise.finally(() => {
+                if (this.activeConnectPromise === connectPromise) {
+                    this.activeConnectPromise = null;
                 }
-
-                if (!this.isStopped) {
-                    // Clear reconnecting flag before scheduling a new attempt
-                    try {
-                        connectionStates.set(this.wssID, {
-                            isConnected: false,
-                            lastAttempt: Date.now(),
-                            isReconnecting: false,
-                            attemptInProgress: false
-                        });
-                    } catch (_) { /* noop */ }
-
-                    if (isRateLimited) {
-                        this.offlineRetry = false;
-                        this.offlineReason = 'Rate limited by TikTok';
-                        this.attemptReconnect(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS, { fixed: true, offline: false });
-                    } else if (isOffline) {
-                        this.offlineRetry = true;
-                        this.offlineReason = userFacingMessage || 'User is not live';
-                        this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
-                    } else {
-                        this.offlineRetry = false;
-                        this.offlineReason = null;
-                        this.attemptReconnect();
-                    }
-                }
-                return false;
-            }
+            }).catch(() => {});
+            return connectPromise;
         }
 
         logConsoleFailure(userMessage, primaryError) {

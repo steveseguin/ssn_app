@@ -474,8 +474,9 @@ let autoActivateCaptureEnsured = false;
 const envForcesTikTokClassic = typeof process !== 'undefined' && process?.env?.SSAPP_FORCE_TIKTOK_CLASSIC === '1';
 const cliForcesTikTokClassic = envForcesTikTokClassic;
 let preferTikTokClassic = cliForcesTikTokClassic;
-let lastTikTokMode = 'tiktok-websocket';
+let lastTikTokMode = 'tiktok-legacy';
 let tikTokClassicSilentUpdate = false;
+let tiktokWebsocketSigningWarningShown = false;
 const ssappSigningGuideEnv = (typeof process !== 'undefined' && process?.env?.SSAPP_TIKTOK_SIGNING_GUIDE_URL)
     ? String(process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL).trim()
     : '';
@@ -2077,7 +2078,7 @@ async function newSource(target, username, startup = false, initialState = {}, i
             if (preferTikTokClassic || cliForcesTikTokClassic) {
                 defaultMode = 'classic';
             } else {
-                defaultMode = lastTikTokMode || 'tiktok-websocket';
+                defaultMode = lastTikTokMode || 'tiktok-legacy';
             }
         }
         
@@ -2183,7 +2184,7 @@ async function newSourceVideoID(target, videoID, startup = false, initialState =
         if (preferTikTokClassic || cliForcesTikTokClassic) {
             defaultMode = 'classic';
         } else {
-            defaultMode = lastTikTokMode || 'tiktok-websocket';
+            defaultMode = lastTikTokMode || 'tiktok-legacy';
         }
     }
 
@@ -2283,7 +2284,7 @@ async function newOtherSource(target, URL, startup = false, initialState = {}) {
         if (preferTikTokClassic || cliForcesTikTokClassic) {
             defaultMode = 'classic';
         } else {
-            defaultMode = lastTikTokMode || 'tiktok-websocket';
+            defaultMode = lastTikTokMode || 'tiktok-legacy';
         }
     }
 
@@ -3375,7 +3376,7 @@ function setupSourceControls(sourceElement) {
         if (modeSelector) {
             modeSelector.classList.remove('hidden');
             // Update the active state based on current connection mode
-            const fallbackMode = (preferTikTokClassic || cliForcesTikTokClassic) ? 'classic' : (lastTikTokMode || 'tiktok-websocket');
+    const fallbackMode = (preferTikTokClassic || cliForcesTikTokClassic) ? 'classic' : (lastTikTokMode || 'tiktok-legacy');
             const currentMode = source?.connectionMode || fallbackMode;
             modeSelector.querySelectorAll('.mode-option').forEach(opt => {
                 opt.classList.remove('active');
@@ -5580,7 +5581,7 @@ async function createYoutubeWebSocketWindowFromSource(source, tabid = false) {
     }
 }
 
-async function createTikTokWSSFromSource(source, strategy = 'websocket') { 
+async function createTikTokWSSFromSource(source, strategy = 'legacy') { 
     if (!ipcRenderer) return false;
     const cleanUsername = source.username?.replace('@', '').trim();
     if (!cleanUsername) {
@@ -5606,6 +5607,13 @@ async function createTikTokWSSFromSource(source, strategy = 'websocket') {
         const sessionId = source.tiktokSessionId || null;
         const ttTargetIdc = source.tiktokTtTargetIdc || null;
         const signing = resolveTikTokSigningConfigForIPC(source);
+
+        if (strategy === 'websocket' && !signing && !tiktokWebsocketSigningWarningShown) {
+            tiktokWebsocketSigningWarningShown = true;
+            const guide = typeof window.SSAPP_SIGNING_HELP_URL === 'string' ? window.SSAPP_SIGNING_HELP_URL : defaultSigningGuideUrl;
+            const guideSuffix = guide ? `\nSee ${guide}` : '';
+            Toast.warning('TikTok WebSocket Requires Signing', `Configure a signing service or API key for reliable use.${guideSuffix}`);
+        }
 
         const wssID = await ipcRenderer.invoke('createTikTokConnection', {
             username: cleanUsername,
@@ -5689,6 +5697,12 @@ function showTikTokSignInMenu(sourceId) {
                 <a href="${signingHelpUrl}" target="_blank" style="color: #93c5fd;">Follow this guide</a> to request and enter the community key.
             </p>`
         : '';
+    const roomIdInputId = `tiktok-signing-room-id-${sourceId}`;
+    const emailInputId = `tiktok-signing-email-${sourceId}`;
+    const autoValidateInputId = `tiktok-signing-auto-validate-${sourceId}`;
+    const existingRoomId = typeof source.tiktokSigningRoomId === 'string' ? source.tiktokSigningRoomId : '';
+    const existingEmail = typeof source.tiktokSigningEmail === 'string' ? source.tiktokSigningEmail : '';
+    const autoValidateEnabled = !!source.tiktokSigningAutoValidate;
     const signingSettingsBlock = `
         <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
             <h4 style="margin: 0 0 10px 0; font-size: 15px;">Euler signing (optional)</h4>
@@ -5718,6 +5732,16 @@ function showTikTokSignInMenu(sourceId) {
             <p style="margin: 0 0 12px 0; font-size: 13px; color: #e2e8f0;">
                 Stay signed in using the button below, open the live room you care about, then click <em>Generate signing keys</em> to pull the latest <code>msToken</code>, <code>X-Bogus</code>, and <code>X-Gnarly</code> from the hidden TikTok window.
             </p>
+            <div style="display: grid; gap: 10px; margin-bottom: 10px;">
+                <label for="${roomIdInputId}" style="font-size: 13px; color: #cbd5f5;">Preferred room ID</label>
+                <input id="${roomIdInputId}" type="text" autocomplete="off" spellcheck="false" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #f8fafc;" value="${ssappEscapeHtml(existingRoomId)}" placeholder="1234567890123456789">
+                <label for="${emailInputId}" style="font-size: 13px; color: #cbd5f5;">Contact email (optional, for TikTok request logs)</label>
+                <input id="${emailInputId}" type="email" autocomplete="off" spellcheck="false" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #f8fafc;" value="${ssappEscapeHtml(existingEmail)}" placeholder="name@example.com">
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #e2e8f0; margin-top: 4px;">
+                    <input id="${autoValidateInputId}" type="checkbox" ${autoValidateEnabled ? 'checked' : ''} style="accent-color: #0ea5e9;">
+                    After generating, ping TikTok's fetch endpoint to confirm the signatures work
+                </label>
+            </div>
             <div style="display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;">
                 <button id="tiktok-signing-generate-${sourceId}" onclick="tiktokGenerateSigningParameters('${sourceId}')" class="button" style="background: #0ea5e9;">
                     🔐 Generate signing keys
@@ -5846,10 +5870,22 @@ function renderTikTokSigningResults(sourceId) {
                 `).join('')}
             </div>`
         : '';
+    const validation = signingState.validation && typeof signingState.validation === 'object'
+        ? signingState.validation
+        : null;
+    const validationBlock = validation && validation.attempted
+        ? `<div style="background: rgba(34, 197, 94, 0.1); border-radius: 4px; padding: 6px 8px; margin-bottom: 8px; color: ${validation.ok ? '#4ade80' : '#fbbf24'};">
+                <strong>Fetch validation:</strong>
+                ${validation.ok
+                    ? `Success (HTTP ${validation.status || '200'}) at ${new Date(validation.timestamp || Date.now()).toLocaleString()}`
+                    : `Failed${validation.status ? ` (HTTP ${validation.status})` : ''}${validation.error ? ` – ${ssappEscapeHtml(validation.error)}` : ''}`}
+            </div>`
+        : '';
     container.innerHTML = `
         <div style="background: rgba(15, 23, 42, 0.4); border-radius: 6px; padding: 10px;">
             <div style="font-size: 12px; color: #cbd5f5; margin-bottom: 4px;">Last updated ${timestamp}</div>
             ${warningsBlock}
+            ${validationBlock}
             <pre style="white-space: pre-wrap; word-break: break-word; background: #0f172a; border-radius: 4px; padding: 8px; max-height: 220px; overflow-y: auto;">${ssappEscapeHtml(payloadJson)}</pre>
         </div>
     `;
@@ -5898,11 +5934,18 @@ async function tiktokGenerateSigningParameters(sourceId) {
     const source = stateManager.getSource(sourceId);
     if (!source) return;
     const actionButton = document.getElementById(`tiktok-signing-generate-${sourceId}`);
+    const roomIdInput = document.getElementById(`tiktok-signing-room-id-${sourceId}`);
+    const emailInput = document.getElementById(`tiktok-signing-email-${sourceId}`);
+    const validateCheckbox = document.getElementById(`tiktok-signing-auto-validate-${sourceId}`);
+    const roomIdValue = typeof roomIdInput?.value === 'string' ? roomIdInput.value.trim() : '';
+    const emailValue = typeof emailInput?.value === 'string' ? emailInput.value.trim() : '';
+    const autoValidate = !!validateCheckbox?.checked;
 
-    if (!source.tiktokSessionId) {
-        Toast.error("TikTok Signing", "Sign in with Browser first so we can reuse your TikTok cookies.");
-        return;
-    }
+    stateManager.updateSource(sourceId, {
+        tiktokSigningRoomId: roomIdValue || null,
+        tiktokSigningEmail: emailValue || null,
+        tiktokSigningAutoValidate: autoValidate
+    });
 
     const originalLabel = actionButton ? actionButton.innerHTML : '';
     if (actionButton) {
@@ -5911,7 +5954,11 @@ async function tiktokGenerateSigningParameters(sourceId) {
     }
 
     try {
-        const response = await ipcRenderer.invoke('tiktokGenerateSigningParameters', {});
+        const response = await ipcRenderer.invoke('tiktokGenerateSigningParameters', {
+            roomId: roomIdValue || null,
+            email: emailValue || null,
+            validate: autoValidate
+        });
         if (!response || response.success !== true || !response.parameters) {
             const errorMsg = response?.error || 'Failed to generate signing parameters.';
             throw new Error(errorMsg);
@@ -5928,10 +5975,19 @@ async function tiktokGenerateSigningParameters(sourceId) {
             tiktokSigningParameters: {
                 payload: response.parameters,
                 warnings,
+                validation: response.validation || null,
                 fetchedAt: new Date().toISOString()
             }
         });
         renderTikTokSigningResults(sourceId);
+        const validationResult = response.validation;
+        if (validationResult && validationResult.attempted) {
+            if (validationResult.ok) {
+                Toast.success("TikTok Signing", `TikTok fetch validation succeeded (HTTP ${validationResult.status || 200}).`);
+            } else {
+                Toast.warning("TikTok Signing", validationResult.error || 'TikTok fetch validation failed.');
+            }
+        }
         Toast.success("TikTok Signing", "Signing parameters collected.");
     } catch (error) {
         console.error('Failed to collect TikTok signing parameters:', error);
@@ -6592,7 +6648,7 @@ function updatePreferTikTokClassicFromState(options = {}) {
     } else if (stateManager.state?.global?.preferTikTokLegacy) {
         lastTikTokMode = 'tiktok-legacy';
     } else {
-        lastTikTokMode = 'tiktok-websocket';
+        lastTikTokMode = 'tiktok-legacy';
     }
 
     const classicChanged = options.forceApply || previousClassic !== newClassicValue;
@@ -6861,7 +6917,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (source.target === 'tiktok' && !source.connectionMode) {
             const defaultMode = (preferTikTokClassic || cliForcesTikTokClassic)
             ? 'classic'
-            : (lastTikTokMode || 'tiktok-websocket');
+            : (lastTikTokMode || 'tiktok-legacy');
             console.log(`Setting default ${defaultMode} mode for ${source.id} on startup`);
             stateManager.updateSource(source.id, { connectionMode: defaultMode });
         }
@@ -6953,7 +7009,7 @@ document.addEventListener('DOMContentLoaded', async function() {
                 if (sourceElement) {
                     const fallbackMode = (preferTikTokClassic || cliForcesTikTokClassic)
                         ? 'classic'
-                        : (lastTikTokMode || 'tiktok-websocket');
+                        : (lastTikTokMode || 'tiktok-legacy');
                     const mode = source.connectionMode || fallbackMode;
                     
                     // Update button text

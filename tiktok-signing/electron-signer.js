@@ -36,10 +36,9 @@
  */
 
 const crypto = require("node:crypto");
-const fs = require("node:fs/promises");
 const path = require("node:path");
 
-const DEFAULT_BUNDLE_PATH = path.join(__dirname, "berrrk.js");
+const DEFAULT_BUNDLE_PATH = path.join(__dirname, "berrrk.js"); // retained for compatibility, unused without injection
 const PAGE_LOAD_TIMEOUT_MS = 20000;
 
 function getWebContents(win) {
@@ -56,6 +55,19 @@ function getWebContents(win) {
   return wc;
 }
 
+function isMainFrameLoading(wc) {
+  if (!wc) {
+    return false;
+  }
+  if (typeof wc.isLoadingMainFrame === "function") {
+    return wc.isLoadingMainFrame();
+  }
+  if (typeof wc.isLoading === "function") {
+    return wc.isLoading();
+  }
+  return false;
+}
+
 async function waitForDomReady(win, timeout = PAGE_LOAD_TIMEOUT_MS) {
   const wc = getWebContents(win);
   if (!wc) {
@@ -63,14 +75,15 @@ async function waitForDomReady(win, timeout = PAGE_LOAD_TIMEOUT_MS) {
   }
 
   const loading =
-    (typeof wc.isLoadingMainFrame === "function" && wc.isLoadingMainFrame()) ||
-    (typeof wc.isLoading === "function" && wc.isLoading());
+    isMainFrameLoading(wc) ||
+    (!wc.isLoadingMainFrame && typeof wc.isLoading === "function" && wc.isLoading());
   if (!loading) {
     return;
   }
 
   await new Promise((resolve, reject) => {
     let settled = false;
+    const currentUrl = typeof wc.getURL === "function" ? wc.getURL() : "";
     const cleanup = () => {
       if (settled) {
         return;
@@ -110,9 +123,22 @@ async function waitForDomReady(win, timeout = PAGE_LOAD_TIMEOUT_MS) {
       reject(new Error("TikTok window closed before it finished loading."));
     };
 
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
+      if (settled) {
+        return;
+      }
+      let readyState = null;
+      try {
+        readyState = await wc.executeJavaScript("document.readyState", true);
+      } catch (_) {}
+      if (readyState === "interactive" || readyState === "complete") {
+        cleanup();
+        resolve();
+        return;
+      }
       cleanup();
-      reject(new Error("Timed out waiting for the TikTok window to finish loading."));
+      const urlMeta = currentUrl ? ` for ${currentUrl}` : "";
+      reject(new Error(`Timed out waiting for the TikTok window to finish loading${urlMeta}.`));
     }, timeout);
 
     wc.once("did-finish-load", onFinish);
@@ -183,30 +209,31 @@ async function exec(win, source, attempt = 0) {
  * @param {Electron.BrowserWindow} win
  * @param {{bundlePath?: string}=} options
  */
-async function injectCrawlerBundle(win, options = {}) {
+async function injectCrawlerBundle(win) {
   await waitForDomReady(win);
-  const bundleAlreadyLoaded = await exec(
+  const status = await exec(
     win,
-    "Boolean(window.__tiktokCrawlerReady && window.byted_acrawler)"
+    `
+      (() => {
+        const crawler = window.byted_acrawler;
+        const hasCrawler = Boolean(crawler);
+        const hasSign = Boolean(crawler && typeof crawler.sign === "function");
+        const hasFrontierSign = Boolean(crawler && typeof crawler.frontierSign === "function");
+        return {
+          hasCrawler,
+          hasSign,
+          hasFrontierSign,
+          ready: hasCrawler && (hasSign || hasFrontierSign)
+        };
+      })();
+    `
   );
-  if (bundleAlreadyLoaded) {
-    return;
-  }
-
-  const bundlePath = options.bundlePath || DEFAULT_BUNDLE_PATH;
-  const source = await fs.readFile(bundlePath, "utf8");
-  await exec(win, source);
-  await waitForDomReady(win);
-
-  const ready = await exec(
-    win,
-    "window.__tiktokCrawlerReady = Boolean(window.byted_acrawler); window.__tiktokCrawlerReady;"
-  );
-  if (!ready) {
+  if (!status || !status.ready) {
     throw new Error(
-      "berrrk.js did not expose window.byted_acrawler. Ensure the window is a real TikTok page."
+      "TikTok did not expose window.byted_acrawler in this page. Open a live room before generating signing keys."
     );
   }
+  return status;
 }
 
 function normalizePathWithQuery(input, baseUrl) {
@@ -275,6 +302,52 @@ async function readMsTokenFromSession(win) {
   }
 }
 
+function buildWebcastFetchParams({
+  roomId,
+  deviceId,
+  userAgent,
+  browserName,
+  browserVersion,
+  msToken,
+  email
+}) {
+  const base = {
+    aid: "1988",
+    app_language: "en",
+    app_name: "tiktok_web",
+    browser_language: "en-US",
+    browser_name: browserName || "Electron",
+    browser_online: "true",
+    browser_version: browserVersion || "1.0.0",
+    cookie_enabled: "true",
+    cursor: "",
+    debug: "false",
+    device_id: deviceId,
+    device_platform: "web",
+    did_rule: "3",
+    fetch_rule: "1",
+    history_comment_count: "0",
+    identity: "audience",
+    internal_ext: "",
+    live_id: "12",
+    notice: email || "SSAPP_SIGN_HELPER",
+    resp_content_type: "protobuf",
+    room_id: roomId || "",
+    screen_height: "1080",
+    screen_width: "1920",
+    tz_name: "UTC",
+    version_code: "331310",
+    msToken: msToken || "",
+    platform: "pc",
+    referer: "",
+    user_agent: userAgent || ""
+  };
+  if (email) {
+    base.contact_us = email;
+  }
+  return base;
+}
+
 /**
  * Generates the full parameter payload (device id, msToken, X-Bogus, X-Gnarly)
  * inside the provided BrowserWindow.
@@ -308,19 +381,152 @@ async function generateSigningParameters(win, options = {}) {
     deviceId = randomDeviceId(),
     urlToSign = null,
     pathWithQuery: explicitPath = null,
-    msToken: msTokenOverride = null
+    msToken: msTokenOverride = null,
+    activeUrl: activeUrlOverride = null
   } = options;
 
   const pathWithQuery = deriveSigningPath(win, roomId, urlToSign, explicitPath);
   const msTokenFromSession = typeof msTokenOverride === "string" && msTokenOverride.trim()
     ? msTokenOverride.trim()
     : await readMsTokenFromSession(win);
+  const fetchParams = buildWebcastFetchParams({
+    roomId,
+    deviceId,
+    userAgent,
+    browserName,
+    browserVersion,
+    msToken: msTokenFromSession,
+    email
+  });
+  const activeUrl =
+    typeof activeUrlOverride === "string" && activeUrlOverride.trim()
+      ? activeUrlOverride.trim()
+      : (() => {
+          try {
+            const current = win && win.webContents && typeof win.webContents.getURL === "function"
+              ? win.webContents.getURL()
+              : "";
+            return typeof current === "string" && current ? current : "https://www.tiktok.com/";
+          } catch (error) {
+            return "https://www.tiktok.com/";
+          }
+        })();
+
+  async function tryFetchFromWebcast() {
+    if (!roomId) {
+      return null;
+    }
+    const fetchScript = `
+      (() => {
+        const requestConfig = ${JSON.stringify({
+          url: "https://webcast.tiktok.com/webcast/im/fetch/",
+          referer: activeUrl,
+          params: fetchParams
+        })};
+        try {
+          const requestUrl = new URL(requestConfig.url);
+          const search = new URLSearchParams(requestConfig.params || {});
+          requestUrl.search = search.toString();
+          return fetch(requestUrl.toString(), {
+            method: "GET",
+            credentials: "include",
+            headers: {
+              "Referer": requestConfig.referer || window.location.href
+            }
+          }).then((response) => {
+            return {
+              ok: Boolean(response && response.ok),
+              status: response ? response.status : null,
+              statusText: response ? response.statusText : null,
+              url: response && response.url ? response.url : requestUrl.toString()
+            };
+          }).catch((error) => ({
+            ok: false,
+            status: null,
+            statusText: null,
+            error: error && (error.stack || error.message) ? (error.stack || error.message) : String(error),
+            url: requestUrl.toString()
+          }));
+        } catch (fetchError) {
+          return {
+            ok: false,
+            status: null,
+            statusText: null,
+            error: fetchError && (fetchError.stack || fetchError.message) ? (fetchError.stack || fetchError.message) : String(fetchError),
+            url: ""
+          };
+        }
+      })();
+    `;
+    const fetchResult = await exec(win, fetchScript);
+    if (!fetchResult || !fetchResult.ok || !fetchResult.url) {
+      return null;
+    }
+    let parsedUrl = null;
+    try {
+      parsedUrl = new URL(fetchResult.url);
+    } catch (_) {
+      parsedUrl = null;
+    }
+    if (!parsedUrl) {
+      return null;
+    }
+    const searchParams = parsedUrl.searchParams;
+    const xBogus =
+      searchParams.get("X-Bogus") ||
+      searchParams.get("X_Bogus") ||
+      searchParams.get("x-bogus") ||
+      "";
+    const xGnarly =
+      searchParams.get("X-Gnarly") ||
+      searchParams.get("X_Gnarly") ||
+      searchParams.get("x-gnarly") ||
+      "";
+    const signature =
+      searchParams.get("_signature") ||
+      searchParams.get("signature") ||
+      searchParams.get("X-Signature") ||
+      "";
+    const finalMsToken =
+      searchParams.get("msToken") ||
+      searchParams.get("ms_token") ||
+      msTokenFromSession ||
+      "";
+    const finalDeviceId = searchParams.get("device_id") || deviceId;
+    const normalizedPath = parsedUrl.pathname + parsedUrl.search;
+    return {
+      payload: {
+        device_id: finalDeviceId,
+        msToken: finalMsToken,
+        "X-Bogus": xBogus,
+        "X-Gnarly": xGnarly,
+        _signature: signature,
+        browserName,
+        browserVersion,
+        userAgent,
+        pathWithQuery: normalizedPath,
+        room_id: searchParams.get("room_id") || roomId,
+        cursor: searchParams.get("cursor") || "",
+        notice: searchParams.get("notice") || fetchParams.notice
+      },
+      meta: {
+        status: fetchResult.status || null,
+        statusText: fetchResult.statusText || null
+      }
+    };
+  }
+
+  const fetchedResult = await tryFetchFromWebcast().catch(() => null);
+  if (fetchedResult && fetchedResult.payload) {
+    return fetchedResult.payload;
+  }
 
   const payloadScript = `
     (() => {
       try {
-        if (!window.byted_acrawler || typeof window.byted_acrawler.sign !== "function") {
-          throw new Error("byted_acrawler.sign is not available in this page context.");
+        const crawler = window.byted_acrawler;
+        if (!crawler) {
+          throw new Error("byted_acrawler is not available in this page context.");
         }
         const ensureMsToken = () => {
           try {
@@ -330,6 +536,11 @@ async function generateSigningParameters(win, options = {}) {
             return "";
           }
         };
+        const hasLegacySign = typeof crawler.sign === "function";
+        const hasFrontierSign = typeof crawler.frontierSign === "function";
+        if (!hasLegacySign && !hasFrontierSign) {
+          throw new Error("Neither byted_acrawler.sign nor byted_acrawler.frontierSign is available.");
+        }
         const deviceId = ${JSON.stringify(deviceId)};
         const roomId = ${JSON.stringify(roomId)};
         const userAgent = ${JSON.stringify(userAgent)};
@@ -344,27 +555,64 @@ async function generateSigningParameters(win, options = {}) {
         }
         const pathWithQuery = providedPath || (activeUrl.pathname + activeUrl.search);
 
-        const xbPayload = { url: pathWithQuery, user_agent: userAgent };
-        const xBogus = window.byted_acrawler.sign(xbPayload);
-
+        let xBogus = "";
         let xGnarly = "";
-        if (typeof window.byted_acrawler.encrypt === "function") {
-          try {
-            const gnarlyResponse = window.byted_acrawler.encrypt({
-              url: pathWithQuery,
-              user_agent: userAgent
-            });
-            xGnarly =
-              gnarlyResponse?.["X-GNARLY"] ||
-              gnarlyResponse?.["X-Gnarly"] ||
-              gnarlyResponse?.value ||
-              "";
-          } catch (err) {
-            console.warn("Failed to compute X-Gnarly", err);
+        if (hasLegacySign) {
+          const legacyPayload = { url: pathWithQuery, user_agent: userAgent };
+          xBogus = crawler.sign(legacyPayload);
+          if (typeof crawler.encrypt === "function") {
+            try {
+              const gnarlyResponse = crawler.encrypt({
+                url: pathWithQuery,
+                user_agent: userAgent
+              }) || {};
+              xGnarly =
+                gnarlyResponse["X-GNARLY"] ||
+                gnarlyResponse["X-Gnarly"] ||
+                gnarlyResponse["value"] ||
+                gnarlyResponse["x-gnarly"] ||
+                "";
+            } catch (err) {
+              console.warn("Failed to compute X-Gnarly via encrypt", err);
+            }
           }
+        } else if (hasFrontierSign) {
+          const query = pathWithQuery.includes("?") ? pathWithQuery.split("?").slice(1).join("?") : "";
+          let frontierResult = {};
+          try {
+            frontierResult =
+              crawler.frontierSign({
+                url: pathWithQuery,
+                path: pathWithQuery,
+                query,
+                user_agent: userAgent,
+                method: "GET",
+                headers: {}
+              }) || {};
+          } catch (frontierError) {
+            throw new Error(
+              "byted_acrawler.frontierSign failed: " +
+                (frontierError && frontierError.stack ? frontierError.stack : String(frontierError))
+            );
+          }
+          const frontierHeaders =
+            (frontierResult && typeof frontierResult === "object" && frontierResult.headers) || frontierResult || {};
+          xBogus =
+            frontierHeaders["X-Bogus"] ||
+            frontierHeaders["x-bogus"] ||
+            frontierHeaders["X_Bogus"] ||
+            frontierHeaders["xbogus"] ||
+            "";
+          xGnarly =
+            frontierHeaders["X-Gnarly"] ||
+            frontierHeaders["X-GNARLY"] ||
+            frontierHeaders["x-gnarly"] ||
+            frontierHeaders["X_Gnarly"] ||
+            frontierHeaders["x_gnarly"] ||
+            "";
         }
 
-        return {
+        const basePayload = {
           __success: true,
           payload: {
             device_id: deviceId,
@@ -378,6 +626,10 @@ async function generateSigningParameters(win, options = {}) {
             pathWithQuery
           }
         };
+        if (typeof window === "object" && window.location) {
+          basePayload.payload._signature = "";
+        }
+        return basePayload;
       } catch (error) {
         const message = error && (error.stack || error.message) ? (error.stack || error.message) : String(error);
         return { __success: false, __error: message };

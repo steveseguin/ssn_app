@@ -74,6 +74,15 @@ class StateManager {
                 if (source.tiktokSigningParameters === undefined) {
                     source.tiktokSigningParameters = null;
                 }
+                if (source.tiktokSigningRoomId === undefined) {
+                    source.tiktokSigningRoomId = null;
+                }
+                if (source.tiktokSigningEmail === undefined) {
+                    source.tiktokSigningEmail = null;
+                }
+                if (source.tiktokSigningAutoValidate === undefined) {
+                    source.tiktokSigningAutoValidate = false;
+                }
             });
         }
                 if (parsed.groups) {
@@ -159,7 +168,10 @@ class StateManager {
                         disableTikTokAutoFallback: false,
                         tiktokSigningApiKey: null,
                         tiktokSigningServiceUrl: null,
-                        tiktokSigningParameters: null
+                        tiktokSigningParameters: null,
+                        tiktokSigningRoomId: null,
+                        tiktokSigningEmail: null,
+                        tiktokSigningAutoValidate: false
                     });
                 });
             }
