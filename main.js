@@ -171,7 +171,7 @@ try {
             }
             console.log('[TikTok] localSigner.sign called. Options:', JSON.stringify(options));
             const targetUrl = options?.activeUrl || options?.landingUrl || null;
-            const win = await ensureTikTokSigningWindow(targetUrl, { allowNavigation: true });
+            const win = await ensureTikTokSigningWindow(targetUrl, { allowNavigation: false });
             const parameters = await tikTokSignerHelper.generateSigningParameters(win, {
                 urlToSign: url,
                 ...options

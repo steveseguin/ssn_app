@@ -2326,7 +2326,15 @@ class ConnectionManager {
 
                 if (typeof connectorDeserializeMessage === 'function') {
                     try {
-                        return connectorDeserializeMessage('ProtoMessageFetchResult', bytes);
+                        const proto = connectorDeserializeMessage('ProtoMessageFetchResult', bytes);
+                        this.logDebug('sign.local.fetchResult', {
+                            hasCursor: Boolean(proto?.cursor),
+                            wsUrl: proto?.wsUrl ? '[present]' : '[missing]',
+                            internalExtLength: proto?.internalExt ? String(proto.internalExt).length : 0,
+                            wsParamKeys: proto?.wsParams ? Object.keys(proto.wsParams) : null,
+                            messageCount: Array.isArray(proto?.messages) ? proto.messages.length : null
+                        });
+                        return proto;
                     } catch (decodeError) {
                         console.warn('[TikTok] Failed to decode fetch result via connector utilities:', decodeError?.message || decodeError);
                     }
@@ -2457,13 +2465,41 @@ class ConnectionManager {
                     // ignore cookie jar errors
                 }
             }
+
+            if (payload?.allCookies && typeof payload.allCookies === 'string') {
+                const segments = payload.allCookies.split(';');
+                for (const segment of segments) {
+                    const trimmed = segment.trim();
+                    if (!trimmed) continue;
+                    const eqIndex = trimmed.indexOf('=');
+                    if (eqIndex <= 0) continue;
+                    const name = trimmed.slice(0, eqIndex).trim();
+                    const value = trimmed.slice(eqIndex + 1);
+                    if (!name) continue;
+                    try {
+                        this.connection.webClient.cookieJar[name] = value;
+                    } catch (_) {
+                        // ignore cookie jar assignment issues
+                    }
+                }
+            }
         }
     }
 
     parseSignedFetchParams(pathWithQuery, fallbackRoomId) {
+        if (typeof pathWithQuery !== 'string' || !pathWithQuery.trim()) {
+            throw new Error('Local signer returned malformed fetch URL.');
+        }
+        let normalized = pathWithQuery.trim();
+        // Guard against payloads that only contain the query string
+        if (normalized.startsWith('?')) {
+            normalized = `/webcast/im/fetch/${normalized}`;
+        } else if (!normalized.startsWith('/') && !/^https?:\/\//i.test(normalized)) {
+            normalized = `/webcast/im/fetch/${normalized}`;
+        }
         let parsed;
         try {
-            parsed = new URL(pathWithQuery, 'https://webcast.tiktok.com');
+            parsed = new URL(normalized, 'https://webcast.tiktok.com');
         } catch (_) {
             throw new Error('Local signer returned malformed fetch URL.');
         }
