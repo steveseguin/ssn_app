@@ -8,7 +8,8 @@ class StateManager {
                 betaMode: false,
                 forceTikTokClassic: false,
                 preferTikTokLegacy: false,
-                lastTikTokMode: 'tiktok-websocket',
+                tiktokModeExplicitlySelected: false,
+                lastTikTokMode: 'tiktok-legacy',
                 youtubeAutoAdd: false,
                 youtubeAutoCleanup: false,
                 youtubeCheckInterval: 300000,
@@ -95,6 +96,9 @@ class StateManager {
                 if (!this.state.global.sessionBindings || typeof this.state.global.sessionBindings !== 'object') {
                     this.state.global.sessionBindings = {};
                 }
+                if (typeof this.state.global.tiktokModeExplicitlySelected !== 'boolean') {
+                    this.state.global.tiktokModeExplicitlySelected = false;
+                }
 
                 const allowedLastModes = new Set(['classic', 'tiktok-websocket', 'tiktok-legacy']);
                 let resolvedLastMode = this.state.global.lastTikTokMode;
@@ -104,13 +108,21 @@ class StateManager {
                         resolvedLastMode = storedLast;
                     } else if (this.state.global.forceTikTokClassic) {
                         resolvedLastMode = 'classic';
-                    } else if (this.state.global.preferTikTokLegacy) {
-                        resolvedLastMode = 'tiktok-legacy';
                     } else {
-                        resolvedLastMode = 'tiktok-websocket';
+                        resolvedLastMode = 'tiktok-legacy';
                     }
                 }
+
+                if (!this.state.global.tiktokModeExplicitlySelected && resolvedLastMode === 'tiktok-websocket') {
+                    resolvedLastMode = 'tiktok-legacy';
+                }
                 this.state.global.lastTikTokMode = resolvedLastMode;
+                try {
+                    localStorage.setItem('lastTikTokMode', resolvedLastMode);
+                    localStorage.setItem('tiktokModeExplicitlySelected', this.state.global.tiktokModeExplicitlySelected ? 'true' : 'false');
+                } catch (_) {
+                    // Ignore storage errors
+                }
             }
             
             // Also migrate old settings format if exists
@@ -154,7 +166,7 @@ class StateManager {
                         connectionMode: source.state?.connectionMode || (source.target === 'tiktok'
                             ? (this.state.global.forceTikTokClassic
                                 ? 'classic'
-                                : (this.state.global.lastTikTokMode || (this.state.global.preferTikTokLegacy ? 'tiktok-legacy' : 'tiktok-websocket')))
+                                : (this.state.global.lastTikTokMode || 'tiktok-legacy'))
                             : 'classic'),
                         isVisible: source.state?.togglehtml !== "false",
                         isMuted: source.state?.togglemute === "true",
@@ -188,7 +200,7 @@ class StateManager {
                         connectionMode: group.state?.connectionMode || (group.target === 'tiktok'
                             ? (this.state.global.forceTikTokClassic
                                 ? 'classic'
-                                : (this.state.global.lastTikTokMode || (this.state.global.preferTikTokLegacy ? 'tiktok-legacy' : 'tiktok-websocket')))
+                                : (this.state.global.lastTikTokMode || 'tiktok-legacy'))
                             : 'classic'),
                         autoActivate: group.state?.togglelock === "true",
                         groupVisible: group.state?.groupVisible !== "false",
@@ -204,10 +216,25 @@ class StateManager {
             this.state.global.youtubeAutoCleanup = localStorage.getItem('youtubeAutoCleanup') === 'true';
             this.state.global.forceTikTokClassic = localStorage.getItem('forceTikTokClassic') === 'true';
             this.state.global.preferTikTokLegacy = localStorage.getItem('preferTikTokLegacy') === 'true';
-            this.state.global.lastTikTokMode = this.state.global.forceTikTokClassic
-                ? 'classic'
-                : (this.state.global.preferTikTokLegacy ? 'tiktok-legacy' : 'tiktok-websocket');
+            const explicitDefault = localStorage.getItem('tiktokModeExplicitlySelected');
+            if (explicitDefault !== null) {
+                this.state.global.tiktokModeExplicitlySelected = explicitDefault === 'true';
+            }
+            const allowedLastModes = new Set(['classic', 'tiktok-websocket', 'tiktok-legacy']);
+            const storedLast = localStorage.getItem('lastTikTokMode');
+            if (storedLast && allowedLastModes.has(storedLast)) {
+                this.state.global.lastTikTokMode = storedLast;
+            }
+            if (!this.state.global.tiktokModeExplicitlySelected && this.state.global.lastTikTokMode === 'tiktok-websocket') {
+                this.state.global.lastTikTokMode = 'tiktok-legacy';
+            }
+            if (!allowedLastModes.has(this.state.global.lastTikTokMode)) {
+                this.state.global.lastTikTokMode = this.state.global.forceTikTokClassic
+                    ? 'classic'
+                    : 'tiktok-legacy';
+            }
             localStorage.setItem('lastTikTokMode', this.state.global.lastTikTokMode);
+            localStorage.setItem('tiktokModeExplicitlySelected', this.state.global.tiktokModeExplicitlySelected ? 'true' : 'false');
             const checkInterval = localStorage.getItem('youtubeCheckInterval');
             if (checkInterval) {
                 this.state.global.youtubeCheckInterval = parseInt(checkInterval);
@@ -382,7 +409,7 @@ class StateManager {
         let id = sourceData.id || this.generateSourceId(sourceData);
         const defaultTikTokMode = this.state.global.forceTikTokClassic
             ? 'classic'
-            : (this.state.global.lastTikTokMode || (this.state.global.preferTikTokLegacy ? 'tiktok-legacy' : 'tiktok-websocket'));
+            : (this.state.global.lastTikTokMode || 'tiktok-legacy');
         const source = {
             id,
             target: sourceData.target,
@@ -504,7 +531,7 @@ class StateManager {
             connectionMode: groupData.connectionMode || (groupData.target === 'tiktok'
                 ? (this.state.global.forceTikTokClassic
                     ? 'classic'
-                    : (this.state.global.lastTikTokMode || (this.state.global.preferTikTokLegacy ? 'tiktok-legacy' : 'tiktok-websocket')))
+                    : (this.state.global.lastTikTokMode || 'tiktok-legacy'))
                 : 'classic'),
             autoActivate: groupData.autoActivate || false,
             groupVisible: groupData.groupVisible !== false,
@@ -613,14 +640,23 @@ class StateManager {
         if ('preferTikTokLegacy' in updates) {
             localStorage.setItem('preferTikTokLegacy', updates.preferTikTokLegacy ? 'true' : 'false');
         }
+        if ('tiktokModeExplicitlySelected' in updates) {
+            const explicit = !!updates.tiktokModeExplicitlySelected;
+            this.state.global.tiktokModeExplicitlySelected = explicit;
+            localStorage.setItem('tiktokModeExplicitlySelected', explicit ? 'true' : 'false');
+        }
         if ('lastTikTokMode' in updates) {
             const allowed = new Set(['classic', 'tiktok-websocket', 'tiktok-legacy']);
             const requested = updates.lastTikTokMode;
             const sanitized = allowed.has(requested)
                 ? requested
-                : (this.state.global.forceTikTokClassic ? 'classic' : 'tiktok-websocket');
+                : (this.state.global.forceTikTokClassic ? 'classic' : 'tiktok-legacy');
             this.state.global.lastTikTokMode = sanitized;
             localStorage.setItem('lastTikTokMode', sanitized);
+            if (!('tiktokModeExplicitlySelected' in updates)) {
+                this.state.global.tiktokModeExplicitlySelected = true;
+                localStorage.setItem('tiktokModeExplicitlySelected', 'true');
+            }
         }
         
         this.emit('globalUpdated', { updates, oldState });

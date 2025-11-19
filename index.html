@@ -1374,7 +1374,7 @@ function updateSourceUI(element, source) {
                 if (mode === 'tiktok-websocket' && source.target === 'tiktok') {
                     activateButton.textContent = 'Connect TikTok WebSocket';
                 } else if (mode === 'tiktok-legacy' && source.target === 'tiktok') {
-                    activateButton.textContent = 'Connect TikTok Legacy';
+                    activateButton.textContent = 'Connect TikTok Polling';
                 } else if (mode === 'websocket') {
                     activateButton.textContent = 'Connect WebSocket';
                 } else {
@@ -2613,7 +2613,7 @@ function setGroupConnectionMode(groupElement, mode) {
     if (skipped > 0) {
         Toast.warning('Partial Mode Update', `Updated inactive streams; ${skipped} active source(s) unchanged. Stop them to switch modes.`);
     } else {
-        Toast.info('Connection Mode Updated', `All streams in ${group.username} now use ${mode === 'websocket' ? 'WebSocket' : (mode === 'tiktok-websocket' ? 'TikTok WS' : (mode === 'tiktok-legacy' ? 'TikTok Legacy' : 'Standard'))} mode`);
+        Toast.info('Connection Mode Updated', `All streams in ${group.username} now use ${mode === 'websocket' ? 'WebSocket' : (mode === 'tiktok-websocket' ? 'TikTok WS' : (mode === 'tiktok-legacy' ? 'TikTok Polling' : 'Standard'))} mode`);
     }
 }
 
@@ -3068,7 +3068,7 @@ function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
             if (srcForMode && srcForMode.status === 'activating') {
                 setActivateButtonConnecting(sourceElement);
             } else if (displayMode === 'tiktok-legacy') {
-                activateButton.innerText = 'Connect TikTok Legacy';
+                activateButton.innerText = 'Connect TikTok Polling';
             } else if (displayMode === 'tiktok-websocket') {
                 activateButton.innerText = 'Connect TikTok WebSocket';
             } else {
@@ -3364,12 +3364,13 @@ function setupSourceControls(sourceElement) {
                     </div>
                     <div class="mode-option" 
                          data-mode="tiktok-legacy" 
-                         onclick="setSourceConnectionMode(this.closest('.entry'), 'tiktok-legacy', this); updateModeSelector(this)">
-                        🕰️ Legacy
+                         onclick="setSourceConnectionMode(this.closest('.entry'), 'tiktok-legacy', this); updateModeSelector(this)"
+                         title="Use HTTP polling without signing (default).">
+                        🕰️ Polling
                     </div>
                 </div>
                 <div class="mode-info">
-                    <span class="info-icon" title="WebSocket uses the new v2.x signer (read-only). Legacy uses the former v1.x bridge. Standard opens a browser window.">ℹ️</span>
+                    <span class="info-icon" title="Polling uses TikTok’s HTTP endpoints (no signing, default). WebSocket uses the v2 signer and requires a stable signing setup. Standard opens a browser window.">ℹ️</span>
                 </div>`;
             controlPanel.appendChild(modeSelector);
         }
@@ -4247,7 +4248,7 @@ function restoreActivateButton(entryElement) {
         if (activeMode === 'tiktok-websocket') {
             activateButton.textContent = 'Connect TikTok WebSocket';
         } else if (activeMode === 'tiktok-legacy') {
-            activateButton.textContent = 'Connect TikTok Legacy';
+            activateButton.textContent = 'Connect TikTok Polling';
         } else {
             activateButton.textContent = translate('btn.activate');
         }
@@ -4688,7 +4689,7 @@ function describeTikTokMode(mode) {
         case 'tiktok-websocket':
             return 'TikTok WebSocket';
         case 'tiktok-legacy':
-            return 'TikTok Legacy';
+            return 'TikTok Polling';
         case 'classic':
             return 'TikTok Standard';
         default:
@@ -5634,7 +5635,7 @@ async function createTikTokWSSFromSource(source, strategy = 'legacy') {
         const isLegacyAttempt = strategy === 'legacy';
         if (!fallbackInfo || fallbackInfo.mode !== 'classic') {
             console.error('Error in TikTok connector from source:', error);
-            const label = isLegacyAttempt ? 'Legacy' : 'WebSocket';
+            const label = isLegacyAttempt ? 'Polling' : 'WebSocket';
             Toast.warning('TikTok Connector Error', `(${label}) Connection Failed: ${error.message || 'Please try again.'}`);
         }
         throw error; 
@@ -8613,7 +8614,7 @@ const translations = {
 			'source.add': 'Add a new source:',
 		'source.mode.standard': '📄 Standard',
 		'source.mode.websocket': '🌐 WebSocket',
-		'source.mode.legacy': '🕰️ Legacy',
+		'source.mode.legacy': '🕰️ Polling',
 		'source.autoactivate': 'Auto-activate',
 		'source.youtube.username': 'YouTube Username',
 		'source.youtube.videoid': 'YouTube Video ID',
@@ -8678,7 +8679,7 @@ const translations = {
 		'source.add': 'Adicionar nova fonte:',
 		'source.mode.standard': '📄 Padrão',
 		'source.mode.websocket': '🌐 WebSocket',
-		'source.mode.legacy': '🕰️ Legacy',
+		'source.mode.legacy': '🕰️ Polling',
 		'source.autoactivate': 'Ativar automaticamente',
 		'source.youtube.username': 'Nome de usuário do YouTube',
 		'source.youtube.videoid': 'ID do vídeo do YouTube',
@@ -8743,7 +8744,7 @@ const translations = {
 		'source.add': 'Añadir nueva fuente',
 		'source.mode.standard': '📄 Estándar',
 		'source.mode.websocket': '🌐 WebSocket',
-		'source.mode.legacy': '🕰️ Legacy',
+		'source.mode.legacy': '🕰️ Polling',
 		'source.autoactivate': 'Activar automáticamente',
 		'source.youtube.username': 'Nombre de usuario de YouTube',
 		'source.youtube.videoid': 'ID de video de YouTube',
@@ -8810,7 +8811,7 @@ const translations = {
 		'source.add': 'Přidat nový zdroj:',
 		'source.mode.standard': '📄 Standardní',
 		'source.mode.websocket': '🌐 WebSocket',
-		'source.mode.legacy': '🕰️ Legacy',
+		'source.mode.legacy': '🕰️ Polling',
 		'source.autoactivate': 'Automaticky aktivovat',
 		'source.youtube.username': 'Uživatelské jméno YouTube',
 		'source.youtube.videoid': 'ID videa YouTube',
@@ -8875,7 +8876,7 @@ const translations = {
 		'source.add': 'Ajouter une nouvelle source',
 		'source.mode.standard': '📄 Standard',
 		'source.mode.websocket': '🌐 WebSocket',
-		'source.mode.legacy': '🕰️ Legacy',
+		'source.mode.legacy': '🕰️ Polling',
 		'source.autoactivate': 'Activation automatique',
 		'source.youtube.username': 'Nom d\'utilisateur YouTube',
 		'source.youtube.videoid': 'ID de vidéo YouTube',
@@ -8940,7 +8941,7 @@ const translations = {
 		'source.add': 'Neue Quelle hinzufügen',
 		'source.mode.standard': '📄 Standard',
 		'source.mode.websocket': '🌐 WebSocket',
-		'source.mode.legacy': '🕰️ Legacy',
+		'source.mode.legacy': '🕰️ Polling',
 		'source.autoactivate': 'Automatisch aktivieren',
 		'source.youtube.username': 'YouTube-Benutzername',
 		'source.youtube.videoid': 'YouTube-Video-ID',
@@ -9005,7 +9006,7 @@ const translations = {
 		'source.add': 'Aggiungi nuova fonte',
 		'source.mode.standard': '📄 Standard',
 		'source.mode.websocket': '🌐 WebSocket',
-		'source.mode.legacy': '🕰️ Legacy',
+		'source.mode.legacy': '🕰️ Polling',
 		'source.autoactivate': 'Attivazione automatica',
 		'source.youtube.username': 'Nome utente YouTube',
 		'source.youtube.videoid': 'ID video YouTube',
@@ -9070,7 +9071,7 @@ const translations = {
 		'source.add': '新しいソースを追加',
 		'source.mode.standard': '📄 スタンダード',
 		'source.mode.websocket': '🌐 WebSocket',
-		'source.mode.legacy': '🕰️ Legacy',
+		'source.mode.legacy': '🕰️ Polling',
 		'source.autoactivate': '自動有効化',
 		'source.youtube.username': 'YouTubeユーザー名',
 		'source.youtube.videoid': 'YouTube動画ID',
@@ -9135,7 +9136,7 @@ const translations = {
 		'source.add': '添加新来源',
 		'source.mode.standard': '📄 标准',
 		'source.mode.websocket': '🌐 WebSocket',
-		'source.mode.legacy': '🕰️ Legacy',
+		'source.mode.legacy': '🕰️ Polling',
 		'source.autoactivate': '自动激活',
 		'source.youtube.username': 'YouTube用户名',
 		'source.youtube.videoid': 'YouTube视频ID',
@@ -9200,7 +9201,7 @@ const translations = {
 		'source.add': '새 소스 추가',
 		'source.mode.standard': '📄 표준',
 		'source.mode.websocket': '🌐 WebSocket',
-		'source.mode.legacy': '🕰️ Legacy',
+		'source.mode.legacy': '🕰️ Polling',
 		'source.autoactivate': '자동 활성화',
 		'source.youtube.username': 'YouTube 사용자명',
 		'source.youtube.videoid': 'YouTube 동영상 ID',
@@ -9265,7 +9266,7 @@ const translations = {
 		'source.add': 'Добавить новый источник',
 		'source.mode.standard': '📄 Стандартный',
 		'source.mode.websocket': '🌐 WebSocket',
-		'source.mode.legacy': '🕰️ Legacy',
+		'source.mode.legacy': '🕰️ Polling',
 		'source.autoactivate': 'Автоактивация',
 		'source.youtube.username': 'Имя пользователя YouTube',
 		'source.youtube.videoid': 'ID видео YouTube',
@@ -9332,7 +9333,7 @@ const translations = {
 		'source.add': 'Yeni kaynak ekle:',
 		'source.mode.standard': '📄 Standart',
 		'source.mode.websocket': '🌐 WebSocket',
-		'source.mode.legacy': '🕰️ Legacy',
+		'source.mode.legacy': '🕰️ Polling',
 		'source.autoactivate': 'Otomatik etkinleştir',
 		'source.youtube.username': 'YouTube Kullanıcı Adı',
 		'source.youtube.videoid': 'YouTube Video ID',
