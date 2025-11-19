@@ -133,7 +133,7 @@ const explicitLogDisable = process.argv.includes('--disable-logs') || process.en
 const isDebugLoggingEnabled = explicitLogDisable ? false : (explicitLogEnable || isDevMode);
 
 if (!isDebugLoggingEnabled) {
-    const noop = () => {};
+    const noop = () => { };
     console.log = noop;
     console.info = noop;
     console.debug = noop;
@@ -149,11 +149,11 @@ let TikTokLiveConnectionClass = null;
 let TikTokPollingFallbackClass = null;
 let usingLegacyTikTokConnector = false;
 let ConnectionManager = null;
-let cleanupConnection = () => {};
-let sendToBackground = () => {};
-let sendBatchToBackground = () => {};
-let logTikTokForwardedMessage = () => {};
-let sendToTikTok = () => {};
+let cleanupConnection = () => { };
+let sendToBackground = () => { };
+let sendBatchToBackground = () => { };
+let logTikTokForwardedMessage = () => { };
+let sendToTikTok = () => { };
 let wssID = 0;
 let tiktokSigningWindow = null;
 let detachSigningWindowHook = null;
@@ -167,6 +167,7 @@ try {
     const tikTokEnv = createTikTokEnvironment({
         connector: tiktokConnector,
         shouldEnableTikTokLogging,
+        signerHelper: tikTokSignerHelper,
         isDevMode: () => isDevMode,
         resolveLogDirectory: () => app.getPath('userData'),
         getMainWindow: () => mainWindow,
@@ -235,7 +236,7 @@ function getCachedSettings() {
                 ? cachedState.settings
                 : {};
         }
-    } catch (_) {}
+    } catch (_) { }
     return {};
 }
 
@@ -459,7 +460,7 @@ if (!sessions[currentSessionName]) {
     store.set('currentSession', 'default');
 }
 
-process.on("uncaughtException", function(error) {
+process.on("uncaughtException", function (error) {
     console.error("Uncaught Exception:", error);
     if (!isDevMode) {
         dialog.showErrorBox('Application Error',
@@ -758,7 +759,7 @@ async function fetchWithTimeout(url, timeoutMs = SOCIAL_STREAM_REMOTE_TIMEOUT_MS
         const text = await response.text();
         return { text };
     } catch (error) {
-        fetchPromise.catch(() => {}); // Prevent unhandled rejection if timeout wins
+        fetchPromise.catch(() => { }); // Prevent unhandled rejection if timeout wins
         clearTimeout(timeoutId);
         throw error;
     }
@@ -854,9 +855,9 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
         }
         throw new Error(reasons.join(' | '));
     })()
-    .finally(() => {
-        socialStreamLoadPromises.delete(cacheKey);
-    });
+        .finally(() => {
+            socialStreamLoadPromises.delete(cacheKey);
+        });
 
     socialStreamLoadPromises.set(cacheKey, promise);
     return promise;
@@ -1166,7 +1167,7 @@ function loadWindowState(url) {
     if (!url) {
         return store.get("windowState"); // Fallback for main window
     }
-    
+
     let stateKey;
     if (url.includes("dock.html")) stateKey = "windowState_dock";
     else if (url.includes("input.html")) stateKey = "windowState_input";
@@ -1177,12 +1178,12 @@ function loadWindowState(url) {
         const baseUrl = url.split('?')[0].split('#')[0];
         stateKey = "windowState_" + baseUrl.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
     }
-    
+
     const savedState = store.get(stateKey);
     if (savedState) {
         return savedState;
     }
-    
+
     // Return appropriate defaults based on window type
     const defaultState = {
         width: url.includes("input.html") ? 600 : 800,
@@ -1463,7 +1464,7 @@ function generateArgHTML(argInfo) {
         const alias = argInfo.alias[key] ? argInfo.alias[key].join(', ') : '';
         const type = argInfo.boolean.includes(key) ? 'boolean' :
             argInfo.string.includes(key) ? 'string' :
-            argInfo.number.includes(key) ? 'number' : '';
+                argInfo.number.includes(key) ? 'number' : '';
         const defaultValue = argInfo.default[key] !== undefined ? argInfo.default[key] : '';
 
         html += `
@@ -1496,7 +1497,7 @@ if (!allowMultipleInstances) {
 }
 
 function getDirectories(path) {
-    return fs.readdirSync(path).filter(function(file) {
+    return fs.readdirSync(path).filter(function (file) {
         return fs.statSync(path + "/" + file).isDirectory();
     });
 }
@@ -1566,7 +1567,7 @@ try {
                         name: json.name,
                         location: dir + "\\" + d + "\\" + ddd[0],
                     });
-                } catch (e) {}
+                } catch (e) { }
             });
         }
     } else if (process.platform == "darwin") {
@@ -1748,14 +1749,14 @@ class WebSocketServer {
                             if (client.inn == outChannel) {
                                 try {
                                     client.send(message.toString());
-                                } catch (e) {}
+                                } catch (e) { }
                             }
                         } else if (client.inn || outChannel) {
                             // skip
                         } else {
                             try {
                                 client.send(message.toString());
-                            } catch (e) {}
+                            } catch (e) { }
                         }
                     }
                 });
@@ -2505,7 +2506,7 @@ function stealthHideView(view) {
         const offY = Math.floor(vb.y - 3000);
         view.setBounds({ x: offX, y: offY, width: 1, height: 1 });
         // Avoid taskbar clutter while hidden
-        try { view.setSkipTaskbar(true); } catch (_) {}
+        try { view.setSkipTaskbar(true); } catch (_) { }
         // Keep window technically visible; do not call hide()/minimize()
         return false;
     } catch (_) {
@@ -2522,8 +2523,8 @@ function stealthShowView(view) {
         if (view.__prevBounds && typeof view.__prevBounds.x === 'number') {
             view.setBounds(view.__prevBounds);
         }
-        try { view.setSkipTaskbar(false); } catch (_) {}
-        try { view.show(); } catch (_) {}
+        try { view.setSkipTaskbar(false); } catch (_) { }
+        try { view.show(); } catch (_) { }
         return true;
     } catch (_) {
         return true;
@@ -2567,7 +2568,7 @@ ipcMain.handle('checkWindowExists', (event, args) => {
                 return false;
             }
         }
-    } catch (_) {}
+    } catch (_) { }
     return true;
 });
 
@@ -2592,7 +2593,7 @@ ipcMain.handle('closeWindow', async (event, args) => {
     try {
         delete browserViews[vid];
         releaseWindowId(vid);
-    } catch (_) {}
+    } catch (_) { }
 
     return true;
 });
@@ -2835,9 +2836,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             promise.resolve = res;
             promise.reject = rej;
 
-            fs.readFile(p, "utf8", function(err, data) {
+            fs.readFile(p, "utf8", function (err, data) {
                 if (err) {
-                    fs.readFile(CSS, "utf8", function(err, data) {
+                    fs.readFile(CSS, "utf8", function (err, data) {
                         if (err) {
                             log("Couldn't read specified CSS file");
                         } else {
@@ -2927,14 +2928,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (mainWindow && !mainWindow.isDestroyed()) {
                 const mainBounds = mainWindow.getBounds();
                 const promptBounds = promptWindow.getBounds();
-                
+
                 // Get the display that contains the main window
                 const display = screen.getDisplayMatching(mainBounds);
-                
+
                 // Calculate center position within the display
                 const x = display.bounds.x + (display.bounds.width - promptBounds.width) / 2;
                 const y = display.bounds.y + (display.bounds.height - promptBounds.height) / 2;
-                
+
                 promptWindow.setPosition(Math.round(x), Math.round(y));
             } else {
                 // Fallback to centering on primary display
@@ -2980,7 +2981,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             event.returnValue = null;
         }
     });
-    ipcMain.on("confirm", function(eventRet, arg) {
+    ipcMain.on("confirm", function (eventRet, arg) {
         // This enables a CONFIRM pop up, which is used to BLOCK the main thread until the user provides input.
         log("confirm");
         try {
@@ -3009,7 +3010,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     });
 
-    ipcMain.on("showOpenDialog", async function(eventRet, arg) {
+    ipcMain.on("showOpenDialog", async function (eventRet, arg) {
         // this enables a PROMPT pop up , which is used to BLOCK the main thread until the user provides input. VDO.Ninja uses prompt for passwords, etc.
         log("----------------------------- showOpenDialog");
         //eventRet.returnValue = null;;
@@ -3050,7 +3051,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     });
 
-    ipcMain.on("alert", function(eventRet, arg) {
+    ipcMain.on("alert", function (eventRet, arg) {
         // this enables a PROMPT pop up , which is used to BLOCK the main thread until the user provides input. VDO.Ninja uses prompt for passwords, etc.
         log("PROMPT");
         try {
@@ -3097,7 +3098,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         targetHeight = ttt.height;
         tainted = true;
     }
-    
+
     // Create the browser window. 
     mainWindow = new BrowserWindow({
         transparent: false,
@@ -3202,25 +3203,25 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
 
         /* 	mainWindow.webContents.on('zoom-changed', (event, zoomDirection) => {
-        	const currentZoom = mainWindow.webContents.getZoomFactor();
-        	if (zoomDirection === 'in') {
-        	  mainWindow.webContents.setZoomFactor(currentZoom + 0.1);
-        	} else if (zoomDirection === 'out') {
-        	  mainWindow.webContents.setZoomFactor(currentZoom - 0.1);
-        	}
+            const currentZoom = mainWindow.webContents.getZoomFactor();
+            if (zoomDirection === 'in') {
+              mainWindow.webContents.setZoomFactor(currentZoom + 0.1);
+            } else if (zoomDirection === 'out') {
+              mainWindow.webContents.setZoomFactor(currentZoom - 0.1);
+            }
         });
-			
+        	
 
           // Handle Ctrl+mousewheel zoom
         mainWindow.webContents.on('before-input-event', (event, input) => {
-        	if (input.control && input.type === 'mouseWheel') {
-        	  const zoomDirection = input.deltaY < 0 ? 'in' : 'out';
-        	  mainWindow.webContents.emit('zoom-changed', event, zoomDirection);
-        	}
+            if (input.control && input.type === 'mouseWheel') {
+              const zoomDirection = input.deltaY < 0 ? 'in' : 'out';
+              mainWindow.webContents.emit('zoom-changed', event, zoomDirection);
+            }
         }); */
 
         handleZoom(mainWindow);
-        
+
         // Add window state saving for main window
         let saveTimeout;
         mainWindow.on("resize", () => {
@@ -3319,7 +3320,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     const currentDisplay = screen.getPrimaryDisplay();
                     scaleFactor = (currentDisplay.scaleFactor || 1) / windowState.scaleFactor;
                 }
-                
+
                 if (windowState.x !== null && windowState.x !== undefined) {
                     config.x = windowState.x;
                 }
@@ -3461,15 +3462,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                         const maybeClose = (navUrl, reason) => {
                             if (!isAllowed(navUrl)) {
-                                try { log(`Auto-closing activated window due to navigation (${reason}): ${navUrl}`); } catch (_) {}
+                                try { log(`Auto-closing activated window due to navigation (${reason}): ${navUrl}`); } catch (_) { }
                                 try {
                                     // Inform renderer (best-effort)
                                     if (mainWindow && !mainWindow.isDestroyed()) {
                                         mainWindow.webContents.send(`window-closed-${view.tabID}`);
                                     }
-                                } catch (_) {}
-                                try { if (!view.isDestroyed()) view.destroy(); } catch (_) {}
-                                try { delete browserViews[view.tabID]; releaseWindowId(view.tabID); } catch (_) {}
+                                } catch (_) { }
+                                try { if (!view.isDestroyed()) view.destroy(); } catch (_) { }
+                                try { delete browserViews[view.tabID]; releaseWindowId(view.tabID); } catch (_) { }
                             }
                         };
 
@@ -3479,7 +3480,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         view.webContents.on('did-redirect-navigation', (event, url) => { maybeClose(url, 'redirect'); });
                     }
                 } catch (e) {
-                    try { console.warn('Error attaching closeOnNavigate handlers:', e); } catch (_) {}
+                    try { console.warn('Error attaching closeOnNavigate handlers:', e); } catch (_) { }
                 }
                 // Log the URL being loaded
                 console.log("Loading URL in new window:", url);
@@ -3497,7 +3498,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
                 });
 
-                view.webContents.on("did-fail-load", function(e) {
+                view.webContents.on("did-fail-load", function (e) {
                     console.error("failed to load");
                     console.error(e);
                     //quitApp();
@@ -3524,9 +3525,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
     createMenu();
 
     /* 	let options  = {
-    	 title : "",
-    	 buttons: ["OK"],
-    	 message:folder
+         title : "",
+         buttons: ["OK"],
+         message:folder
     };
     let response = dialog.showMessageBoxSync(options);
      */
@@ -3535,7 +3536,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         mainWindow.setIgnoreMouseEvents(mainWindow.mouseEvent);
     }
 
-    ipcMain.on("backgroundLoaded", function(eventRet, value) {
+    ipcMain.on("backgroundLoaded", function (eventRet, value) {
         // this doens't run tho, does it?
         log("BACKGROUND LOADED");
         if (mainWindow && mainWindow.webContents) {
@@ -3562,7 +3563,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         });
     });
 
-    ipcMain.on("fromBackground", function(eventRet, value) {
+    ipcMain.on("fromBackground", function (eventRet, value) {
         log("\nfromBackground ??????????????????");
         log("Received settings from background:", JSON.stringify(value).substring(0, 200));
         cachedState = value;
@@ -3580,7 +3581,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         eventRet.returnValue = cachedState;
     });
 
-    ipcMain.on("storageSave", function(eventRet, value) {
+    ipcMain.on("storageSave", function (eventRet, value) {
         // from background
 
         log("\nstorageSave:");
@@ -3613,7 +3614,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         log(cachedState);
     });
 
-    ipcMain.on("storageGet", function(eventRet, value) {
+    ipcMain.on("storageGet", function (eventRet, value) {
         // from background , ["streamID", "password", "state", "settings"];
 
         var response = {};
@@ -3634,7 +3635,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         eventRet.returnValue = response;
     });
 
-    ipcMain.on("fromBackgroundPopupResponse", function(eventRet, value) {
+    ipcMain.on("fromBackgroundPopupResponse", function (eventRet, value) {
         log("\nfromBackgroundPopupResponse:");
         //log(value)
 
@@ -3667,7 +3668,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         eventRet.returnValue = value;
     });
 
-    ipcMain.on("fromBackgroundResponse", function(eventRet, value) {
+    ipcMain.on("fromBackgroundResponse", function (eventRet, value) {
         // log("\nBackgroundResponsed");
         //log(value)
 
@@ -3690,7 +3691,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         eventRet.returnValue = value;
     });
 
-    ipcMain.on("fromPopup", function(eventRet, value) {
+    ipcMain.on("fromPopup", function (eventRet, value) {
         log("\nfromPopup; will forward to background.js");
         //log(value);
 
@@ -3737,7 +3738,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     });
 
-    ipcMain.on("fromPopupResponse", function(eventRet, value) {
+    ipcMain.on("fromPopupResponse", function (eventRet, value) {
         log("\nfromPopupResponse");
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
@@ -3748,7 +3749,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     });
 
-    ipcMain.on("PPTHotkey", function(eventRet, value) {
+    ipcMain.on("PPTHotkey", function (eventRet, value) {
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.send("postMessage", {
                 PPT: true,
@@ -3773,7 +3774,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         console.error(e);
     }
 
-    mainWindow.on("close", async function(e) {
+    mainWindow.on("close", async function (e) {
         log("mainWindow close");
         saveWindowState(mainWindow);
         if (!app.isQuitting) {
@@ -3810,7 +3811,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 ipcMain.removeAllListeners("getTabs");
                 ipcMain.removeAllListeners("sendInputToTab");
                 ipcMain.removeAllListeners("getSources");
-            } catch (e) {}
+            } catch (e) { }
 
 
             // Destroy browser views
@@ -3820,7 +3821,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         if (browserViews[winID]) {
                             try {
                                 browserViews[winID].close();
-                                
+
                                 // Immediate cleanup with safety check
                                 if (!browserViews[winID].isDestroyed()) {
                                     browserViews[winID].destroy();
@@ -3860,7 +3861,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         window.close();
                     }
                 });
-            } catch (e) {}
+            } catch (e) { }
             try {
                 // Unregister all shortcuts
                 globalShortcut.unregisterAll();
@@ -3868,20 +3869,20 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 if (mainWindow) {
                     mainWindow.removeAllListeners();
                 }
-            } catch (e) {}
+            } catch (e) { }
 
             try {
                 if (dialog) {
                     dialog.closeAll();
                 }
-            } catch (e) {}
+            } catch (e) { }
 
             try {
                 if (tray) {
                     tray.destroy();
                     tray = null;
                 }
-            } catch (e) {}
+            } catch (e) { }
 
             try {
 
@@ -3901,15 +3902,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     });
 
-    mainWindow.on("closed", async function(e) {
+    mainWindow.on("closed", async function (e) {
         log("mainWindow closed");
-        
+
         // Clear any intervals attached to mainWindow
         if (mainWindow && mainWindow.intervals) {
             mainWindow.intervals.forEach(interval => clearInterval(interval));
             mainWindow.intervals = [];
         }
-        
+
         setTimeout(() => {
             if (mainWindow && !mainWindow.isDestroyed()) {
                 mainWindow.destroy();
@@ -3918,11 +3919,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }, 2000);
     });
 
-    mainWindow.on("page-title-updated", function(event) {
+    mainWindow.on("page-title-updated", function (event) {
         event.preventDefault();
     });
 
-    mainWindow.webContents.on("did-fail-load", function(e) {
+    mainWindow.webContents.on("did-fail-load", function (e) {
         console.error("failed to load");
         console.error(e);
         //quitApp();
@@ -4001,19 +4002,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     }
 
-    mainWindow.webContents.on("did-finish-load", function(e) {
+    mainWindow.webContents.on("did-finish-load", function (e) {
         if (tainted) {
             mainWindow.setSize(parseInt(WIDTH), parseInt(HEIGHT)); // allows for larger than display resolution.
             tainted = false;
         }
-        
+
         // Only inject language preference if this is the main app window
         // Check if this is a local file:// URL pointing to our app
         const currentURL = mainWindow.webContents.getURL();
-        const isMainAppWindow = currentURL && currentURL.startsWith('file://') && 
-                               (currentURL.includes(path.join(__dirname, 'index.html').replace(/\\/g, '/')) ||
-                                currentURL === URI); // URI is the URL we loaded
-        
+        const isMainAppWindow = currentURL && currentURL.startsWith('file://') &&
+            (currentURL.includes(path.join(__dirname, 'index.html').replace(/\\/g, '/')) ||
+                currentURL === URI); // URI is the URL we loaded
+
         if (isMainAppWindow) {
             // This is the main app window, inject language preference
             try {
@@ -4049,14 +4050,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         'ko-KR': 'ko',
                         'ru-RU': 'ru'
                     };
-                    
+
                     // Use mapped language or extract the base language code
                     if (languageMap[SYSTEM_LOCALE]) {
                         uiLanguage = languageMap[SYSTEM_LOCALE];
                     } else if (SYSTEM_LOCALE.includes('-')) {
                         uiLanguage = SYSTEM_LOCALE.split('-')[0];
                     }
-                    
+
                     mainWindow.webContents.executeJavaScript(`
                         localStorage.setItem('language', '${uiLanguage}');
                         if (typeof changeLanguage === 'function') {
@@ -4068,20 +4069,20 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 console.log('Could not inject language preference:', e);
             }
         }
-        
+
         if (mainWindow && mainWindow.webContents && mainWindow.webContents.getURL().includes("youtube.com")) {
             log("Youtube ad skipper inserted");
             if (!YT_AD_SKIPPER_INTERVAL) {
-            const adSkipperInterval = YT_AD_SKIPPER_INTERVAL = setInterval(
-                function(mw) {
-                    try {
-                        if (!mw || mw.isDestroyed()) {
-                            clearInterval(adSkipperInterval);
-                            YT_AD_SKIPPER_INTERVAL = null;
-                            return;
-                        }
-                        mw.webContents.executeJavaScript(
-                            '\
+                const adSkipperInterval = YT_AD_SKIPPER_INTERVAL = setInterval(
+                    function (mw) {
+                        try {
+                            if (!mw || mw.isDestroyed()) {
+                                clearInterval(adSkipperInterval);
+                                YT_AD_SKIPPER_INTERVAL = null;
+                                return;
+                            }
+                            mw.webContents.executeJavaScript(
+                                '\
 						if (!xxxxxx){\
 							var xxxxxx = setInterval(function(){\
 							if (document.querySelector(".ytp-ad-skip-button")){\
@@ -4090,41 +4091,41 @@ async function createWindow(args, reuse = false, mainApp = false) {
 							},500);\
 						}\
 					'
-                        );
-                    } catch (e) {
-                        clearInterval(adSkipperInterval);
-                        YT_AD_SKIPPER_INTERVAL = null;
-                        return;
-                    }
-                },
-                5000,
-                mainWindow
-            );
-            
-            // Store interval for cleanup
-            if (!mainWindow.intervals) mainWindow.intervals = [];
-            mainWindow.intervals.push(adSkipperInterval);
+                            );
+                        } catch (e) {
+                            clearInterval(adSkipperInterval);
+                            YT_AD_SKIPPER_INTERVAL = null;
+                            return;
+                        }
+                    },
+                    5000,
+                    mainWindow
+                );
 
-            // Attach a one-time navigation handler to clear page-level timer when leaving YouTube
-            if (!mainWindow.__ytSkipperNavHandlerAttached) {
-                const clearYtPageTimer = () => {
-                    try {
-                        mainWindow.webContents.executeJavaScript('try{ if (window.xxxxxx){ clearInterval(window.xxxxxx); window.xxxxxx=null; } }catch(e){}');
-                    } catch (_) {}
-                };
-                try {
-                    mainWindow.webContents.on('did-navigate', (event, url) => {
-                        if (url && !url.includes('youtube.com')) clearYtPageTimer();
-                    });
-                    mainWindow.webContents.on('did-navigate-in-page', () => {
+                // Store interval for cleanup
+                if (!mainWindow.intervals) mainWindow.intervals = [];
+                mainWindow.intervals.push(adSkipperInterval);
+
+                // Attach a one-time navigation handler to clear page-level timer when leaving YouTube
+                if (!mainWindow.__ytSkipperNavHandlerAttached) {
+                    const clearYtPageTimer = () => {
                         try {
-                            const cu = mainWindow.webContents.getURL() || '';
-                            if (!cu.includes('youtube.com')) clearYtPageTimer();
-                        } catch (_) {}
-                    });
-                    mainWindow.__ytSkipperNavHandlerAttached = true;
-                } catch (_) {}
-            }
+                            mainWindow.webContents.executeJavaScript('try{ if (window.xxxxxx){ clearInterval(window.xxxxxx); window.xxxxxx=null; } }catch(e){}');
+                        } catch (_) { }
+                    };
+                    try {
+                        mainWindow.webContents.on('did-navigate', (event, url) => {
+                            if (url && !url.includes('youtube.com')) clearYtPageTimer();
+                        });
+                        mainWindow.webContents.on('did-navigate-in-page', () => {
+                            try {
+                                const cu = mainWindow.webContents.getURL() || '';
+                                if (!cu.includes('youtube.com')) clearYtPageTimer();
+                            } catch (_) { }
+                        });
+                        mainWindow.__ytSkipperNavHandlerAttached = true;
+                    } catch (_) { }
+                }
             }
         }
 
@@ -4152,7 +4153,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         //
     });
 
-    ipcMain.on("postMessage", function(eventRet, ...args) {
+    ipcMain.on("postMessage", function (eventRet, ...args) {
         var tabID = -1;
         var options = {};
 
@@ -4162,7 +4163,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 options = args[1];
             }
         }
-        
+
         // Also check for tabID in the message data itself
         if (args[0] && args[0].__tabID__ !== undefined) {
             tabID = args[0].__tabID__;
@@ -4176,7 +4177,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             } else if (sssurl.startsWith("https://socialstream.ninja/featured.html?") || sssurl.startsWith("https://beta.socialstream.ninja/featured.html?") || (sssurl.startsWith("file://") && sssurl.includes("/featured.html?"))) {
                 return;
             }
-        } catch (e) {}
+        } catch (e) { }
 
         // Handle generic WebSocket status signals (from WSS pages)
         try {
@@ -4192,7 +4193,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 eventRet.returnValue = { ok: true };
                 return;
             }
-        } catch (_) {}
+        } catch (_) { }
 
         if (args[0] && args[0].getSettings) {
             let tab = options.tabID || tabID;
@@ -4204,7 +4205,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 streamID: cachedState.streamID || null,
                 password: cachedState.password || null
             };
-            
+
             log("getSettings request - returning cachedState:", JSON.stringify(settingsResponse).substring(0, 200));
 
             const settingsView = getActiveBrowserView(tab);
@@ -4243,7 +4244,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (eventRet.sender && eventRet.sender.getURL) {
                 sender.tab.url = eventRet.sender.getURL();
             }
-            
+
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
                 if (frame.url.split("?")[0].endsWith("background.html")) {
                     frame.postMessage("fromMainSender", [args[0], {
@@ -4251,7 +4252,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }]);
                 }
             });
-            
+
             // Return response with message ID for callbacks
             if (args[0] && args[0].message) {
                 const response = {
@@ -4269,7 +4270,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         };
     });
 
-    ipcMain.on("getAppVersion", function(eventRet) {
+    ipcMain.on("getAppVersion", function (eventRet) {
         try {
             if (mainWindow && mainWindow.webContents) {
                 mainWindow.webContents.send("appVersion", app.getVersion());
@@ -4287,14 +4288,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
     });
 
     // Keep the synchronous version for backward compatibility
-    ipcMain.on("nodefetch", function(eventRet, args) {
+    ipcMain.on("nodefetch", function (eventRet, args) {
         log("NODE FETCHING! (sync)");
         fetch(args.url, {
-                method: args.method || "GET",
-                headers: args.headers,
-                body: args.method === 'POST' ? JSON.stringify(args.body) : undefined,
-                timeout: args.timeout || 30000
-            })
+            method: args.method || "GET",
+            headers: args.headers,
+            body: args.method === 'POST' ? JSON.stringify(args.body) : undefined,
+            timeout: args.timeout || 30000
+        })
             .then((response) => {
                 log(response);
                 return response.text().then(text => ({
@@ -4315,7 +4316,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
     });
 
     // Add async version
-    ipcMain.handle("nodefetch", async function(event, args) {
+    ipcMain.handle("nodefetch", async function (event, args) {
         log("NODE FETCHING! (async)");
         try {
             const response = await fetch(args.url, {
@@ -4324,7 +4325,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 body: args.method === 'POST' ? JSON.stringify(args.body) : undefined,
                 timeout: args.timeout || 30000
             });
-            
+
             const text = await response.text();
             return {
                 status: response.status,
@@ -4339,13 +4340,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     });
 
-    ipcMain.on("nodepost", function(eventRet, args2) {
+    ipcMain.on("nodepost", function (eventRet, args2) {
         log("NODE POSTING!");
         fetch(args2.url, {
-                method: "POST",
-                headers: args2.headers,
-                body: (typeof args2.body === 'object') ? JSON.stringify(args2.body) : args2.body,
-            })
+            method: "POST",
+            headers: args2.headers,
+            body: (typeof args2.body === 'object') ? JSON.stringify(args2.body) : args2.body,
+        })
             .then((response) => response.text())
             .then((data) => {
                 eventRet.returnValue = data;
@@ -4356,13 +4357,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
             });
     });
 
-    ipcMain.on("nodeput", function(eventRet, args2) {
+    ipcMain.on("nodeput", function (eventRet, args2) {
         log("NODE PUTTING!");
         fetch(args2.url, {
-                method: "PUT",
-                headers: args2.headers,
-                body: (typeof args2.body === 'object') ? JSON.stringify(args2.body) : args2.body,
-            })
+            method: "PUT",
+            headers: args2.headers,
+            body: (typeof args2.body === 'object') ? JSON.stringify(args2.body) : args2.body,
+        })
             .then((response) => response.text())
             .then((data) => {
                 eventRet.returnValue = data;
@@ -4460,7 +4461,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             return null;
         }
     }
-    
+
     function getDomainToPlatform(domain) {
         // Map common domains to platform names (without TLD)
         const domainMap = {
@@ -4479,11 +4480,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
             'restream.io': 'restream',
             'zoom.us': 'zoom'
         };
-        
+
         return domainMap[domain] || domain;
     }
 
-    ipcMain.on("signIn", function(eventRet, args2) {
+    ipcMain.on("signIn", function (eventRet, args2) {
         log("IPC CREATE WINDOW - SIGN IN");
         var args = Object.assign({}, Argv, args2);
 
@@ -4585,7 +4586,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
     async function createSignInWindow(args) {
         try {
             const domain = getPrimaryDomain(args.url);
-            
+
             // Always use in-app sign-in (never system browser)
 
             // Determine session partition name first (same logic as below)
@@ -4638,7 +4639,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (shouldClearSession) {
                 // Check if we should preserve Kasada cookies (default: false when clearing)
                 const preserveKasadaCookies = false; // Never preserve when user chooses to clear
-                
+
                 // Store existing Kasada cookies before clearing
                 const kasadaCookieNames = ['KP_UIDz', 'KP_UIDZ', 'kpid', 'kppid', 'kppidg', 'ga__12_abel', 'ga__15_abel', 'ga__12_abel-ssn', 'ga__15_abel-ssn'];
                 let kasadaCookies = [];
@@ -4730,10 +4731,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Use the session partition we already determined above
             const persistentSession = ses; // We already have this from line 3212
-            
-            
+
+
             log(`[SIGN-IN] URL: ${args.url}, Domain: ${domain}, Platform: ${getDomainToPlatform(domain)}, Session: ${sessionPartition}, CustomSession: ${args.customSession}`);
-            
+
             // Debug: Check cookies after sign-in window closes
             setTimeout(async () => {
                 const cookies = await ses.cookies.get({ domain: '.twitch.tv' });
@@ -4743,7 +4744,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 });
             }, 5000);
             createdPartitions.add(sessionPartition); // Track this partition
-            
+
             // Kasada interceptor removed - handled by preload-kasada.js instead
             // const { setupKasadaInterceptor } = require('./kasada-intercept');
             // setupKasadaInterceptor(persistentSession);
@@ -4753,15 +4754,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const isTrustedDomain = trustedDomains.some(trusted =>
                 args.url.includes(trusted) || domain === trusted
             );
-            
+
 
             // Determine preload script based on configuration
             let preloadScript = null;
-            
+
             // Domains known to use Kasada protection
             const kasadaDomains = ['twitch.tv', 'kick.com'];
             const isKasadaDomain = kasadaDomains.some(kd => domain.includes(kd));
-            
+
             // Check if there's a specific preload config for this domain's signin
             if (args.config && args.config.signin && args.config.signin.preload !== undefined) {
                 const preloadConfig = args.config.signin.preload;
@@ -4787,13 +4788,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     preloadScript = 'preload-mock.js';
                 }
             }
-            
+
             console.log(`Using preload: ${preloadScript || 'none'} for domain: ${domain}`);
 
             // Build webPreferences object - MATCH WORKING CODE EXACTLY
             const webPreferences = {
                 preload: preloadScript ? path.join(__dirname, preloadScript) : undefined,
-                
+
                 // Critical Chrome-matching settings from working code
                 contextIsolation: (preloadScript === 'preload-kasada.js') ? false : true,
                 nodeIntegration: false,
@@ -4804,22 +4805,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 experimentalFeatures: false,
                 // Ensure proper window.open/opener semantics for OAuth popups
                 nativeWindowOpen: true,
-                
+
                 // Chrome's plugin settings
                 plugins: true,
-                
+
                 // Chrome's default web preferences
                 images: true,
                 javascript: true,
                 webgl: true,
-                
+
                 // Chrome process model
                 affinity: 'browser'
             };
-            
+
             // Always specify session
             webPreferences.session = persistentSession;
-            
+
             // Pass Chrome-specific arguments for kasada preload - match working code exactly
             if (preloadScript === 'preload-kasada.js') {
                 webPreferences.additionalArguments = [
@@ -4839,7 +4840,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 height: 720,
                 webPreferences: webPreferences
             };
-            
+
             // Only add extra options if NOT using kasada
             if (preloadScript !== 'preload-kasada.js') {
                 windowOptions = {
@@ -4882,14 +4883,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 windowOptions.minimizable = true;
                 windowOptions.maximizable = true;
             }
-            
+
             const view = new BrowserWindow(windowOptions);
-            
+
             // Chrome's loading behavior
             view.once('ready-to-show', () => {
                 view.show();
             });
-            
+
             // Enhanced protection when Kasada preload is used
             // This applies to any domain where the user has specified kasada preload in config
             if (preloadScript === 'preload-kasada.js') {
@@ -4934,7 +4935,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             log("Generated tabID for sign-in window:", view.tabID);
             // Initialize logical visibility flag for stealth-hide/show
             view.__ss_visible = true;
-            try { view.setSkipTaskbar(false); } catch(_){}
+            try { view.setSkipTaskbar(false); } catch (_) { }
             browserViews[view.tabID] = view;
 
 
@@ -4944,94 +4945,94 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 // Guard: avoid stacking client hints handlers on the same session
                 if (session && !clientHintsConfiguredSessions.has(session)) {
 
-                // Don't set user agent here - let it be set once at session creation
-                // session.setUserAgent(args.config.userAgent);
+                    // Don't set user agent here - let it be set once at session creation
+                    // session.setUserAgent(args.config.userAgent);
 
-                // First, handle the Accept-CH response headers to prevent client hints negotiation
-                session.webRequest.onHeadersReceived({
+                    // First, handle the Accept-CH response headers to prevent client hints negotiation
+                    session.webRequest.onHeadersReceived({
                         urls: ['*://*/*']
                     },
-                    (details, callback) => {
-                        const responseHeaders = details.responseHeaders;
+                        (details, callback) => {
+                            const responseHeaders = details.responseHeaders;
 
-                        // Remove Accept-CH headers that trigger client hints
-                        delete responseHeaders['Accept-CH'];
-                        delete responseHeaders['accept-ch'];
+                            // Remove Accept-CH headers that trigger client hints
+                            delete responseHeaders['Accept-CH'];
+                            delete responseHeaders['accept-ch'];
 
-                        callback({
-                            responseHeaders
-                        });
-                    }
-                );
-
-                // Use onBeforeRequest to modify the request details
-                session.webRequest.onBeforeRequest({
-                        urls: ['*://*/*']
-                    },
-                    (details, callback) => {
-                        callback({
-                            cancel: false
-                        });
-                    }
-                );
-
-                // Minimal header modification - let Chromium handle most headers naturally
-                session.webRequest.onBeforeSendHeaders({
-                        urls: ['*://*/*']
-                    },
-                    (details, callback) => {
-                        const {
-                            requestHeaders
-                        } = details;
-
-                        // Don't manipulate User-Agent in headers - let session handle it
-                        /* DISABLED - This manipulation might be causing iframe issues
-                        if (args.config.userAgent) {
-                            requestHeaders['User-Agent'] = args.config.userAgent;
-                            
-                            // Handle Client Hints based on browser type
-                            const chromeMatch = args.config.userAgent.match(/Chrome\/(\d+)/);
-                            const firefoxMatch = args.config.userAgent.match(/Firefox\/(\d+)/);
-                            const edgeMatch = args.config.userAgent.match(/Edg\/(\d+)/);
-                            
-                            if (chromeMatch) {
-                                const chromeVersion = chromeMatch[1];
-                                
-                                // Set Client Hints headers to match the User-Agent
-                                requestHeaders['sec-ch-ua'] = `"Google Chrome";v="${chromeVersion}", "Chromium";v="${chromeVersion}", "Not;A=Brand";v="99"`;
-                                requestHeaders['sec-ch-ua-mobile'] = '?0';
-                                requestHeaders['sec-ch-ua-platform'] = '"Windows"';
-                                
-                                // Only set full version list if requested by server
-                                if (requestHeaders['sec-ch-ua-full-version-list']) {
-                                    requestHeaders['sec-ch-ua-full-version-list'] = `"Google Chrome";v="${chromeVersion}.0.0.0", "Chromium";v="${chromeVersion}.0.0.0", "Not;A=Brand";v="99.0.0.0"`;
-                                }
-                            } else if (edgeMatch) {
-                                const edgeVersion = edgeMatch[1];
-                                
-                                // Edge also uses Chromium-based Client Hints
-                                requestHeaders['sec-ch-ua'] = `"Microsoft Edge";v="${edgeVersion}", "Chromium";v="${edgeVersion}", "Not;A=Brand";v="99"`;
-                                requestHeaders['sec-ch-ua-mobile'] = '?0';
-                                requestHeaders['sec-ch-ua-platform'] = '"Windows"';
-                            } else if (firefoxMatch) {
-                                // Firefox doesn't send Client Hints headers - remove them if present
-                                delete requestHeaders['sec-ch-ua'];
-                                delete requestHeaders['sec-ch-ua-mobile'];
-                                delete requestHeaders['sec-ch-ua-platform'];
-                                delete requestHeaders['sec-ch-ua-full-version-list'];
-                            }
+                            callback({
+                                responseHeaders
+                            });
                         }
-                        */ // END DISABLED BLOCK
+                    );
 
-                        // Remove any Electron-specific headers that might give us away
-                        delete requestHeaders['Electron'];
+                    // Use onBeforeRequest to modify the request details
+                    session.webRequest.onBeforeRequest({
+                        urls: ['*://*/*']
+                    },
+                        (details, callback) => {
+                            callback({
+                                cancel: false
+                            });
+                        }
+                    );
 
-                        callback({
-                            requestHeaders
-                        });
-                    }
-                );
-                clientHintsConfiguredSessions.add(session);
+                    // Minimal header modification - let Chromium handle most headers naturally
+                    session.webRequest.onBeforeSendHeaders({
+                        urls: ['*://*/*']
+                    },
+                        (details, callback) => {
+                            const {
+                                requestHeaders
+                            } = details;
+
+                            // Don't manipulate User-Agent in headers - let session handle it
+                            /* DISABLED - This manipulation might be causing iframe issues
+                            if (args.config.userAgent) {
+                                requestHeaders['User-Agent'] = args.config.userAgent;
+                                
+                                // Handle Client Hints based on browser type
+                                const chromeMatch = args.config.userAgent.match(/Chrome\/(\d+)/);
+                                const firefoxMatch = args.config.userAgent.match(/Firefox\/(\d+)/);
+                                const edgeMatch = args.config.userAgent.match(/Edg\/(\d+)/);
+                                
+                                if (chromeMatch) {
+                                    const chromeVersion = chromeMatch[1];
+                                    
+                                    // Set Client Hints headers to match the User-Agent
+                                    requestHeaders['sec-ch-ua'] = `"Google Chrome";v="${chromeVersion}", "Chromium";v="${chromeVersion}", "Not;A=Brand";v="99"`;
+                                    requestHeaders['sec-ch-ua-mobile'] = '?0';
+                                    requestHeaders['sec-ch-ua-platform'] = '"Windows"';
+                                    
+                                    // Only set full version list if requested by server
+                                    if (requestHeaders['sec-ch-ua-full-version-list']) {
+                                        requestHeaders['sec-ch-ua-full-version-list'] = `"Google Chrome";v="${chromeVersion}.0.0.0", "Chromium";v="${chromeVersion}.0.0.0", "Not;A=Brand";v="99.0.0.0"`;
+                                    }
+                                } else if (edgeMatch) {
+                                    const edgeVersion = edgeMatch[1];
+                                    
+                                    // Edge also uses Chromium-based Client Hints
+                                    requestHeaders['sec-ch-ua'] = `"Microsoft Edge";v="${edgeVersion}", "Chromium";v="${edgeVersion}", "Not;A=Brand";v="99"`;
+                                    requestHeaders['sec-ch-ua-mobile'] = '?0';
+                                    requestHeaders['sec-ch-ua-platform'] = '"Windows"';
+                                } else if (firefoxMatch) {
+                                    // Firefox doesn't send Client Hints headers - remove them if present
+                                    delete requestHeaders['sec-ch-ua'];
+                                    delete requestHeaders['sec-ch-ua-mobile'];
+                                    delete requestHeaders['sec-ch-ua-platform'];
+                                    delete requestHeaders['sec-ch-ua-full-version-list'];
+                                }
+                            }
+                            */ // END DISABLED BLOCK
+
+                            // Remove any Electron-specific headers that might give us away
+                            delete requestHeaders['Electron'];
+
+                            callback({
+                                requestHeaders
+                            });
+                        }
+                    );
+                    clientHintsConfiguredSessions.add(session);
                 }
             }
 
@@ -5103,9 +5104,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         // Open OAuth target in the same window instead of a popup
                         try {
                             const ua = getSignInUserAgent(url, args.config, args.configs);
-                            try { view.webContents.setUserAgent(ua); } catch(_) {}
-                            view.webContents.loadURL(url, { userAgent: ua }).catch(() => {});
-                        } catch(_) {}
+                            try { view.webContents.setUserAgent(ua); } catch (_) { }
+                            view.webContents.loadURL(url, { userAgent: ua }).catch(() => { });
+                        } catch (_) { }
                         return { action: 'deny' };
                     }
                     const childContextIsolation = webPreferences.contextIsolation;
@@ -5136,11 +5137,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         try {
                             const userAgent = getSignInUserAgent(url, args.config, args.configs);
                             view.webContents.setUserAgent(userAgent);
-                        } catch (_) {}
+                        } catch (_) { }
                     }
                 });
 
-                
+
 
                 // Inject chrome.runtime mock for sign-in windows that need it
                 view.webContents.on('dom-ready', () => {
@@ -5212,7 +5213,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             console.error('Failed to inject chrome.runtime in sign-in window:', err);
                         });
                     }
-                    
+
                     // Inject additional anti-detection code for all sign-in windows
                     const antiDetectionCode = `
                         // Additional anti-detection measures for Kasada
@@ -5315,7 +5316,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             });
                         })();
                     `;
-                    
+
                     view.webContents.executeJavaScript(antiDetectionCode).catch(err => {
                         console.error('Failed to inject additional anti-detection code:', err);
                     });
@@ -5330,7 +5331,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     });
                 });
                 */
-                
+
                 // TEMPORARILY DISABLED: Kasada fix injection creates fake KPSDK with placeholder tokens
                 // This prevents the real SDK from loading properly
                 /*
@@ -5403,7 +5404,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             }
                             log(`Loading URL with platform-specific fallback user agent for kasada: ${userAgent}`);
                         }
-                        try { view.webContents.setUserAgent(userAgent); } catch(_) {}
+                        try { view.webContents.setUserAgent(userAgent); } catch (_) { }
                         view.webContents.loadURL(args.url, {
                             userAgent: userAgent,
                             httpReferrer: {
@@ -5413,7 +5414,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         });
                     } else if (args.config?.userAgent) {
                         log(`Using configured user agent: ${args.config.userAgent}`);
-                        try { view.webContents.setUserAgent(args.config.userAgent); } catch(_) {}
+                        try { view.webContents.setUserAgent(args.config.userAgent); } catch (_) { }
                         view.webContents.loadURL(args.url, {
                             userAgent: args.config.userAgent
                         });
@@ -5422,7 +5423,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
                 }, loadDelay);
 
-                view.webContents.on("did-fail-load", function(event, errorCode, errorDescription, validatedURL) {
+                view.webContents.on("did-fail-load", function (event, errorCode, errorDescription, validatedURL) {
                     console.error("Sign-in window failed to load:", validatedURL);
                     console.error("Error:", errorDescription, "Code:", errorCode);
 
@@ -5499,57 +5500,57 @@ async function createWindow(args, reuse = false, mainApp = false) {
     // Universal IPC Request Handler
     ipcMain.on('ipc-request', async (event, request) => {
         const { channel, callbackId, data, timestamp } = request;
-        
+
         // Log all IPC requests for debugging
         log(`IPC Request: ${channel} [${callbackId}]`);
-        
+
         try {
             let result;
-            
+
             // Route to appropriate handler based on channel
             switch (channel) {
                 case 'createWindow':
                     // Handle window creation
                     result = await handleCreateWindowAsync(data);
                     break;
-                    
+
                 case 'storageSave':
                     result = await handleStorageSave(data);
                     break;
-                    
+
                 case 'storageLoad':
                     result = await handleStorageLoad(data);
                     break;
-                    
+
                 case 'nodefetch':
                     result = await handleNodeFetch(data);
                     break;
-                    
+
                 case 'closeWindow':
                     result = await handleCloseWindow(data);
                     break;
-                    
+
                 case 'reloadWindow':
                     result = await handleReloadWindow(data);
                     break;
-                    
+
                 case 'getWindowInfo':
                     result = await handleGetWindowInfo(data);
                     break;
-                    
+
                 default:
                     throw new Error(`Unknown IPC channel: ${channel}`);
             }
-            
+
             // Send success response
             event.sender.send('ipc-response', {
                 callbackId,
                 result
             });
-            
+
         } catch (error) {
             log(`IPC Error in ${channel}: ${error.message}`);
-            
+
             // Send error response
             event.sender.send('ipc-response', {
                 callbackId,
@@ -5557,7 +5558,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             });
         }
     });
-    
+
     // Async window creation handler
     async function handleCreateWindowAsync(args2) {
         return new Promise((resolve, reject) => {
@@ -5607,11 +5608,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     const mockEvent = {
                         returnValue: null
                     };
-                    
+
                     try {
                         log("Calling originalCreateWindowHandler for async request");
                         originalCreateWindowHandler(mockEvent, args2);
-                        
+
                         if (mockEvent.returnValue) {
                             log(`Async handler got window ID: ${mockEvent.returnValue}`);
                             resolve(mockEvent.returnValue);
@@ -5624,16 +5625,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         reject(e);
                     }
                 });
-                
+
             } catch (error) {
                 log(`Outer error in handleCreateWindowAsync: ${error.message}`);
                 reject(error);
             }
         });
     }
-    
+
     // Keep the old sync handler for backward compatibility  
-    const originalCreateWindowHandler = function(eventRet, args2) {
+    const originalCreateWindowHandler = function (eventRet, args2) {
         log("IPC CREATE WINDOW");
         var args = Object.assign({}, Argv, args2);
         if (!args.url) {
@@ -5687,7 +5688,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         // Determine session based on customSession parameter
         let sessionPartition;
         let persistentSession;
-        
+
         if (args.customSession && args.customSession !== 'AUTO') {
             // Use custom session
             if (args.customSession.startsWith('default-')) {
@@ -5706,18 +5707,18 @@ async function createWindow(args, reuse = false, mainApp = false) {
             sessionPartition = `persist:${platform}`;
             log(`Using auto session based on platform: ${sessionPartition}`);
         }
-        
+
         // Always use the platform-based session, regardless of preload type
         persistentSession = session.fromPartition(sessionPartition);
         createdPartitions.add(sessionPartition); // Track this partition
         const domain = getPrimaryDomain(args.url);
         const platform = getDomainToPlatform(domain);
         log(`[ACTIVATE] URL: ${args.url}, Domain: ${domain}, Platform: ${platform}, Session: ${sessionPartition}, CustomSession: ${args.customSession}`);
-        
+
         // Language is now set globally via command line to match system locale
         // This avoids Electron's en-GB bug for Canadians and should work properly
         log(`[ACTIVATE] Using system locale: ${SYSTEM_LOCALE} (set globally via command line)`)
-        
+
         // Debug: Check cookies when activate window is created
         persistentSession.cookies.get({ domain: '.twitch.tv' }).then(cookies => {
             log(`[ACTIVATE DEBUG] Cookies for .twitch.tv: ${cookies.length} cookies found`);
@@ -5795,14 +5796,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 // This prevents Windows Security "Sign in with your passkey" popups in activate-source windows
                 try {
                     const thisWebContentsId = view.webContents.id;
-                    const liFilter = { urls: [ 'https://www.linkedin.com/checkpoint/pk/*' ] };
+                    const liFilter = { urls: ['https://www.linkedin.com/checkpoint/pk/*'] };
                     view.webContents.session.webRequest.onBeforeRequest(liFilter, (details, callback) => {
                         try {
                             if (details.webContentsId === thisWebContentsId && details.url.includes('/checkpoint/pk/initiateLogin')) {
                                 console.log('[LinkedIn] Blocking passkey initiation:', details.url);
                                 return callback({ cancel: true });
                             }
-                        } catch (e) {}
+                        } catch (e) { }
                         return callback({});
                     });
                 } catch (e) {
@@ -5815,15 +5816,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     log(`Setting session user agent: ${args.config.userAgent}`);
                     view.webContents.session.setUserAgent(args.config.userAgent);
                 } */
-                
+
                 // Check if we need to set any headers
                 const needsOriginReferer = args.config && (("Origin" in args.config) || ("Referer" in args.config));
                 const needsUserAgentHeaders = args.config && args.config.userAgent && args.config.mockUserAgentData;
 
                 if (needsOriginReferer || needsUserAgentHeaders) {
                     view.webContents.session.webRequest.onBeforeSendHeaders({
-                            urls: ['*://*/*']
-                        },
+                        urls: ['*://*/*']
+                    },
                         (details, callback) => {
                             const {
                                 requestHeaders
@@ -5925,7 +5926,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                         const maybeClose = (navUrl, reason) => {
                             if (!isAllowed(navUrl)) {
-                                try { log(`Auto-closing activated window due to navigation (${reason}): ${navUrl}`); } catch (_) {}
+                                try { log(`Auto-closing activated window due to navigation (${reason}): ${navUrl}`); } catch (_) { }
 
                                 // Best-effort UI notification with details for toast
                                 try {
@@ -5939,18 +5940,18 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                             newUrl: navUrl
                                         });
                                     }
-                                } catch (_) {}
+                                } catch (_) { }
 
                                 // Also send the legacy per-tab closed event (used by sign-in flow, harmless here)
                                 try {
                                     if (mainWindow && !mainWindow.isDestroyed()) {
                                         mainWindow.webContents.send(`window-closed-${view.tabID}`);
                                     }
-                                } catch (_) {}
+                                } catch (_) { }
 
                                 // Destroy the window and clean up bookkeeping
-                                try { if (!view.isDestroyed()) view.destroy(); } catch (_) {}
-                                try { delete browserViews[view.tabID]; releaseWindowId(view.tabID); } catch (_) {}
+                                try { if (!view.isDestroyed()) view.destroy(); } catch (_) { }
+                                try { delete browserViews[view.tabID]; releaseWindowId(view.tabID); } catch (_) { }
                             }
                         };
 
@@ -5960,7 +5961,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         view.webContents.on('did-redirect-navigation', (event, url) => { maybeClose(url, 'redirect'); });
                     }
                 } catch (e) {
-                    try { console.warn('Error attaching closeOnNavigate handlers (classic window):', e); } catch (_) {}
+                    try { console.warn('Error attaching closeOnNavigate handlers (classic window):', e); } catch (_) { }
                 }
                 // Add navigation debugging for regular windows
                 view.webContents.on('did-start-loading', () => {
@@ -5975,7 +5976,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     log(`Regular window DOM ready`);
                 });
 
-                view.webContents.on("did-fail-load", function(event, errorCode, errorDescription, validatedURL) {
+                view.webContents.on("did-fail-load", function (event, errorCode, errorDescription, validatedURL) {
                     console.error("Regular window failed to load:", validatedURL);
                     console.error("Error:", errorDescription, "Code:", errorCode);
 
@@ -5990,7 +5991,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 });
 
 
-                
+
                 // Load URL
                 log(`Loading regular window URL: ${args.url}`);
                 log(`User agent config: ${args.config?.userAgent}`);
@@ -6009,7 +6010,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             view.onbeforeunload = (e) => {
                 log("I do not want to be closed 1");
                 e.preventDefault();
-                try { stealthHideView(view); } catch(_) { try { view.hide(); } catch(_){} }
+                try { stealthHideView(view); } catch (_) { try { view.hide(); } catch (_) { } }
                 if (mainWindow && !mainWindow.isDestroyed()) {
                     mainWindow.webContents.send('window-hidden', {
                         tabID: view.tabID,
@@ -6019,7 +6020,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 e.returnValue = false;
             };
 
-            view.on("close", function(e) {
+            view.on("close", function (e) {
                 log("I do not want to be closed 2");
                 e.preventDefault();
 
@@ -6033,8 +6034,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
                 }
 
-                try { stealthHideView(view); } catch(_) {
-                    try { if (view && !view.isDestroyed()) view.hide(); } catch(_){}
+                try { stealthHideView(view); } catch (_) {
+                    try { if (view && !view.isDestroyed()) view.hide(); } catch (_) { }
                 }
                 if (mainWindow && view && !mainWindow.isDestroyed() && !view.isDestroyed()) {
                     mainWindow.webContents.send('window-hidden', {
@@ -6053,7 +6054,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     log("No muted arg, defaulting to muted=true");
                     view.webContents.setAudioMuted(true);
                 }
-                
+
                 // Set up WebSocket monitoring if configured in args or config
                 // Configuration can be set in config files (e.g., config_0.json) or passed via args
                 // Configuration options:
@@ -6063,9 +6064,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 const websocketMonitoring = args.websocketMonitoring || (args.config && args.config.websocketMonitoring);
                 if (websocketMonitoring) {
                     try {
-                                                
+
                         let websocketFilter = null;
-                        
+
                         // Handle different configuration formats
                         if (typeof websocketMonitoring === 'object' && websocketMonitoring.filter) {
                             // Object format: { filter: "domain.com" }
@@ -6079,7 +6080,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             // Boolean true: monitor all WebSockets
                             websocketFilter = null;
                         }
-                        
+
                         const cleanup = setupWebSocketMonitor(view.webContents, {
                             filter: websocketFilter,
                             onMessage: (data) => {
@@ -6114,7 +6115,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 });
                             }
                         });
-                        
+
                         // Store cleanup function for later
                         view.__websocketMonitorCleanup = cleanup;
                         log(`WebSocket monitoring enabled${websocketFilter ? ' with filter' : ' for all WebSockets'}`);
@@ -6122,7 +6123,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         log('Failed to set up WebSocket monitoring:', error);
                     }
                 }
-                
+
                 //view.webContents.on("will-navigate", handleNavigation);
                 //view.webContents.on("new-window", handleNavigation);
 
@@ -6143,9 +6144,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
                 });
 
-                view.webContents.on("did-start-loading", function() {
+                view.webContents.on("did-start-loading", function () {
                     //loaded = false;
-                    timeout = setTimeout(function() {
+                    timeout = setTimeout(function () {
                         if (!loaded) {
                             loaded = true;
                             startRunning();
@@ -6153,7 +6154,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }, 3000);
                 });
 
-                view.webContents.on("dom-ready", function() {
+                view.webContents.on("dom-ready", function () {
                     if (!loaded) {
                         loaded = true;
                         clearTimeout(timeout);
@@ -6244,7 +6245,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
                 });
 
-                view.webContents.on("did-navigate", function(e) {
+                view.webContents.on("did-navigate", function (e) {
                     log("did-navigate");
                     loaded = false;
                     scriptInjected = false; // Reset injection flag on navigation
@@ -6254,7 +6255,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Move this declaration before it's used in event handlers
             let scriptInjected = false; // Track if script has been injected
-            
+
             function startRunning() {
                 // Prevent duplicate injection
                 if (scriptInjected) {
@@ -6332,7 +6333,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     } else {
                         jsSource = runningLocally + args.source;
                     }
-                    
+
                     // Convert file:// URL to regular file path if needed
                     if (jsSource.startsWith('file://')) {
                         jsSource = jsSource.replace('file:///', '').replace(/\//g, path.sep);
@@ -6344,7 +6345,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             jsSource = jsSource.replace(/^([a-zA-Z]):/, '$1:');
                         }
                     }
-                    
+
                     log("jsSource: " + jsSource);
                     let text = null;
                     try {
@@ -6840,7 +6841,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
             // Initialize logical visibility flag for stealth-hide/show
             view.__ss_visible = true;
-            try { view.setSkipTaskbar(false); } catch(_){}
+            try { view.setSkipTaskbar(false); } catch (_) { }
             eventRet.returnValue = view.tabID;
             log(`Window created successfully with ID: ${view.tabID}`);
         } catch (e) {
@@ -6848,46 +6849,46 @@ async function createWindow(args, reuse = false, mainApp = false) {
             eventRet.returnValue = null;
         }
     };
-    
+
     // Register the sync handler for backward compatibility
     ipcMain.on("createWindow", originalCreateWindowHandler);
-    
+
     // Add async handlers for other IPC channels
     async function handleStorageSave(data) {
         // TODO: Implement async storage save
         throw new Error("Not implemented yet - use sync handler");
     }
-    
+
     async function handleStorageLoad(data) {
         // TODO: Implement async storage load
         throw new Error("Not implemented yet - use sync handler");
     }
-    
+
     async function handleNodeFetch(data) {
         // TODO: Implement async node fetch
         throw new Error("Not implemented yet - use sync handler");
     }
-    
+
     async function handleCloseWindow(data) {
         // TODO: Implement async close window
         throw new Error("Not implemented yet - use sync handler");
     }
-    
+
     async function handleReloadWindow(data) {
         // TODO: Implement async reload window
         throw new Error("Not implemented yet - use sync handler");
     }
-    
+
     async function handleGetWindowInfo(data) {
         // TODO: Implement async get window info
         throw new Error("Not implemented yet - use sync handler");
     }
 
-    ipcMain.on("getVersion", function(eventRet) {
+    ipcMain.on("getVersion", function (eventRet) {
         eventRet.returnValue = app.getVersion();
     });
 
-ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
+    ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
         if (CLI_FORCE_TIKTOK_CLASSIC) {
             runtimeForceTikTokClassic = true;
             process.env.SSAPP_FORCE_TIKTOK_CLASSIC = '1';
@@ -6898,234 +6899,234 @@ ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
         process.env.SSAPP_FORCE_TIKTOK_CLASSIC = next ? '1' : '0';
     });
 
-function normalizeTikTokSigningServiceUrl(rawValue) {
-    if (!rawValue || typeof rawValue !== 'string') {
-        return null;
-    }
-    let value = rawValue.trim();
-    if (!value) {
-        return null;
-    }
-    if (!/^https?:\/\//i.test(value)) {
-        value = `https://${value}`;
-    }
-    try {
-        const parsed = new URL(value);
-        return `${parsed.protocol}//${parsed.host}`.replace(/\/+$/, '');
-    } catch (_) {
-        return value.replace(/\/+$/, '');
-    }
-}
-
-const DEFAULT_TIKTOK_SIGNING_URL = 'https://www.tiktok.com/';
-
-function normalizeTikTokLandingUrl(rawValue) {
-    if (!rawValue || typeof rawValue !== 'string') {
-        return DEFAULT_TIKTOK_SIGNING_URL;
-    }
-    const trimmed = rawValue.trim();
-    if (!trimmed) {
-        return DEFAULT_TIKTOK_SIGNING_URL;
-    }
-    try {
-        return new URL(trimmed).toString();
-    } catch (_) {
+    function normalizeTikTokSigningServiceUrl(rawValue) {
+        if (!rawValue || typeof rawValue !== 'string') {
+            return null;
+        }
+        let value = rawValue.trim();
+        if (!value) {
+            return null;
+        }
+        if (!/^https?:\/\//i.test(value)) {
+            value = `https://${value}`;
+        }
         try {
-            return new URL(trimmed, DEFAULT_TIKTOK_SIGNING_URL).toString();
-        } catch (__error) {
+            const parsed = new URL(value);
+            return `${parsed.protocol}//${parsed.host}`.replace(/\/+$/, '');
+        } catch (_) {
+            return value.replace(/\/+$/, '');
+        }
+    }
+
+    const DEFAULT_TIKTOK_SIGNING_URL = 'https://www.tiktok.com/';
+
+    function normalizeTikTokLandingUrl(rawValue) {
+        if (!rawValue || typeof rawValue !== 'string') {
             return DEFAULT_TIKTOK_SIGNING_URL;
         }
-    }
-}
-
-function ensureDeviceId(value) {
-    const digits = typeof value === 'string' ? value.replace(/\D+/g, '') : '';
-    if (digits && digits.length >= 19) {
-        return digits.slice(0, 19);
-    }
-    if (digits && digits.length > 0) {
-        return (digits + '0000000000000000000').slice(0, 19);
-    }
-    const random = String(crypto.randomInt(1e6, 9e6)) + Date.now().toString();
-    return random.slice(0, 19).padEnd(19, '0');
-}
-
-async function validateTikTokFetch(parameters, options = {}) {
-    const roomId = typeof options.roomId === 'string' && options.roomId.trim()
-        ? options.roomId.trim()
-        : (typeof parameters?.room_id === 'string' ? parameters.room_id.trim() : '');
-    const msToken = typeof parameters?.msToken === 'string' ? parameters.msToken.trim() : '';
-    const xBogus = typeof parameters?.["X-Bogus"] === 'string' ? parameters["X-Bogus"].trim() : '';
-    const signatureParam = typeof parameters?._signature === 'string' ? parameters._signature.trim() : '';
-    if (!roomId || !msToken || !xBogus) {
-        return {
-            attempted: false,
-            ok: false,
-            error: !roomId ? 'Room ID missing for validation.' : 'Missing msToken or X-Bogus for validation.'
-        };
-    }
-    const browserName = typeof parameters?.browserName === 'string' && parameters.browserName.trim()
-        ? parameters.browserName.trim()
-        : 'Electron';
-    const browserVersion = typeof parameters?.browserVersion === 'string' && parameters.browserVersion.trim()
-        ? parameters.browserVersion.trim()
-        : (process.versions.chrome || '1.0.0');
-    const userAgent = typeof parameters?.userAgent === 'string' && parameters.userAgent.trim()
-        ? parameters.userAgent
-        : `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browserVersion} Safari/537.36`;
-    const deviceId = ensureDeviceId(parameters?.device_id);
-
-    const qs = new URLSearchParams({
-        aid: '1988',
-        app_language: 'en',
-        app_name: 'tiktok_web',
-        browser_language: 'en-US',
-        browser_name: browserName,
-        browser_online: 'true',
-        browser_version: browserVersion,
-        cookie_enabled: 'true',
-        cursor: '',
-        debug: 'false',
-        device_id: deviceId,
-        device_platform: 'web',
-        did_rule: '3',
-        fetch_rule: '1',
-        history_comment_count: '0',
-        identity: 'audience',
-        internal_ext: '',
-        live_id: '12',
-        notice: 'SSAPP_SIGN_VALIDATE',
-        resp_content_type: 'protobuf',
-        room_id: roomId,
-        screen_height: '1080',
-        screen_width: '1920',
-        tz_name: 'UTC',
-        version_code: '331310',
-        msToken,
-        'X-Bogus': xBogus,
-        user_agent: userAgent
-    });
-
-    if (typeof parameters?.["X-Gnarly"] === 'string' && parameters["X-Gnarly"].trim()) {
-        qs.set('X-Gnarly', parameters["X-Gnarly"].trim());
-    }
-    if (signatureParam) {
-        qs.set('_signature', signatureParam);
-    }
-    if (typeof options.email === 'string' && options.email.trim()) {
-        qs.set('contact_us', options.email.trim());
-    }
-
-    const requestUrl = `https://webcast.tiktok.com/webcast/im/fetch/?${qs.toString()}`;
-    try {
-        const response = await fetch(requestUrl, {
-            method: 'GET',
-            headers: {
-                'User-Agent': userAgent,
-                'Referer': typeof options.referer === 'string' && options.referer ? options.referer : 'https://www.tiktok.com/',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Cookie': `msToken=${encodeURIComponent(msToken)}`
-            }
-        });
-        return {
-            attempted: true,
-            ok: response.ok,
-            status: response.status,
-            statusText: response.statusText,
-            timestamp: new Date().toISOString(),
-            error: response.ok ? null : `HTTP ${response.status} ${response.statusText || ''}`.trim()
-        };
-    } catch (error) {
-        return {
-            attempted: true,
-            ok: false,
-            status: null,
-            statusText: null,
-            timestamp: new Date().toISOString(),
-            error: error && error.message ? error.message : String(error)
-        };
-    }
-}
-
-function attachSigningWindow(win) {
-    if (!win || win.isDestroyed()) {
-        return;
-    }
-    if (detachSigningWindowHook && typeof detachSigningWindowHook === 'function') {
-        try {
-            detachSigningWindowHook();
-        } catch (_) {}
-        detachSigningWindowHook = null;
-    }
-    const handleClosed = () => {
-        if (tiktokSigningWindow === win) {
-            tiktokSigningWindow = null;
+        const trimmed = rawValue.trim();
+        if (!trimmed) {
+            return DEFAULT_TIKTOK_SIGNING_URL;
         }
-    };
-    win.once('closed', handleClosed);
-    detachSigningWindowHook = () => {
         try {
-            win.removeListener('closed', handleClosed);
-        } catch (_) {}
-    };
-}
-
-async function ensureTikTokSigningWindow(targetUrl, options = {}) {
-    const normalizedTarget = typeof targetUrl === 'string' && targetUrl.trim()
-        ? normalizeTikTokLandingUrl(targetUrl.trim())
-        : null;
-    const landingUrl = normalizedTarget || DEFAULT_TIKTOK_SIGNING_URL;
-    if (!tiktokSigningWindow || tiktokSigningWindow.isDestroyed()) {
-        tiktokSigningWindow = new BrowserWindow({
-            show: true,
-            width: 1100,
-            height: 720,
-            webPreferences: {
-                nodeIntegration: false,
-                contextIsolation: true,
-                partition: TIKTOK_AUTH_PARTITION
+            return new URL(trimmed).toString();
+        } catch (_) {
+            try {
+                return new URL(trimmed, DEFAULT_TIKTOK_SIGNING_URL).toString();
+            } catch (__error) {
+                return DEFAULT_TIKTOK_SIGNING_URL;
             }
+        }
+    }
+
+    function ensureDeviceId(value) {
+        const digits = typeof value === 'string' ? value.replace(/\D+/g, '') : '';
+        if (digits && digits.length >= 19) {
+            return digits.slice(0, 19);
+        }
+        if (digits && digits.length > 0) {
+            return (digits + '0000000000000000000').slice(0, 19);
+        }
+        const random = String(crypto.randomInt(1e6, 9e6)) + Date.now().toString();
+        return random.slice(0, 19).padEnd(19, '0');
+    }
+
+    async function validateTikTokFetch(parameters, options = {}) {
+        const roomId = typeof options.roomId === 'string' && options.roomId.trim()
+            ? options.roomId.trim()
+            : (typeof parameters?.room_id === 'string' ? parameters.room_id.trim() : '');
+        const msToken = typeof parameters?.msToken === 'string' ? parameters.msToken.trim() : '';
+        const xBogus = typeof parameters?.["X-Bogus"] === 'string' ? parameters["X-Bogus"].trim() : '';
+        const signatureParam = typeof parameters?._signature === 'string' ? parameters._signature.trim() : '';
+        if (!roomId || !msToken || !xBogus) {
+            return {
+                attempted: false,
+                ok: false,
+                error: !roomId ? 'Room ID missing for validation.' : 'Missing msToken or X-Bogus for validation.'
+            };
+        }
+        const browserName = typeof parameters?.browserName === 'string' && parameters.browserName.trim()
+            ? parameters.browserName.trim()
+            : 'Electron';
+        const browserVersion = typeof parameters?.browserVersion === 'string' && parameters.browserVersion.trim()
+            ? parameters.browserVersion.trim()
+            : (process.versions.chrome || '1.0.0');
+        const userAgent = typeof parameters?.userAgent === 'string' && parameters.userAgent.trim()
+            ? parameters.userAgent
+            : `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browserVersion} Safari/537.36`;
+        const deviceId = ensureDeviceId(parameters?.device_id);
+
+        const qs = new URLSearchParams({
+            aid: '1988',
+            app_language: 'en',
+            app_name: 'tiktok_web',
+            browser_language: 'en-US',
+            browser_name: browserName,
+            browser_online: 'true',
+            browser_version: browserVersion,
+            cookie_enabled: 'true',
+            cursor: '',
+            debug: 'false',
+            device_id: deviceId,
+            device_platform: 'web',
+            did_rule: '3',
+            fetch_rule: '1',
+            history_comment_count: '0',
+            identity: 'audience',
+            internal_ext: '',
+            live_id: '12',
+            notice: 'SSAPP_SIGN_VALIDATE',
+            resp_content_type: 'protobuf',
+            room_id: roomId,
+            screen_height: '1080',
+            screen_width: '1920',
+            tz_name: 'UTC',
+            version_code: '331310',
+            msToken,
+            'X-Bogus': xBogus,
+            user_agent: userAgent
         });
+
+        if (typeof parameters?.["X-Gnarly"] === 'string' && parameters["X-Gnarly"].trim()) {
+            qs.set('X-Gnarly', parameters["X-Gnarly"].trim());
+        }
+        if (signatureParam) {
+            qs.set('_signature', signatureParam);
+        }
+        if (typeof options.email === 'string' && options.email.trim()) {
+            qs.set('contact_us', options.email.trim());
+        }
+
+        const requestUrl = `https://webcast.tiktok.com/webcast/im/fetch/?${qs.toString()}`;
         try {
-            tiktokSigningWindow.setMenuBarVisibility(false);
-        } catch (_) {}
-        attachSigningWindow(tiktokSigningWindow);
-        await tiktokSigningWindow.loadURL(landingUrl);
-    } else if (normalizedTarget && options.allowNavigation !== false) {
-        await tiktokSigningWindow.loadURL(normalizedTarget);
+            const response = await fetch(requestUrl, {
+                method: 'GET',
+                headers: {
+                    'User-Agent': userAgent,
+                    'Referer': typeof options.referer === 'string' && options.referer ? options.referer : 'https://www.tiktok.com/',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Cookie': `msToken=${encodeURIComponent(msToken)}`
+                }
+            });
+            return {
+                attempted: true,
+                ok: response.ok,
+                status: response.status,
+                statusText: response.statusText,
+                timestamp: new Date().toISOString(),
+                error: response.ok ? null : `HTTP ${response.status} ${response.statusText || ''}`.trim()
+            };
+        } catch (error) {
+            return {
+                attempted: true,
+                ok: false,
+                status: null,
+                statusText: null,
+                timestamp: new Date().toISOString(),
+                error: error && error.message ? error.message : String(error)
+            };
+        }
     }
-    try {
-        tiktokSigningWindow.show();
-        tiktokSigningWindow.focus();
-    } catch (_) {}
-    return tiktokSigningWindow;
-}
 
-function disposeTikTokSigningWindow() {
-    if (tiktokSigningWindow && !tiktokSigningWindow.isDestroyed()) {
-        tiktokSigningWindow.destroy();
+    function attachSigningWindow(win) {
+        if (!win || win.isDestroyed()) {
+            return;
+        }
+        if (detachSigningWindowHook && typeof detachSigningWindowHook === 'function') {
+            try {
+                detachSigningWindowHook();
+            } catch (_) { }
+            detachSigningWindowHook = null;
+        }
+        const handleClosed = () => {
+            if (tiktokSigningWindow === win) {
+                tiktokSigningWindow = null;
+            }
+        };
+        win.once('closed', handleClosed);
+        detachSigningWindowHook = () => {
+            try {
+                win.removeListener('closed', handleClosed);
+            } catch (_) { }
+        };
     }
-    tiktokSigningWindow = null;
-}
 
-function normalizeTikTokSigningArgs(input) {
-    if (!input || typeof input !== 'object') {
-        return null;
+    async function ensureTikTokSigningWindow(targetUrl, options = {}) {
+        const normalizedTarget = typeof targetUrl === 'string' && targetUrl.trim()
+            ? normalizeTikTokLandingUrl(targetUrl.trim())
+            : null;
+        const landingUrl = normalizedTarget || DEFAULT_TIKTOK_SIGNING_URL;
+        if (!tiktokSigningWindow || tiktokSigningWindow.isDestroyed()) {
+            tiktokSigningWindow = new BrowserWindow({
+                show: true,
+                width: 1100,
+                height: 720,
+                webPreferences: {
+                    nodeIntegration: false,
+                    contextIsolation: true,
+                    partition: TIKTOK_AUTH_PARTITION
+                }
+            });
+            try {
+                tiktokSigningWindow.setMenuBarVisibility(false);
+            } catch (_) { }
+            attachSigningWindow(tiktokSigningWindow);
+            await tiktokSigningWindow.loadURL(landingUrl);
+        } else if (normalizedTarget && options.allowNavigation !== false) {
+            await tiktokSigningWindow.loadURL(normalizedTarget);
+        }
+        try {
+            tiktokSigningWindow.show();
+            tiktokSigningWindow.focus();
+        } catch (_) { }
+        return tiktokSigningWindow;
     }
-    const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
-    const serviceUrl = normalizeTikTokSigningServiceUrl(typeof input.serviceUrl === 'string' ? input.serviceUrl : '');
-    const payload = {};
-    if (apiKey) {
-        payload.apiKey = apiKey;
-    }
-    if (serviceUrl) {
-        payload.serviceUrl = serviceUrl;
-    }
-    return Object.keys(payload).length ? payload : null;
-}
 
-ipcMain.handle("createTikTokConnection", async function(_event, args) {
+    function disposeTikTokSigningWindow() {
+        if (tiktokSigningWindow && !tiktokSigningWindow.isDestroyed()) {
+            tiktokSigningWindow.destroy();
+        }
+        tiktokSigningWindow = null;
+    }
+
+    function normalizeTikTokSigningArgs(input) {
+        if (!input || typeof input !== 'object') {
+            return null;
+        }
+        const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
+        const serviceUrl = normalizeTikTokSigningServiceUrl(typeof input.serviceUrl === 'string' ? input.serviceUrl : '');
+        const payload = {};
+        if (apiKey) {
+            payload.apiKey = apiKey;
+        }
+        if (serviceUrl) {
+            payload.serviceUrl = serviceUrl;
+        }
+        return Object.keys(payload).length ? payload : null;
+    }
+
+    ipcMain.handle("createTikTokConnection", async function (_event, args) {
         if (runtimeForceTikTokClassic) {
             console.info('[TikTok] Skipping WebSocket connection - classic mode is forced.');
             const fallbackError = new Error('SSAPP_TIKTOK_FORCED_CLASSIC: TikTok WebSocket disabled by classic mode preference');
@@ -7171,6 +7172,7 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
         const sessionId = rawSessionId || null;
         const ttTargetIdc = rawTtTargetIdc || null;
         const signing = normalizeTikTokSigningArgs(args?.signing);
+        const signingProvider = args?.signingProvider || 'auto';
 
         const requestedStrategy = args && args.strategy === 'websocket' ? 'websocket' : 'legacy';
         const manager = new ConnectionManager(
@@ -7178,7 +7180,7 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
             wssID,
             sessionId,
             ttTargetIdc,
-            { forceLegacyConnector: requestedStrategy === 'legacy', signing }
+            { forceLegacyConnector: requestedStrategy === 'legacy', signing, signingProvider }
         );
         if (args && args.replyOnly === true) {
             manager.replyOnly = true;
@@ -7256,7 +7258,7 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
         return virtualTabId;
     });
 
-    ipcMain.on("disconnectTikTokConnection", function(eventRet, args) {
+    ipcMain.on("disconnectTikTokConnection", function (eventRet, args) {
         if (!args.wssID) {
             eventRet.returnValue = false;
             return;
@@ -7272,7 +7274,7 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
                     status: 'stopped_by_user',
                     sourceId
                 });
-            } catch (_) {}
+            } catch (_) { }
             cleanupConnection(args.wssID);
             eventRet.returnValue = true;
         } catch (e) {
@@ -7292,7 +7294,7 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
                 try {
                     tiktokSigningWindow.show();
                     tiktokSigningWindow.focus();
-                } catch (_) {}
+                } catch (_) { }
             }
             return {
                 success: true,
@@ -7544,22 +7546,22 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
     });
 
     /* ipcMain.on('inject', function(eventRet,args) {
-    	const view = browserViews[args.vid];
-    	log("https://raw.githubusercontent.com/steveseguin/social_stream/main/"+args.source);
-    	fetch("https://raw.githubusercontent.com/steveseguin/social_stream/main/"+args.source).then((response) => response.text()).then(text=>{
-    		try {
-    			view.webContents.on("console-message", async (event, level, message,line, sourceId) => {
-    				log(message);
-    			});
-    			
-    		} catch(e){
-    			log(e);
-    		}
-    	});
-    	eventRet.returnValue = args.vid || null;
+        const view = browserViews[args.vid];
+        log("https://raw.githubusercontent.com/steveseguin/social_stream/main/"+args.source);
+        fetch("https://raw.githubusercontent.com/steveseguin/social_stream/main/"+args.source).then((response) => response.text()).then(text=>{
+            try {
+                view.webContents.on("console-message", async (event, level, message,line, sourceId) => {
+                    log(message);
+                });
+            	
+            } catch(e){
+                log(e);
+            }
+        });
+        eventRet.returnValue = args.vid || null;
     }); */
 
-    ipcMain.on("reloadWindow", function(eventRet, args) {
+    ipcMain.on("reloadWindow", function (eventRet, args) {
         try {
             const byVid = getActiveBrowserView(args.vid);
             if (byVid && byVid.webContents) {
@@ -7576,7 +7578,7 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
         }
     });
 
-    ipcMain.on("closeWindow", function(eventRet, args) {
+    ipcMain.on("closeWindow", function (eventRet, args) {
         log("close window: " + args.vid);
         try {
             const view = browserViews[args.vid];
@@ -7793,7 +7795,7 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
     // i need to have the injected code be made aware it shoudl stop video; on window create. figure out how
     //  need to save the state of mute and visibility, so remembers on page load.  should be muted by default?
 
-    ipcMain.on("muteWindow", function(eventRet, args) {
+    ipcMain.on("muteWindow", function (eventRet, args) {
         try {
             log("muteWindow 1");
             const view = getActiveBrowserView(args.vid);
@@ -7850,7 +7852,7 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
         }
         return false;
     });
-    
+
     // Performance monitoring IPC handlers
     ipcMain.handle('getPerformanceMetrics', async () => {
         try {
@@ -7910,7 +7912,7 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
     });
 
     // Original synchronous handler for backward compatibility
-    ipcMain.on("sendToTab", function(eventRet, args) {
+    ipcMain.on("sendToTab", function (eventRet, args) {
         log("sendToTab 1");
         const tabId = args.tab || args.tabID;
         const message = args.message || args;
@@ -7929,7 +7931,7 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
         }
     });
 
-    ipcMain.on("getTabs", function(eventRet, args) {
+    ipcMain.on("getTabs", function (eventRet, args) {
         var keys = Object.keys(browserViews);
         var tabs = [];
         keys.forEach((key) => {
@@ -7944,7 +7946,7 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
         eventRet.returnValue = tabs;
     });
 
-    ipcMain.on("sendInputToTab", function(eventRet, args) {
+    ipcMain.on("sendInputToTab", function (eventRet, args) {
         log("sendInputToTab 1");
         const view = getActiveBrowserView(args.tab);
         if (view) {
@@ -8037,7 +8039,7 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
         }
     });
 
-    ipcMain.on("getSources", async function(eventRet, args) {
+    ipcMain.on("getSources", async function (eventRet, args) {
         try {
             if (mainWindow) {
                 const sources = await desktopCapturer.getSources({
@@ -8051,17 +8053,17 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
     });
 
     /* if (mainWindow){
-    	const ret = globalShortcut.register('CommandOrControl+M', () => {
-    		log('CommandOrControl+M is pressed');
-    		if (mainWindow.node && mainWindow.vdonVersion){
-    			mainWindow.webContents.send('postMessage', {'micOld':'toggle'});
-    		} else if (mainWindow && mainWindow.vdonVersion) {
-    			mainWindow.webContents.send('postMessage', {'mic':'toggle'});
-    		}
-    	});
-    	if (!ret) {
-    		log('registration failed1')
-    	}
+        const ret = globalShortcut.register('CommandOrControl+M', () => {
+            log('CommandOrControl+M is pressed');
+            if (mainWindow.node && mainWindow.vdonVersion){
+                mainWindow.webContents.send('postMessage', {'micOld':'toggle'});
+            } else if (mainWindow && mainWindow.vdonVersion) {
+                mainWindow.webContents.send('postMessage', {'mic':'toggle'});
+            }
+        });
+        if (!ret) {
+            log('registration failed1')
+        }
     } */
 
     const ret_refresh = globalShortcut.register("CommandOrControl+Shift+Alt+R", () => {
@@ -8171,19 +8173,19 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
 
     /* session.defaultSession.webRequest.onBeforeRequest({urls: ['file://*']}, (details, callback) => { // added for added security, but doesn't seem to be working.
       if (details.referrer.startsWith("http://")){
-    	 callback({response:{cancel:true}});
+         callback({response:{cancel:true}});
       } else if (details.referrer.startsWith("https://")){ // do not let a third party load a local resource.
-    	  callback({response:{cancel:true}});
+          callback({response:{cancel:true}});
       } else {
-    	  callback({response:{cancel:false}});
+          callback({response:{cancel:false}});
       }
     }); */
 
     /* try {
-    	var HTML = '<html><head><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" /><style>body {padding:0;height:100%;width:100%;margin:0;}</style></head><body ><div style="-webkit-app-region: drag;height:25px;width:100%"></div></body></html>';
-    	await mainWindow.loadURL("data:text/html;charset=utf-8," + encodeURI(HTML));
+        var HTML = '<html><head><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" /><style>body {padding:0;height:100%;width:100%;margin:0;}</style></head><body ><div style="-webkit-app-region: drag;height:25px;width:100%"></div></body></html>';
+        await mainWindow.loadURL("data:text/html;charset=utf-8," + encodeURI(HTML));
     } catch(e){
-    	console.error(e);
+        console.error(e);
     } */
 
     try {
@@ -8197,247 +8199,578 @@ ipcMain.handle("createTikTokConnection", async function(_event, args) {
 
 contextMenu({
     prepend: (defaultActions, params, browserWindow) => [{
-            label: "🔙 Go Back",
-            // Only show it when right-clicking text
-            visible: browserWindow.webContents.navigationHistory.canGoBack(),
-            click: () => {
-                //var args = browserWindow.args; // reloading doesn't work otherwise
-                //args.url = "https://vdo.ninja/electron?version="+ver;
-                //browserWindow.destroy();
-                //createWindow(args); // we close the window and open it again; a faked refresh
-                //DoNotClose = false;
-                browserWindow.webContents.goBack();
-            },
+        label: "🔙 Go Back",
+        // Only show it when right-clicking text
+        visible: browserWindow.webContents.navigationHistory.canGoBack(),
+        click: () => {
+            //var args = browserWindow.args; // reloading doesn't work otherwise
+            //args.url = "https://vdo.ninja/electron?version="+ver;
+            //browserWindow.destroy();
+            //createWindow(args); // we close the window and open it again; a faked refresh
+            //DoNotClose = false;
+            browserWindow.webContents.goBack();
         },
-        {
-            label: "♻ Reload (Ctrl+Shift+Alt+R)",
-            // Only show it when right-clicking text
-            visible: true,
-            click: () => {
-                browserWindow.reload();
+    },
+    {
+        label: "♻ Reload (Ctrl+Shift+Alt+R)",
+        // Only show it when right-clicking text
+        visible: true,
+        click: () => {
+            browserWindow.reload();
 
-                /* DoNotClose = true; // avoids fully closing the app if no other windows are open
-                
-                var args = browserWindow.args; // reloading doesn't work otherwise
-                args.url = browserWindow.webContents.getURL();
-                var title = browserWindow.getTitle();
-                browserWindow.destroy();
-                createWindow(args, title); // we close the window and open it again; a faked refresh
-                DoNotClose = false; */
-            },
+            /* DoNotClose = true; // avoids fully closing the app if no other windows are open
+            
+            var args = browserWindow.args; // reloading doesn't work otherwise
+            args.url = browserWindow.webContents.getURL();
+            var title = browserWindow.getTitle();
+            browserWindow.destroy();
+            createWindow(args, title); // we close the window and open it again; a faked refresh
+            DoNotClose = false; */
         },
-        /////////////
-        {
-            label: "🎶 Change media device",
-            // Only show it when right-clicking text
-            visible: false,
-            type: "submenu",
-            submenu: [{
-                    label: "🔈 Change audio destination for THIS element only",
-                    // Only show it when right-clicking text
-
-                    visible: params.mediaType == "video" || params.mediaType == "audio" || false,
-                    click: () => {
-                        var buttons = ["Cancel"];
-                        var details = [false];
-
-                        // browserWindow.inspectElement(params.x, params.y)
-                        browserWindow.webContents.send("postMessage", {
-                            getDeviceList: true,
-                            params: params
-                        });
-
-                        ipcMain.once("deviceList", (event, data) => {
-                            //log(data);
-                            var deviceList = data.deviceInfos;
-
-                            //data.menu = menu || false;
-                            //data.eleId = ele.id || false;
-                            //data.UUID = ele.dataset.UUID || false;
-                            //data.deviceInfos;
-                            //data.params = params;
-
-                            for (var i = 0; i < deviceList.length; i++) {
-                                if (deviceList[i].kind === "audiooutput") {
-                                    buttons.push(deviceList[i].label);
-                                    details.push(deviceList[i].deviceId);
-                                }
-                            }
-                            let options = {
-                                title: "Change audio output device",
-                                buttons: buttons,
-                                message: "Change audio output specifically for this media element",
-                            };
-
-                            let response = dialog.showMessageBoxSync(options);
-                            if (response) {
-                                browserWindow.webContents.send("postMessage", {
-                                    changeAudioOutputDevice: details[response],
-                                    data: data,
-                                });
-                            }
-                        });
-                    },
-                },
-                {
-                    label: "🔈 Change audio destination",
-                    // Only show it when right-clicking text
-
-                    visible: false, //browserWindow.node,
-                    click: () => {
-                        var buttons = ["Cancel"];
-                        var details = [false];
-
-                        // browserWindow.inspectElement(params.x, params.y)
-                        browserWindow.webContents.send("postMessage", {
-                            getDeviceList: true,
-                            params: params
-                        });
-
-                        ipcMain.once("deviceList", (event, data) => {
-                            log(data);
-                            var deviceList = data.deviceInfos;
-
-                            //data.menu = menu || false;
-                            //data.eleId = ele.id || false;
-                            //data.UUID = ele.dataset.UUID || false;
-                            //data.deviceInfos;
-                            //data.params = params;
-
-                            for (var i = 0; i < deviceList.length; i++) {
-                                if (deviceList[i].kind === "audiooutput") {
-                                    buttons.push(deviceList[i].label);
-                                    details.push(deviceList[i].deviceId);
-                                }
-                            }
-                            let options = {
-                                title: "Change audio output device",
-                                buttons: buttons,
-                                message: "Change the audio output device",
-                            };
-
-                            let response = dialog.showMessageBoxSync(options);
-                            if (response) {
-                                browserWindow.webContents.send("postMessage", {
-                                    changeAudioOutputDevice: details[response]
-                                });
-                            }
-                        });
-                    },
-                },
-                {
-                    label: "🎤 Change audio input",
-                    // Only show it when right-clicking text
-
-                    visible: false,
-                    click: () => {
-                        var buttons = ["Cancel"];
-                        var details = [false];
-
-                        browserWindow.webContents.send("postMessage", {
-                            getDeviceList: true,
-                            params: params
-                        });
-
-                        ipcMain.once("deviceList", (event, data) => {
-                            log(data);
-                            var deviceList = data.deviceInfos;
-
-                            //data.menu = menu || false;
-                            //data.eleId = ele.id || false;
-                            //data.UUID = ele.dataset.UUID || false;
-                            //data.deviceInfos;
-                            //data.params = params;
-
-                            var deviceCounter = 0;
-                            for (var i = 0; i < deviceList.length; i++) {
-                                if (deviceList[i].kind === "audioinput") {
-                                    deviceCounter += 1;
-                                    buttons.push(deviceList[i].label);
-                                    details.push(deviceList[i].deviceId);
-                                }
-                            }
-
-                            let options = {
-                                title: "Change audio input device",
-                                buttons: buttons,
-                                message: "Change your local audio input source",
-                            };
-
-                            if (!deviceCounter) {
-                                options.message = "No audio input devices available here";
-                            }
-
-                            let response = dialog.showMessageBoxSync(options);
-                            if (response) {
-                                browserWindow.webContents.send("postMessage", {
-                                    changeAudioDevice: details[response]
-                                });
-                            }
-                        });
-                    },
-                },
-            ],
-        },
-        {
-            label: "🧰 Enable Chrome Extension",
+    },
+    /////////////
+    {
+        label: "🎶 Change media device",
+        // Only show it when right-clicking text
+        visible: false,
+        type: "submenu",
+        submenu: [{
+            label: "🔈 Change audio destination for THIS element only",
             // Only show it when right-clicking text
 
-            visible: extensions.length,
+            visible: params.mediaType == "video" || params.mediaType == "audio" || false,
             click: () => {
                 var buttons = ["Cancel"];
+                var details = [false];
 
-                for (var i = 0; i < extensions.length; i++) {
-                    buttons.push(extensions[i].name);
-                }
-                var options = {
-                    title: "Choose an extension to enable",
-                    buttons: buttons,
-                    message: "Choose an extension to enable. You may need to reload the window to trigger once loaded.",
-                };
+                // browserWindow.inspectElement(params.x, params.y)
+                browserWindow.webContents.send("postMessage", {
+                    getDeviceList: true,
+                    params: params
+                });
 
-                let idx = dialog.showMessageBoxSync(options);
-                if (idx) {
-                    idx -= 1;
-                    //log(idx, extensions[idx].location);
+                ipcMain.once("deviceList", (event, data) => {
+                    //log(data);
+                    var deviceList = data.deviceInfos;
 
-                    browserWindow.webContents.session.loadExtension(extensions[idx].location + "").then(({
-                        id
-                    }) => {
-                        log("loadExtension");
-                    });
-                    // extensions
-                }
+                    //data.menu = menu || false;
+                    //data.eleId = ele.id || false;
+                    //data.UUID = ele.dataset.UUID || false;
+                    //data.deviceInfos;
+                    //data.params = params;
+
+                    for (var i = 0; i < deviceList.length; i++) {
+                        if (deviceList[i].kind === "audiooutput") {
+                            buttons.push(deviceList[i].label);
+                            details.push(deviceList[i].deviceId);
+                        }
+                    }
+                    let options = {
+                        title: "Change audio output device",
+                        buttons: buttons,
+                        message: "Change audio output specifically for this media element",
+                    };
+
+                    let response = dialog.showMessageBoxSync(options);
+                    if (response) {
+                        browserWindow.webContents.send("postMessage", {
+                            changeAudioOutputDevice: details[response],
+                            data: data,
+                        });
+                    }
+                });
             },
         },
         {
-            label: "🔇 Mute the window",
-            type: "checkbox",
-            visible: true,
-            checked: browserWindow.webContents.isAudioMuted(),
-            click: () => {
-                if (browserWindow.webContents.isAudioMuted()) {
-                    browserWindow.webContents.setAudioMuted(false);
-                } else {
-                    browserWindow.webContents.setAudioMuted(true);
-                }
-            },
-        },
-        {
-            label: "🔴 Record Video (toggle)",
+            label: "🔈 Change audio destination",
             // Only show it when right-clicking text
+
+            visible: false, //browserWindow.node,
+            click: () => {
+                var buttons = ["Cancel"];
+                var details = [false];
+
+                // browserWindow.inspectElement(params.x, params.y)
+                browserWindow.webContents.send("postMessage", {
+                    getDeviceList: true,
+                    params: params
+                });
+
+                ipcMain.once("deviceList", (event, data) => {
+                    log(data);
+                    var deviceList = data.deviceInfos;
+
+                    //data.menu = menu || false;
+                    //data.eleId = ele.id || false;
+                    //data.UUID = ele.dataset.UUID || false;
+                    //data.deviceInfos;
+                    //data.params = params;
+
+                    for (var i = 0; i < deviceList.length; i++) {
+                        if (deviceList[i].kind === "audiooutput") {
+                            buttons.push(deviceList[i].label);
+                            details.push(deviceList[i].deviceId);
+                        }
+                    }
+                    let options = {
+                        title: "Change audio output device",
+                        buttons: buttons,
+                        message: "Change the audio output device",
+                    };
+
+                    let response = dialog.showMessageBoxSync(options);
+                    if (response) {
+                        browserWindow.webContents.send("postMessage", {
+                            changeAudioOutputDevice: details[response]
+                        });
+                    }
+                });
+            },
+        },
+        {
+            label: "🎤 Change audio input",
+            // Only show it when right-clicking text
+
             visible: false,
             click: () => {
-                if (browserWindow) {
-                    browserWindow.webContents.send("postMessage", {
-                        record: true,
-                        params: params
-                    });
+                var buttons = ["Cancel"];
+                var details = [false];
+
+                browserWindow.webContents.send("postMessage", {
+                    getDeviceList: true,
+                    params: params
+                });
+
+                ipcMain.once("deviceList", (event, data) => {
+                    log(data);
+                    var deviceList = data.deviceInfos;
+
+                    //data.menu = menu || false;
+                    //data.eleId = ele.id || false;
+                    //data.UUID = ele.dataset.UUID || false;
+                    //data.deviceInfos;
+                    //data.params = params;
+
+                    var deviceCounter = 0;
+                    for (var i = 0; i < deviceList.length; i++) {
+                        if (deviceList[i].kind === "audioinput") {
+                            deviceCounter += 1;
+                            buttons.push(deviceList[i].label);
+                            details.push(deviceList[i].deviceId);
+                        }
+                    }
+
+                    let options = {
+                        title: "Change audio input device",
+                        buttons: buttons,
+                        message: "Change your local audio input source",
+                    };
+
+                    if (!deviceCounter) {
+                        options.message = "No audio input devices available here";
+                    }
+
+                    let response = dialog.showMessageBoxSync(options);
+                    if (response) {
+                        browserWindow.webContents.send("postMessage", {
+                            changeAudioDevice: details[response]
+                        });
+                    }
+                });
+            },
+        },
+        ],
+    },
+    {
+        label: "🧰 Enable Chrome Extension",
+        // Only show it when right-clicking text
+
+        visible: extensions.length,
+        click: () => {
+            var buttons = ["Cancel"];
+
+            for (var i = 0; i < extensions.length; i++) {
+                buttons.push(extensions[i].name);
+            }
+            var options = {
+                title: "Choose an extension to enable",
+                buttons: buttons,
+                message: "Choose an extension to enable. You may need to reload the window to trigger once loaded.",
+            };
+
+            let idx = dialog.showMessageBoxSync(options);
+            if (idx) {
+                idx -= 1;
+                //log(idx, extensions[idx].location);
+
+                browserWindow.webContents.session.loadExtension(extensions[idx].location + "").then(({
+                    id
+                }) => {
+                    log("loadExtension");
+                });
+                // extensions
+            }
+        },
+    },
+    {
+        label: "🔇 Mute the window",
+        type: "checkbox",
+        visible: true,
+        checked: browserWindow.webContents.isAudioMuted(),
+        click: () => {
+            if (browserWindow.webContents.isAudioMuted()) {
+                browserWindow.webContents.setAudioMuted(false);
+            } else {
+                browserWindow.webContents.setAudioMuted(true);
+            }
+        },
+    },
+    {
+        label: "🔴 Record Video (toggle)",
+        // Only show it when right-clicking text
+        visible: false,
+        click: () => {
+            if (browserWindow) {
+                browserWindow.webContents.send("postMessage", {
+                    record: true,
+                    params: params
+                });
+            }
+        },
+    },
+    {
+        label: "✏ Edit URL",
+        // Only show it when right-clicking text
+        visible: true,
+        click: () => {
+            var URI = browserWindow.webContents.getURL();
+            var onTop = browserWindow.isAlwaysOnTop();
+            if (onTop) {
+                browserWindow.setAlwaysOnTop(false);
+            }
+            prompt({
+                title: "Edit the URL",
+                label: "URL:",
+                value: URI,
+                inputAttrs: {
+                    type: "text",
+                    placeholder: "Enter URL or search term"
+                },
+                resizable: true,
+                type: "input",
+                alwaysOnTop: true,
+            })
+                .then(async (r) => {
+                    if (r === null) {
+                        log("user cancelled");
+                        if (onTop) {
+                            browserWindow.setAlwaysOnTop(true);
+                        }
+                    } else {
+                        log("result", r);
+                        if (onTop) {
+                            browserWindow.setAlwaysOnTop(true);
+                        }
+
+                        const formattedURL = await formatURL(r, browserWindow);
+                        if (formattedURL) {
+                            if (browserWindow?.args?.config?.userAgent) {
+                                browserWindow.webContents.loadURL(formattedURL, {
+                                    userAgent: browserWindow.args.config.userAgent
+                                });
+                            } else {
+                                browserWindow.loadURL(formattedURL);
+                            }
+                        }
+                    }
+                })
+                .catch(console.error);
+        },
+    },
+    {
+        label: "🪟 IFrame Options",
+        // Only show it when right-clicking text
+        visible: params.frameURL,
+        type: "submenu",
+        submenu: [{
+            label: "✏ Edit IFrame URL",
+            // Only show it when right-clicking text
+            visible: true,
+            click: () => {
+                log(browserWindow.webContents);
+                log(params);
+
+                var URI = params.frameURL;
+                var onTop = browserWindow.isAlwaysOnTop();
+                if (onTop) {
+                    browserWindow.setAlwaysOnTop(false);
                 }
+                prompt({
+                    title: "Edit the target IFrame URL",
+                    label: "URL:",
+                    value: URI,
+                    inputAttrs: {
+                        type: "url",
+                    },
+                    resizable: true,
+                    type: "input",
+                    alwaysOnTop: true,
+                })
+                    .then((r) => {
+                        if (r === null) {
+                            log("user cancelled");
+                            if (onTop) {
+                                browserWindow.setAlwaysOnTop(true);
+                            }
+                        } else {
+                            log("result", r);
+                            if (onTop) {
+                                browserWindow.setAlwaysOnTop(true);
+                            }
+
+                            browserWindow.webContents.executeJavaScript(
+                                "(function () {\
+								var ele = document.elementFromPoint(" +
+                                params.x +
+                                ", " +
+                                params.y +
+                                ');\
+								if (ele.tagName !== "IFRAME"){\
+									ele = false;\
+									document.querySelectorAll("iframe").forEach(ee=>{\
+										if (ee.src == "' +
+                                URI +
+                                '"){\
+											ele = ee;\
+										}\
+									});\
+								}\
+								if (ele && (ele.tagName == "IFRAME")){\
+									ele.src = "' +
+                                r +
+                                '";\
+								}\
+							})();'
+                            );
+                        }
+                    })
+                    .catch(console.error);
             },
         },
         {
-            label: "✏ Edit URL",
+            label: "♻ Reload IFrame",
+            // Only show it when right-clicking text
+            visible: true,
+            click: () => {
+                browserWindow.webContents.mainFrame.frames.forEach((frame) => {
+                    if (frame.url === params.frameURL) {
+                        frame.reload();
+                    }
+                });
+            },
+        },
+        {
+            label: "🔙 Go Back in IFrame",
+            // Only show it when right-clicking text
+            visible: true,
+            click: () => {
+                browserWindow.webContents.mainFrame.frames.forEach((frame) => {
+                    if (frame.url === params.frameURL) {
+                        frame.executeJavaScript("(function () {window.history.back();})();");
+                    }
+                });
+            },
+        },
+        {
+            label: "Go Forward in IFrame",
+            // Only show it when right-clicking text
+            visible: true,
+            click: () => {
+                browserWindow.webContents.mainFrame.frames.forEach((frame) => {
+                    if (frame.url === params.frameURL) {
+                        frame.executeJavaScript("(function () {window.history.forward();})();");
+                    }
+                });
+            },
+        },
+        ],
+    },
+    {
+        label: "📑 Insert CSS",
+        // Only show it when right-clicking text
+        visible: true,
+        click: async () => {
+            try {
+                var onTop = browserWindow.isAlwaysOnTop();
+                if (onTop) {
+                    browserWindow.setAlwaysOnTop(false);
+                }
+                if (browserWindow.webContents) {
+                    const savedValue = await browserWindow.webContents.executeJavaScript(`localStorage.getItem('insertCSS');`);
+
+                    log(savedValue);
+                    prompt({
+                        title: "Insert Custom CSS",
+                        label: "CSS:",
+                        value: savedValue || "body {background-color:#0000;}",
+                        inputAttrs: {
+                            type: "text",
+                        },
+                        resizable: true,
+                        type: "input",
+                        alwaysOnTop: true,
+                    })
+                        .then((r) => {
+                            if (r === null) {
+                                log("user cancelled");
+                                if (onTop) {
+                                    browserWindow.setAlwaysOnTop(true);
+                                }
+                            } else {
+                                log("result", r);
+                                const safeJSString = JSON.stringify(r);
+                                browserWindow.webContents.executeJavaScript(
+                                    `localStorage.setItem('insertCSS', ${safeJSString});`
+                                );
+                                if (onTop) {
+                                    browserWindow.setAlwaysOnTop(true);
+                                }
+                                browserWindow.webContents.insertCSS(r, {
+                                    cssOrigin: "user"
+                                });
+                            }
+                        })
+                        .catch(console.error);
+                }
+            } catch (error) {
+                log(error);
+            }
+        },
+    },
+    {
+        label: "✏ Edit Window Title",
+        // Only show it when right-clicking text
+        visible: true,
+        click: () => {
+            if (!browserWindow.args) {
+                browserWindow.args = {};
+            }
+            var title2 = browserWindow.getTitle();
+            var onTop = browserWindow.isAlwaysOnTop();
+            if (onTop) {
+                browserWindow.setAlwaysOnTop(false);
+            }
+            prompt({
+                title: "Edit Window Title",
+                label: "Title:",
+                value: title2,
+                inputAttrs: {
+                    type: "string",
+                },
+                resizable: true,
+                type: "input",
+                alwaysOnTop: true,
+            })
+                .then((r) => {
+                    if (r === null) {
+                        if (onTop) {
+                            browserWindow.setAlwaysOnTop(true);
+                        }
+                        log("user cancelled");
+                    } else {
+                        if (onTop) {
+                            browserWindow.setAlwaysOnTop(true);
+                        }
+                        log("result", r);
+                        browserWindow.args.title = r;
+                        browserWindow.setTitle(r);
+                    }
+                })
+                .catch(console.error);
+        },
+    },
+    {
+        label: "↔ Resize window",
+        // Only show it when right-clicking text
+        visible: true,
+        type: "submenu",
+        submenu: [{
+            label: "Fullscreen",
+            // Only show if not already full-screen
+            visible: !browserWindow.isMaximized(),
+            click: () => {
+                if (process.platform == "darwin") {
+                    // On certain electron builds, fullscreen fails on macOS; this is in case it starts happening again
+                    browserWindow.isMaximized() ? browserWindow.unmaximize() : browserWindow.maximize();
+                } else {
+                    browserWindow.isFullScreen() ? browserWindow.setFullScreen(false) : browserWindow.setFullScreen(true);
+                }
+                //browserWindow.setMenu(null);
+                //const {width,height} = screen.getPrimaryDisplay().workAreaSize;
+                //browserWindow.setSize(width, height);
+            },
+        },
+        {
+            label: "1920x1080",
+            // Only show it when right-clicking text
+            visible: true,
+            click: () => {
+                if (process.platform !== "darwin") {
+                    if (browserWindow.isFullScreen()) {
+                        browserWindow.setFullScreen(false);
+                    }
+                } else {
+                    if (browserWindow.isMaximized()) {
+                        browserWindow.unmaximize();
+                    }
+                }
+                //let factor = screen.getPrimaryDisplay().scaleFactor;
+                //browserWindow.setSize(1920/factor, 1080/factor);
+                let point = screen.getCursorScreenPoint();
+                let factor = screen.getDisplayNearestPoint(point).scaleFactor || 1;
+                browserWindow.setSize(parseInt(1920 / factor), parseInt(1080 / factor));
+            },
+        },
+        {
+            label: "1280x720",
+            // Only show it when right-clicking text
+            visible: true,
+            click: () => {
+                if (process.platform !== "darwin") {
+                    if (browserWindow.isFullScreen()) {
+                        browserWindow.setFullScreen(false);
+                    }
+                } else {
+                    if (browserWindow.isMaximized()) {
+                        browserWindow.unmaximize();
+                    }
+                }
+                let point = screen.getCursorScreenPoint();
+                let factor = screen.getDisplayNearestPoint(point).scaleFactor || 1;
+                browserWindow.setSize(parseInt(1280 / factor), parseInt(720 / factor));
+            },
+        },
+        {
+            label: "640x360",
+            // Only show it when right-clicking text
+            visible: true,
+            click: () => {
+                if (process.platform !== "darwin") {
+                    if (browserWindow.isFullScreen()) {
+                        browserWindow.setFullScreen(false);
+                    }
+                } else {
+                    if (browserWindow.isMaximized()) {
+                        browserWindow.unmaximize();
+                    }
+                }
+                let point = screen.getCursorScreenPoint();
+                let factor = screen.getDisplayNearestPoint(point).scaleFactor || 1;
+                browserWindow.setSize(parseInt(640 / factor), parseInt(360 / factor));
+            },
+        },
+        {
+            label: "Custom resolution",
             // Only show it when right-clicking text
             visible: true,
             click: () => {
@@ -8447,387 +8780,56 @@ contextMenu({
                     browserWindow.setAlwaysOnTop(false);
                 }
                 prompt({
-                        title: "Edit the URL",
-                        label: "URL:",
-                        value: URI,
-                        inputAttrs: {
-                            type: "text",
-                            placeholder: "Enter URL or search term"
-                        },
-                        resizable: true,
-                        type: "input",
-                        alwaysOnTop: true,
-                    })
-                    .then(async (r) => {
-                        if (r === null) {
-                            log("user cancelled");
-                            if (onTop) {
-                                browserWindow.setAlwaysOnTop(true);
-                            }
-                        } else {
-                            log("result", r);
-                            if (onTop) {
-                                browserWindow.setAlwaysOnTop(true);
-                            }
-
-                            const formattedURL = await formatURL(r, browserWindow);
-                            if (formattedURL) {
-                                if (browserWindow?.args?.config?.userAgent) {
-                                    browserWindow.webContents.loadURL(formattedURL, {
-                                        userAgent: browserWindow.args.config.userAgent
-                                    });
-                                } else {
-                                    browserWindow.loadURL(formattedURL);
-                                }
-                            }
-                        }
-                    })
-                    .catch(console.error);
-            },
-        },
-        {
-            label: "🪟 IFrame Options",
-            // Only show it when right-clicking text
-            visible: params.frameURL,
-            type: "submenu",
-            submenu: [{
-                    label: "✏ Edit IFrame URL",
-                    // Only show it when right-clicking text
-                    visible: true,
-                    click: () => {
-                        log(browserWindow.webContents);
-                        log(params);
-
-                        var URI = params.frameURL;
-                        var onTop = browserWindow.isAlwaysOnTop();
-                        if (onTop) {
-                            browserWindow.setAlwaysOnTop(false);
-                        }
-                        prompt({
-                                title: "Edit the target IFrame URL",
-                                label: "URL:",
-                                value: URI,
-                                inputAttrs: {
-                                    type: "url",
-                                },
-                                resizable: true,
-                                type: "input",
-                                alwaysOnTop: true,
-                            })
-                            .then((r) => {
-                                if (r === null) {
-                                    log("user cancelled");
-                                    if (onTop) {
-                                        browserWindow.setAlwaysOnTop(true);
-                                    }
-                                } else {
-                                    log("result", r);
-                                    if (onTop) {
-                                        browserWindow.setAlwaysOnTop(true);
-                                    }
-
-                                    browserWindow.webContents.executeJavaScript(
-                                        "(function () {\
-								var ele = document.elementFromPoint(" +
-                                        params.x +
-                                        ", " +
-                                        params.y +
-                                        ');\
-								if (ele.tagName !== "IFRAME"){\
-									ele = false;\
-									document.querySelectorAll("iframe").forEach(ee=>{\
-										if (ee.src == "' +
-                                        URI +
-                                        '"){\
-											ele = ee;\
-										}\
-									});\
-								}\
-								if (ele && (ele.tagName == "IFRAME")){\
-									ele.src = "' +
-                                        r +
-                                        '";\
-								}\
-							})();'
-                                    );
-                                }
-                            })
-                            .catch(console.error);
+                    title: "Custom window resolution",
+                    label: "Enter a resolution:",
+                    value: browserWindow.getSize()[0] + "x" + browserWindow.getSize()[1],
+                    inputAttrs: {
+                        type: "string",
+                        placeholder: "1280x720",
                     },
-                },
-                {
-                    label: "♻ Reload IFrame",
-                    // Only show it when right-clicking text
-                    visible: true,
-                    click: () => {
-                        browserWindow.webContents.mainFrame.frames.forEach((frame) => {
-                            if (frame.url === params.frameURL) {
-                                frame.reload();
-                            }
-                        });
-                    },
-                },
-                {
-                    label: "🔙 Go Back in IFrame",
-                    // Only show it when right-clicking text
-                    visible: true,
-                    click: () => {
-                        browserWindow.webContents.mainFrame.frames.forEach((frame) => {
-                            if (frame.url === params.frameURL) {
-                                frame.executeJavaScript("(function () {window.history.back();})();");
-                            }
-                        });
-                    },
-                },
-                {
-                    label: "Go Forward in IFrame",
-                    // Only show it when right-clicking text
-                    visible: true,
-                    click: () => {
-                        browserWindow.webContents.mainFrame.frames.forEach((frame) => {
-                            if (frame.url === params.frameURL) {
-                                frame.executeJavaScript("(function () {window.history.forward();})();");
-                            }
-                        });
-                    },
-                },
-            ],
-        },
-        {
-            label: "📑 Insert CSS",
-            // Only show it when right-clicking text
-            visible: true,
-            click: async () => {
-                try {
-                    var onTop = browserWindow.isAlwaysOnTop();
-                    if (onTop) {
-                        browserWindow.setAlwaysOnTop(false);
-                    }
-                    if (browserWindow.webContents) {
-                        const savedValue = await browserWindow.webContents.executeJavaScript(`localStorage.getItem('insertCSS');`);
-
-                        log(savedValue);
-                        prompt({
-                                title: "Insert Custom CSS",
-                                label: "CSS:",
-                                value: savedValue || "body {background-color:#0000;}",
-                                inputAttrs: {
-                                    type: "text",
-                                },
-                                resizable: true,
-                                type: "input",
-                                alwaysOnTop: true,
-                            })
-                            .then((r) => {
-                                if (r === null) {
-                                    log("user cancelled");
-                                    if (onTop) {
-                                        browserWindow.setAlwaysOnTop(true);
-                                    }
-                                } else {
-                                    log("result", r);
-                                    const safeJSString = JSON.stringify(r);
-                                    browserWindow.webContents.executeJavaScript(
-                                        `localStorage.setItem('insertCSS', ${safeJSString});`
-                                    );
-                                    if (onTop) {
-                                        browserWindow.setAlwaysOnTop(true);
-                                    }
-                                    browserWindow.webContents.insertCSS(r, {
-                                        cssOrigin: "user"
-                                    });
-                                }
-                            })
-                            .catch(console.error);
-                    }
-                } catch (error) {
-                    log(error);
-                }
-            },
-        },
-        {
-            label: "✏ Edit Window Title",
-            // Only show it when right-clicking text
-            visible: true,
-            click: () => {
-                if (!browserWindow.args) {
-                    browserWindow.args = {};
-                }
-                var title2 = browserWindow.getTitle();
-                var onTop = browserWindow.isAlwaysOnTop();
-                if (onTop) {
-                    browserWindow.setAlwaysOnTop(false);
-                }
-                prompt({
-                        title: "Edit Window Title",
-                        label: "Title:",
-                        value: title2,
-                        inputAttrs: {
-                            type: "string",
-                        },
-                        resizable: true,
-                        type: "input",
-                        alwaysOnTop: true,
-                    })
+                    type: "input",
+                    alwaysOnTop: true,
+                })
                     .then((r) => {
                         if (r === null) {
-                            if (onTop) {
-                                browserWindow.setAlwaysOnTop(true);
-                            }
                             log("user cancelled");
-                        } else {
                             if (onTop) {
                                 browserWindow.setAlwaysOnTop(true);
                             }
-                            log("result", r);
-                            browserWindow.args.title = r;
-                            browserWindow.setTitle(r);
+                        } else {
+                            log("Window resized to ", r);
+                            if (onTop) {
+                                browserWindow.setAlwaysOnTop(true);
+                            }
+                            if (process.platform !== "darwin") {
+                                if (browserWindow.isFullScreen()) {
+                                    browserWindow.setFullScreen(false);
+                                }
+                            } else {
+                                if (browserWindow.isMaximized()) {
+                                    browserWindow.unmaximize();
+                                }
+                            }
+                            let point = screen.getCursorScreenPoint();
+                            let factor = screen.getDisplayNearestPoint(point).scaleFactor || 1;
+                            log(r);
+                            log(factor);
+                            browserWindow.setSize(parseInt(r.split("x")[0] / factor), parseInt(r.split("x")[1] / factor));
                         }
                     })
                     .catch(console.error);
             },
         },
-        {
-            label: "↔ Resize window",
-            // Only show it when right-clicking text
-            visible: true,
-            type: "submenu",
-            submenu: [{
-                    label: "Fullscreen",
-                    // Only show if not already full-screen
-                    visible: !browserWindow.isMaximized(),
-                    click: () => {
-                        if (process.platform == "darwin") {
-                            // On certain electron builds, fullscreen fails on macOS; this is in case it starts happening again
-                            browserWindow.isMaximized() ? browserWindow.unmaximize() : browserWindow.maximize();
-                        } else {
-                            browserWindow.isFullScreen() ? browserWindow.setFullScreen(false) : browserWindow.setFullScreen(true);
-                        }
-                        //browserWindow.setMenu(null);
-                        //const {width,height} = screen.getPrimaryDisplay().workAreaSize;
-                        //browserWindow.setSize(width, height);
-                    },
-                },
-                {
-                    label: "1920x1080",
-                    // Only show it when right-clicking text
-                    visible: true,
-                    click: () => {
-                        if (process.platform !== "darwin") {
-                            if (browserWindow.isFullScreen()) {
-                                browserWindow.setFullScreen(false);
-                            }
-                        } else {
-                            if (browserWindow.isMaximized()) {
-                                browserWindow.unmaximize();
-                            }
-                        }
-                        //let factor = screen.getPrimaryDisplay().scaleFactor;
-                        //browserWindow.setSize(1920/factor, 1080/factor);
-                        let point = screen.getCursorScreenPoint();
-                        let factor = screen.getDisplayNearestPoint(point).scaleFactor || 1;
-                        browserWindow.setSize(parseInt(1920 / factor), parseInt(1080 / factor));
-                    },
-                },
-                {
-                    label: "1280x720",
-                    // Only show it when right-clicking text
-                    visible: true,
-                    click: () => {
-                        if (process.platform !== "darwin") {
-                            if (browserWindow.isFullScreen()) {
-                                browserWindow.setFullScreen(false);
-                            }
-                        } else {
-                            if (browserWindow.isMaximized()) {
-                                browserWindow.unmaximize();
-                            }
-                        }
-                        let point = screen.getCursorScreenPoint();
-                        let factor = screen.getDisplayNearestPoint(point).scaleFactor || 1;
-                        browserWindow.setSize(parseInt(1280 / factor), parseInt(720 / factor));
-                    },
-                },
-                {
-                    label: "640x360",
-                    // Only show it when right-clicking text
-                    visible: true,
-                    click: () => {
-                        if (process.platform !== "darwin") {
-                            if (browserWindow.isFullScreen()) {
-                                browserWindow.setFullScreen(false);
-                            }
-                        } else {
-                            if (browserWindow.isMaximized()) {
-                                browserWindow.unmaximize();
-                            }
-                        }
-                        let point = screen.getCursorScreenPoint();
-                        let factor = screen.getDisplayNearestPoint(point).scaleFactor || 1;
-                        browserWindow.setSize(parseInt(640 / factor), parseInt(360 / factor));
-                    },
-                },
-                {
-                    label: "Custom resolution",
-                    // Only show it when right-clicking text
-                    visible: true,
-                    click: () => {
-                        var URI = browserWindow.webContents.getURL();
-                        var onTop = browserWindow.isAlwaysOnTop();
-                        if (onTop) {
-                            browserWindow.setAlwaysOnTop(false);
-                        }
-                        prompt({
-                                title: "Custom window resolution",
-                                label: "Enter a resolution:",
-                                value: browserWindow.getSize()[0] + "x" + browserWindow.getSize()[1],
-                                inputAttrs: {
-                                    type: "string",
-                                    placeholder: "1280x720",
-                                },
-                                type: "input",
-                                alwaysOnTop: true,
-                            })
-                            .then((r) => {
-                                if (r === null) {
-                                    log("user cancelled");
-                                    if (onTop) {
-                                        browserWindow.setAlwaysOnTop(true);
-                                    }
-                                } else {
-                                    log("Window resized to ", r);
-                                    if (onTop) {
-                                        browserWindow.setAlwaysOnTop(true);
-                                    }
-                                    if (process.platform !== "darwin") {
-                                        if (browserWindow.isFullScreen()) {
-                                            browserWindow.setFullScreen(false);
-                                        }
-                                    } else {
-                                        if (browserWindow.isMaximized()) {
-                                            browserWindow.unmaximize();
-                                        }
-                                    }
-                                    let point = screen.getCursorScreenPoint();
-                                    let factor = screen.getDisplayNearestPoint(point).scaleFactor || 1;
-                                    log(r);
-                                    log(factor);
-                                    browserWindow.setSize(parseInt(r.split("x")[0] / factor), parseInt(r.split("x")[1] / factor));
-                                }
-                            })
-                            .catch(console.error);
-                    },
-                },
-            ],
-        },
-        {
-            label: "🚿 Clean Video Output",
-            type: "checkbox",
-            visible: false,
-            checked: false,
-            click: () => {
-                var css =
-                    " \
+        ],
+    },
+    {
+        label: "🚿 Clean Video Output",
+        type: "checkbox",
+        visible: false,
+        checked: false,
+        click: () => {
+            var css =
+                " \
 					.html5-video-player {\
 						z-index:unset!important;\
 					}\
@@ -8846,11 +8848,11 @@ contextMenu({
 					body {\
 						overflow: hidden!important;\
 					}";
-                browserWindow.webContents.insertCSS(css, {
-                    cssOrigin: "user"
-                });
-                browserWindow.webContents.executeJavaScript(
-                    '(function () {\
+            browserWindow.webContents.insertCSS(css, {
+                cssOrigin: "user"
+            });
+            browserWindow.webContents.executeJavaScript(
+                '(function () {\
 					var videos = document.querySelectorAll("video");\
 					if (videos.length>1){\
 						var video = videos[0];\
@@ -8866,11 +8868,11 @@ contextMenu({
 						document.body.appendChild(videos[0]);\
 					}\
 				})();'
-                );
+            );
 
-                if (browserWindow.webContents.getURL().includes("youtube.com")) {
-                    browserWindow.webContents.executeJavaScript(
-                        '(function () {\
+            if (browserWindow.webContents.getURL().includes("youtube.com")) {
+                browserWindow.webContents.executeJavaScript(
+                    '(function () {\
 						if (!xxxxxx){\
 							var xxxxxx = setInterval(function(){\
 							if (document.querySelector(".ytp-ad-skip-button")){\
@@ -8879,83 +8881,83 @@ contextMenu({
 							},500);\
 						}\
 					})();'
-                    );
-                }
-            },
+                );
+            }
         },
-        {
-            label: "📌 Always on top",
-            type: "checkbox",
-            visible: true,
-            checked: browserWindow.isAlwaysOnTop(),
-            click: () => {
-                if (!browserWindow.args) {
-                    browserWindow.args = {};
-                }
-                if (browserWindow.isAlwaysOnTop()) {
-                    browserWindow.setAlwaysOnTop(false);
-                    browserWindow.args.pin = false;
-                    browserWindow.setVisibleOnAllWorkspaces(false);
+    },
+    {
+        label: "📌 Always on top",
+        type: "checkbox",
+        visible: true,
+        checked: browserWindow.isAlwaysOnTop(),
+        click: () => {
+            if (!browserWindow.args) {
+                browserWindow.args = {};
+            }
+            if (browserWindow.isAlwaysOnTop()) {
+                browserWindow.setAlwaysOnTop(false);
+                browserWindow.args.pin = false;
+                browserWindow.setVisibleOnAllWorkspaces(false);
+            } else {
+                browserWindow.args.pin = true;
+                if (process.platform == "darwin") {
+                    browserWindow.setAlwaysOnTop(true, "floating", 1);
                 } else {
-                    browserWindow.args.pin = true;
+                    browserWindow.setAlwaysOnTop(true, "level");
+                }
+
+                browserWindow.setVisibleOnAllWorkspaces(true);
+            }
+        },
+    },
+    {
+        label: "🚫🖱 ️Make UnClickable until in-focus (CTRL+SHIFT+ALT+X)",
+        visible: true, // Only show it when pinned
+        click: () => {
+            if (browserWindow) {
+                if (!browserWindow.isAlwaysOnTop()) {
                     if (process.platform == "darwin") {
                         browserWindow.setAlwaysOnTop(true, "floating", 1);
                     } else {
                         browserWindow.setAlwaysOnTop(true, "level");
                     }
-
                     browserWindow.setVisibleOnAllWorkspaces(true);
                 }
-            },
+                browserWindow.mouseEvent = true;
+                browserWindow.setIgnoreMouseEvents(browserWindow.mouseEvent);
+            }
         },
-        {
-            label: "🚫🖱 ️Make UnClickable until in-focus (CTRL+SHIFT+ALT+X)",
-            visible: true, // Only show it when pinned
-            click: () => {
-                if (browserWindow) {
-                    if (!browserWindow.isAlwaysOnTop()) {
-                        if (process.platform == "darwin") {
-                            browserWindow.setAlwaysOnTop(true, "floating", 1);
-                        } else {
-                            browserWindow.setAlwaysOnTop(true, "level");
-                        }
-                        browserWindow.setVisibleOnAllWorkspaces(true);
-                    }
-                    browserWindow.mouseEvent = true;
-                    browserWindow.setIgnoreMouseEvents(browserWindow.mouseEvent);
-                }
-            },
+    },
+    {
+        label: "Force 16/9 aspect ratio",
+        type: "checkbox",
+        visible: false, // need to re-ensable this at some point
+        checked: forcingAspectRatio,
+        click: () => {
+            if (forcingAspectRatio) {
+                browserWindow.setAspectRatio(0);
+                forcingAspectRatio = false;
+            } else {
+                browserWindow.setAspectRatio(16 / 9);
+                forcingAspectRatio = true;
+            }
         },
-        {
-            label: "Force 16/9 aspect ratio",
-            type: "checkbox",
-            visible: false, // need to re-ensable this at some point
-            checked: forcingAspectRatio,
-            click: () => {
-                if (forcingAspectRatio) {
-                    browserWindow.setAspectRatio(0);
-                    forcingAspectRatio = false;
-                } else {
-                    browserWindow.setAspectRatio(16 / 9);
-                    forcingAspectRatio = true;
-                }
-            },
+    },
+    {
+        label: "🔍 Inspect Element",
+        visible: true,
+        click: () => {
+            browserWindow.inspectElement(params.x, params.y);
         },
-        {
-            label: "🔍 Inspect Element",
-            visible: true,
-            click: () => {
-                browserWindow.inspectElement(params.x, params.y);
-            },
+    },
+    {
+        label: "❌ Close",
+        // Only show it when right-clicking text
+        visible: true,
+        click: () => {
+            browserWindow.close(); // hide, and wait 2 second before really closing; this allows for saving of files.
         },
-        {
-            label: "❌ Close",
-            // Only show it when right-clicking text
-            visible: true,
-            click: () => {
-                browserWindow.close(); // hide, and wait 2 second before really closing; this allows for saving of files.
-            },
-        },
+    },
     ],
 });
 
@@ -9005,155 +9007,155 @@ if (!fs.existsSync(folder)) {
 app.setPath("userData", folder);
 log("folder: " + folder);
 
-app.whenReady().then(async function() {
-        //app.allowRendererProcessReuse = false;
-        log("APP READY");
-        
-        // Log actual app locale to see what Electron is using
-        log(`Electron app.getLocale(): ${app.getLocale()}`);
-        log(`Expected SYSTEM_LOCALE: ${SYSTEM_LOCALE}`);
+app.whenReady().then(async function () {
+    //app.allowRendererProcessReuse = false;
+    log("APP READY");
 
-        // Set a global fallback user agent WITHOUT Electron to avoid detection
-        // Chrome shows simplified version in UA string
-        const CHROME_UA_VERSION = '142.0.0.0';  // For user agent string
-        const CHROME_UA_FULL_VERSION = '142.0.7444.163'; // For Client Hints full version
-        let CHROME_UA;
-        if (isMac) {
-            CHROME_UA = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
-        } else if (process.platform === 'linux') {
-            CHROME_UA = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
-        } else {
-            CHROME_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
-        }
-        app.userAgentFallback = CHROME_UA;
-        
-        // Configure defaultSession to match Chrome exactly BEFORE creating windows (from working code)
-        const ses = session.defaultSession;
-        
-        // Chrome's exact user agent - MUST BE SET BEFORE WINDOW CREATION
-        // Don't set locale here - let the command line switch handle it
-        ses.setUserAgent(CHROME_UA);
-        
-        // Chrome's exact headers (from working code)
-        ses.webRequest.onBeforeSendHeaders((details, callback) => {
-            const headers = details.requestHeaders;
-            
-            // Chrome's exact header order and values
-            headers['Accept'] = headers['Accept'] || 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7';
-            // Don't override Accept-Language - let the system locale from command line take effect
-            headers['Accept-Encoding'] = 'gzip, deflate, br, zstd';
-            headers['Cache-Control'] = headers['Cache-Control'] || 'max-age=0';
-            
-            // Chrome's security headers / Client Hints
-            const chromeMainVersion = CHROME_UA_VERSION.split('.')[0]; // Extract "140" from "140.0.0.0"
-            headers['Sec-CH-UA'] = `"Not;A=Brand";v="99", "Chromium";v="${chromeMainVersion}", "Google Chrome";v="${chromeMainVersion}"`;
-            headers['Sec-CH-UA-Mobile'] = '?0';
-            headers['Sec-CH-UA-Platform'] = '"Windows"';
-            headers['Sec-CH-UA-Platform-Version'] = '"19.0.0"';
-            headers['Sec-CH-UA-Arch'] = '"x86"';
-            headers['Sec-CH-UA-Bitness'] = '"64"';
-            headers['Sec-CH-UA-Model'] = '""';
-            headers['Sec-CH-UA-Full-Version'] = `"${CHROME_UA_FULL_VERSION}"`;
-            headers['Sec-CH-UA-Full-Version-List'] = `"Not;A=Brand";v="99.0.0.0", "Chromium";v="${CHROME_UA_FULL_VERSION}", "Google Chrome";v="${CHROME_UA_FULL_VERSION}"`;
-            headers['Sec-Fetch-Site'] = headers['Sec-Fetch-Site'] || 'none';
-            headers['Sec-Fetch-Mode'] = headers['Sec-Fetch-Mode'] || 'navigate';
-            headers['Sec-Fetch-User'] = headers['Sec-Fetch-User'] || '?1';
-            headers['Sec-Fetch-Dest'] = headers['Sec-Fetch-Dest'] || 'document';
-            headers['Upgrade-Insecure-Requests'] = '1';
-            
-            // Chrome sends DNT
-            headers['DNT'] = '1';
-            
-            // Remove Electron specific headers
-            delete headers['X-DevTools-Request-Id'];
-            delete headers['X-DevTools-Emulate-Network-Conditions-Client-Id'];
-            
-            callback({ requestHeaders: headers });
-        });
-        
-        session.fromPartition("default").setPermissionRequestHandler((webContents, permission, callback) => {
-            try {
-                let allowedPermissions = ["audioCapture", "desktopCapture", "pageCapture", "tabCapture", "experimental"]; // Full list here: https://developer.chrome.com/extensions/declare_permissions#manifest
+    // Log actual app locale to see what Electron is using
+    log(`Electron app.getLocale(): ${app.getLocale()}`);
+    log(`Expected SYSTEM_LOCALE: ${SYSTEM_LOCALE}`);
 
-                if (allowedPermissions.includes(permission)) {
-                    callback(true); // Approve permission request
-                } else {
-                    console.error(
-                        `The application tried to request permission for '${permission}'. This permission was not whitelisted and has been blocked.`
-                    );
-                    callback(false); // Deny
-                }
+    // Set a global fallback user agent WITHOUT Electron to avoid detection
+    // Chrome shows simplified version in UA string
+    const CHROME_UA_VERSION = '142.0.0.0';  // For user agent string
+    const CHROME_UA_FULL_VERSION = '142.0.7444.163'; // For Client Hints full version
+    let CHROME_UA;
+    if (isMac) {
+        CHROME_UA = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
+    } else if (process.platform === 'linux') {
+        CHROME_UA = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
+    } else {
+        CHROME_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
+    }
+    app.userAgentFallback = CHROME_UA;
 
-                ttt = screen.getPrimaryDisplay().workAreaSize;
+    // Configure defaultSession to match Chrome exactly BEFORE creating windows (from working code)
+    const ses = session.defaultSession;
 
-            } catch (e) {
-                console.error(e);
-            }
-        });
+    // Chrome's exact user agent - MUST BE SET BEFORE WINDOW CREATION
+    // Don't set locale here - let the command line switch handle it
+    ses.setUserAgent(CHROME_UA);
 
+    // Chrome's exact headers (from working code)
+    ses.webRequest.onBeforeSendHeaders((details, callback) => {
+        const headers = details.requestHeaders;
+
+        // Chrome's exact header order and values
+        headers['Accept'] = headers['Accept'] || 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7';
+        // Don't override Accept-Language - let the system locale from command line take effect
+        headers['Accept-Encoding'] = 'gzip, deflate, br, zstd';
+        headers['Cache-Control'] = headers['Cache-Control'] || 'max-age=0';
+
+        // Chrome's security headers / Client Hints
+        const chromeMainVersion = CHROME_UA_VERSION.split('.')[0]; // Extract "140" from "140.0.0.0"
+        headers['Sec-CH-UA'] = `"Not;A=Brand";v="99", "Chromium";v="${chromeMainVersion}", "Google Chrome";v="${chromeMainVersion}"`;
+        headers['Sec-CH-UA-Mobile'] = '?0';
+        headers['Sec-CH-UA-Platform'] = '"Windows"';
+        headers['Sec-CH-UA-Platform-Version'] = '"19.0.0"';
+        headers['Sec-CH-UA-Arch'] = '"x86"';
+        headers['Sec-CH-UA-Bitness'] = '"64"';
+        headers['Sec-CH-UA-Model'] = '""';
+        headers['Sec-CH-UA-Full-Version'] = `"${CHROME_UA_FULL_VERSION}"`;
+        headers['Sec-CH-UA-Full-Version-List'] = `"Not;A=Brand";v="99.0.0.0", "Chromium";v="${CHROME_UA_FULL_VERSION}", "Google Chrome";v="${CHROME_UA_FULL_VERSION}"`;
+        headers['Sec-Fetch-Site'] = headers['Sec-Fetch-Site'] || 'none';
+        headers['Sec-Fetch-Mode'] = headers['Sec-Fetch-Mode'] || 'navigate';
+        headers['Sec-Fetch-User'] = headers['Sec-Fetch-User'] || '?1';
+        headers['Sec-Fetch-Dest'] = headers['Sec-Fetch-Dest'] || 'document';
+        headers['Upgrade-Insecure-Requests'] = '1';
+
+        // Chrome sends DNT
+        headers['DNT'] = '1';
+
+        // Remove Electron specific headers
+        delete headers['X-DevTools-Request-Id'];
+        delete headers['X-DevTools-Emulate-Network-Conditions-Client-Id'];
+
+        callback({ requestHeaders: headers });
+    });
+
+    session.fromPartition("default").setPermissionRequestHandler((webContents, permission, callback) => {
         try {
-            ////log("READING CACHE STATE FROM DISK");
-            cachedState = JSON.parse(fs.readFileSync(path.join(folder, "savedSync.json")));
-            //log(cachedState);
+            let allowedPermissions = ["audioCapture", "desktopCapture", "pageCapture", "tabCapture", "experimental"]; // Full list here: https://developer.chrome.com/extensions/declare_permissions#manifest
 
-            if ("streamID" in cachedState && !cachedState.streamID) {
-                log("invalid cachedState");
+            if (allowedPermissions.includes(permission)) {
+                callback(true); // Approve permission request
             } else {
-                log("loaded cachedState");
-                if (cachedState && !("state" in cachedState) && "isExtensionOn" in cachedState) {
-                    cachedState.state = cachedState.isExtensionOn;
-                    delete cachedState.isExtensionOn;
-                } else if (cachedState && "isExtensionOn" in cachedState) {
-                    delete cachedState.isExtensionOn;
-                }
+                console.error(
+                    `The application tried to request permission for '${permission}'. This permission was not whitelisted and has been blocked.`
+                );
+                callback(false); // Deny
             }
-            log(cachedState);
 
-            if (cachedState.wsServer) {
-                wsServer.start();
-            }
+            ttt = screen.getPrimaryDisplay().workAreaSize;
+
         } catch (e) {
-            log("Failed to load cachedState -- it probably doesn't yet exist");
-            //console.error(e);
-            //log("saving file");
-            // fs.writeFileSync(path.join(folder, "savedSync.json"), JSON.stringify(cachedState));
+            console.error(e);
         }
+    });
 
-        // If no --filesource provided, use saved local source path (if any)
+    try {
+        ////log("READING CACHE STATE FROM DISK");
+        cachedState = JSON.parse(fs.readFileSync(path.join(folder, "savedSync.json")));
+        //log(cachedState);
+
+        if ("streamID" in cachedState && !cachedState.streamID) {
+            log("invalid cachedState");
+        } else {
+            log("loaded cachedState");
+            if (cachedState && !("state" in cachedState) && "isExtensionOn" in cachedState) {
+                cachedState.state = cachedState.isExtensionOn;
+                delete cachedState.isExtensionOn;
+            } else if (cachedState && "isExtensionOn" in cachedState) {
+                delete cachedState.isExtensionOn;
+            }
+        }
+        log(cachedState);
+
+        if (cachedState.wsServer) {
+            wsServer.start();
+        }
+    } catch (e) {
+        log("Failed to load cachedState -- it probably doesn't yet exist");
+        //console.error(e);
+        //log("saving file");
+        // fs.writeFileSync(path.join(folder, "savedSync.json"), JSON.stringify(cachedState));
+    }
+
+    // If no --filesource provided, use saved local source path (if any)
+    try {
+        const savedLocalSource = store.get('localSourcePath');
+        if (!Argv.filesource && !preferLocalAssetsFlag && savedLocalSource) {
+            const resolved = fsPathFromMaybeFileUrl(savedLocalSource) || savedLocalSource;
+            if (resolved && fs.existsSync(resolved)) {
+                Argv.filesource = savedLocalSource;
+                log(`Using saved local source: ${savedLocalSource}`);
+            } else {
+                console.warn('Saved local Social Stream source missing, reverting to online assets:', savedLocalSource);
+                try { store.delete('localSourcePath'); } catch (_) { }
+                queueInjectorToast('warning', 'Local Social Stream Missing', 'Saved Social Stream files were not found. Reverting to the online version.');
+            }
+        }
+    } catch (e) {
+        console.error('Error applying saved local source:', e);
+    }
+
+    if (preferLocalAssetsFlag && !Argv.filesource) {
         try {
-            const savedLocalSource = store.get('localSourcePath');
-            if (!Argv.filesource && !preferLocalAssetsFlag && savedLocalSource) {
-                const resolved = fsPathFromMaybeFileUrl(savedLocalSource) || savedLocalSource;
-                if (resolved && fs.existsSync(resolved)) {
-                    Argv.filesource = savedLocalSource;
-                    log(`Using saved local source: ${savedLocalSource}`);
-                } else {
-                    console.warn('Saved local Social Stream source missing, reverting to online assets:', savedLocalSource);
-                    try { store.delete('localSourcePath'); } catch (_) {}
-                    queueInjectorToast('warning', 'Local Social Stream Missing', 'Saved Social Stream files were not found. Reverting to the online version.');
-                }
+            const fallbackRoot = await resolveBundledSocialStreamRoot('main');
+            if (fallbackRoot) {
+                const fileUrl = pathToFileUrl(ensureTrailingSep(fallbackRoot));
+                Argv.filesource = fileUrl;
+                console.info('[SSAPP] Prefer-local assets enabled. Using bundled Social Stream from', fileUrl);
+            } else {
+                console.warn('[SSAPP] Prefer-local assets requested, but bundled resources were not found. Falling back to remote assets.');
             }
-        } catch (e) {
-            console.error('Error applying saved local source:', e);
+        } catch (error) {
+            console.error('[SSAPP] Failed to enable prefer-local assets:', error && error.message ? error.message : error);
         }
+    }
 
-        if (preferLocalAssetsFlag && !Argv.filesource) {
-            try {
-                const fallbackRoot = await resolveBundledSocialStreamRoot('main');
-                if (fallbackRoot) {
-                    const fileUrl = pathToFileUrl(ensureTrailingSep(fallbackRoot));
-                    Argv.filesource = fileUrl;
-                    console.info('[SSAPP] Prefer-local assets enabled. Using bundled Social Stream from', fileUrl);
-                } else {
-                    console.warn('[SSAPP] Prefer-local assets requested, but bundled resources were not found. Falling back to remote assets.');
-                }
-            } catch (error) {
-                console.error('[SSAPP] Failed to enable prefer-local assets:', error && error.message ? error.message : error);
-            }
-        }
-
-        createWindow(Argv, false, true);
-    })
+    createWindow(Argv, false, true);
+})
     .catch(console.error);
 
 ipcMain.handle("tts", async (event, data) => {
@@ -9275,7 +9277,7 @@ app.on("ready", () => {
     });
 });
 
-app.on("activate", function() {
+app.on("activate", function () {
     // social stream activating a window from the index.html page
     // On macOS it's common to re-create a window in the app when the
     // dock icon is clicked and there are no other windows open.
@@ -9290,30 +9292,30 @@ app.on('browser-window-created', (event, window) => {
     });
 
     /*   window.on('close', (event) => {
-    	 log("window close");
-    	 
+         log("window close");
+         
         if (!app.isQuitting) {
           event.preventDefault();
           if (window && !window.isDestroyed()) {
-    		log("Hiding window instead of closing");
+            log("Hiding window instead of closing");
             window.hide();
           }
         } else {
-    		log("closign window");
-    	}
+            log("closign window");
+        }
       }); */
 });
 
 
 async function quitApp() {
     app.isQuitting = true;
-    
+
     // Clear all global intervals
     if (global.intervals) {
         global.intervals.forEach(interval => clearInterval(interval));
         global.intervals = [];
     }
-    
+
     // Clear all websocket connections
     if (websocketConnections) {
         Object.keys(websocketConnections).forEach(id => {
@@ -9326,7 +9328,7 @@ async function quitApp() {
             }
         });
     }
-    
+
     // Close all browser views immediately
     if (browserViews) {
         Object.keys(browserViews).forEach(id => {
@@ -9347,7 +9349,7 @@ async function quitApp() {
             }
         });
     }
-    
+
     // Close all windows
     BrowserWindow.getAllWindows().forEach(window => {
         try {
@@ -9366,11 +9368,11 @@ async function quitApp() {
 
     // Small delay for cleanup
     await sleep(100);
-    
+
     if (tray) {
         try {
             tray.destroy();
-        } catch (e) {}
+        } catch (e) { }
     }
     app.quit();
 }
@@ -9402,7 +9404,7 @@ function fsPathFromMaybeFileUrl(p) {
             const { fileURLToPath } = require('url');
             return ensureTrailingSep(fileURLToPath(p));
         }
-    } catch (e) {}
+    } catch (e) { }
     return p;
 }
 
@@ -9420,8 +9422,8 @@ function reloadWithLocalSource(localPath) {
 }
 
 function clearLocalSourceAndReload() {
-    try { store.delete('localSourcePath'); } catch (e) {}
-    try { Argv.filesource = null; } catch (e) {}
+    try { store.delete('localSourcePath'); } catch (e) { }
+    try { Argv.filesource = null; } catch (e) { }
     try {
         if (mainWindow) {
             const indexUrl = `file://${path.join(__dirname, 'index.html')}`;
@@ -9449,7 +9451,7 @@ function findSocialStreamRoot(startDir) {
             if (!e.isDirectory()) continue;
             const p1 = path.join(startDir, e.name);
             let subs = [];
-            try { subs = fs.readdirSync(p1, { withFileTypes: true }); } catch {}
+            try { subs = fs.readdirSync(p1, { withFileTypes: true }); } catch { }
             for (const s of subs) {
                 if (s.isDirectory()) {
                     const p2 = path.join(p1, s.name);
@@ -9510,7 +9512,7 @@ async function handleLoadFromFolder() {
         const finalPath = ensureTrailingSep(root);
         const fileUrl = pathToFileUrl(finalPath);
         store.set('localSourcePath', fileUrl);
-        try { Argv.filesource = fileUrl; } catch (e) {}
+        try { Argv.filesource = fileUrl; } catch (e) { }
         reloadWithLocalSource(fileUrl);
         createMenu();
     } catch (e) {
@@ -9532,7 +9534,7 @@ async function handleLoadFromZip() {
         const finalPath = ensureTrailingSep(root);
         const fileUrl = pathToFileUrl(finalPath);
         store.set('localSourcePath', fileUrl);
-        try { Argv.filesource = fileUrl; } catch (e) {}
+        try { Argv.filesource = fileUrl; } catch (e) { }
         reloadWithLocalSource(fileUrl);
         createMenu();
     } catch (e) {
@@ -9596,34 +9598,34 @@ function createMenu() {
         ...(isMac ? [{
             label: app.name,
             submenu: [{
-                    role: "about"
-                },
-                {
-                    type: "separator"
-                },
-                {
-                    role: "services"
-                },
-                {
-                    type: "separator"
-                },
-                {
-                    role: "hide"
-                },
-                {
-                    role: "hideothers"
-                },
-                {
-                    role: "unhide"
-                },
-                {
-                    type: "separator"
-                },
-                {
-                    role: "quit"
-                },
+                role: "about"
+            },
+            {
+                type: "separator"
+            },
+            {
+                role: "services"
+            },
+            {
+                type: "separator"
+            },
+            {
+                role: "hide"
+            },
+            {
+                role: "hideothers"
+            },
+            {
+                role: "unhide"
+            },
+            {
+                type: "separator"
+            },
+            {
+                role: "quit"
+            },
             ],
-        }, ] : []),
+        },] : []),
         // File menu
         {
             label: 'File',
@@ -9696,125 +9698,125 @@ function createMenu() {
         {
             label: "Edit",
             submenu: [{
-                    role: "undo"
-                },
-                {
-                    role: "redo"
-                },
-                {
-                    type: "separator"
-                },
-                {
-                    role: "cut"
-                },
-                {
-                    role: "copy"
-                },
-                {
-                    role: "paste"
-                },
-                ...(isMac ? [{
-                        role: "pasteAndMatchStyle"
-                    },
-                    {
-                        role: "delete"
-                    },
-                    {
-                        role: "selectAll"
-                    },
-                    {
-                        type: "separator"
-                    },
-                    {
-                        label: "Speech",
-                        submenu: [{
-                            role: "startspeaking"
-                        }, {
-                            role: "stopspeaking"
-                        }],
-                    },
-                ] : [{
-                    role: "delete"
+                role: "undo"
+            },
+            {
+                role: "redo"
+            },
+            {
+                type: "separator"
+            },
+            {
+                role: "cut"
+            },
+            {
+                role: "copy"
+            },
+            {
+                role: "paste"
+            },
+            ...(isMac ? [{
+                role: "pasteAndMatchStyle"
+            },
+            {
+                role: "delete"
+            },
+            {
+                role: "selectAll"
+            },
+            {
+                type: "separator"
+            },
+            {
+                label: "Speech",
+                submenu: [{
+                    role: "startspeaking"
                 }, {
-                    type: "separator"
-                }, {
-                    role: "selectAll"
-                }]),
+                    role: "stopspeaking"
+                }],
+            },
+            ] : [{
+                role: "delete"
+            }, {
+                type: "separator"
+            }, {
+                role: "selectAll"
+            }]),
 
             ],
         },
         {
             label: 'View',
             submenu: [{
-                    role: 'reload'
-                },
-                {
-                    role: 'forceReload'
-                },
-                {
-                    type: 'separator'
-                },
-                {
-                    label: 'Zoom In',
-                    accelerator: 'CommandOrControl+=',
-                    click: () => {
-                        const win = BrowserWindow.getFocusedWindow();
-                        if (win) {
-                            const currentZoom = win.webContents.getZoomFactor();
-                            win.webContents.setZoomFactor(currentZoom + 0.1);
-                        }
-                    }
-                },
-                {
-                    role: 'zoomOut'
-                },
-                {
-                    role: 'resetZoom'
-                },
-                {
-                    type: 'separator'
-                },
-                {
-                    role: 'togglefullscreen'
-                },
-                {
-                    type: 'separator'
-                },
-                //{
-                //  label: 'Clean Video Output',
-                //  click: () => {
-                //	if (mainWindow && mainWindow.webContents) {
-                //	  // Insert the CSS and execute the JavaScript as in the context menu
-                //	  const css = `/* ... CSS content ... */`;
-                //	  mainWindow.webContents.insertCSS(css, { cssOrigin: 'user' });
-                //	  mainWindow.webContents.executeJavaScript(`/* ... JavaScript content ... */`);
-                //	}
-                //  }
-                //},
-                {
-                    label: 'Insert Custom CSS',
-                    click: async () => {
-                        if (mainWindow && mainWindow.webContents) {
-                            const savedValue = await mainWindow.webContents.executeJavaScript(`localStorage.getItem('insertCSS');`);
-                            prompt({
-                                title: 'Insert Custom CSS',
-                                label: 'CSS:',
-                                value: savedValue || 'body {background-color:#0000;}',
-                                inputAttrs: {
-                                    type: 'text'
-                                },
-                                type: 'input'
-                            }).then(r => {
-                                if (r !== null) {
-                                    mainWindow.webContents.executeJavaScript(`localStorage.setItem('insertCSS', '${r}');`);
-                                    mainWindow.webContents.insertCSS(r, {
-                                        cssOrigin: 'user'
-                                    });
-                                }
-                            }).catch(console.error);
-                        }
+                role: 'reload'
+            },
+            {
+                role: 'forceReload'
+            },
+            {
+                type: 'separator'
+            },
+            {
+                label: 'Zoom In',
+                accelerator: 'CommandOrControl+=',
+                click: () => {
+                    const win = BrowserWindow.getFocusedWindow();
+                    if (win) {
+                        const currentZoom = win.webContents.getZoomFactor();
+                        win.webContents.setZoomFactor(currentZoom + 0.1);
                     }
                 }
+            },
+            {
+                role: 'zoomOut'
+            },
+            {
+                role: 'resetZoom'
+            },
+            {
+                type: 'separator'
+            },
+            {
+                role: 'togglefullscreen'
+            },
+            {
+                type: 'separator'
+            },
+            //{
+            //  label: 'Clean Video Output',
+            //  click: () => {
+            //	if (mainWindow && mainWindow.webContents) {
+            //	  // Insert the CSS and execute the JavaScript as in the context menu
+            //	  const css = `/* ... CSS content ... */`;
+            //	  mainWindow.webContents.insertCSS(css, { cssOrigin: 'user' });
+            //	  mainWindow.webContents.executeJavaScript(`/* ... JavaScript content ... */`);
+            //	}
+            //  }
+            //},
+            {
+                label: 'Insert Custom CSS',
+                click: async () => {
+                    if (mainWindow && mainWindow.webContents) {
+                        const savedValue = await mainWindow.webContents.executeJavaScript(`localStorage.getItem('insertCSS');`);
+                        prompt({
+                            title: 'Insert Custom CSS',
+                            label: 'CSS:',
+                            value: savedValue || 'body {background-color:#0000;}',
+                            inputAttrs: {
+                                type: 'text'
+                            },
+                            type: 'input'
+                        }).then(r => {
+                            if (r !== null) {
+                                mainWindow.webContents.executeJavaScript(`localStorage.setItem('insertCSS', '${r}');`);
+                                mainWindow.webContents.insertCSS(r, {
+                                    cssOrigin: 'user'
+                                });
+                            }
+                        }).catch(console.error);
+                    }
+                }
+            }
             ]
         },
 
@@ -9822,91 +9824,91 @@ function createMenu() {
         {
             label: 'Window',
             submenu: [{
-                    role: 'minimize'
-                },
-                {
-                    role: 'zoom'
-                },
-                {
-                    type: 'separator'
-                },
-                {
-                    label: 'Always on Top',
-                    type: 'checkbox',
-                    checked: mainWindow ? mainWindow.isAlwaysOnTop() : false,
-                    click: () => {
-                        if (mainWindow) {
-                            const shouldPin = !mainWindow.isAlwaysOnTop();
-                            mainWindow.setAlwaysOnTop(shouldPin);
-                            mainWindow.setVisibleOnAllWorkspaces(shouldPin);
-                        }
+                role: 'minimize'
+            },
+            {
+                role: 'zoom'
+            },
+            {
+                type: 'separator'
+            },
+            {
+                label: 'Always on Top',
+                type: 'checkbox',
+                checked: mainWindow ? mainWindow.isAlwaysOnTop() : false,
+                click: () => {
+                    if (mainWindow) {
+                        const shouldPin = !mainWindow.isAlwaysOnTop();
+                        mainWindow.setAlwaysOnTop(shouldPin);
+                        mainWindow.setVisibleOnAllWorkspaces(shouldPin);
                     }
-                },
-                {
-                    label: 'Make Unclickable',
-                    click: () => {
-                        if (mainWindow) {
-                            mainWindow.setIgnoreMouseEvents(true);
-                        }
+                }
+            },
+            {
+                label: 'Make Unclickable',
+                click: () => {
+                    if (mainWindow) {
+                        mainWindow.setIgnoreMouseEvents(true);
                     }
-                },
-                {
-                    type: 'separator'
-                },
-                {
-                    label: 'Minimize to Tray',
-                    click: () => minimizeToTray()
-                },
-                {
-                    type: 'separator'
-                },
-                {
-                    role: 'front'
-                },
-                ...(isMac ? [{
-                    type: 'separator'
-                }, {
-                    role: 'window'
-                }] : [])
+                }
+            },
+            {
+                type: 'separator'
+            },
+            {
+                label: 'Minimize to Tray',
+                click: () => minimizeToTray()
+            },
+            {
+                type: 'separator'
+            },
+            {
+                role: 'front'
+            },
+            ...(isMac ? [{
+                type: 'separator'
+            }, {
+                role: 'window'
+            }] : [])
             ]
         },
         // Help menu
         {
             role: "help",
             submenu: [{
-                    label: "Get support on Discord",
-                    click: async () => {
-                        await shell.openExternal("https://discord.socialstream.ninja");
-                    },
+                label: "Get support on Discord",
+                click: async () => {
+                    await shell.openExternal("https://discord.socialstream.ninja");
                 },
-                {
-                    label: "Visit main website",
-                    click: async () => {
-                        await shell.openExternal("https://socialstream.ninja/");
-                    },
+            },
+            {
+                label: "Visit main website",
+                click: async () => {
+                    await shell.openExternal("https://socialstream.ninja/");
                 },
-                {
-                    label: "Terms of service",
-                    click: async () => {
-                        await shell.openExternal("https://socialstream.ninja/TOS");
-                    },
+            },
+            {
+                label: "Terms of service",
+                click: async () => {
+                    await shell.openExternal("https://socialstream.ninja/TOS");
                 },
-                {
-                    label: "Privacy policy",
-                    click: async () => {
-                        await shell.openExternal("https://socialstream.ninja/privacy");
-                    },
+            },
+            {
+                label: "Privacy policy",
+                click: async () => {
+                    await shell.openExternal("https://socialstream.ninja/privacy");
                 },
-                {
-                    label: "YouTube's terms of service",
-                    click: async () => {
-                        await shell.openExternal("https://www.youtube.com/t/terms");
-                    },
+            },
+            {
+                label: "YouTube's terms of service",
+                click: async () => {
+                    await shell.openExternal("https://www.youtube.com/t/terms");
                 },
-                {
-                    label: 'Command Line Arguments',
-                    click: () => showCommandLineArguments()
-                },
+            },
+            {
+                label: 'Command Line Arguments',
+                click: () => showCommandLineArguments()
+            },
             ],
         },
     ];
@@ -9924,18 +9926,18 @@ function createMenu() {
     tray.setToolTip("Social Stream Ninja");
     tray.setContextMenu(
         Menu.buildFromTemplate([{
-                label: "Show App",
-                click: () => {
-                    mainWindow.show();
-                },
+            label: "Show App",
+            click: () => {
+                mainWindow.show();
             },
-            {
-                label: "Exit",
-                click: () => {
-                    app.isQuitting = true;
-                    quitApp();
-                },
+        },
+        {
+            label: "Exit",
+            click: () => {
+                app.isQuitting = true;
+                quitApp();
             },
+        },
         ])
     );
 

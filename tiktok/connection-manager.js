@@ -33,13 +33,13 @@ const env = {
     browserViews: Object.create(null),
     websocketConnections: Object.create(null),
     log: (...args) => console.log(...args),
-    onStatus: () => {},
+    onStatus: () => { },
     isCaptureEventsEnabled: () => false,
     isCaptureJoinedEventEnabled: () => false,
     isViewerUpdateAllowed: () => false,
     isTextOnlyModeEnabled: () => false,
     getCachedSettings: () => ({}),
-    onEvent: () => {},
+    onEvent: () => { },
     isDevMode: () => false
 };
 
@@ -126,7 +126,7 @@ function resolveSourceIdForPayload(payload) {
         if (manager && manager.sourceId) {
             return manager.sourceId;
         }
-    } catch (_) {}
+    } catch (_) { }
     return null;
 }
 
@@ -600,7 +600,7 @@ function createTikTokEnvironment(options = {}) {
     const {
         connector,
         shouldEnableTikTokLogging: shouldEnableLoggingOption = false,
-        onStatus: onStatusOverride = () => {},
+        onStatus: onStatusOverride = () => { },
         getCachedSettings: getCachedSettingsOverride = () => ({}),
         isCaptureEventsEnabled: captureEventsEnabledFn = () => false,
         isCaptureJoinedEventEnabled: captureJoinedFn = () => false,
@@ -614,7 +614,8 @@ function createTikTokEnvironment(options = {}) {
         browserViews = null,
         websocketConnections = null,
         log: logFn = null,
-        onEvent: onEventOverride = () => {}
+        onEvent: onEventOverride = () => { },
+        signerHelper: signerHelperOverride = null
     } = options;
 
     TikTokPollingFallbackClass = null;
@@ -667,15 +668,16 @@ function createTikTokEnvironment(options = {}) {
         env.websocketConnections = websocketConnections;
     }
 
-    env.onStatus = typeof onStatusOverride === 'function' ? onStatusOverride : () => {};
+    env.onStatus = typeof onStatusOverride === 'function' ? onStatusOverride : () => { };
     env.getCachedSettings = typeof getCachedSettingsOverride === 'function' ? getCachedSettingsOverride : () => ({});
     env.isCaptureEventsEnabled = typeof captureEventsEnabledFn === 'function' ? captureEventsEnabledFn : () => false;
     env.isCaptureJoinedEventEnabled = typeof captureJoinedFn === 'function' ? captureJoinedFn : () => false;
     env.isViewerUpdateAllowed = typeof viewerUpdateAllowedFn === 'function' ? viewerUpdateAllowedFn : () => false;
     env.isTextOnlyModeEnabled = typeof textOnlyModeFn === 'function' ? textOnlyModeFn : () => false;
     env.log = typeof logFn === 'function' ? logFn : env.log;
-    env.onEvent = typeof onEventOverride === 'function' ? onEventOverride : () => {};
+    env.onEvent = typeof onEventOverride === 'function' ? onEventOverride : () => { };
     env.isDevMode = typeof isDevModeOverride === 'function' ? isDevModeOverride : () => false;
+    env.signerHelper = signerHelperOverride;
 
     cachedTikTokLogDir = null;
 
@@ -1055,412 +1057,412 @@ function resolveTikTokSubscriberStatus(data = {}) {
     return false;
 }
 
-    function composeTikTokChatMessage(data = {}, options = {}) {
-        const { includeTopGifterBadgeAlways = false } = options;
-        const explicitTextOnly = data && (data.textonly === true || data.textonlymode === true);
-        const textOnly = explicitTextOnly || isTextOnlyModeEnabled();
+function composeTikTokChatMessage(data = {}, options = {}) {
+    const { includeTopGifterBadgeAlways = false } = options;
+    const explicitTextOnly = data && (data.textonly === true || data.textonlymode === true);
+    const textOnly = explicitTextOnly || isTextOnlyModeEnabled();
 
-        let chatmessage = typeof data?.comment === 'string' ? data.comment : '';
+    let chatmessage = typeof data?.comment === 'string' ? data.comment : '';
 
-        if (Array.isArray(data?.emotes) && data.emotes.length > 0) {
-            const emoteParts = [];
-            data.emotes.forEach((emote) => {
-                if (!emote) return;
+    if (Array.isArray(data?.emotes) && data.emotes.length > 0) {
+        const emoteParts = [];
+        data.emotes.forEach((emote) => {
+            if (!emote) return;
 
-                const emoteLabel = cleanVisibleString(emote.emoteName || emote.name || emote.title || emote.id);
+            const emoteLabel = cleanVisibleString(emote.emoteName || emote.name || emote.title || emote.id);
 
-                if (textOnly) {
-                    if (emoteLabel) {
-                        emoteParts.push(emoteLabel);
-                    } else {
-                        emoteParts.push('[sticker]');
-                    }
-                    return;
-                }
-
-                const urlCandidate = emote.emoteImageUrl || emote.imageUrl || emote.url || emote.image?.url;
-                const resolvedUrl = normalizeTikTokImageUrl(urlCandidate);
-                if (!resolvedUrl) return;
-
-                const emoteId = emote.emoteId || emote.id || '';
-                let tag = `<img class="sticker" src="${resolvedUrl}"`;
+            if (textOnly) {
                 if (emoteLabel) {
-                    tag += ` alt="${emoteLabel}"`;
+                    emoteParts.push(emoteLabel);
+                } else {
+                    emoteParts.push('[sticker]');
                 }
-                if (emoteId) {
-                    tag += ` data-emote-id="${emoteId}"`;
-                }
-                tag += '>';
-                emoteParts.push(tag);
-            });
-
-            if (emoteParts.length) {
-                const emoteText = emoteParts.join(' ');
-                chatmessage = chatmessage ? `${chatmessage} ${emoteText}` : emoteText;
-            }
-        }
-
-        const message = {
-            chatmessage,
-            textonly: textOnly,
-            textonlymode: textOnly
-        };
-
-        const badgeSources = collectTikTokBadges(data);
-        if (badgeSources.length) {
-            const badges = [];
-            const seenBadgeUrls = new Set();
-            badgeSources.forEach((badge) => {
-                const badgeUrl = getBadgeImageUrl(badge);
-                if (!badgeUrl) return;
-                if (seenBadgeUrls.has(badgeUrl)) return;
-                seenBadgeUrls.add(badgeUrl);
-                badges.push(badgeUrl);
-            });
-            if (badges.length) {
-                message.chatbadges = badges;
-            }
-        }
-
-        if (data?.topGifterRank) {
-            const existingBadges = Array.isArray(message.chatbadges) ? message.chatbadges : [];
-            if (includeTopGifterBadgeAlways || existingBadges.length === 0) {
-                if (!Array.isArray(message.chatbadges)) {
-                    message.chatbadges = [];
-                }
-                const topGifterBadgeUrl = 'https://p16-webcast.tiktokcdn.com/webcast-sg/new_top_gifter_version_2.png~tplv-obj.image';
-                if (!message.chatbadges.includes(topGifterBadgeUrl)) {
-                    message.chatbadges.push(topGifterBadgeUrl);
-                }
-            }
-        }
-
-        message.moderator = resolveTikTokModeratorStatus(data);
-        message.membership = resolveTikTokSubscriberStatus(data);
-
-        const identity = extractTikTokIdentity(data);
-        const resolvedUserId = resolveTikTokUserId(data, identity);
-        if (resolvedUserId) {
-            message.userid = resolvedUserId;
-        }
-        message.chatname = resolveTikTokDisplayName(data, identity, resolvedUserId);
-
-        const avatarUrl = identity.profilePictureUrl
-            || normalizeTikTokImageUrl(data?.profilePictureUrl)
-            || normalizeTikTokImageUrl(data?.profilePicture)
-            || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
-            || normalizeTikTokImageUrl(data?.user?.profilePicture);
-        message.chatimg = avatarUrl || null;
-
-        const nameColor = data?.nameColor || data?.name_color || data?.user?.nameColor;
-        const safeColor = normalizeNameColor(nameColor);
-        if (safeColor) {
-            message.nameColor = safeColor;
-        }
-
-        return message;
-    }
-
-    function sendChatMessage(data, virtualTabId) {
-        const msg = composeTikTokChatMessage(data, { includeTopGifterBadgeAlways: true });
-        if (typeof msg.textonly !== 'boolean') {
-            msg.textonly = isTextOnlyModeEnabled();
-        }
-        if (typeof msg.textonlymode !== 'boolean') {
-            msg.textonlymode = msg.textonly;
-        }
-        msg.type = 'tiktok';
-        msg.tid = virtualTabId;
-        sendToBackground(msg);
-    }
-
-    let wssID = 0;
-
-    // Function to send messages to TikTok chat
-    async function sendToTikTok(args) {
-        try {
-            const {
-                wssID,
-                message
-            } = args || {};
-
-            const manager = env.websocketConnections[wssID];
-            if (!manager) {
-                log(`TikTok connection not found for wssID: ${wssID}`);
-                return {
-                    success: false,
-                    error: 'Connection not found'
-                };
+                return;
             }
 
-            const result = await manager.sendChatMessage(message);
-            if (!result || typeof result.success !== 'boolean') {
-                return {
-                    success: false,
-                    error: 'Unknown send status'
-                };
+            const urlCandidate = emote.emoteImageUrl || emote.imageUrl || emote.url || emote.image?.url;
+            const resolvedUrl = normalizeTikTokImageUrl(urlCandidate);
+            if (!resolvedUrl) return;
+
+            const emoteId = emote.emoteId || emote.id || '';
+            let tag = `<img class="sticker" src="${resolvedUrl}"`;
+            if (emoteLabel) {
+                tag += ` alt="${emoteLabel}"`;
             }
-
-            if (result.success) {
-                log('TikTok message sent via API request.');
-            } else if (result.error) {
-                log(`TikTok message send blocked: ${result.error}`);
+            if (emoteId) {
+                tag += ` data-emote-id="${emoteId}"`;
             }
+            tag += '>';
+            emoteParts.push(tag);
+        });
 
-            return result;
-
-        } catch (error) {
-            log(`Failed to send TikTok message: ${error.message}`);
-            return {
-                success: false,
-                error: error.message || 'Failed to send message'
-            };
+        if (emoteParts.length) {
+            const emoteText = emoteParts.join(' ');
+            chatmessage = chatmessage ? `${chatmessage} ${emoteText}` : emoteText;
         }
     }
 
-    const CONFIG = {
-        CONNECTION: {
-            TIMEOUT: 15000,
-            CLEANUP_INTERVAL: 60000,
-            HEALTH_CHECK_INTERVAL: 60000, // Increased to 60s for better stability
-            // Adaptive reconnect windows (active → moderate → idle)
-            MESSAGE_TIMEOUT_ACTIVE_MS: 5 * 60 * 1000,
-            MESSAGE_TIMEOUT_MODERATE_MS: 10 * 60 * 1000,
-            MESSAGE_TIMEOUT_IDLE_MS: 30 * 60 * 1000,
-            ACTIVITY_THRESHOLDS: {
-                HIGH_PER_MINUTE: 120, // Consider stream "active" if >=120 msgs/min (~2 msg/sec)
-                MODERATE_PER_MINUTE: 15 // Moderate traffic if >=15 msgs/min
-            },
-            ACTIVITY_HISTORY_MS: 30 * 60 * 1000, // Track up to 30 minutes of activity
-            MAX_RECONNECT_ATTEMPTS: Infinity, // Retry indefinitely
-            RECONNECT_DELAY: 3000,
-            // Fixed retry cadence when user is offline / not live
-            OFFLINE_RETRY_INTERVAL_MS: 60000, // 1 minute
-            // Cap exponential backoff for transient errors (5 minutes max)
-            MAX_RECONNECT_DELAY_MS: 300000, // 5 minutes
-            // Backoff jitter factor (e.g., 0.1 => ±10%)
-            BACKOFF_JITTER: 0.1,
-            // Rate limit retry delay
-            RATE_LIMIT_RETRY_MS: 300000, // 5 minutes
-            // Maximum time to wait for the Euler sign server before failing fast
-            SIGN_REQUEST_TIMEOUT_MS: 25000,
-            // Increase timeout if the first attempt times out (added incrementally to avoid long hangs)
-            SIGN_REQUEST_TIMEOUT_STEP_MS: 10000,
-            // Do not exceed this timeout when boosting sign server calls
-            SIGN_REQUEST_TIMEOUT_MAX_MS: 45000,
-            // Small pause before immediately retrying after a boosted timeout
-            SIGN_REQUEST_IMMEDIATE_RETRY_DELAY_MS: 750
-        },
-        CHAT: {
-            PROCESSING_INTERVAL: 100,
-            // Hard cap for total queued messages across TikTok chat processing
-            MAX_QUEUE_SIZE: 10000,
-            // Drop stale messages that fall outside this trailing window
-            STALE_MESSAGE_GRACE_MS: 3 * 60 * 1000,
-            HIGH_LOAD_THRESHOLD: 5000,
-            HIGH_LOAD_INTERVAL: 20,
-            // Preferred batch sizes across different load tiers
-            STANDARD_BATCH_SIZE: 50,
-            HIGH_LOAD_BATCH_SIZE: 120,
-            HIGH_WATER_THRESHOLD: 8000,
-            HIGH_WATER_BATCH_SIZE: 250,
-            HIGH_WATER_INTERVAL: 5
-        },
-        GIFT: {
-            PROCESSING_INTERVAL: 50
-        }
+    const message = {
+        chatmessage,
+        textonly: textOnly,
+        textonlymode: textOnly
     };
 
-
-    const connectionCleanupInterval = setInterval(() => {
-        for (const [id, state] of connectionStates.entries()) {
-            const manager = env.websocketConnections[id];
-            const attemptInProgress = !!state?.attemptInProgress;
-
-            // Do not clean up while a connection attempt is actively running
-            if (attemptInProgress) {
-                continue;
-            }
-
-            // Watchdog: if stuck in reconnecting state without a timer, kick the scheduler
-            if (manager && !manager.isStopped) {
-                const isConnected = !!(manager.connection && manager.connection.isConnected);
-                const hasTimer = !!manager.reconnectTimer;
-                if (!isConnected && state.isReconnecting && !hasTimer) {
-                    const idleMs = Date.now() - (state.lastAttempt || 0);
-                    if (idleMs > CONFIG.CONNECTION.TIMEOUT) {
-                        console.warn(`Reconnect watchdog: restarting attempt for ${id} after ${idleMs}ms idle`);
-                        try { manager.attemptReconnect(); } catch (e) { console.error('Watchdog attemptReconnect error:', e); }
-                    }
-                }
-            }
-
-            // Existing cleanup: if not connected, not reconnecting, and beyond timeout
-            if (!state.isConnected && !state.isReconnecting && Date.now() - state.lastAttempt > CONFIG.CONNECTION.TIMEOUT) {
-                console.warn(`Cleaning up failed connection ${id}`);
-                cleanupConnection(id);
-            }
-        }
-    }, CONFIG.CONNECTION.CLEANUP_INTERVAL);
-    
-    // Store for cleanup on app quit
-    if (!global.intervals) global.intervals = [];
-    global.intervals.push(connectionCleanupInterval);
-
-    function cleanupConnection(wssID) {
-        try {
-            const manager = env.websocketConnections[wssID];
-            if (manager) {
-                // If it's a ConnectionManager instance
-                if (manager.connection) {
-                    manager.connection.disconnect();
-                    log("closing TIktok connection and cleaning up");
-                    manager.connection.removeAllListeners();
-                }
-                // Clear any intervals and timers
-                if (manager.healthCheckInterval) {
-                    clearInterval(manager.healthCheckInterval);
-                }
-                if (manager.viewerUpdateInterval) {
-                    clearInterval(manager.viewerUpdateInterval);
-                }
-                if (manager.reconnectTimer) {
-                    clearTimeout(manager.reconnectTimer);
-                    manager.reconnectTimer = null;
-                }
-                if (manager.activityBuckets instanceof Map) {
-                    manager.activityBuckets.clear();
-                }
-                if (typeof manager.resetGoalAggregates === 'function') {
-                    try {
-                        manager.resetGoalAggregates({ flush: false });
-                    } catch (_) { /* noop */ }
-                }
-                // Mark as stopped
-                manager.isStopped = true;
-                if (typeof manager.logDebug === 'function') {
-                    manager.logDebug('lifecycle.cleanup', { triggeredBy: 'cleanupConnection' });
-                }
-                if (typeof manager.closeLogWriter === 'function') {
-                    manager.closeLogWriter('cleanupConnection');
-                }
-
-                // Remove the virtual tab entry
-                if (manager.virtualTabId && env.browserViews[manager.virtualTabId]) {
-                    delete env.browserViews[manager.virtualTabId];
-                    log("Removed virtual tab: " + manager.virtualTabId);
-                }
-
-                delete env.websocketConnections[wssID];
-            }
-            connectionStates.delete(wssID);
-            log("deleting connectionStates: " + wssID);
-        } catch (e) {
-            console.error('Error during connection cleanup:', e);
+    const badgeSources = collectTikTokBadges(data);
+    if (badgeSources.length) {
+        const badges = [];
+        const seenBadgeUrls = new Set();
+        badgeSources.forEach((badge) => {
+            const badgeUrl = getBadgeImageUrl(badge);
+            if (!badgeUrl) return;
+            if (seenBadgeUrls.has(badgeUrl)) return;
+            seenBadgeUrls.add(badgeUrl);
+            badges.push(badgeUrl);
+        });
+        if (badges.length) {
+            message.chatbadges = badges;
         }
     }
 
-    function normalizeNameColor(raw) {
-        if (raw === undefined || raw === null) return null;
-
-        const normalized = String(raw).trim().toLowerCase();
-        if (!normalized) return null;
-
-        const compact = normalized.includes('rgb') ? normalized.replace(/\s+/g, '') : null;
-
-        if (
-            normalized === 'black' ||
-            normalized === '000000' ||
-            normalized === '#000' ||
-            normalized === '#000000' ||
-            normalized === '0x000000' ||
-            compact === 'rgb(0,0,0)' ||
-            compact === 'rgba(0,0,0,1)'
-        ) {
-            return null;
+    if (data?.topGifterRank) {
+        const existingBadges = Array.isArray(message.chatbadges) ? message.chatbadges : [];
+        if (includeTopGifterBadgeAlways || existingBadges.length === 0) {
+            if (!Array.isArray(message.chatbadges)) {
+                message.chatbadges = [];
+            }
+            const topGifterBadgeUrl = 'https://p16-webcast.tiktokcdn.com/webcast-sg/new_top_gifter_version_2.png~tplv-obj.image';
+            if (!message.chatbadges.includes(topGifterBadgeUrl)) {
+                message.chatbadges.push(topGifterBadgeUrl);
+            }
         }
-
-        let hex = normalized;
-        let hadHash = false;
-
-        if (hex.startsWith('0x') && hex.length === 8) {
-            hex = hex.slice(2);
-        }
-
-        if (hex.startsWith('#')) {
-            hadHash = true;
-            hex = hex.slice(1);
-        }
-
-        if (hadHash && hex.length === 3 && /^[0-9a-f]{3}$/.test(hex)) {
-            hex = `${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`;
-        } else if (hex.length === 3) {
-            return null;
-        }
-
-        if (hex.length !== 6 || !/^[0-9a-f]{6}$/.test(hex)) {
-            // Unsupported format; ignore to avoid injecting invalid CSS
-            return null;
-        }
-
-        return `#${hex}`;
     }
 
-    function sanitizeMetaValue(value, depth = 0) {
-        if (value === null || value === undefined) {
-            return undefined;
+    message.moderator = resolveTikTokModeratorStatus(data);
+    message.membership = resolveTikTokSubscriberStatus(data);
+
+    const identity = extractTikTokIdentity(data);
+    const resolvedUserId = resolveTikTokUserId(data, identity);
+    if (resolvedUserId) {
+        message.userid = resolvedUserId;
+    }
+    message.chatname = resolveTikTokDisplayName(data, identity, resolvedUserId);
+
+    const avatarUrl = identity.profilePictureUrl
+        || normalizeTikTokImageUrl(data?.profilePictureUrl)
+        || normalizeTikTokImageUrl(data?.profilePicture)
+        || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+        || normalizeTikTokImageUrl(data?.user?.profilePicture);
+    message.chatimg = avatarUrl || null;
+
+    const nameColor = data?.nameColor || data?.name_color || data?.user?.nameColor;
+    const safeColor = normalizeNameColor(nameColor);
+    if (safeColor) {
+        message.nameColor = safeColor;
+    }
+
+    return message;
+}
+
+function sendChatMessage(data, virtualTabId) {
+    const msg = composeTikTokChatMessage(data, { includeTopGifterBadgeAlways: true });
+    if (typeof msg.textonly !== 'boolean') {
+        msg.textonly = isTextOnlyModeEnabled();
+    }
+    if (typeof msg.textonlymode !== 'boolean') {
+        msg.textonlymode = msg.textonly;
+    }
+    msg.type = 'tiktok';
+    msg.tid = virtualTabId;
+    sendToBackground(msg);
+}
+
+let wssID = 0;
+
+// Function to send messages to TikTok chat
+async function sendToTikTok(args) {
+    try {
+        const {
+            wssID,
+            message
+        } = args || {};
+
+        const manager = env.websocketConnections[wssID];
+        if (!manager) {
+            log(`TikTok connection not found for wssID: ${wssID}`);
+            return {
+                success: false,
+                error: 'Connection not found'
+            };
         }
 
-        if (typeof value === 'string') {
-            const trimmed = value.trim();
-            if (!trimmed) {
-                return undefined;
-            }
-            const MAX_LENGTH = 512;
-            return trimmed.length > MAX_LENGTH
-                ? `${trimmed.slice(0, MAX_LENGTH - 3)}...`
-                : trimmed;
+        const result = await manager.sendChatMessage(message);
+        if (!result || typeof result.success !== 'boolean') {
+            return {
+                success: false,
+                error: 'Unknown send status'
+            };
         }
 
-        if (typeof value === 'number') {
-            return Number.isFinite(value) ? value : undefined;
+        if (result.success) {
+            log('TikTok message sent via API request.');
+        } else if (result.error) {
+            log(`TikTok message send blocked: ${result.error}`);
         }
 
-        if (typeof value === 'boolean') {
-            return value;
+        return result;
+
+    } catch (error) {
+        log(`Failed to send TikTok message: ${error.message}`);
+        return {
+            success: false,
+            error: error.message || 'Failed to send message'
+        };
+    }
+}
+
+const CONFIG = {
+    CONNECTION: {
+        TIMEOUT: 15000,
+        CLEANUP_INTERVAL: 60000,
+        HEALTH_CHECK_INTERVAL: 60000, // Increased to 60s for better stability
+        // Adaptive reconnect windows (active → moderate → idle)
+        MESSAGE_TIMEOUT_ACTIVE_MS: 5 * 60 * 1000,
+        MESSAGE_TIMEOUT_MODERATE_MS: 10 * 60 * 1000,
+        MESSAGE_TIMEOUT_IDLE_MS: 30 * 60 * 1000,
+        ACTIVITY_THRESHOLDS: {
+            HIGH_PER_MINUTE: 120, // Consider stream "active" if >=120 msgs/min (~2 msg/sec)
+            MODERATE_PER_MINUTE: 15 // Moderate traffic if >=15 msgs/min
+        },
+        ACTIVITY_HISTORY_MS: 30 * 60 * 1000, // Track up to 30 minutes of activity
+        MAX_RECONNECT_ATTEMPTS: Infinity, // Retry indefinitely
+        RECONNECT_DELAY: 3000,
+        // Fixed retry cadence when user is offline / not live
+        OFFLINE_RETRY_INTERVAL_MS: 60000, // 1 minute
+        // Cap exponential backoff for transient errors (5 minutes max)
+        MAX_RECONNECT_DELAY_MS: 300000, // 5 minutes
+        // Backoff jitter factor (e.g., 0.1 => ±10%)
+        BACKOFF_JITTER: 0.1,
+        // Rate limit retry delay
+        RATE_LIMIT_RETRY_MS: 300000, // 5 minutes
+        // Maximum time to wait for the Euler sign server before failing fast
+        SIGN_REQUEST_TIMEOUT_MS: 25000,
+        // Increase timeout if the first attempt times out (added incrementally to avoid long hangs)
+        SIGN_REQUEST_TIMEOUT_STEP_MS: 10000,
+        // Do not exceed this timeout when boosting sign server calls
+        SIGN_REQUEST_TIMEOUT_MAX_MS: 45000,
+        // Small pause before immediately retrying after a boosted timeout
+        SIGN_REQUEST_IMMEDIATE_RETRY_DELAY_MS: 750
+    },
+    CHAT: {
+        PROCESSING_INTERVAL: 100,
+        // Hard cap for total queued messages across TikTok chat processing
+        MAX_QUEUE_SIZE: 10000,
+        // Drop stale messages that fall outside this trailing window
+        STALE_MESSAGE_GRACE_MS: 3 * 60 * 1000,
+        HIGH_LOAD_THRESHOLD: 5000,
+        HIGH_LOAD_INTERVAL: 20,
+        // Preferred batch sizes across different load tiers
+        STANDARD_BATCH_SIZE: 50,
+        HIGH_LOAD_BATCH_SIZE: 120,
+        HIGH_WATER_THRESHOLD: 8000,
+        HIGH_WATER_BATCH_SIZE: 250,
+        HIGH_WATER_INTERVAL: 5
+    },
+    GIFT: {
+        PROCESSING_INTERVAL: 50
+    }
+};
+
+
+const connectionCleanupInterval = setInterval(() => {
+    for (const [id, state] of connectionStates.entries()) {
+        const manager = env.websocketConnections[id];
+        const attemptInProgress = !!state?.attemptInProgress;
+
+        // Do not clean up while a connection attempt is actively running
+        if (attemptInProgress) {
+            continue;
         }
 
-        if (Array.isArray(value)) {
-            if (depth >= 2) {
-                return undefined;
-            }
-            const sanitized = [];
-            for (const item of value) {
-                if (sanitized.length >= 20) break;
-                const candidate = sanitizeMetaValue(item, depth + 1);
-                if (candidate !== undefined) {
-                    sanitized.push(candidate);
+        // Watchdog: if stuck in reconnecting state without a timer, kick the scheduler
+        if (manager && !manager.isStopped) {
+            const isConnected = !!(manager.connection && manager.connection.isConnected);
+            const hasTimer = !!manager.reconnectTimer;
+            if (!isConnected && state.isReconnecting && !hasTimer) {
+                const idleMs = Date.now() - (state.lastAttempt || 0);
+                if (idleMs > CONFIG.CONNECTION.TIMEOUT) {
+                    console.warn(`Reconnect watchdog: restarting attempt for ${id} after ${idleMs}ms idle`);
+                    try { manager.attemptReconnect(); } catch (e) { console.error('Watchdog attemptReconnect error:', e); }
                 }
             }
-            return sanitized.length ? sanitized : undefined;
         }
 
-        if (typeof value === 'object') {
-            if (depth >= 2) {
-                return undefined;
-            }
-            const sanitized = {};
-            for (const [key, val] of Object.entries(value)) {
-                const candidate = sanitizeMetaValue(val, depth + 1);
-                if (candidate !== undefined) {
-                    sanitized[key] = candidate;
-                }
-            }
-            return Object.keys(sanitized).length ? sanitized : undefined;
+        // Existing cleanup: if not connected, not reconnecting, and beyond timeout
+        if (!state.isConnected && !state.isReconnecting && Date.now() - state.lastAttempt > CONFIG.CONNECTION.TIMEOUT) {
+            console.warn(`Cleaning up failed connection ${id}`);
+            cleanupConnection(id);
         }
+    }
+}, CONFIG.CONNECTION.CLEANUP_INTERVAL);
 
+// Store for cleanup on app quit
+if (!global.intervals) global.intervals = [];
+global.intervals.push(connectionCleanupInterval);
+
+function cleanupConnection(wssID) {
+    try {
+        const manager = env.websocketConnections[wssID];
+        if (manager) {
+            // If it's a ConnectionManager instance
+            if (manager.connection) {
+                manager.connection.disconnect();
+                log("closing TIktok connection and cleaning up");
+                manager.connection.removeAllListeners();
+            }
+            // Clear any intervals and timers
+            if (manager.healthCheckInterval) {
+                clearInterval(manager.healthCheckInterval);
+            }
+            if (manager.viewerUpdateInterval) {
+                clearInterval(manager.viewerUpdateInterval);
+            }
+            if (manager.reconnectTimer) {
+                clearTimeout(manager.reconnectTimer);
+                manager.reconnectTimer = null;
+            }
+            if (manager.activityBuckets instanceof Map) {
+                manager.activityBuckets.clear();
+            }
+            if (typeof manager.resetGoalAggregates === 'function') {
+                try {
+                    manager.resetGoalAggregates({ flush: false });
+                } catch (_) { /* noop */ }
+            }
+            // Mark as stopped
+            manager.isStopped = true;
+            if (typeof manager.logDebug === 'function') {
+                manager.logDebug('lifecycle.cleanup', { triggeredBy: 'cleanupConnection' });
+            }
+            if (typeof manager.closeLogWriter === 'function') {
+                manager.closeLogWriter('cleanupConnection');
+            }
+
+            // Remove the virtual tab entry
+            if (manager.virtualTabId && env.browserViews[manager.virtualTabId]) {
+                delete env.browserViews[manager.virtualTabId];
+                log("Removed virtual tab: " + manager.virtualTabId);
+            }
+
+            delete env.websocketConnections[wssID];
+        }
+        connectionStates.delete(wssID);
+        log("deleting connectionStates: " + wssID);
+    } catch (e) {
+        console.error('Error during connection cleanup:', e);
+    }
+}
+
+function normalizeNameColor(raw) {
+    if (raw === undefined || raw === null) return null;
+
+    const normalized = String(raw).trim().toLowerCase();
+    if (!normalized) return null;
+
+    const compact = normalized.includes('rgb') ? normalized.replace(/\s+/g, '') : null;
+
+    if (
+        normalized === 'black' ||
+        normalized === '000000' ||
+        normalized === '#000' ||
+        normalized === '#000000' ||
+        normalized === '0x000000' ||
+        compact === 'rgb(0,0,0)' ||
+        compact === 'rgba(0,0,0,1)'
+    ) {
+        return null;
+    }
+
+    let hex = normalized;
+    let hadHash = false;
+
+    if (hex.startsWith('0x') && hex.length === 8) {
+        hex = hex.slice(2);
+    }
+
+    if (hex.startsWith('#')) {
+        hadHash = true;
+        hex = hex.slice(1);
+    }
+
+    if (hadHash && hex.length === 3 && /^[0-9a-f]{3}$/.test(hex)) {
+        hex = `${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`;
+    } else if (hex.length === 3) {
+        return null;
+    }
+
+    if (hex.length !== 6 || !/^[0-9a-f]{6}$/.test(hex)) {
+        // Unsupported format; ignore to avoid injecting invalid CSS
+        return null;
+    }
+
+    return `#${hex}`;
+}
+
+function sanitizeMetaValue(value, depth = 0) {
+    if (value === null || value === undefined) {
         return undefined;
     }
+
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) {
+            return undefined;
+        }
+        const MAX_LENGTH = 512;
+        return trimmed.length > MAX_LENGTH
+            ? `${trimmed.slice(0, MAX_LENGTH - 3)}...`
+            : trimmed;
+    }
+
+    if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : undefined;
+    }
+
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    if (Array.isArray(value)) {
+        if (depth >= 2) {
+            return undefined;
+        }
+        const sanitized = [];
+        for (const item of value) {
+            if (sanitized.length >= 20) break;
+            const candidate = sanitizeMetaValue(item, depth + 1);
+            if (candidate !== undefined) {
+                sanitized.push(candidate);
+            }
+        }
+        return sanitized.length ? sanitized : undefined;
+    }
+
+    if (typeof value === 'object') {
+        if (depth >= 2) {
+            return undefined;
+        }
+        const sanitized = {};
+        for (const [key, val] of Object.entries(value)) {
+            const candidate = sanitizeMetaValue(val, depth + 1);
+            if (candidate !== undefined) {
+                sanitized[key] = candidate;
+            }
+        }
+        return Object.keys(sanitized).length ? sanitized : undefined;
+    }
+
+    return undefined;
+}
 
 function sanitizeEventMeta(meta) {
     if (!meta || typeof meta !== 'object') {
@@ -1518,20 +1520,20 @@ function resolveFirstImageUrl(candidates = []) {
     return null;
 }
 
-    // Load CircularBuffer if available
-    let CircularBuffer;
-    try {
-        CircularBuffer = require('./circular-buffer.js');
-    } catch (e) {
-        // Fallback to array if CircularBuffer not available
-        CircularBuffer = null;
-    }
+// Load CircularBuffer if available
+let CircularBuffer;
+try {
+    CircularBuffer = require('./circular-buffer.js');
+} catch (e) {
+    // Fallback to array if CircularBuffer not available
+    CircularBuffer = null;
+}
 
-    class MessageProcessor {
-        constructor(manager) {
-            this.manager = manager;
-            // Use CircularBuffer if available, otherwise fallback to array
-            if (CircularBuffer) {
+class MessageProcessor {
+    constructor(manager) {
+        this.manager = manager;
+        // Use CircularBuffer if available, otherwise fallback to array
+        if (CircularBuffer) {
             this.queue = new CircularBuffer(CONFIG.CHAT.MAX_QUEUE_SIZE);
         } else {
             this.queue = [];
@@ -1547,1960 +1549,1562 @@ function resolveFirstImageUrl(candidates = []) {
         this.droppedSinceHighWater = 0;
     }
 
-        addToQueue(data) {
+    addToQueue(data) {
 
-            if (this.manager?.isReplayActive && this.manager.isReplayActive()) {
+        if (this.manager?.isReplayActive && this.manager.isReplayActive()) {
+            return;
+        }
+
+        const timestamp = this.extractMessageTimestamp(data);
+        const graceWindow = CONFIG.CHAT.STALE_MESSAGE_GRACE_MS || (3 * 60 * 1000);
+        if (timestamp !== null && this.lastProcessedTimestamp > 0) {
+            const cutoff = this.lastProcessedTimestamp - graceWindow;
+            if (timestamp < cutoff) {
+                const identifier = data?.msgId || data?.msg_id || 'unknown';
+                log(`Dropping stale TikTok message: ${identifier}`);
                 return;
             }
+        }
 
-            const timestamp = this.extractMessageTimestamp(data);
-            const graceWindow = CONFIG.CHAT.STALE_MESSAGE_GRACE_MS || (3 * 60 * 1000);
-            if (timestamp !== null && this.lastProcessedTimestamp > 0) {
-                const cutoff = this.lastProcessedTimestamp - graceWindow;
-                if (timestamp < cutoff) {
-                    const identifier = data?.msgId || data?.msg_id || 'unknown';
-                    log(`Dropping stale TikTok message: ${identifier}`);
-                    return;
-                }
-            }
+        if (timestamp !== null) {
+            this.lastProcessedTimestamp = Math.max(this.lastProcessedTimestamp, timestamp);
+        }
 
-            if (timestamp !== null) {
-                this.lastProcessedTimestamp = Math.max(this.lastProcessedTimestamp, timestamp);
-            }
-
-            // Enforce queue caps (works for CircularBuffer and Array)
-            const getSize = () => (this.queue.getSize ? this.queue.getSize() : this.queue.length);
-            const capacity = CONFIG.CHAT.MAX_QUEUE_SIZE;
-            let qSize = getSize();
-            if (qSize >= capacity) {
-                const dropsNeeded = Math.max(1, qSize - capacity + 1);
-                const dropChunk = Math.max(10, Math.ceil(capacity * 0.01));
-                const totalToDrop = dropsNeeded <= dropChunk
-                    ? dropsNeeded
-                    : Math.min(qSize, dropsNeeded + dropChunk);
-                const droppedEntries = typeof this.queue.splice === 'function'
-                    ? this.queue.splice(0, Math.min(totalToDrop, qSize))
-                    : (() => {
-                        const removed = [];
-                        const limit = Math.min(totalToDrop, qSize);
-                        for (let i = 0; i < limit; i++) {
-                            const next = typeof this.queue.shift === 'function'
-                                ? this.queue.shift()
-                                : this.queue.length ? this.queue[i] : undefined;
-                            if (typeof next === 'undefined') break;
-                            removed.push(next);
-                        }
-                        if (!this.queue.splice && Array.isArray(this.queue) && removed.length) {
-                            this.queue.splice(0, removed.length);
-                        }
-                        return removed;
-                    })();
-
-                if (droppedEntries.length > 0) {
-                    this.droppedSinceHighWater += droppedEntries.length;
-                    const now = Date.now();
-                    if (!this.highWaterLoggedAt || (now - this.highWaterLoggedAt) > 5000) {
-                        log(`[TikTok] message queue high-water trimmed ${this.droppedSinceHighWater} messages.`);
-                        this.highWaterLoggedAt = now;
-                        this.droppedSinceHighWater = 0;
+        // Enforce queue caps (works for CircularBuffer and Array)
+        const getSize = () => (this.queue.getSize ? this.queue.getSize() : this.queue.length);
+        const capacity = CONFIG.CHAT.MAX_QUEUE_SIZE;
+        let qSize = getSize();
+        if (qSize >= capacity) {
+            const dropsNeeded = Math.max(1, qSize - capacity + 1);
+            const dropChunk = Math.max(10, Math.ceil(capacity * 0.01));
+            const totalToDrop = dropsNeeded <= dropChunk
+                ? dropsNeeded
+                : Math.min(qSize, dropsNeeded + dropChunk);
+            const droppedEntries = typeof this.queue.splice === 'function'
+                ? this.queue.splice(0, Math.min(totalToDrop, qSize))
+                : (() => {
+                    const removed = [];
+                    const limit = Math.min(totalToDrop, qSize);
+                    for (let i = 0; i < limit; i++) {
+                        const next = typeof this.queue.shift === 'function'
+                            ? this.queue.shift()
+                            : this.queue.length ? this.queue[i] : undefined;
+                        if (typeof next === 'undefined') break;
+                        removed.push(next);
                     }
-                }
-                qSize = getSize();
-            }
-
-            // Add the new item
-            if (this.queue.push) this.queue.push(data);
-            else {
-                // Extremely unlikely path, but keep safe
-                try { this.queue[this.queue.length] = data; } catch (_) {}
-            }
-            this.startProcessing();
-        }
-
-        extractMessageTimestamp(data = {}) {
-            const candidates = [
-                data?.createTime,
-                data?.eventTime,
-                data?.timestamp,
-                data?.msgTime,
-                data?.event?.createTime,
-                data?.event?.eventTime
-            ];
-
-            for (const value of candidates) {
-                if (value === undefined || value === null) {
-                    continue;
-                }
-
-                let numericValue = null;
-
-                if (typeof value === 'number' && Number.isFinite(value)) {
-                    numericValue = value;
-                } else if (typeof value === 'bigint') {
-                    numericValue = Number(value);
-                } else if (typeof value === 'string') {
-                    const trimmed = value.trim();
-                    if (!trimmed) continue;
-                    const numeric = Number(trimmed);
-                    if (Number.isFinite(numeric)) {
-                        numericValue = numeric;
-                    } else {
-                        const parsed = Date.parse(trimmed);
-                        if (!Number.isNaN(parsed)) {
-                            numericValue = parsed;
-                        }
+                    if (!this.queue.splice && Array.isArray(this.queue) && removed.length) {
+                        this.queue.splice(0, removed.length);
                     }
-                }
+                    return removed;
+                })();
 
-                if (!Number.isFinite(numericValue) || numericValue <= 0) {
-                    continue;
+            if (droppedEntries.length > 0) {
+                this.droppedSinceHighWater += droppedEntries.length;
+                const now = Date.now();
+                if (!this.highWaterLoggedAt || (now - this.highWaterLoggedAt) > 5000) {
+                    log(`[TikTok] message queue high-water trimmed ${this.droppedSinceHighWater} messages.`);
+                    this.highWaterLoggedAt = now;
+                    this.droppedSinceHighWater = 0;
                 }
-
-                if (numericValue < 1e12) {
-                    return Math.floor(numericValue * 1000);
-                }
-
-                if (numericValue > 1e15) {
-                    return Math.floor(numericValue / 1000);
-                }
-
-                return Math.floor(numericValue);
             }
-
-            return null;
+            qSize = getSize();
         }
 
-        formatChatMessage(data) {
-            const msg = composeTikTokChatMessage(data, { includeTopGifterBadgeAlways: false });
-            if (typeof msg.textonly !== 'boolean') {
-                msg.textonly = isTextOnlyModeEnabled();
-            }
-            if (typeof msg.textonlymode !== 'boolean') {
-                msg.textonlymode = msg.textonly;
-            }
-            msg.type = 'tiktok';
-            return msg;
+        // Add the new item
+        if (this.queue.push) this.queue.push(data);
+        else {
+            // Extremely unlikely path, but keep safe
+            try { this.queue[this.queue.length] = data; } catch (_) { }
         }
-
-        scheduleProcessing(interval) {
-            if (this.isProcessing) {
-                return;
-            }
-            const delay = Number.isFinite(interval) && interval >= 0 ? interval : 0;
-            if (this.processTimer) {
-                if (typeof this.pendingProcessInterval === 'number' && delay >= this.pendingProcessInterval) {
-                    return;
-                }
-                clearTimeout(this.processTimer);
-            }
-            this.pendingProcessInterval = delay;
-            this.processTimer = setTimeout(() => {
-                this.processTimer = null;
-                this.pendingProcessInterval = null;
-                this.processQueue();
-            }, delay);
-        }
-
-        startProcessing() {
-            if (!this.isProcessing) {
-                // Get queue size properly for both CircularBuffer and array
-                const queueSize = this.queue.getSize ? this.queue.getSize() : this.queue.length;
-                if (queueSize === 0) {
-                    return;
-                }
-                // Use faster processing when queue is large
-                const interval = queueSize >= CONFIG.CHAT.HIGH_WATER_THRESHOLD
-                    ? CONFIG.CHAT.HIGH_WATER_INTERVAL
-                    : (queueSize > CONFIG.CHAT.HIGH_LOAD_THRESHOLD
-                        ? CONFIG.CHAT.HIGH_LOAD_INTERVAL
-                        : (queueSize < 10
-                            ? 20
-                            : CONFIG.CHAT.PROCESSING_INTERVAL));
-                this.scheduleProcessing(interval);
-            }
-        }
-
-        processQueue() {
-            if (this.processTimer) {
-                clearTimeout(this.processTimer);
-                this.processTimer = null;
-                this.pendingProcessInterval = null;
-            }
-            // Check if queue is empty properly for both CircularBuffer and array
-            const getSize = () => (this.queue.getSize ? this.queue.getSize() : this.queue.length);
-            const queueSize = getSize();
-            if (queueSize === 0 && this.pendingBatch.length === 0) {
-                this.isProcessing = false;
-                return;
-            }
-
-            this.isProcessing = true;
-            const standardBatch = CONFIG.CHAT.STANDARD_BATCH_SIZE || 50;
-            const highLoadBatch = CONFIG.CHAT.HIGH_LOAD_BATCH_SIZE || Math.max(standardBatch, 120);
-            const highWaterBatch = CONFIG.CHAT.HIGH_WATER_BATCH_SIZE || Math.max(highLoadBatch, 250);
-
-            const isHighWater = queueSize >= CONFIG.CHAT.HIGH_WATER_THRESHOLD;
-            const isHighLoad = queueSize >= CONFIG.CHAT.HIGH_LOAD_THRESHOLD;
-            const isLowTraffic = queueSize < 10;
-
-            let batchSize;
-            if (isHighWater) {
-                batchSize = highWaterBatch;
-            } else if (isHighLoad) {
-                batchSize = highLoadBatch;
-            } else if (isLowTraffic) {
-                batchSize = queueSize || 1;
-            } else {
-                batchSize = standardBatch;
-            }
-
-            const batch = this.queue.splice(0, Math.min(batchSize, queueSize));
-
-            try {
-                if (batch.length > 0) {
-                    if (isHighWater || isHighLoad) {
-                        if (this.pendingBatch.length > 0) {
-                            this.flushPendingBatch();
-                        }
-                        const messages = batch.map(data => {
-                            const msg = this.formatChatMessage(data);
-                            msg.tid = this.manager.virtualTabId;
-                            return msg;
-                        });
-                        if (messages.length === 1) {
-                            sendToBackground(messages[0]);
-                        } else {
-                            sendBatchToBackground(messages);
-                        }
-                        this.lastSendTime = Date.now();
-                    } else if (isLowTraffic) {
-                        const messages = batch.map(data => {
-                            const msg = this.formatChatMessage(data);
-                            msg.tid = this.manager.virtualTabId;
-                            return msg;
-                        });
-                        if (messages.length === 1) {
-                            sendToBackground(messages[0]);
-                        } else {
-                            sendBatchToBackground(messages);
-                        }
-                        this.lastSendTime = Date.now();
-                    } else {
-                        this.addToPendingBatch(batch);
-                    }
-                }
-            } catch (e) {
-                console.error('Error processing message batch:', e);
-            }
-
-            this.isProcessing = false;
-            const remaining = getSize();
-            if (remaining > 0) {
-                // Dynamic interval based on updated queue size
-                const nextInterval = remaining >= CONFIG.CHAT.HIGH_WATER_THRESHOLD
-                    ? CONFIG.CHAT.HIGH_WATER_INTERVAL
-                    : (remaining > CONFIG.CHAT.HIGH_LOAD_THRESHOLD
-                        ? CONFIG.CHAT.HIGH_LOAD_INTERVAL
-                        : (remaining < 10
-                            ? 20
-                            : CONFIG.CHAT.PROCESSING_INTERVAL));
-                this.scheduleProcessing(nextInterval);
-            } else if (this.pendingBatch.length > 0) {
-                // Ensure pending batch is sent
-                this.flushPendingBatch();
-            }
-        }
-
-        addToPendingBatch(batch) {
-            // Add messages to pending batch
-            batch.forEach(data => {
-                const msg = this.formatChatMessage(data);
-                msg.tid = this.manager.virtualTabId;
-                this.pendingBatch.push(msg);
-            });
-
-            // Clear existing timer
-            if (this.batchTimer) {
-                clearTimeout(this.batchTimer);
-            }
-
-            // Set up time-based flushing (max 50ms wait for smooth flow)
-            this.batchTimer = setTimeout(() => {
-                this.flushPendingBatch();
-            }, 50);
-
-            // Also flush if batch gets large enough
-            if (this.pendingBatch.length >= 50) {
-                this.flushPendingBatch();
-            }
-        }
-
-        flushPendingBatch() {
-            if (this.pendingBatch.length === 0) return;
-
-            // Clear timer
-            if (this.batchTimer) {
-                clearTimeout(this.batchTimer);
-                this.batchTimer = null;
-            }
-
-            // Send the batch
-            sendBatchToBackground(this.pendingBatch);
-            this.pendingBatch = [];
-            this.lastSendTime = Date.now();
-        }
+        this.startProcessing();
     }
 
-    class GiftProcessor {
-        constructor(manager) {
-            this.manager = manager;
-            this.queue = [];
-            this.isProcessing = false;
-        }
+    extractMessageTimestamp(data = {}) {
+        const candidates = [
+            data?.createTime,
+            data?.eventTime,
+            data?.timestamp,
+            data?.msgTime,
+            data?.event?.createTime,
+            data?.event?.eventTime
+        ];
 
-        addToQueue(data) {
-            if (!data || typeof data !== 'object') {
-                return;
+        for (const value of candidates) {
+            if (value === undefined || value === null) {
+                continue;
             }
 
-            if (this.manager?.isReplayActive && this.manager.isReplayActive()) {
-                return;
-            }
+            let numericValue = null;
 
-            const repeatCount = Number(data.repeatCount) || 0;
-            const comboCount = Number(data.comboCount) || 0;
-            const groupCount = Number(data.groupCount) || 0;
-
-            let giftType = null;
-            const giftTypeCandidates = [
-                data.giftType,
-                data?.gift?.giftType,
-                data?.gift?.type,
-                data?.gift?.gift_type,
-                data?.giftDetails?.giftType,
-                data?.giftDetails?.gift_type
-            ];
-            for (const candidate of giftTypeCandidates) {
-                const numeric = Number(candidate);
+            if (typeof value === 'number' && Number.isFinite(value)) {
+                numericValue = value;
+            } else if (typeof value === 'bigint') {
+                numericValue = Number(value);
+            } else if (typeof value === 'string') {
+                const trimmed = value.trim();
+                if (!trimmed) continue;
+                const numeric = Number(trimmed);
                 if (Number.isFinite(numeric)) {
-                    giftType = numeric;
-                    break;
+                    numericValue = numeric;
+                } else {
+                    const parsed = Date.parse(trimmed);
+                    if (!Number.isNaN(parsed)) {
+                        numericValue = parsed;
+                    }
                 }
             }
 
-            const inferredComboInProgress = !data.repeatEnd && (repeatCount > 1 || comboCount > 1 || groupCount > 1);
-            const isComboStarter = !data.repeatEnd && giftType === 1;
-            if (inferredComboInProgress) {
-                return;
-            }
-            if (isComboStarter) {
-                return;
+            if (!Number.isFinite(numericValue) || numericValue <= 0) {
+                continue;
             }
 
-            const aggregatedCount = Math.max(
-                repeatCount,
-                comboCount,
-                groupCount,
-                Number(data?.giftDetails?.repeatCount) || 0,
-                Number(data?.giftDetails?.comboCount) || 0,
-                Number(data?.giftDetails?.groupCount) || 0,
-                Number(data?.extendedGiftInfo?.repeat_count) || 0,
-                Number(data?.extendedGiftInfo?.combo_count) || 0,
-                Number(data?.extendedGiftInfo?.group_count) || 0,
-                1
-            );
+            if (numericValue < 1e12) {
+                return Math.floor(numericValue * 1000);
+            }
 
-            this.queue.push({
-                data,
-                count: aggregatedCount
-            });
-            this.startProcessing();
+            if (numericValue > 1e15) {
+                return Math.floor(numericValue / 1000);
+            }
+
+            return Math.floor(numericValue);
         }
 
-        startProcessing() {
-            if (!this.isProcessing) {
-                this.processQueue();
-            }
-        }
+        return null;
+    }
 
-        async processQueue() {
-            if (this.queue.length === 0) {
-                this.isProcessing = false;
+    formatChatMessage(data) {
+        const msg = composeTikTokChatMessage(data, { includeTopGifterBadgeAlways: false });
+        if (typeof msg.textonly !== 'boolean') {
+            msg.textonly = isTextOnlyModeEnabled();
+        }
+        if (typeof msg.textonlymode !== 'boolean') {
+            msg.textonlymode = msg.textonly;
+        }
+        msg.type = 'tiktok';
+        return msg;
+    }
+
+    scheduleProcessing(interval) {
+        if (this.isProcessing) {
+            return;
+        }
+        const delay = Number.isFinite(interval) && interval >= 0 ? interval : 0;
+        if (this.processTimer) {
+            if (typeof this.pendingProcessInterval === 'number' && delay >= this.pendingProcessInterval) {
                 return;
             }
-
-            this.isProcessing = true;
-            const {
-                data,
-                count
-            } = this.queue.shift();
-
-            this.sendGiftMessage(data, count);
-
-            setTimeout(() => this.processQueue(), CONFIG.GIFT.PROCESSING_INTERVAL);
+            clearTimeout(this.processTimer);
         }
+        this.pendingProcessInterval = delay;
+        this.processTimer = setTimeout(() => {
+            this.processTimer = null;
+            this.pendingProcessInterval = null;
+            this.processQueue();
+        }, delay);
+    }
 
-        sendGiftMessage(data, count) {
-            const giftData = isPlainObject(data?.gift) ? data.gift : {};
-            const giftDetails = isPlainObject(data?.giftDetails) ? data.giftDetails : {};
-            const extendedGiftInfo = isPlainObject(data?.extendedGiftInfo) ? data.extendedGiftInfo : {};
-
-            const giftId = pickFirstNonEmptyString([
-                data.giftId,
-                giftData.giftId,
-                giftData.gift_id,
-                giftData.id,
-                giftData.id_str,
-                giftData.giftIdStr,
-                giftData.gift_id_str,
-                giftDetails.id,
-                giftDetails.id_str,
-                giftDetails.giftId,
-                giftDetails.gift_id,
-                extendedGiftInfo.id,
-                extendedGiftInfo.id_str
-            ]);
-
-            const mappedGiftName = giftId && giftMapping && giftMapping[giftId] ? giftMapping[giftId].name : null;
-            const giftName = pickFirstNonEmptyString([
-                data.giftName,
-                giftData.giftName,
-                giftData.name,
-                giftData.displayName,
-                giftData.title,
-                giftDetails.giftName,
-                giftDetails.describe,
-                extendedGiftInfo.name,
-                extendedGiftInfo.describe,
-                mappedGiftName
-            ]) || (giftId ? `Gift ${giftId}` : 'Gift');
-
-            const perGiftDiamonds = pickFirstPositiveNumber([
-                data.diamondCount,
-                giftData.diamondCount,
-                giftData.diamond_count,
-                giftData.diamondValue,
-                giftData.diamond_value,
-                giftData.value,
-                giftData.coins,
-                giftDetails.diamondCount,
-                giftDetails.diamond_count,
-                extendedGiftInfo.diamondCount,
-                extendedGiftInfo.diamond_count,
-                extendedGiftInfo.coins,
-                giftId && giftMapping && giftMapping[giftId] ? giftMapping[giftId].coins : 0
-            ]);
-            const totalDiamonds = perGiftDiamonds * count;
-            const donationDisplay = totalDiamonds > 0 ? `${totalDiamonds} 💎` : null;
-
-            // const giftPictureUrl = resolveFirstImageUrl([
-            //     data.giftPictureUrl,
-            //     giftData.giftPictureUrl,
-            //     giftData.iconUrl,
-            //     giftData.icon_url,
-            //     giftData.pictureUrl,
-            //     giftData.picture_url,
-            //     giftData.imageUrl,
-            //     giftData.image_url,
-            //     giftData.image,
-            //     giftDetails.icon,
-            //     giftDetails.giftImage,
-            //     extendedGiftInfo.icon,
-            //     extendedGiftInfo.image
-            // ]);
-
-            const identity = extractTikTokIdentity(data);
-            const resolvedUserId = resolveTikTokUserId(data, identity);
-            const resolvedChatname = resolveTikTokDisplayName(data, identity, resolvedUserId);
-            const explicitTextOnly = data && (data.textonly === true || data.textonlymode === true);
-            const textOnly = explicitTextOnly || isTextOnlyModeEnabled();
-
-            let chatmessage = `Sent ${giftName} x${count}`;
-
-            const msg = {
-                chatmessage,
-                type: "tiktok",
-                textonly: textOnly,
-                textonlymode: textOnly,
-                event: 'gift',
-                chatname: resolvedChatname,
-                chatimg: identity.profilePictureUrl
-                    || normalizeTikTokImageUrl(data.profilePictureUrl)
-                    || normalizeTikTokImageUrl(data.profilePicture)
-                    || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
-                    || normalizeTikTokImageUrl(data?.user?.profilePicture)
-                    || null,
-                moderator: resolveTikTokModeratorStatus(data),
-                membership: resolveTikTokSubscriberStatus(data),
-                tid: this.manager.virtualTabId,
-                title: giftName
-            };
-
-            if (resolvedUserId) {
-                msg.userid = resolvedUserId;
+    startProcessing() {
+        if (!this.isProcessing) {
+            // Get queue size properly for both CircularBuffer and array
+            const queueSize = this.queue.getSize ? this.queue.getSize() : this.queue.length;
+            if (queueSize === 0) {
+                return;
             }
-            if (donationDisplay) {
-                msg.hasDonation = donationDisplay;
-                msg.subtitle = donationDisplay;
-                msg.donoValue = totalDiamonds * 0.005;
-            }
-            // Suppress large art for standard gift notifications; legacy overlays already
-            // render the gift name/diamond value via text. If TikTok surfaces paid sticker
-            // gifts distinctly in the future, we can re-enable artwork selectively.
-
-            const fanTicketCount = pickFirstPositiveNumber([
-                data.fanTicketCount,
-                giftDetails.fanTicketCount,
-                extendedGiftInfo.fan_ticket_count
-            ]) * count;
-
-            const repeatCount = Number(data.repeatCount) || Number(giftDetails.repeatCount) || Number(extendedGiftInfo.repeat_count) || 0;
-            const comboCount = Number(data.comboCount) || Number(giftDetails.comboCount) || Number(extendedGiftInfo.combo_count) || 0;
-            const groupCount = Number(data.groupCount) || Number(giftDetails.groupCount) || Number(extendedGiftInfo.group_count) || 0;
-
-            const meta = sanitizeEventMeta({
-                giftId,
-                count,
-                repeatCount: repeatCount > 1 ? repeatCount : undefined,
-                comboCount: comboCount > 1 ? comboCount : undefined,
-                groupCount: groupCount > 1 ? groupCount : undefined,
-                diamondsPerGift: perGiftDiamonds || undefined,
-                diamondsTotal: totalDiamonds || undefined,
-                fanTickets: fanTicketCount > 0 ? fanTicketCount : undefined
-            });
-            if (meta) {
-                msg.meta = meta;
-            }
-
-            const rawColor = data.nameColor || data.name_color || data.user?.nameColor;
-            const safeColor = normalizeNameColor(rawColor);
-            if (safeColor) {
-                msg.nameColor = safeColor;
-            }
-
-            sendToBackground(msg);
+            // Use faster processing when queue is large
+            const interval = queueSize >= CONFIG.CHAT.HIGH_WATER_THRESHOLD
+                ? CONFIG.CHAT.HIGH_WATER_INTERVAL
+                : (queueSize > CONFIG.CHAT.HIGH_LOAD_THRESHOLD
+                    ? CONFIG.CHAT.HIGH_LOAD_INTERVAL
+                    : (queueSize < 10
+                        ? 20
+                        : CONFIG.CHAT.PROCESSING_INTERVAL));
+            this.scheduleProcessing(interval);
         }
     }
 
-    class ConnectionManager {
-        constructor(username, wssID, sessionId = null, ttTargetIdc = null, options = {}) {
-            this.username = username;
-            this.wssID = wssID;
-            const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : null;
-            const normalizedTtTargetIdc = typeof ttTargetIdc === 'string' ? ttTargetIdc.trim() : null;
-            this.sessionId = normalizedSessionId || null;
-            this.ttTargetIdc = normalizedTtTargetIdc || null;
-            const { forceLegacyConnector = false, signing = null } = options || {};
-            this.preferredStrategy = (usingLegacyTikTokConnector || forceLegacyConnector) ? 'legacy' : 'websocket';
-            this.connection = null;
-            this.lastMessageTime = Date.now();
-            this.healthCheckInterval = null;
-            this.viewerUpdateInterval = null;
-            this.lastViewerCount = 0;
-            this.messageProcessor = new MessageProcessor(this);
-            this.giftProcessor = new GiftProcessor(this);
-            this.activityBuckets = new Map();
-            this.recentShoppingEvents = new Map();
-            // Live shopping events rely on 2.x payloads; the Map sticks around harmlessly until we upgrade.
-            this.reconnectAttempts = 0;
-            this.isStopped = false;
-            this.reconnectTimer = null;
-            // When true, we keep retrying at a fixed interval to detect when the user goes live
-            this.offlineRetry = false;
-            this.offlineReason = null;
-            // Per-connection reply-only flag (skip forwarding captured events)
-            this.replyOnly = false;
-            this.tiktokLogWriter = createTikTokLogWriter(this.username, this.wssID);
-            this.tiktokLogFilePath = this.tiktokLogWriter ? this.tiktokLogWriter.filePath : null;
-            this.warnedMissingTtTargetIdc = false;
-            this.signingConfig = normalizeSigningConfig(signing);
-            this.signServerFailureCount = 0;
-            this.signRequestTimeoutMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_MS || 25000;
-            this.signRequestTimeoutBaseMs = this.signRequestTimeoutMs;
-            this.signRequestTimeoutStepMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_STEP_MS || 10000;
-            if (!Number.isFinite(this.signRequestTimeoutStepMs) || this.signRequestTimeoutStepMs <= 0) {
-                this.signRequestTimeoutStepMs = 10000;
-            }
-            this.signRequestTimeoutMaxMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_MAX_MS || Math.max(this.signRequestTimeoutMs, this.signRequestTimeoutStepMs);
-            if (!Number.isFinite(this.signRequestTimeoutMaxMs) || this.signRequestTimeoutMaxMs < this.signRequestTimeoutMs) {
-                this.signRequestTimeoutMaxMs = Math.max(this.signRequestTimeoutMs, this.signRequestTimeoutStepMs * 2);
-            }
-            this.signRequestImmediateRetryDelayMs = CONFIG.CONNECTION.SIGN_REQUEST_IMMEDIATE_RETRY_DELAY_MS;
-            if (!Number.isFinite(this.signRequestImmediateRetryDelayMs) || this.signRequestImmediateRetryDelayMs < 0) {
-                this.signRequestImmediateRetryDelayMs = 750;
-            }
-            if (this.tiktokLogWriter) {
-                this.tiktokLogWriter.append({
-                    timestamp: new Date().toISOString(),
-                    event: 'log_initialized',
-                    connection: this.getLogContext(),
-                    payload: { message: 'TikTok logging started' }
-                });
-            }
-            this.pollingFallbackActivated = false;
-            // When both connector classes exist we can fallback from 2.x to legacy 1.x.
-            this.pollingFallbackSupported = !usingLegacyTikTokConnector &&
-                !!(TikTokLiveConnectionClass &&
-                    TikTokPollingFallbackClass &&
-                    TikTokPollingFallbackClass !== TikTokLiveConnectionClass);
-            this.connectionStrategy = this.preferredStrategy;
-            this.activeConnectPromise = null;
-            this.enableDirectChatRoute = isDirectChatRouteSupported && !disableDirectChatRoute;
-            this.directChatRoute = null;
-            this.directChatRouteClient = null;
-            this.pendingRoomIdPromise = null;
-            this.resumeCursorState = null;
-            this.previousRoomId = null;
-            this.replayActive = false;
+    processQueue() {
+        if (this.processTimer) {
+            clearTimeout(this.processTimer);
+            this.processTimer = null;
+            this.pendingProcessInterval = null;
+        }
+        // Check if queue is empty properly for both CircularBuffer and array
+        const getSize = () => (this.queue.getSize ? this.queue.getSize() : this.queue.length);
+        const queueSize = getSize();
+        if (queueSize === 0 && this.pendingBatch.length === 0) {
+            this.isProcessing = false;
+            return;
         }
 
-        getLogContext() {
-            return {
-                username: this.username,
-                wssID: this.wssID,
-                sessionProvided: !!this.sessionId,
-                ttTargetIdcProvided: !!this.ttTargetIdc,
-                virtualTabId: this.virtualTabId || null
-            };
+        this.isProcessing = true;
+        const standardBatch = CONFIG.CHAT.STANDARD_BATCH_SIZE || 50;
+        const highLoadBatch = CONFIG.CHAT.HIGH_LOAD_BATCH_SIZE || Math.max(standardBatch, 120);
+        const highWaterBatch = CONFIG.CHAT.HIGH_WATER_BATCH_SIZE || Math.max(highLoadBatch, 250);
+
+        const isHighWater = queueSize >= CONFIG.CHAT.HIGH_WATER_THRESHOLD;
+        const isHighLoad = queueSize >= CONFIG.CHAT.HIGH_LOAD_THRESHOLD;
+        const isLowTraffic = queueSize < 10;
+
+        let batchSize;
+        if (isHighWater) {
+            batchSize = highWaterBatch;
+        } else if (isHighLoad) {
+            batchSize = highLoadBatch;
+        } else if (isLowTraffic) {
+            batchSize = queueSize || 1;
+        } else {
+            batchSize = standardBatch;
         }
 
-        isReplayActive() {
-            return !!this.replayActive;
-        }
+        const batch = this.queue.splice(0, Math.min(batchSize, queueSize));
 
-        logDebug(eventName, payload) {
-            if (!this.tiktokLogWriter) {
-                return;
-            }
-            const entry = {
-                timestamp: new Date().toISOString(),
-                event: eventName,
-                connection: this.getLogContext()
-            };
-            if (payload !== undefined) {
-                entry.payload = payload;
-            }
-            this.tiktokLogWriter.append(entry);
-        }
-
-        closeLogWriter(reason) {
-            if (!this.tiktokLogWriter) {
-                return;
-            }
-            this.logDebug('log_closed', reason ? { reason } : undefined);
-            this.tiktokLogWriter.close();
-            this.tiktokLogWriter = null;
-            this.tiktokLogFilePath = null;
-        }
-
-        buildConnectionOptions(useLegacyConnector = false) {
-            const forceLegacy = useLegacyConnector || usingLegacyTikTokConnector || this.preferredStrategy === 'legacy';
-            if (forceLegacy) {
-                const legacyOptions = {
-                    processInitialData: false,
-                    enableExtendedGiftInfo: true,
-                    enableWebsocketUpgrade: true,
-                    fetchRoomInfoOnConnect: true,
-                    requestPollingIntervalMs: 1000,
-                    clientParams: {
-                        app_language: "en-US",
-                        device_platform: "web"
+        try {
+            if (batch.length > 0) {
+                if (isHighWater || isHighLoad) {
+                    if (this.pendingBatch.length > 0) {
+                        this.flushPendingBatch();
                     }
-                };
-                if (this.signingConfig?.apiKey) {
-                    legacyOptions.signApiKey = this.signingConfig.apiKey;
+                    const messages = batch.map(data => {
+                        const msg = this.formatChatMessage(data);
+                        msg.tid = this.manager.virtualTabId;
+                        return msg;
+                    });
+                    if (messages.length === 1) {
+                        sendToBackground(messages[0]);
+                    } else {
+                        sendBatchToBackground(messages);
+                    }
+                    this.lastSendTime = Date.now();
+                } else if (isLowTraffic) {
+                    const messages = batch.map(data => {
+                        const msg = this.formatChatMessage(data);
+                        msg.tid = this.manager.virtualTabId;
+                        return msg;
+                    });
+                    if (messages.length === 1) {
+                        sendToBackground(messages[0]);
+                    } else {
+                        sendBatchToBackground(messages);
+                    }
+                    this.lastSendTime = Date.now();
+                } else {
+                    this.addToPendingBatch(batch);
                 }
-                return legacyOptions;
             }
+        } catch (e) {
+            console.error('Error processing message batch:', e);
+        }
 
-            const clientParams = {
-                app_language: "en-US",
-                device_platform: "web"
-            };
-            const options = {
+        this.isProcessing = false;
+        const remaining = getSize();
+        if (remaining > 0) {
+            // Dynamic interval based on updated queue size
+            const nextInterval = remaining >= CONFIG.CHAT.HIGH_WATER_THRESHOLD
+                ? CONFIG.CHAT.HIGH_WATER_INTERVAL
+                : (remaining > CONFIG.CHAT.HIGH_LOAD_THRESHOLD
+                    ? CONFIG.CHAT.HIGH_LOAD_INTERVAL
+                    : (remaining < 10
+                        ? 20
+                        : CONFIG.CHAT.PROCESSING_INTERVAL));
+            this.scheduleProcessing(nextInterval);
+        } else if (this.pendingBatch.length > 0) {
+            // Ensure pending batch is sent
+            this.flushPendingBatch();
+        }
+    }
+
+    addToPendingBatch(batch) {
+        // Add messages to pending batch
+        batch.forEach(data => {
+            const msg = this.formatChatMessage(data);
+            msg.tid = this.manager.virtualTabId;
+            this.pendingBatch.push(msg);
+        });
+
+        // Clear existing timer
+        if (this.batchTimer) {
+            clearTimeout(this.batchTimer);
+        }
+
+        // Set up time-based flushing (max 50ms wait for smooth flow)
+        this.batchTimer = setTimeout(() => {
+            this.flushPendingBatch();
+        }, 50);
+
+        // Also flush if batch gets large enough
+        if (this.pendingBatch.length >= 50) {
+            this.flushPendingBatch();
+        }
+    }
+
+    flushPendingBatch() {
+        if (this.pendingBatch.length === 0) return;
+
+        // Clear timer
+        if (this.batchTimer) {
+            clearTimeout(this.batchTimer);
+            this.batchTimer = null;
+        }
+
+        // Send the batch
+        sendBatchToBackground(this.pendingBatch);
+        this.pendingBatch = [];
+        this.lastSendTime = Date.now();
+    }
+}
+
+class GiftProcessor {
+    constructor(manager) {
+        this.manager = manager;
+        this.queue = [];
+        this.isProcessing = false;
+    }
+
+    addToQueue(data) {
+        if (!data || typeof data !== 'object') {
+            return;
+        }
+
+        if (this.manager?.isReplayActive && this.manager.isReplayActive()) {
+            return;
+        }
+
+        const repeatCount = Number(data.repeatCount) || 0;
+        const comboCount = Number(data.comboCount) || 0;
+        const groupCount = Number(data.groupCount) || 0;
+
+        let giftType = null;
+        const giftTypeCandidates = [
+            data.giftType,
+            data?.gift?.giftType,
+            data?.gift?.type,
+            data?.gift?.gift_type,
+            data?.giftDetails?.giftType,
+            data?.giftDetails?.gift_type
+        ];
+        for (const candidate of giftTypeCandidates) {
+            const numeric = Number(candidate);
+            if (Number.isFinite(numeric)) {
+                giftType = numeric;
+                break;
+            }
+        }
+
+        const inferredComboInProgress = !data.repeatEnd && (repeatCount > 1 || comboCount > 1 || groupCount > 1);
+        const isComboStarter = !data.repeatEnd && giftType === 1;
+        if (inferredComboInProgress) {
+            return;
+        }
+        if (isComboStarter) {
+            return;
+        }
+
+        const aggregatedCount = Math.max(
+            repeatCount,
+            comboCount,
+            groupCount,
+            Number(data?.giftDetails?.repeatCount) || 0,
+            Number(data?.giftDetails?.comboCount) || 0,
+            Number(data?.giftDetails?.groupCount) || 0,
+            Number(data?.extendedGiftInfo?.repeat_count) || 0,
+            Number(data?.extendedGiftInfo?.combo_count) || 0,
+            Number(data?.extendedGiftInfo?.group_count) || 0,
+            1
+        );
+
+        this.queue.push({
+            data,
+            count: aggregatedCount
+        });
+        this.startProcessing();
+    }
+
+    startProcessing() {
+        if (!this.isProcessing) {
+            this.processQueue();
+        }
+    }
+
+    async processQueue() {
+        if (this.queue.length === 0) {
+            this.isProcessing = false;
+            return;
+        }
+
+        this.isProcessing = true;
+        const {
+            data,
+            count
+        } = this.queue.shift();
+
+        this.sendGiftMessage(data, count);
+
+        setTimeout(() => this.processQueue(), CONFIG.GIFT.PROCESSING_INTERVAL);
+    }
+
+    sendGiftMessage(data, count) {
+        const giftData = isPlainObject(data?.gift) ? data.gift : {};
+        const giftDetails = isPlainObject(data?.giftDetails) ? data.giftDetails : {};
+        const extendedGiftInfo = isPlainObject(data?.extendedGiftInfo) ? data.extendedGiftInfo : {};
+
+        const giftId = pickFirstNonEmptyString([
+            data.giftId,
+            giftData.giftId,
+            giftData.gift_id,
+            giftData.id,
+            giftData.id_str,
+            giftData.giftIdStr,
+            giftData.gift_id_str,
+            giftDetails.id,
+            giftDetails.id_str,
+            giftDetails.giftId,
+            giftDetails.gift_id,
+            extendedGiftInfo.id,
+            extendedGiftInfo.id_str
+        ]);
+
+        const mappedGiftName = giftId && giftMapping && giftMapping[giftId] ? giftMapping[giftId].name : null;
+        const giftName = pickFirstNonEmptyString([
+            data.giftName,
+            giftData.giftName,
+            giftData.name,
+            giftData.displayName,
+            giftData.title,
+            giftDetails.giftName,
+            giftDetails.describe,
+            extendedGiftInfo.name,
+            extendedGiftInfo.describe,
+            mappedGiftName
+        ]) || (giftId ? `Gift ${giftId}` : 'Gift');
+
+        const perGiftDiamonds = pickFirstPositiveNumber([
+            data.diamondCount,
+            giftData.diamondCount,
+            giftData.diamond_count,
+            giftData.diamondValue,
+            giftData.diamond_value,
+            giftData.value,
+            giftData.coins,
+            giftDetails.diamondCount,
+            giftDetails.diamond_count,
+            extendedGiftInfo.diamondCount,
+            extendedGiftInfo.diamond_count,
+            extendedGiftInfo.coins,
+            giftId && giftMapping && giftMapping[giftId] ? giftMapping[giftId].coins : 0
+        ]);
+        const totalDiamonds = perGiftDiamonds * count;
+        const donationDisplay = totalDiamonds > 0 ? `${totalDiamonds} 💎` : null;
+
+        // const giftPictureUrl = resolveFirstImageUrl([
+        //     data.giftPictureUrl,
+        //     giftData.giftPictureUrl,
+        //     giftData.iconUrl,
+        //     giftData.icon_url,
+        //     giftData.pictureUrl,
+        //     giftData.picture_url,
+        //     giftData.imageUrl,
+        //     giftData.image_url,
+        //     giftData.image,
+        //     giftDetails.icon,
+        //     giftDetails.giftImage,
+        //     extendedGiftInfo.icon,
+        //     extendedGiftInfo.image
+        // ]);
+
+        const identity = extractTikTokIdentity(data);
+        const resolvedUserId = resolveTikTokUserId(data, identity);
+        const resolvedChatname = resolveTikTokDisplayName(data, identity, resolvedUserId);
+        const explicitTextOnly = data && (data.textonly === true || data.textonlymode === true);
+        const textOnly = explicitTextOnly || isTextOnlyModeEnabled();
+
+        let chatmessage = `Sent ${giftName} x${count}`;
+
+        const msg = {
+            chatmessage,
+            type: "tiktok",
+            textonly: textOnly,
+            textonlymode: textOnly,
+            event: 'gift',
+            chatname: resolvedChatname,
+            chatimg: identity.profilePictureUrl
+                || normalizeTikTokImageUrl(data.profilePictureUrl)
+                || normalizeTikTokImageUrl(data.profilePicture)
+                || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+                || normalizeTikTokImageUrl(data?.user?.profilePicture)
+                || null,
+            moderator: resolveTikTokModeratorStatus(data),
+            membership: resolveTikTokSubscriberStatus(data),
+            tid: this.manager.virtualTabId,
+            title: giftName
+        };
+
+        if (resolvedUserId) {
+            msg.userid = resolvedUserId;
+        }
+        if (donationDisplay) {
+            msg.hasDonation = donationDisplay;
+            msg.subtitle = donationDisplay;
+            msg.donoValue = totalDiamonds * 0.005;
+        }
+        // Suppress large art for standard gift notifications; legacy overlays already
+        // render the gift name/diamond value via text. If TikTok surfaces paid sticker
+        // gifts distinctly in the future, we can re-enable artwork selectively.
+
+        const fanTicketCount = pickFirstPositiveNumber([
+            data.fanTicketCount,
+            giftDetails.fanTicketCount,
+            extendedGiftInfo.fan_ticket_count
+        ]) * count;
+
+        const repeatCount = Number(data.repeatCount) || Number(giftDetails.repeatCount) || Number(extendedGiftInfo.repeat_count) || 0;
+        const comboCount = Number(data.comboCount) || Number(giftDetails.comboCount) || Number(extendedGiftInfo.combo_count) || 0;
+        const groupCount = Number(data.groupCount) || Number(giftDetails.groupCount) || Number(extendedGiftInfo.group_count) || 0;
+
+        const meta = sanitizeEventMeta({
+            giftId,
+            count,
+            repeatCount: repeatCount > 1 ? repeatCount : undefined,
+            comboCount: comboCount > 1 ? comboCount : undefined,
+            groupCount: groupCount > 1 ? groupCount : undefined,
+            diamondsPerGift: perGiftDiamonds || undefined,
+            diamondsTotal: totalDiamonds || undefined,
+            fanTickets: fanTicketCount > 0 ? fanTicketCount : undefined
+        });
+        if (meta) {
+            msg.meta = meta;
+        }
+
+        const rawColor = data.nameColor || data.name_color || data.user?.nameColor;
+        const safeColor = normalizeNameColor(rawColor);
+        if (safeColor) {
+            msg.nameColor = safeColor;
+        }
+
+        sendToBackground(msg);
+    }
+}
+
+class ConnectionManager {
+    constructor(username, wssID, sessionId = null, ttTargetIdc = null, options = {}) {
+        this.username = username;
+        this.wssID = wssID;
+        const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : null;
+        const normalizedTtTargetIdc = typeof ttTargetIdc === 'string' ? ttTargetIdc.trim() : null;
+        this.sessionId = normalizedSessionId || null;
+        this.ttTargetIdc = normalizedTtTargetIdc || null;
+        const { forceLegacyConnector = false, signing = null } = options || {};
+        this.preferredStrategy = (usingLegacyTikTokConnector || forceLegacyConnector) ? 'legacy' : 'websocket';
+        this.connection = null;
+        this.lastMessageTime = Date.now();
+        this.healthCheckInterval = null;
+        this.viewerUpdateInterval = null;
+        this.lastViewerCount = 0;
+        this.messageProcessor = new MessageProcessor(this);
+        this.giftProcessor = new GiftProcessor(this);
+        this.activityBuckets = new Map();
+        this.recentShoppingEvents = new Map();
+        // Live shopping events rely on 2.x payloads; the Map sticks around harmlessly until we upgrade.
+        this.reconnectAttempts = 0;
+        this.isStopped = false;
+        this.reconnectTimer = null;
+        // When true, we keep retrying at a fixed interval to detect when the user goes live
+        this.offlineRetry = false;
+        this.offlineReason = null;
+        // Per-connection reply-only flag (skip forwarding captured events)
+        this.replyOnly = false;
+        this.tiktokLogWriter = createTikTokLogWriter(this.username, this.wssID);
+        this.tiktokLogFilePath = this.tiktokLogWriter ? this.tiktokLogWriter.filePath : null;
+        this.warnedMissingTtTargetIdc = false;
+        this.signingConfig = normalizeSigningConfig(signing);
+        this.signingProvider = options.signingProvider || 'auto';
+        this.signServerFailureCount = 0;
+        this.signRequestTimeoutMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_MS || 25000;
+        this.signRequestTimeoutBaseMs = this.signRequestTimeoutMs;
+        this.signRequestTimeoutStepMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_STEP_MS || 10000;
+        if (!Number.isFinite(this.signRequestTimeoutStepMs) || this.signRequestTimeoutStepMs <= 0) {
+            this.signRequestTimeoutStepMs = 10000;
+        }
+        this.signRequestTimeoutMaxMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_MAX_MS || Math.max(this.signRequestTimeoutMs, this.signRequestTimeoutStepMs);
+        if (!Number.isFinite(this.signRequestTimeoutMaxMs) || this.signRequestTimeoutMaxMs < this.signRequestTimeoutMs) {
+            this.signRequestTimeoutMaxMs = Math.max(this.signRequestTimeoutMs, this.signRequestTimeoutStepMs * 2);
+        }
+        this.signRequestImmediateRetryDelayMs = CONFIG.CONNECTION.SIGN_REQUEST_IMMEDIATE_RETRY_DELAY_MS;
+        if (!Number.isFinite(this.signRequestImmediateRetryDelayMs) || this.signRequestImmediateRetryDelayMs < 0) {
+            this.signRequestImmediateRetryDelayMs = 750;
+        }
+        if (this.tiktokLogWriter) {
+            this.tiktokLogWriter.append({
+                timestamp: new Date().toISOString(),
+                event: 'log_initialized',
+                connection: this.getLogContext(),
+                payload: { message: 'TikTok logging started' }
+            });
+        }
+        this.pollingFallbackActivated = false;
+        // When both connector classes exist we can fallback from 2.x to legacy 1.x.
+        this.pollingFallbackSupported = !usingLegacyTikTokConnector &&
+            !!(TikTokLiveConnectionClass &&
+                TikTokPollingFallbackClass &&
+                TikTokPollingFallbackClass !== TikTokLiveConnectionClass);
+        this.connectionStrategy = this.preferredStrategy;
+        this.activeConnectPromise = null;
+        this.enableDirectChatRoute = isDirectChatRouteSupported && !disableDirectChatRoute;
+        this.directChatRoute = null;
+        this.directChatRouteClient = null;
+        this.pendingRoomIdPromise = null;
+        this.resumeCursorState = null;
+        this.previousRoomId = null;
+        this.replayActive = false;
+        this.replayActive = false;
+        this.signerHelper = env.signerHelper || null;
+        this.websocketFailureCount = 0;
+        this.WEBSOCKET_FAILURE_THRESHOLD = 3;
+    }
+
+    getLogContext() {
+        return {
+            username: this.username,
+            wssID: this.wssID,
+            sessionProvided: !!this.sessionId,
+            ttTargetIdcProvided: !!this.ttTargetIdc,
+            virtualTabId: this.virtualTabId || null
+        };
+    }
+
+    isReplayActive() {
+        return !!this.replayActive;
+    }
+
+    logDebug(eventName, payload) {
+        if (!this.tiktokLogWriter) {
+            return;
+        }
+        const entry = {
+            timestamp: new Date().toISOString(),
+            event: eventName,
+            connection: this.getLogContext()
+        };
+        if (payload !== undefined) {
+            entry.payload = payload;
+        }
+        this.tiktokLogWriter.append(entry);
+    }
+
+    closeLogWriter(reason) {
+        if (!this.tiktokLogWriter) {
+            return;
+        }
+        this.logDebug('log_closed', reason ? { reason } : undefined);
+        this.tiktokLogWriter.close();
+        this.tiktokLogWriter = null;
+        this.tiktokLogFilePath = null;
+    }
+
+    buildConnectionOptions(useLegacyConnector = false) {
+        const forceLegacy = useLegacyConnector || usingLegacyTikTokConnector || this.preferredStrategy === 'legacy';
+        if (forceLegacy) {
+            const legacyOptions = {
                 processInitialData: false,
                 enableExtendedGiftInfo: true,
-                enableRequestPolling: true,
-                requestPollingIntervalMs: 1000,
+                enableWebsocketUpgrade: true,
                 fetchRoomInfoOnConnect: true,
-                enableWebsocketUpgrade: !forceLegacy,
-                webClientParams: { ...clientParams },
-                wsClientParams: { ...clientParams },
-                clientParams: { ...clientParams }
+                requestPollingIntervalMs: 1000,
+                clientParams: {
+                    app_language: "en-US",
+                    device_platform: "web"
+                }
             };
             if (this.signingConfig?.apiKey) {
-                options.signApiKey = this.signingConfig.apiKey;
+                legacyOptions.signApiKey = this.signingConfig.apiKey;
             }
-            return options;
+            return legacyOptions;
         }
 
-        createCustomSigner() {
-            if (!this.signingConfig || (!this.signingConfig.apiKey && !this.signingConfig.serviceUrl)) {
-                return null;
-            }
-            if (!EulerSignerClass || typeof EulerSignerClass !== 'function') {
-                this.logDebug('sign.config.custom_signer_unavailable', { reason: 'missing_class' });
-                return null;
-            }
-            const overrides = {};
-            if (this.signingConfig.apiKey) {
-                overrides.apiKey = this.signingConfig.apiKey;
-            }
-            if (this.signingConfig.serviceUrl) {
-                overrides.basePath = this.signingConfig.serviceUrl;
-            }
-            if (!Object.keys(overrides).length) {
-                return null;
-            }
-            try {
-                return new EulerSignerClass(overrides);
-            } catch (error) {
-                console.warn('Failed to instantiate custom Euler signer:', error?.message || error);
-                this.logDebug('sign.config.custom_signer_failed', {
-                    error: error?.message || String(error)
-                });
-                return null;
-            }
+        const clientParams = {
+            app_language: "en-US",
+            device_platform: "web"
+        };
+        const options = {
+            processInitialData: false,
+            enableExtendedGiftInfo: true,
+            enableRequestPolling: true,
+            requestPollingIntervalMs: 1000,
+            fetchRoomInfoOnConnect: true,
+            enableWebsocketUpgrade: !forceLegacy,
+            webClientParams: { ...clientParams },
+            wsClientParams: { ...clientParams },
+            clientParams: { ...clientParams }
+        };
+        if (this.signingConfig?.apiKey) {
+            options.signApiKey = this.signingConfig.apiKey;
         }
+        return options;
+    }
 
-        initializeConnectionInstance({ forceLegacy = false, context = 'primary' } = {}) {
-            const useLegacyConnector = forceLegacy || this.preferredStrategy === 'legacy' || usingLegacyTikTokConnector;
-            let ConnectorClass = null;
-            if (!useLegacyConnector && TikTokLiveConnectionClass && TikTokLiveConnectionClass !== TikTokPollingFallbackClass) {
-                ConnectorClass = TikTokLiveConnectionClass;
-            } else if (TikTokPollingFallbackClass) {
-                ConnectorClass = TikTokPollingFallbackClass;
-            } else if (TikTokLiveConnectionClass) {
-                ConnectorClass = TikTokLiveConnectionClass;
-            }
-            if (!ConnectorClass) {
-                throw new Error('TikTok connector missing. Please reinstall tiktok-live-connector.');
-            }
-            const connectionOptions = this.buildConnectionOptions(useLegacyConnector);
-            if (this.sessionId) {
-                connectionOptions.sessionId = this.sessionId;
-                if (this.ttTargetIdc) {
-                    connectionOptions.ttTargetIdc = this.ttTargetIdc;
-                }
-            }
-            this.connectionStrategy = useLegacyConnector ? 'legacy' : 'websocket';
-            const connectorLabel = ConnectorClass && ConnectorClass.name
-                ? ConnectorClass.name
-                : (useLegacyConnector ? 'WebcastPushConnection' : 'TikTokLiveConnection');
-
-            const customSigner = this.createCustomSigner();
-            if (customSigner) {
-                this.connection = new ConnectorClass(this.username, connectionOptions, customSigner);
-                this.logDebug('sign.config.custom_signer_applied', {
-                    hasApiKey: !!this.signingConfig?.apiKey,
-                    hasServiceUrl: !!this.signingConfig?.serviceUrl
-                });
-            } else {
-                this.connection = new ConnectorClass(this.username, connectionOptions);
-            }
-            this.applyResumeCursorToConnection();
-            this.applySignRequestTimeout(this.signRequestTimeoutMs);
-            this.logDebug('lifecycle.initialize.signTimeoutConfigured', {
-                timeoutMs: this.signRequestTimeoutMs,
-                maxTimeoutMs: this.signRequestTimeoutMaxMs,
-                context
+    createCustomSigner() {
+        if (!this.signingConfig || (!this.signingConfig.apiKey && !this.signingConfig.serviceUrl)) {
+            return null;
+        }
+        if (!EulerSignerClass || typeof EulerSignerClass !== 'function') {
+            this.logDebug('sign.config.custom_signer_unavailable', { reason: 'missing_class' });
+            return null;
+        }
+        const overrides = {};
+        if (this.signingConfig.apiKey) {
+            overrides.apiKey = this.signingConfig.apiKey;
+        }
+        if (this.signingConfig.serviceUrl) {
+            overrides.basePath = this.signingConfig.serviceUrl;
+        }
+        if (!Object.keys(overrides).length) {
+            return null;
+        }
+        try {
+            return new EulerSignerClass(overrides);
+        } catch (error) {
+            console.warn('Failed to instantiate custom Euler signer:', error?.message || error);
+            this.logDebug('sign.config.custom_signer_failed', {
+                error: error?.message || String(error)
             });
-            this.logDebug('lifecycle.initialize.connectionCreated', {
-                authenticated: !!this.sessionId,
-                usingLegacyConnector: usingLegacyTikTokConnector,
-                strategy: this.connectionStrategy,
-                connector: connectorLabel,
-                forceLegacy: useLegacyConnector
-            });
-            this.setupEventHandlers();
+            return null;
         }
+    }
 
-        applyResumeCursorToConnection() {
-            const state = this.resumeCursorState;
-            if (!state || !state.cursor || !this.connection) {
+    initializeConnectionInstance({ forceLegacy = false, context = 'primary' } = {}) {
+        const useLegacyConnector = forceLegacy || this.preferredStrategy === 'legacy' || usingLegacyTikTokConnector;
+        let ConnectorClass = null;
+        if (!useLegacyConnector && TikTokLiveConnectionClass && TikTokLiveConnectionClass !== TikTokPollingFallbackClass) {
+            ConnectorClass = TikTokLiveConnectionClass;
+        } else if (TikTokPollingFallbackClass) {
+            ConnectorClass = TikTokPollingFallbackClass;
+        } else if (TikTokLiveConnectionClass) {
+            ConnectorClass = TikTokLiveConnectionClass;
+        }
+        if (!ConnectorClass) {
+            throw new Error('TikTok connector missing. Please reinstall tiktok-live-connector.');
+        }
+        const connectionOptions = this.buildConnectionOptions(useLegacyConnector);
+        if (this.sessionId) {
+            connectionOptions.sessionId = this.sessionId;
+            if (this.ttTargetIdc) {
+                connectionOptions.ttTargetIdc = this.ttTargetIdc;
+            }
+        }
+        this.connectionStrategy = useLegacyConnector ? 'legacy' : 'websocket';
+        const connectorLabel = ConnectorClass && ConnectorClass.name
+            ? ConnectorClass.name
+            : (useLegacyConnector ? 'WebcastPushConnection' : 'TikTokLiveConnection');
+
+        const customSigner = this.createCustomSigner();
+        if (customSigner) {
+            this.connection = new ConnectorClass(this.username, connectionOptions, customSigner);
+            this.logDebug('sign.config.custom_signer_applied', {
+                hasApiKey: !!this.signingConfig?.apiKey,
+                hasServiceUrl: !!this.signingConfig?.serviceUrl
+            });
+        } else {
+            this.connection = new ConnectorClass(this.username, connectionOptions);
+        }
+        this.applyResumeCursorToConnection();
+        this.applySignRequestTimeout(this.signRequestTimeoutMs);
+        this.logDebug('lifecycle.initialize.signTimeoutConfigured', {
+            timeoutMs: this.signRequestTimeoutMs,
+            maxTimeoutMs: this.signRequestTimeoutMaxMs,
+            context
+        });
+        this.logDebug('lifecycle.initialize.connectionCreated', {
+            authenticated: !!this.sessionId,
+            usingLegacyConnector: usingLegacyTikTokConnector,
+            strategy: this.connectionStrategy,
+            connector: connectorLabel,
+            forceLegacy: useLegacyConnector
+        });
+        this.setupEventHandlers();
+    }
+
+    applyResumeCursorToConnection() {
+        const state = this.resumeCursorState;
+        if (!state || !state.cursor || !this.connection) {
+            return;
+        }
+        if (state.roomId && this.previousRoomId && state.roomId !== this.previousRoomId) {
+            return;
+        }
+        const setCursor = (params) => {
+            if (!params || typeof params !== 'object') {
                 return;
             }
-            if (state.roomId && this.previousRoomId && state.roomId !== this.previousRoomId) {
-                return;
+            params.cursor = state.cursor;
+            if (state.internalExt) {
+                params.internal_ext = state.internalExt;
             }
-            const setCursor = (params) => {
-                if (!params || typeof params !== 'object') {
-                    return;
-                }
-                params.cursor = state.cursor;
-                if (state.internalExt) {
-                    params.internal_ext = state.internalExt;
-                }
-            };
-            setCursor(this.connection.webClient && this.connection.webClient.clientParams);
-            setCursor(this.connection.options && this.connection.options.clientParams);
-            setCursor(this.connection.options && this.connection.options.webClientParams);
-            setCursor(this.connection.options && this.connection.options.wsClientParams);
-            this.logDebug('lifecycle.cursor.resume_applied', {
-                roomId: state.roomId || null,
-                hasInternalExt: !!state.internalExt
-            });
-        }
+        };
+        setCursor(this.connection.webClient && this.connection.webClient.clientParams);
+        setCursor(this.connection.options && this.connection.options.clientParams);
+        setCursor(this.connection.options && this.connection.options.webClientParams);
+        setCursor(this.connection.options && this.connection.options.wsClientParams);
+        this.logDebug('lifecycle.cursor.resume_applied', {
+            roomId: state.roomId || null,
+            hasInternalExt: !!state.internalExt
+        });
+    }
 
-        async teardownConnection({ silent = false } = {}) {
-            this.directChatRoute = null;
-            this.directChatRouteClient = null;
-            this.pendingRoomIdPromise = null;
-            if (!this.connection) {
-                return;
-            }
-            try {
-                if (typeof this.connection.removeAllListeners === 'function') {
-                    this.connection.removeAllListeners();
-                }
-            } catch (error) {
-                if (!silent) {
-                    console.warn('Error removing TikTok connection listeners:', error);
-                }
-            }
-            try {
-                if (typeof this.connection.disconnect === 'function') {
-                    const result = this.connection.disconnect();
-                    if (result && typeof result.then === 'function') {
-                        await result.catch(() => {});
-                    }
-                }
-            } catch (error) {
-                if (!silent) {
-                    console.warn('Error disconnecting TikTok connection:', error);
-                }
-            }
-            this.connection = null;
+    async teardownConnection({ silent = false } = {}) {
+        this.directChatRoute = null;
+        this.directChatRouteClient = null;
+        this.pendingRoomIdPromise = null;
+        if (!this.connection) {
+            return;
         }
-
-        getSanitizedFallbackMessage(primaryError, defaultMessage = 'TikTok WebSocket signer returned unreadable data. Using polling fallback.') {
-            const rawMessage = typeof primaryError?.ssappFallbackMessage === 'string' && primaryError.ssappFallbackMessage.trim()
-                ? primaryError.ssappFallbackMessage.trim()
-                : (typeof primaryError?.message === 'string' ? primaryError.message : '');
-            const sanitized = rawMessage.replace(/^SSAPP_TIKTOK_FALLBACK:\s*/i, '').trim();
-            const finalMessage = sanitized || defaultMessage;
-            primaryError.code = primaryError.code || 'SSAPP_TIKTOK_FALLBACK';
-            primaryError.ssappFallback = true;
-            primaryError.ssappFallbackMode = 'polling';
-            primaryError.ssappFallbackMessage = finalMessage;
-            return finalMessage;
-        }
-
-        async tryFallbackToPolling(primaryError, stage = 'connect') {
-            if (!this.pollingFallbackSupported || this.pollingFallbackActivated || this.preferredStrategy === 'legacy') {
-                this.logDebug('lifecycle.fallback.polling.skipped', {
-                    reason: !this.pollingFallbackSupported ? 'unsupported' : (this.preferredStrategy === 'legacy' ? 'legacy_forced' : 'already_activated'),
-                    stage,
-                    message: primaryError?.message || null
-                });
-                return false;
+        try {
+            if (typeof this.connection.removeAllListeners === 'function') {
+                this.connection.removeAllListeners();
             }
-            const fallbackMessage = this.getSanitizedFallbackMessage(primaryError, 'TikTok signer unavailable. Switching to legacy connector.');
-            this.pollingFallbackActivated = true;
-            this.signServerFailureCount = 0;
-            this.logDebug('lifecycle.fallback.polling.begin', {
+        } catch (error) {
+            if (!silent) {
+                console.warn('Error removing TikTok connection listeners:', error);
+            }
+        }
+        try {
+            if (typeof this.connection.disconnect === 'function') {
+                const result = this.connection.disconnect();
+                if (result && typeof result.then === 'function') {
+                    await result.catch(() => { });
+                }
+            }
+        } catch (error) {
+            if (!silent) {
+                console.warn('Error disconnecting TikTok connection:', error);
+            }
+        }
+        this.connection = null;
+    }
+
+    getSanitizedFallbackMessage(primaryError, defaultMessage = 'TikTok WebSocket signer returned unreadable data. Using polling fallback.') {
+        const rawMessage = typeof primaryError?.ssappFallbackMessage === 'string' && primaryError.ssappFallbackMessage.trim()
+            ? primaryError.ssappFallbackMessage.trim()
+            : (typeof primaryError?.message === 'string' ? primaryError.message : '');
+        const sanitized = rawMessage.replace(/^SSAPP_TIKTOK_FALLBACK:\s*/i, '').trim();
+        const finalMessage = sanitized || defaultMessage;
+        primaryError.code = primaryError.code || 'SSAPP_TIKTOK_FALLBACK';
+        primaryError.ssappFallback = true;
+        primaryError.ssappFallbackMode = 'polling';
+        primaryError.ssappFallbackMessage = finalMessage;
+        return finalMessage;
+    }
+
+    async tryFallbackToPolling(primaryError, stage = 'connect') {
+        if (!this.pollingFallbackSupported || this.pollingFallbackActivated || this.preferredStrategy === 'legacy') {
+            this.logDebug('lifecycle.fallback.polling.skipped', {
+                reason: !this.pollingFallbackSupported ? 'unsupported' : (this.preferredStrategy === 'legacy' ? 'legacy_forced' : 'already_activated'),
                 stage,
-                message: fallbackMessage,
-                payloadLength: primaryError?.payloadLength || null
+                message: primaryError?.message || null
             });
-            console.warn(`[TikTok] Legacy fallback activated (${stage}) for ${this.username}: ${fallbackMessage}`);
-            this.preferredStrategy = 'legacy';
-            try {
-                await this.teardownConnection({ silent: true });
-            } catch (error) {
-                this.logDebug('lifecycle.fallback.polling.teardownError', normalizeForLogging(error));
-            }
-            try {
-                this.initializeConnectionInstance({ forceLegacy: true, context: 'legacy_fallback' });
-            } catch (error) {
-                this.pollingFallbackActivated = false;
-                this.connectionStrategy = 'websocket';
-                this.preferredStrategy = 'websocket';
-                this.logDebug('lifecycle.fallback.polling.instantiateError', normalizeForLogging(error));
-                console.error('[TikTok] Failed to instantiate legacy fallback connection:', error);
-                return false;
-            }
-            try {
-                emitStatus( {
-                    wssID: this.wssID,
-                    status: 'fallback_polling',
-                    error: fallbackMessage,
-                    payloadLength: primaryError?.payloadLength || null,
-                    payloadPreviewHex: primaryError?.payloadPreviewHex || null
-                });
-            } catch (notifyErr) {
-                console.warn('Failed to notify renderer about TikTok fallback:', notifyErr);
-            }
-            return true;
+            return false;
+        }
+        const fallbackMessage = this.getSanitizedFallbackMessage(primaryError, 'TikTok signer unavailable. Switching to legacy connector.');
+        this.pollingFallbackActivated = true;
+        this.signServerFailureCount = 0;
+        this.logDebug('lifecycle.fallback.polling.begin', {
+            stage,
+            message: fallbackMessage,
+            payloadLength: primaryError?.payloadLength || null
+        });
+        console.warn(`[TikTok] Legacy fallback activated (${stage}) for ${this.username}: ${fallbackMessage}`);
+        this.preferredStrategy = 'legacy';
+        try {
+            await this.teardownConnection({ silent: true });
+        } catch (error) {
+            this.logDebug('lifecycle.fallback.polling.teardownError', normalizeForLogging(error));
+        }
+        try {
+            this.initializeConnectionInstance({ forceLegacy: true, context: 'legacy_fallback' });
+        } catch (error) {
+            this.pollingFallbackActivated = false;
+            this.connectionStrategy = 'websocket';
+            this.preferredStrategy = 'websocket';
+            this.logDebug('lifecycle.fallback.polling.instantiateError', normalizeForLogging(error));
+            console.error('[TikTok] Failed to instantiate legacy fallback connection:', error);
+            return false;
+        }
+        try {
+            emitStatus({
+                wssID: this.wssID,
+                status: 'fallback_polling',
+                error: fallbackMessage,
+                payloadLength: primaryError?.payloadLength || null,
+                payloadPreviewHex: primaryError?.payloadPreviewHex || null
+            });
+        } catch (notifyErr) {
+            console.warn('Failed to notify renderer about TikTok fallback:', notifyErr);
+        }
+        return true;
+    }
+
+    applySignRequestTimeout(timeoutMs) {
+        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+            return;
         }
 
-        applySignRequestTimeout(timeoutMs) {
-            if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        const previousTimeout = this.signRequestTimeoutMs;
+        this.signRequestTimeoutMs = timeoutMs;
+
+        if (!this.connection) {
+            return;
+        }
+
+        try {
+            const webcastApi = this.connection?.webClient?.webSigner?.webcast;
+            if (!webcastApi) {
                 return;
             }
 
-            const previousTimeout = this.signRequestTimeoutMs;
-            this.signRequestTimeoutMs = timeoutMs;
-
-            if (!this.connection) {
-                return;
+            if (webcastApi.configuration) {
+                webcastApi.configuration.baseOptions = {
+                    ...(webcastApi.configuration.baseOptions || {}),
+                    timeout: timeoutMs
+                };
             }
 
-            try {
-                const webcastApi = this.connection?.webClient?.webSigner?.webcast;
-                if (!webcastApi) {
-                    return;
+            if (webcastApi.axios && webcastApi.axios.defaults) {
+                webcastApi.axios.defaults.timeout = timeoutMs;
+                const defaultMessage = `Sign server request timed out after ${timeoutMs}ms`;
+                if (!webcastApi.axios.defaults.timeoutErrorMessage) {
+                    webcastApi.axios.defaults.timeoutErrorMessage = defaultMessage;
+                } else if (typeof webcastApi.axios.defaults.timeoutErrorMessage === 'string' && webcastApi.axios.defaults.timeoutErrorMessage.startsWith('Sign server request timed out after')) {
+                    webcastApi.axios.defaults.timeoutErrorMessage = defaultMessage;
                 }
+            }
 
-                if (webcastApi.configuration) {
-                    webcastApi.configuration.baseOptions = {
-                        ...(webcastApi.configuration.baseOptions || {}),
-                        timeout: timeoutMs
-                    };
-                }
-
-                if (webcastApi.axios && webcastApi.axios.defaults) {
-                    webcastApi.axios.defaults.timeout = timeoutMs;
-                    const defaultMessage = `Sign server request timed out after ${timeoutMs}ms`;
-                    if (!webcastApi.axios.defaults.timeoutErrorMessage) {
-                        webcastApi.axios.defaults.timeoutErrorMessage = defaultMessage;
-                    } else if (typeof webcastApi.axios.defaults.timeoutErrorMessage === 'string' && webcastApi.axios.defaults.timeoutErrorMessage.startsWith('Sign server request timed out after')) {
-                        webcastApi.axios.defaults.timeoutErrorMessage = defaultMessage;
-                    }
-                }
-
-                if (previousTimeout !== timeoutMs) {
-                    this.logDebug('sign.timeout.applied', {
-                        previousTimeoutMs: previousTimeout,
-                        timeoutMs
-                    });
-                }
-            } catch (timeoutConfigError) {
-                console.warn('Failed to configure Euler sign server timeout:', timeoutConfigError);
-                this.logDebug('sign.timeout.apply_failed', {
-                    timeoutMs,
-                    error: timeoutConfigError?.message || String(timeoutConfigError)
+            if (previousTimeout !== timeoutMs) {
+                this.logDebug('sign.timeout.applied', {
+                    previousTimeoutMs: previousTimeout,
+                    timeoutMs
                 });
             }
+        } catch (timeoutConfigError) {
+            console.warn('Failed to configure Euler sign server timeout:', timeoutConfigError);
+            this.logDebug('sign.timeout.apply_failed', {
+                timeoutMs,
+                error: timeoutConfigError?.message || String(timeoutConfigError)
+            });
         }
+    }
 
-        isSignServerTimeout(primaryError, rawMessage = '') {
-            const code = primaryError?.code;
-            if (typeof code === 'string') {
-                const normalizedCode = code.toUpperCase();
-                if (normalizedCode === 'ECONNABORTED' || normalizedCode === 'ETIMEDOUT' || normalizedCode === 'ESOCKETTIMEDOUT') {
-                    return true;
-                }
-            }
-
-            const combined = `${rawMessage || ''} ${primaryError?.message || ''}`.toLowerCase();
-            if (!combined.trim()) {
-                return false;
-            }
-
-            if (combined.includes('timeout') || combined.includes('timed out')) {
+    isSignServerTimeout(primaryError, rawMessage = '') {
+        const code = primaryError?.code;
+        if (typeof code === 'string') {
+            const normalizedCode = code.toUpperCase();
+            if (normalizedCode === 'ECONNABORTED' || normalizedCode === 'ETIMEDOUT' || normalizedCode === 'ESOCKETTIMEDOUT') {
                 return true;
             }
+        }
 
+        const combined = `${rawMessage || ''} ${primaryError?.message || ''}`.toLowerCase();
+        if (!combined.trim()) {
             return false;
         }
 
-        maybeBoostSignRequestTimeout(primaryError, rawMessage = '') {
-            if (!this.isSignServerTimeout(primaryError, rawMessage)) {
-                return false;
-            }
-
-            if (!Number.isFinite(this.signRequestTimeoutMaxMs) || this.signRequestTimeoutMaxMs <= this.signRequestTimeoutMs) {
-                return false;
-            }
-
-            const step = Number.isFinite(this.signRequestTimeoutStepMs) && this.signRequestTimeoutStepMs > 0
-                ? this.signRequestTimeoutStepMs
-                : Math.max(5000, this.signRequestTimeoutMs);
-
-            const nextTimeout = Math.min(this.signRequestTimeoutMaxMs, this.signRequestTimeoutMs + step);
-
-            if (!Number.isFinite(nextTimeout) || nextTimeout <= this.signRequestTimeoutMs) {
-                return false;
-            }
-
-            const previous = this.signRequestTimeoutMs;
-            console.info(`[TikTok] Sign server timeout - increasing request timeout from ${previous}ms to ${nextTimeout}ms`);
-            this.logDebug('sign.timeout.boost', {
-                previousTimeoutMs: previous,
-                nextTimeoutMs: nextTimeout,
-                maxTimeoutMs: this.signRequestTimeoutMaxMs
-            });
-            this.applySignRequestTimeout(nextTimeout);
+        if (combined.includes('timeout') || combined.includes('timed out')) {
             return true;
         }
 
-        handleSignServerRejection(primaryError) {
-            const helpMessage = this.getSigningServiceHelpMessage();
-            this.logDebug('sign.error.rejected_session', {
-                message: helpMessage,
-                attempts: this.signServerFailureCount,
-                errorName: primaryError?.name || null,
-                reason: primaryError?.reason || null
+        return false;
+    }
+
+    maybeBoostSignRequestTimeout(primaryError, rawMessage = '') {
+        if (!this.isSignServerTimeout(primaryError, rawMessage)) {
+            return false;
+        }
+
+        if (!Number.isFinite(this.signRequestTimeoutMaxMs) || this.signRequestTimeoutMaxMs <= this.signRequestTimeoutMs) {
+            return false;
+        }
+
+        const step = Number.isFinite(this.signRequestTimeoutStepMs) && this.signRequestTimeoutStepMs > 0
+            ? this.signRequestTimeoutStepMs
+            : Math.max(5000, this.signRequestTimeoutMs);
+
+        const nextTimeout = Math.min(this.signRequestTimeoutMaxMs, this.signRequestTimeoutMs + step);
+
+        if (!Number.isFinite(nextTimeout) || nextTimeout <= this.signRequestTimeoutMs) {
+            return false;
+        }
+
+        const previous = this.signRequestTimeoutMs;
+        console.info(`[TikTok] Sign server timeout - increasing request timeout from ${previous}ms to ${nextTimeout}ms`);
+        this.logDebug('sign.timeout.boost', {
+            previousTimeoutMs: previous,
+            nextTimeoutMs: nextTimeout,
+            maxTimeoutMs: this.signRequestTimeoutMaxMs
+        });
+        this.applySignRequestTimeout(nextTimeout);
+        return true;
+    }
+
+    handleSignServerRejection(primaryError) {
+        const helpMessage = this.getSigningServiceHelpMessage();
+        this.logDebug('sign.error.rejected_session', {
+            message: helpMessage,
+            attempts: this.signServerFailureCount,
+            errorName: primaryError?.name || null,
+            reason: primaryError?.reason || null
+        });
+        this.logConsoleFailure(helpMessage, primaryError instanceof Error ? primaryError : null);
+        try {
+            connectionStates.set(this.wssID, {
+                isConnected: false,
+                lastAttempt: Date.now(),
+                isReconnecting: false,
+                attemptInProgress: false
             });
-            this.logConsoleFailure(helpMessage, primaryError instanceof Error ? primaryError : null);
-            try {
-                connectionStates.set(this.wssID, {
-                    isConnected: false,
-                    lastAttempt: Date.now(),
-                    isReconnecting: false,
-                    attemptInProgress: false
-                });
-            } catch (_) { /* noop */ }
-            this.offlineRetry = false;
-            this.offlineReason = null;
-            try {
+        } catch (_) { /* noop */ }
+        this.offlineRetry = false;
+        this.offlineReason = null;
+        try {
+            emitStatus({
+                wssID: this.wssID,
+                status: 'failed',
+                error: helpMessage,
+                signServer: true,
+                sessionRejected: true
+            });
+        } catch (notifyErr) {
+            console.warn('Failed to send TikTok sign-in rejection status:', notifyErr);
+        }
+    }
+
+    handleSignServerFailure(primaryError, rawMessage = '', userFacingMessage = '') {
+        const detail = this.truncateForLog(rawMessage || primaryError?.message || '', 600);
+        const displayMessage = (typeof userFacingMessage === 'string' && userFacingMessage.trim())
+            ? userFacingMessage.trim()
+            : 'Sign server unavailable';
+
+        console.warn(`[TikTok] Sign server issue detected (${displayMessage}). Retrying silently.`);
+        this.logDebug('sign.error.retry', {
+            message: displayMessage,
+            detail: detail || null,
+            attempts: this.signServerFailureCount
+        });
+
+        // Attempt to notify renderer without surfacing an error banner
+        try {
+            if (getMainWindow() && getMainWindow().webContents) {
                 emitStatus({
                     wssID: this.wssID,
-                    status: 'failed',
-                    error: helpMessage,
-                    signServer: true,
-                    sessionRejected: true
+                    status: 'reconnecting',
+                    reason: undefined,
+                    signServer: true
                 });
-            } catch (notifyErr) {
-                console.warn('Failed to send TikTok sign-in rejection status:', notifyErr);
             }
+        } catch (_) { /* renderer may be gone */ }
+
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
         }
 
-        handleSignServerFailure(primaryError, rawMessage = '', userFacingMessage = '') {
-            const detail = this.truncateForLog(rawMessage || primaryError?.message || '', 600);
-            const displayMessage = (typeof userFacingMessage === 'string' && userFacingMessage.trim())
-                ? userFacingMessage.trim()
-                : 'Sign server unavailable';
-
-            console.warn(`[TikTok] Sign server issue detected (${displayMessage}). Retrying silently.`);
-            this.logDebug('sign.error.retry', {
-                message: displayMessage,
-                detail: detail || null,
-                attempts: this.signServerFailureCount
+        try {
+            connectionStates.set(this.wssID, {
+                isConnected: false,
+                lastAttempt: Date.now(),
+                isReconnecting: false,
+                attemptInProgress: false
             });
+        } catch (_) { /* noop */ }
 
-            // Attempt to notify renderer without surfacing an error banner
-            try {
-                if (getMainWindow() && getMainWindow().webContents) {
-                    emitStatus( {
-                        wssID: this.wssID,
-                        status: 'reconnecting',
-                        reason: undefined,
-                        signServer: true
-                    });
-                }
-            } catch (_) { /* renderer may be gone */ }
-
-            if (this.reconnectTimer) {
-                clearTimeout(this.reconnectTimer);
-                this.reconnectTimer = null;
-            }
-
-            try {
-                connectionStates.set(this.wssID, {
-                    isConnected: false,
-                    lastAttempt: Date.now(),
-                    isReconnecting: false,
-                    attemptInProgress: false
-                });
-            } catch (_) { /* noop */ }
-
-            if (this.isStopped) {
-                return;
-            }
-
-            this.offlineRetry = false;
-            this.offlineReason = null;
-            this.reconnectAttempts = Math.max(0, this.reconnectAttempts - 1);
-
-            const retryDelay = Number.isFinite(this.signRequestImmediateRetryDelayMs) && this.signRequestImmediateRetryDelayMs > 0
-                ? this.signRequestImmediateRetryDelayMs
-                : 0;
-
-            this.attemptReconnect(retryDelay, {
-                fixed: true,
-                immediate: retryDelay <= 0,
-                silent: true,
-                reason: 'sign_server_retry'
-            });
+        if (this.isStopped) {
+            return;
         }
 
-        normalizeGoalUpdate(data = {}) {
-            if (!data || typeof data !== 'object') {
-                return null;
-            }
+        this.offlineRetry = false;
+        this.offlineReason = null;
+        this.reconnectAttempts = Math.max(0, this.reconnectAttempts - 1);
 
-            const pickFirst = (values, fallback = null) => {
-                for (const value of values) {
-                    if (value === undefined || value === null) continue;
-                    if (typeof value === 'string') {
-                        const trimmed = value.trim();
-                        if (trimmed.length) {
-                            return trimmed;
-                        }
-                    } else {
-                        return value;
+        const retryDelay = Number.isFinite(this.signRequestImmediateRetryDelayMs) && this.signRequestImmediateRetryDelayMs > 0
+            ? this.signRequestImmediateRetryDelayMs
+            : 0;
+
+        this.attemptReconnect(retryDelay, {
+            fixed: true,
+            immediate: retryDelay <= 0,
+            silent: true,
+            reason: 'sign_server_retry'
+        });
+    }
+
+    normalizeGoalUpdate(data = {}) {
+        if (!data || typeof data !== 'object') {
+            return null;
+        }
+
+        const pickFirst = (values, fallback = null) => {
+            for (const value of values) {
+                if (value === undefined || value === null) continue;
+                if (typeof value === 'string') {
+                    const trimmed = value.trim();
+                    if (trimmed.length) {
+                        return trimmed;
                     }
-                }
-                return fallback;
-            };
-
-            const hasValue = (value) => value !== undefined && value !== null && !(typeof value === 'string' && value.trim() === '');
-            const parseNumber = (value) => {
-                if (!hasValue(value)) return null;
-                const num = Number(value);
-                return Number.isFinite(num) ? num : null;
-            };
-
-            const goal = data?.goal || {};
-            const subGoal = data?.contributeSubgoal || {};
-
-            const contributorName = pickFirst([
-                data?.contributorDisplayId,
-                data?.contributorIdStr,
-                hasValue(data?.contributorId) ? String(data.contributorId) : null,
-                data?.nickname,
-                data?.user?.displayId,
-                data?.user?.uniqueId,
-                data?.user?.nickname
-            ], 'Viewer') || 'Viewer';
-
-            const giftName = pickFirst([
-                subGoal?.gift?.name,
-                goal?.title,
-                goal?.description,
-                data?.giftName
-            ], 'Goal') || 'Goal';
-
-            const progressRaw = pickFirst([
-                subGoal?.progress,
-                goal?.progress,
-                data?.progress
-            ], null);
-            const targetRaw = pickFirst([
-                subGoal?.target,
-                goal?.target,
-                data?.target
-            ], null);
-            const scoreRaw = pickFirst([
-                data?.contributeScore,
-                data?.score
-            ], null);
-
-            const progressNumber = parseNumber(progressRaw);
-            const targetNumber = parseNumber(targetRaw);
-            const scoreNumber = parseNumber(scoreRaw);
-
-            const avatarUrl = normalizeTikTokImageUrl(data?.contributorAvatar?.url)
-                || normalizeTikTokImageUrl(data?.profilePictureUrl)
-                || normalizeTikTokImageUrl(data?.profilePicture)
-                || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
-                || normalizeTikTokImageUrl(data?.user?.profilePicture)
-                || null;
-
-            const contributorId = hasValue(data?.contributorId) ? data.contributorId : null;
-            const contributorIdStr = hasValue(data?.contributorIdStr) ? data.contributorIdStr : null;
-            const uniqueId = pickFirst([
-                data?.user?.uniqueId,
-                data?.user?.displayId,
-                contributorIdStr,
-                contributorId ? String(contributorId) : null
-            ], null);
-
-            const subGoalId = pickFirst([
-                subGoal?.id,
-                subGoal?.idStr,
-                goal?.id,
-                goal?.idStr
-            ], null);
-            const subGoalType = subGoal?.type !== undefined ? subGoal.type : null;
-
-            const eventType = data?.pin ? 'goal_pin' : (data?.unpin ? 'goal_unpin' : 'goal_update');
-
-            const meta = {
-                contributorName,
-                contributorId,
-                contributorIdStr,
-                uniqueId,
-                giftName,
-                progress: progressNumber !== null ? progressNumber : progressRaw ?? null,
-                target: targetNumber !== null ? targetNumber : targetRaw ?? null,
-                score: scoreNumber !== null ? scoreNumber : scoreRaw ?? null,
-                progressRaw: progressRaw ?? undefined,
-                targetRaw: targetRaw ?? undefined,
-                scoreRaw: scoreRaw ?? undefined,
-                avatarUrl: avatarUrl || undefined,
-                subGoalId: subGoalId || undefined,
-                subGoalType: subGoalType ?? undefined,
-                pin: data?.pin ? true : undefined,
-                unpin: data?.unpin ? true : undefined,
-                timestamp: Date.now()
-            };
-
-            if (goal?.title) meta.goalTitle = cleanVisibleString(goal.title);
-            if (goal?.description) meta.goalDescription = cleanVisibleString(goal.description);
-
-            return {
-                eventType,
-                meta
-            };
-        }
-
-        emitGoalEvent(goalEvent) {
-            if (!goalEvent || typeof goalEvent !== 'object') {
-                return;
-            }
-
-            if (!isCaptureEventsEnabled()) {
-                return;
-            }
-
-            const { eventType, meta } = goalEvent;
-            if (!eventType) {
-                return;
-            }
-
-            const metaObject = (meta && typeof meta === 'object') ? meta : {};
-            const progressPreview = metaObject.progress ?? metaObject.progressRaw ?? null;
-            const targetPreview = metaObject.target ?? metaObject.targetRaw ?? null;
-            const scorePreview = metaObject.score ?? metaObject.scoreRaw ?? null;
-
-            console.info('[TikTok] Goal event', {
-                username: this.username,
-                event: eventType,
-                contributor: metaObject.contributorName || metaObject.uniqueId || null,
-                giftName: metaObject.giftName || null,
-                progress: progressPreview,
-                target: targetPreview,
-                score: scorePreview
-            });
-
-            this.sendEventMessage({}, eventType, null, metaObject);
-        }
-
-        resetGoalAggregates() {
-            // Batching removed; method retained for compatibility.
-        }
-
-        static delay(ms) {
-            if (!Number.isFinite(ms) || ms <= 0) {
-                return Promise.resolve();
-            }
-            return new Promise((resolve) => setTimeout(resolve, ms));
-        }
-
-        recordActivity(timestamp = Date.now()) {
-            this.lastMessageTime = timestamp;
-
-            const bucketSize = 60 * 1000; // 1 minute buckets
-            const bucketKey = Math.floor(timestamp / bucketSize) * bucketSize;
-            const current = this.activityBuckets.get(bucketKey) || 0;
-            this.activityBuckets.set(bucketKey, current + 1);
-
-            this.pruneActivity(timestamp);
-        }
-
-        pruneActivity(now = Date.now()) {
-            const historyWindow = CONFIG.CONNECTION.ACTIVITY_HISTORY_MS || (30 * 60 * 1000);
-            const cutoff = now - historyWindow;
-            for (const key of this.activityBuckets.keys()) {
-                if (key < cutoff) {
-                    this.activityBuckets.delete(key);
-                }
-            }
-        }
-
-        countActivitySince(cutoff) {
-            if (!this.activityBuckets.size) {
-                return 0;
-            }
-
-            let count = 0;
-            const bucketSize = 60 * 1000;
-            for (const [bucketKey, bucketCount] of this.activityBuckets.entries()) {
-                if (bucketKey + bucketSize > cutoff) {
-                    count += bucketCount;
-                }
-            }
-            return count;
-        }
-
-        getAdaptiveMessageTimeout() {
-            const now = Date.now();
-            this.pruneActivity(now);
-
-            const {
-                ACTIVITY_THRESHOLDS = {},
-                MESSAGE_TIMEOUT_ACTIVE_MS = 5 * 60 * 1000,
-                MESSAGE_TIMEOUT_MODERATE_MS = 10 * 60 * 1000,
-                MESSAGE_TIMEOUT_IDLE_MS = 30 * 60 * 1000
-            } = CONFIG.CONNECTION;
-
-            const highThreshold = ACTIVITY_THRESHOLDS.HIGH_PER_MINUTE || 120;
-            const moderateThreshold = ACTIVITY_THRESHOLDS.MODERATE_PER_MINUTE || 15;
-
-            const perMinute = this.countActivitySince(now - 60 * 1000);
-            if (perMinute >= highThreshold) {
-                return MESSAGE_TIMEOUT_ACTIVE_MS;
-            }
-
-            if (perMinute >= moderateThreshold) {
-                return MESSAGE_TIMEOUT_MODERATE_MS;
-            }
-
-            const perFiveMinutes = this.countActivitySince(now - 5 * 60 * 1000);
-            if (perFiveMinutes >= moderateThreshold * 2) {
-                return MESSAGE_TIMEOUT_MODERATE_MS;
-            }
-
-            return MESSAGE_TIMEOUT_IDLE_MS;
-        }
-
-        async initialize() {
-            this.logDebug('lifecycle.initialize.start');
-            console.log(`Initializing TikTok connection for user: ${this.username}`);
-            if (this.sessionId) {
-                console.log('Using authenticated connection');
-            } else {
-                console.log('Using anonymous connection');
-            }
-            if (usingLegacyTikTokConnector && !this.pollingFallbackActivated) {
-                console.warn('[TikTok] Legacy connector in use; live shopping purchase events are unavailable until the package is upgraded.');
-            }
-            try {
-                this.initializeConnectionInstance({ forceLegacy: this.preferredStrategy === 'legacy', context: 'primary' });
-                return this.connect();
-            } catch (error) {
-                const fallbackHandled = await this.tryFallbackToPolling(error, 'initialize');
-                if (fallbackHandled) {
-                    return this.connect();
-                }
-                this.logDebug('lifecycle.initialize.error', error);
-                console.error('Failed to initialize TikTok connection:', error);
-                this.handleFatalError(error);
-                throw error;
-            }
-        }
-
-        handleFatalError(error) {
-            this.logDebug('lifecycle.fatalError', error);
-            console.error('Fatal connection error:', error);
-            this.isStopped = true;
-
-            let errorMessage = 'Connection failed';
-
-            // Handle specific error types
-            if (error instanceof Error) {
-                if (error.message.includes('LIVE has ended') || error.name === 'UserOfflineError') {
-                    errorMessage = 'Live stream has ended';
-                } else if (error.name === 'AlreadyConnectingError') {
-                    errorMessage = 'Connection already in progress';
                 } else {
-                    errorMessage = error.message;
+                    return value;
                 }
             }
+            return fallback;
+        };
 
-            emitStatus( {
-                wssID: this.wssID,
-                status: 'fatal_error',
-                error: errorMessage
-            });
+        const hasValue = (value) => value !== undefined && value !== null && !(typeof value === 'string' && value.trim() === '');
+        const parseNumber = (value) => {
+            if (!hasValue(value)) return null;
+            const num = Number(value);
+            return Number.isFinite(num) ? num : null;
+        };
 
-            // Clean up the connection
-            cleanupConnection(this.wssID);
+        const goal = data?.goal || {};
+        const subGoal = data?.contributeSubgoal || {};
+
+        const contributorName = pickFirst([
+            data?.contributorDisplayId,
+            data?.contributorIdStr,
+            hasValue(data?.contributorId) ? String(data.contributorId) : null,
+            data?.nickname,
+            data?.user?.displayId,
+            data?.user?.uniqueId,
+            data?.user?.nickname
+        ], 'Viewer') || 'Viewer';
+
+        const giftName = pickFirst([
+            subGoal?.gift?.name,
+            goal?.title,
+            goal?.description,
+            data?.giftName
+        ], 'Goal') || 'Goal';
+
+        const progressRaw = pickFirst([
+            subGoal?.progress,
+            goal?.progress,
+            data?.progress
+        ], null);
+        const targetRaw = pickFirst([
+            subGoal?.target,
+            goal?.target,
+            data?.target
+        ], null);
+        const scoreRaw = pickFirst([
+            data?.contributeScore,
+            data?.score
+        ], null);
+
+        const progressNumber = parseNumber(progressRaw);
+        const targetNumber = parseNumber(targetRaw);
+        const scoreNumber = parseNumber(scoreRaw);
+
+        const avatarUrl = normalizeTikTokImageUrl(data?.contributorAvatar?.url)
+            || normalizeTikTokImageUrl(data?.profilePictureUrl)
+            || normalizeTikTokImageUrl(data?.profilePicture)
+            || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+            || normalizeTikTokImageUrl(data?.user?.profilePicture)
+            || null;
+
+        const contributorId = hasValue(data?.contributorId) ? data.contributorId : null;
+        const contributorIdStr = hasValue(data?.contributorIdStr) ? data.contributorIdStr : null;
+        const uniqueId = pickFirst([
+            data?.user?.uniqueId,
+            data?.user?.displayId,
+            contributorIdStr,
+            contributorId ? String(contributorId) : null
+        ], null);
+
+        const subGoalId = pickFirst([
+            subGoal?.id,
+            subGoal?.idStr,
+            goal?.id,
+            goal?.idStr
+        ], null);
+        const subGoalType = subGoal?.type !== undefined ? subGoal.type : null;
+
+        const eventType = data?.pin ? 'goal_pin' : (data?.unpin ? 'goal_unpin' : 'goal_update');
+
+        const meta = {
+            contributorName,
+            contributorId,
+            contributorIdStr,
+            uniqueId,
+            giftName,
+            progress: progressNumber !== null ? progressNumber : progressRaw ?? null,
+            target: targetNumber !== null ? targetNumber : targetRaw ?? null,
+            score: scoreNumber !== null ? scoreNumber : scoreRaw ?? null,
+            progressRaw: progressRaw ?? undefined,
+            targetRaw: targetRaw ?? undefined,
+            scoreRaw: scoreRaw ?? undefined,
+            avatarUrl: avatarUrl || undefined,
+            subGoalId: subGoalId || undefined,
+            subGoalType: subGoalType ?? undefined,
+            pin: data?.pin ? true : undefined,
+            unpin: data?.unpin ? true : undefined,
+            timestamp: Date.now()
+        };
+
+        if (goal?.title) meta.goalTitle = cleanVisibleString(goal.title);
+        if (goal?.description) meta.goalDescription = cleanVisibleString(goal.description);
+
+        return {
+            eventType,
+            meta
+        };
+    }
+
+    emitGoalEvent(goalEvent) {
+        if (!goalEvent || typeof goalEvent !== 'object') {
+            return;
         }
 
-        setupEventHandlers() {
-            const suppressedDecodedLogTypes = new Set([
-                'WebcastLinkLayerMessage',
-                'WebcastLinkMessage',
-                'WebcastLinkMicFanTicketMethod',
-                'WebcastLinkMicMethod'
-            ]);
-            if (typeof this.connection.on === 'function') {
-                this.connection.on('ssappProtoFetch', (result) => this.handleProtoFetch(result));
-            }
-            this.connection.on('websocketData', (buffer) => {
-                let preview = null;
-                let length = null;
-                try {
-                    if (buffer && typeof buffer.length === 'number') {
-                        length = buffer.length;
-                        if (length > 0) {
-                            const slice = typeof buffer.slice === 'function'
-                                ? buffer.slice(0, Math.min(length, 16))
-                                : (Buffer.isBuffer(buffer) ? buffer.subarray(0, Math.min(length, 16)) : null);
-                            if (slice) {
-                                preview = Buffer.from(slice).toString('hex');
-                            }
-                        }
-                    }
-                } catch (_) {
-                    preview = null;
-                }
-                this.logDebug('control.websocketData', {
-                    length,
-                    preview
-                });
-            });
-            this.connection.on('rawData', (messageType) => {
-                this.logDebug('control.rawData', {
-                    messageType
-                });
-            });
-            this.connection.on('decodedData', (messageType, decodedData, rawPayload) => {
-                this.lastMessageTime = Date.now();
-                const suppressed = suppressedDecodedLogTypes.has(messageType);
-                const logEntry = {
-                    messageType
-                };
-                if (!suppressed) {
-                    logEntry.decodedData = decodedData;
-                    if (rawPayload && typeof rawPayload === 'object') {
-                        const payloadLength = Array.isArray(rawPayload.data) ? rawPayload.data.length : undefined;
-                        if (payloadLength !== undefined) {
-                            logEntry.rawPayloadLength = payloadLength;
-                        }
-                    }
-                }
-                this.logDebug('control.decodedData', logEntry);
-            });
-            this.connection.on('enterRoom', (data) => {
-                this.logDebug('control.enterRoom', data);
-            });
-            this.connection.on('websocketConnected', () => {
-                this.logDebug('control.websocketConnected');
-                this.handleConnect();
-            });
-            this.connection.on('disconnect', () => {
-                this.logDebug('control.disconnect');
-                this.handleDisconnect();
-            });
-            this.connection.on('error', (err) => {
-                this.logDebug('control.error', err);
-                this.handleError(err);
-            });
-            this.connection.on('streamEnd', () => {
-                this.logDebug('control.streamEnd');
-                this.handleStreamEnd();
-            });
-            this.connection.on('chat', (data) => {
-                this.logDebug('event.chat', data);
-                this.recordActivity();
-                this.messageProcessor.addToQueue(data);
-            });
-            this.connection.on('gift', (data) => {
-                this.logDebug('event.gift', data);
-                this.recordActivity();
-                this.giftProcessor.addToQueue(data);
-            });
-
-            const eventHandlers = {
-                follow: (data) => {
-                    this.recordActivity();
-                    const identity = extractTikTokIdentity(data);
-                    const displayName = identity.nickname || identity.uniqueId || 'Viewer';
-                    if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
-                    if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
-                    this.sendEventMessage(data, "follow", `${displayName} followed!`);
-                },
-                subscribe: (data) => {
-                    this.recordActivity();
-                    const identity = extractTikTokIdentity(data);
-                    const displayName = identity.nickname || identity.uniqueId || 'Viewer';
-                    if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
-                    if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
-                    this.sendEventMessage(data, "subscribed", `${displayName} subscribed!`);
-                },
-                social: (data = {}) => {
-                    this.recordActivity();
-                    const devMode = isDevBuild();
-                    const meta = normalizeSocialMeta(data);
-
-                    if (SOCIAL_SUPPRESSED_DISPLAY_TYPES.has(meta.baseDisplayType)) {
-                        if (devMode) {
-                            console.debug('[TikTok] suppressed placeholder social event', { meta });
-                        }
-                        return;
-                    }
-                    if (isRedundantFollowOrSub(meta)) {
-                        if (devMode) {
-                            console.debug('[TikTok] suppressed redundant follow/sub social event', { meta });
-                        }
-                        return;
-                    }
-                    if (isSocialGiftEcho(meta)) {
-                        if (devMode) {
-                            console.debug('[TikTok] suppressed social gift echo', { meta });
-                        }
-                        return;
-                    }
-                    if (isGenericSocialLabel(meta)) {
-                        if (devMode) {
-                            console.debug('[TikTok] suppressed generic social label', { meta });
-                        }
-                        return;
-                    }
-
-                    const classification = classifySocialEvent(meta);
-                    if (!classification) {
-                        if (devMode) {
-                            console.debug('[TikTok] unknown social event (dev log only)', { meta, raw: data });
-                        }
-                        return;
-                    }
-
-                    const identity = extractTikTokIdentity(data);
-                    const displayName = identity.nickname || identity.uniqueId || 'Viewer';
-                    if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
-                    if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
-
-                    const message = `${displayName} ${classification.message}!`;
-                    this.sendEventMessage(data, classification.event, message);
-                },
-                member: (data = {}) => {
-                    this.recordActivity();
-                    if (!isCaptureEventsEnabled() || !isCaptureJoinedEventEnabled()) {
-                        return;
-                    }
-
-                    const action = data?.action;
-                    const actionCode = typeof action === 'number' ? action : Number(action);
-                    const actionIsJoin = actionCode === 1 ||
-                        (typeof action === 'string' && action.toLowerCase().trim() === 'join');
-                    const descriptionMentionsJoin = [
-                        data?.actionDescription,
-                        data?.displayText?.defaultPattern,
-                        data?.anchorDisplayText?.defaultPattern
-                    ].some(text => typeof text === 'string' && text.toLowerCase().includes('join'));
-
-                    if (!actionIsJoin && !descriptionMentionsJoin) {
-                        return;
-                    }
-
-                    if (typeof data.nickname === 'string') {
-                        const cleaned = data.nickname.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
-                        if (cleaned) {
-                            data.nickname = cleaned;
-                        } else {
-                            delete data.nickname;
-                        }
-                    }
-
-                    const identity = extractTikTokIdentity(data);
-                    if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
-                    if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
-
-                    this.sendEventMessage(data, 'joined', 'joined');
-                },
-                roomUser: (data) => {
-                    this.recordActivity();
-                    if ("viewerCount" in data) {
-                        this.lastViewerCount = parseInt(data.viewerCount) || 0;
-                        if (isViewerUpdateAllowed()) {
-                            sendToBackground({
-                                meta: this.lastViewerCount,
-                                type: "tiktok",
-                                event: "viewer_update",
-                                tid: this.virtualTabId
-                            });
-                        }
-                    }
-                },
-                oecLiveShopping: (data = {}) => {
-                    this.recordActivity();
-
-                    const shopData = data?.shopData && typeof data.shopData === 'object' ? data.shopData : {};
-                    const details = data?.details && typeof data.details === 'object' ? data.details : {};
-                    const rawTitle = (typeof shopData.title === 'string' && shopData.title.trim()) ? shopData.title.trim() : 'Product';
-                    const isGenericTitle = !rawTitle || /^product$/i.test(rawTitle);
-                    const meaningfulTitle = isGenericTitle ? null : rawTitle;
-                    const title = rawTitle || 'Product';
-                    const phaseRaw = data?.data1;
-                    const phaseNumber = Number(phaseRaw);
-                    const phase = Number.isFinite(phaseNumber) ? phaseNumber : null;
-                    const detailId = details?.id1 || shopData?.data1 || data?.id1 || null;
-                    const detailTimestamp = details?.timestamp || details?.data?.timestamp || null;
-                    const detailDataValueNumber = Number(details?.data?.data);
-                    const detailDataValue = Number.isFinite(detailDataValueNumber) ? detailDataValueNumber : null;
-
-                    const priceText = shopData.priceString ? ` – ${shopData.priceString}` : '';
-                    const shopText = shopData.shopName ? ` (${shopData.shopName})` : '';
-                    const identity = extractTikTokIdentity(data);
-                    const buyerName = identity?.nickname || identity?.uniqueId || null;
-
-                    const labelSources = [
-                        details?.data?.label,
-                        details?.data?.label2,
-                        details?.data?.label3,
-                        details?.label,
-                        details?.describe,
-                        data?.describe,
-                        data?.label,
-                        data?.labels,
-                        data?.eventLabel,
-                        data?.eventLabels
-                    ];
-                    const labelCandidates = [];
-                    for (const source of labelSources) {
-                        if (!source) continue;
-                        if (Array.isArray(source)) {
-                            source.forEach((item) => {
-                                if (typeof item === 'string') {
-                                    const trimmed = item.trim();
-                                    if (trimmed) labelCandidates.push(trimmed);
-                                }
-                            });
-                        } else if (typeof source === 'string') {
-                            const trimmed = source.trim();
-                            if (trimmed) labelCandidates.push(trimmed);
-                        }
-                    }
-
-                    const displayLabel = labelCandidates[0] || null;
-                    const normalizedLabelSignals = labelCandidates.map((label) => label.toLowerCase());
-                    const purchaseSignal = normalizedLabelSignals.some(label => /purchase|sold\s?out|checkout|order|paid|bayar|beli|soldout/.test(label));
-                    const likelyPurchase = purchaseSignal || phase === 4 || (detailDataValue !== null && detailDataValue >= 2);
-
-                    const eventType = likelyPurchase ? 'shopping_purchase' : 'oec_live_shopping';
-                    const phaseDescriptions = {
-                        1: 'Product preview',
-                        2: 'Product spotlight',
-                        3: 'Product spotlight',
-                        4: 'Purchase event',
-                        5: 'Post-purchase update'
-                    };
-                    const phaseDescription = (phase !== null && phaseDescriptions[phase]) || null;
-
-                    let message = null;
-                    if (likelyPurchase) {
-                        if (buyerName && meaningfulTitle) {
-                            message = `${buyerName} purchased ${meaningfulTitle}${priceText}${shopText}`;
-                        } else if (buyerName) {
-                            message = `${buyerName} made a purchase${priceText}${shopText}`;
-                        } else if (meaningfulTitle) {
-                            message = `Purchase: ${meaningfulTitle}${priceText}${shopText}`;
-                        }
-                    } else if (meaningfulTitle) {
-                        if (displayLabel && !displayLabel.toLowerCase().includes(meaningfulTitle.toLowerCase())) {
-                            message = `${displayLabel} — ${meaningfulTitle}${priceText}${shopText}`;
-                        } else if (displayLabel) {
-                            message = `${displayLabel}${priceText}${shopText}`;
-                        } else {
-                            message = `Live shopping: ${meaningfulTitle}${priceText}${shopText}`;
-                        }
-                    } else if (displayLabel && /deal|drop|promo|flash|offer|discount/.test(displayLabel.toLowerCase())) {
-                        message = displayLabel;
-                    }
-
-                    const summaryParts = [];
-                    if (phaseDescription) summaryParts.push(phaseDescription);
-                    if (meaningfulTitle) summaryParts.push(meaningfulTitle);
-                    else if (displayLabel) summaryParts.push(displayLabel);
-                    if (shopData.priceString) summaryParts.push(shopData.priceString);
-                    if (shopData.shopName) summaryParts.push(shopData.shopName);
-                    if (likelyPurchase && buyerName) summaryParts.push(`Buyer: ${buyerName}`);
-                    const summary = summaryParts.length ? summaryParts.join(' • ') : null;
-
-                    const chatMessage = (typeof message === 'string' && message.trim().length) ? message.trim() : '';
-                    const chatSuppressed = !chatMessage;
-
-                    const now = Date.now();
-                    const eventKey = detailId || (displayLabel ? `${phase ?? 'phaseX'}:${displayLabel}` : `${phase ?? 'phaseX'}:${meaningfulTitle || title}`);
-                    if (!this.recentShoppingEvents) {
-                        this.recentShoppingEvents = new Map();
-                    }
-
-                    if (eventKey) {
-                        const previous = this.recentShoppingEvents.get(eventKey);
-                        if (previous && previous.type === eventType && (now - previous.timestamp) < 2000) {
-                            this.logDebug('event.oecLiveShopping.suppressedDuplicate', {
-                                eventKey,
-                                eventType,
-                                phase,
-                                deltaMs: now - previous.timestamp
-                            });
-                            return;
-                        }
-                        this.recentShoppingEvents.set(eventKey, {
-                            timestamp: now,
-                            type: eventType
-                        });
-                        for (const [key, info] of [...this.recentShoppingEvents.entries()]) {
-                            if (now - info.timestamp > 15000) {
-                                this.recentShoppingEvents.delete(key);
-                            }
-                        }
-                    }
-
-                    this.logDebug('event.oecLiveShopping.classified', {
-                        eventKey,
-                        eventType,
-                        phase,
-                        phaseDescription,
-                        labels: labelCandidates,
-                        detailId,
-                        detailDataValue,
-                        price: shopData.priceString || null,
-                        shopName: shopData.shopName || null,
-                        buyer: buyerName || null,
-                        likelyPurchase,
-                        chatSuppressed
-                    });
-
-                    console.info('[TikTok] Live shopping event', {
-                        username: this.username,
-                        title: meaningfulTitle || title,
-                        price: shopData.priceString || null,
-                        shopName: shopData.shopName || null,
-                        detailId,
-                        phase,
-                        likelyPurchase,
-                        labels: labelCandidates
-                    });
-
-                    const payload = {
-                        ...data,
-                        nickname: shopData.shopName || data?.nickname || 'TikTok Shop',
-                        profilePictureUrl: normalizeTikTokImageUrl(shopData.imageUrl)
-                            || normalizeTikTokImageUrl(data?.profilePictureUrl)
-                            || normalizeTikTokImageUrl(data?.profilePicture)
-                            || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
-                            || normalizeTikTokImageUrl(data?.user?.profilePicture)
-                            || null
-                    };
-
-                    const shoppingMeta = {
-                        source: 'oec_live_shopping',
-                        productTitle: title,
-                        productTitleNormalized: meaningfulTitle || null,
-                        phase,
-                        eventKey,
-                        likelyPurchase,
-                        phaseDescription,
-                        buyer: buyerName || null,
-                        chatSuppressed
-                    };
-                    if (shopData.priceString) shoppingMeta.price = shopData.priceString;
-                    if (shopData.shopName) shoppingMeta.shopName = shopData.shopName;
-                    const primaryShopUrl = shopData.shopUrl || shopData.shopUrl2;
-                    if (primaryShopUrl) shoppingMeta.shopUrl = primaryShopUrl;
-                    if (detailId) shoppingMeta.detailId = detailId;
-                    if (detailTimestamp) shoppingMeta.detailTimestamp = detailTimestamp;
-                    if (detailDataValue !== null) shoppingMeta.detailDataValue = detailDataValue;
-                    if (labelCandidates.length) shoppingMeta.labels = labelCandidates;
-                    if (data?.shopTimings) shoppingMeta.shopTimings = data.shopTimings;
-                    if (phase !== null) shoppingMeta.phaseRaw = phaseRaw;
-                    if (summary) shoppingMeta.summary = summary;
-
-                    this.sendEventMessage(payload, eventType, chatMessage, shoppingMeta);
-                },
-                goalUpdate: (data = {}) => {
-                    this.recordActivity();
-                    const normalized = this.normalizeGoalUpdate(data);
-                    if (!normalized) {
-                        return;
-                    }
-                    this.emitGoalEvent(normalized);
-                },
-                pollMessage: (data = {}) => {
-                    this.recordActivity();
-                    const basicInfo = data?.pollBasicInfo || {};
-                    const pollTitle = basicInfo.title || data?.startContent?.Title || 'Poll';
-
-                    const summarizeOptions = (optionList) => {
-                        if (!Array.isArray(optionList) || !optionList.length) return [];
-                        return optionList.map(opt => {
-                            const label = opt?.DisplayContent || `Option ${opt?.OptionIdx ?? ''}`;
-                            const votes = typeof opt?.Votes === 'number' ? opt.Votes : (opt?.Votes ? Number(opt.Votes) : 0);
-                            return {
-                                label,
-                                votes: Number.isFinite(votes) ? votes : 0
-                            };
-                        });
-                    };
-
-                    let status = 'update';
-                    let options = [];
-                    if (data?.startContent) {
-                        status = 'started';
-                        options = summarizeOptions(data.startContent.OptionList);
-                    } else if (data?.endContent) {
-                        status = 'ended';
-                        options = summarizeOptions(data.endContent.OptionList);
-                    } else if (data?.updateContent) {
-                        status = 'votes';
-                        options = summarizeOptions(data.updateContent.OptionList);
-                    }
-
-                    const optionsText = options.length ? options.map(opt => `${opt.label}: ${opt.votes}`).join(', ') : null;
-                    const message = optionsText ? `Poll ${status}: ${pollTitle} — ${optionsText}` : `Poll ${status}: ${pollTitle}`;
-
-                    console.info('[TikTok] Poll message', {
-                        username: this.username,
-                        title: pollTitle,
-                        status,
-                        optionCount: options.length,
-                        pollId: basicInfo.pollIdStr || null
-                    });
-
-                    const operator = data?.startContent?.Operator || data?.endContent?.Operator;
-                    const operatorAvatarUrl = normalizeTikTokImageUrl(operator?.profilePicture?.url)
-                        || normalizeTikTokImageUrl(operator?.profilePictureUrl)
-                        || normalizeTikTokImageUrl(data?.profilePictureUrl)
-                        || normalizeTikTokImageUrl(data?.profilePicture)
-                        || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
-                        || normalizeTikTokImageUrl(data?.user?.profilePicture);
-                    const payload = {
-                        ...data,
-                        nickname: data?.nickname || basicInfo.pollSponsor || pollTitle,
-                        profilePictureUrl: operatorAvatarUrl || null
-                    };
-
-                    const pollMeta = { status };
-                    if (basicInfo.pollIdStr) pollMeta.pollId = basicInfo.pollIdStr;
-                    if (options.length) pollMeta.options = options;
-                    if (basicInfo.pollDuration) pollMeta.duration = basicInfo.pollDuration;
-                    if (basicInfo.timeRemain) pollMeta.remaining = basicInfo.timeRemain;
-
-                    this.sendEventMessage(payload, 'poll_message', message, pollMeta);
-                },
-                roomPin: (data = {}) => {
-                    this.recordActivity();
-                    const action = data?.pin ? 'Pinned' : (data?.unpin ? 'Unpinned' : 'Pin updated');
-                    const operatorName = data?.operator?.nickname || data?.operator?.uniqueId || 'Host';
-
-                    let sourceMessage;
-                    if (data?.chatMessage?.comment) {
-                        sourceMessage = {
-                            text: data.chatMessage.comment,
-                            author: data.chatMessage.user?.nickname || data.chatMessage.user?.uniqueId || 'Viewer',
-                            avatar: data.chatMessage.user?.profilePicture?.url
-                        };
-                    } else if (data?.socialMessage?.shareInfo) {
-                        sourceMessage = {
-                            text: data.socialMessage.shareInfo?.shareText || 'Social action pinned',
-                            author: data.socialMessage.user?.nickname || data.socialMessage.user?.uniqueId || 'Viewer',
-                            avatar: data.socialMessage.user?.profilePicture?.url
-                        };
-                    }
-
-                    const author = sourceMessage?.author || 'Viewer';
-                    const text = sourceMessage?.text || 'Pinned message';
-                    const avatarArray = sourceMessage?.avatar;
-                    const avatarUrl = normalizeTikTokImageUrl(avatarArray)
-                        || normalizeTikTokImageUrl(data?.profilePictureUrl)
-                        || normalizeTikTokImageUrl(data?.profilePicture)
-                        || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
-                        || normalizeTikTokImageUrl(data?.user?.profilePicture);
-                    const message = `${action} by ${operatorName}: ${author} — ${text}`;
-
-                    console.info('[TikTok] Room pin update', {
-                        username: this.username,
-                        action,
-                        operator: operatorName,
-                        author,
-                        pinId: data?.pinId || null
-                    });
-
-                    const payload = {
-                        ...data,
-                        nickname: data?.nickname || author,
-                        profilePictureUrl: avatarUrl || null
-                    };
-
-                    const pinMeta = { action, operator: operatorName };
-                    if (data?.pinId) pinMeta.pinId = data.pinId;
-                    if (data?.displayDuration) pinMeta.displayDuration = data.displayDuration;
-
-                    this.sendEventMessage(payload, 'room_pin', message, pinMeta);
-                }
-            };
-
-            Object.entries(eventHandlers).forEach(([event, handler]) => {
-                this.connection.on(event, (data) => {
-                    this.logDebug(`event.${event}`, data);
-                    handler(data);
-                });
-            });
+        if (!isCaptureEventsEnabled()) {
+            return;
         }
 
-        handleProtoFetch(fetchResult) {
-            if (!fetchResult || typeof fetchResult !== 'object') {
-                return;
+        const { eventType, meta } = goalEvent;
+        if (!eventType) {
+            return;
+        }
+
+        const metaObject = (meta && typeof meta === 'object') ? meta : {};
+        const progressPreview = metaObject.progress ?? metaObject.progressRaw ?? null;
+        const targetPreview = metaObject.target ?? metaObject.targetRaw ?? null;
+        const scorePreview = metaObject.score ?? metaObject.scoreRaw ?? null;
+
+        console.info('[TikTok] Goal event', {
+            username: this.username,
+            event: eventType,
+            contributor: metaObject.contributorName || metaObject.uniqueId || null,
+            giftName: metaObject.giftName || null,
+            progress: progressPreview,
+            target: targetPreview,
+            score: scorePreview
+        });
+
+        this.sendEventMessage({}, eventType, null, metaObject);
+    }
+
+    resetGoalAggregates() {
+        // Batching removed; method retained for compatibility.
+    }
+
+    static delay(ms) {
+        if (!Number.isFinite(ms) || ms <= 0) {
+            return Promise.resolve();
+        }
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    recordActivity(timestamp = Date.now()) {
+        this.lastMessageTime = timestamp;
+
+        const bucketSize = 60 * 1000; // 1 minute buckets
+        const bucketKey = Math.floor(timestamp / bucketSize) * bucketSize;
+        const current = this.activityBuckets.get(bucketKey) || 0;
+        this.activityBuckets.set(bucketKey, current + 1);
+
+        this.pruneActivity(timestamp);
+    }
+
+    pruneActivity(now = Date.now()) {
+        const historyWindow = CONFIG.CONNECTION.ACTIVITY_HISTORY_MS || (30 * 60 * 1000);
+        const cutoff = now - historyWindow;
+        for (const key of this.activityBuckets.keys()) {
+            if (key < cutoff) {
+                this.activityBuckets.delete(key);
             }
+        }
+    }
+
+    countActivitySince(cutoff) {
+        if (!this.activityBuckets.size) {
+            return 0;
+        }
+
+        let count = 0;
+        const bucketSize = 60 * 1000;
+        for (const [bucketKey, bucketCount] of this.activityBuckets.entries()) {
+            if (bucketKey + bucketSize > cutoff) {
+                count += bucketCount;
+            }
+        }
+        return count;
+    }
+
+    getAdaptiveMessageTimeout() {
+        const now = Date.now();
+        this.pruneActivity(now);
+
+        const {
+            ACTIVITY_THRESHOLDS = {},
+            MESSAGE_TIMEOUT_ACTIVE_MS = 5 * 60 * 1000,
+            MESSAGE_TIMEOUT_MODERATE_MS = 10 * 60 * 1000,
+            MESSAGE_TIMEOUT_IDLE_MS = 30 * 60 * 1000
+        } = CONFIG.CONNECTION;
+
+        const highThreshold = ACTIVITY_THRESHOLDS.HIGH_PER_MINUTE || 120;
+        const moderateThreshold = ACTIVITY_THRESHOLDS.MODERATE_PER_MINUTE || 15;
+
+        const perMinute = this.countActivitySince(now - 60 * 1000);
+        if (perMinute >= highThreshold) {
+            return MESSAGE_TIMEOUT_ACTIVE_MS;
+        }
+
+        if (perMinute >= moderateThreshold) {
+            return MESSAGE_TIMEOUT_MODERATE_MS;
+        }
+
+        const perFiveMinutes = this.countActivitySince(now - 5 * 60 * 1000);
+        if (perFiveMinutes >= moderateThreshold * 2) {
+            return MESSAGE_TIMEOUT_MODERATE_MS;
+        }
+
+        return MESSAGE_TIMEOUT_IDLE_MS;
+    }
+
+    async initialize() {
+        this.logDebug('lifecycle.initialize.start');
+        console.log(`Initializing TikTok connection for user: ${this.username}`);
+        if (this.sessionId) {
+            console.log('Using authenticated connection');
+        } else {
+            console.log('Using anonymous connection');
+        }
+        if (usingLegacyTikTokConnector && !this.pollingFallbackActivated) {
+            console.warn('[TikTok] Legacy connector in use; live shopping purchase events are unavailable until the package is upgraded.');
+        }
+        try {
+            this.initializeConnectionInstance({ forceLegacy: this.preferredStrategy === 'legacy', context: 'primary' });
+            return this.connect();
+        } catch (error) {
+            const fallbackHandled = await this.tryFallbackToPolling(error, 'initialize');
+            if (fallbackHandled) {
+                return this.connect();
+            }
+            this.logDebug('lifecycle.initialize.error', error);
+            console.error('Failed to initialize TikTok connection:', error);
+            this.handleFatalError(error);
+            throw error;
+        }
+    }
+
+    handleFatalError(error) {
+        this.logDebug('lifecycle.fatalError', error);
+        console.error('Fatal connection error:', error);
+        this.isStopped = true;
+
+        let errorMessage = 'Connection failed';
+
+        // Handle specific error types
+        if (error instanceof Error) {
+            if (error.message.includes('LIVE has ended') || error.name === 'UserOfflineError') {
+                errorMessage = 'Live stream has ended';
+            } else if (error.name === 'AlreadyConnectingError') {
+                errorMessage = 'Connection already in progress';
+            } else {
+                errorMessage = error.message;
+            }
+        }
+
+        emitStatus({
+            wssID: this.wssID,
+            status: 'fatal_error',
+            error: errorMessage
+        });
+
+        // Clean up the connection
+        cleanupConnection(this.wssID);
+    }
+
+    setupEventHandlers() {
+        const suppressedDecodedLogTypes = new Set([
+            'WebcastLinkLayerMessage',
+            'WebcastLinkMessage',
+            'WebcastLinkMicFanTicketMethod',
+            'WebcastLinkMicMethod'
+        ]);
+        if (typeof this.connection.on === 'function') {
+            this.connection.on('ssappProtoFetch', (result) => this.handleProtoFetch(result));
+        }
+        this.connection.on('websocketData', (buffer) => {
+            let preview = null;
+            let length = null;
             try {
-                const roomId = this.connection?.roomId || this.connection?.webClient?.roomId || null;
-                if (roomId) {
-                    if (this.previousRoomId && roomId !== this.previousRoomId && this.resumeCursorState && this.resumeCursorState.roomId !== roomId) {
-                        this.resumeCursorState = null;
-                    }
-                    this.previousRoomId = roomId;
-                }
-
-                const isFirst = fetchResult.isFirst === true;
-                const historyNoMore = fetchResult.historyNoMore === true;
-
-                if (isFirst) {
-                    this.replayActive = true;
-                }
-                if (!isFirst || historyNoMore) {
-                    this.replayActive = false;
-                }
-
-                if ((!isFirst || historyNoMore) && fetchResult.cursor && roomId) {
-                    this.resumeCursorState = {
-                        cursor: fetchResult.cursor,
-                        internalExt: fetchResult.internalExt || null,
-                        roomId,
-                        capturedAt: Date.now()
-                    };
-                    this.logDebug('lifecycle.cursor.captured', {
-                        roomId,
-                        hasInternalExt: !!fetchResult.internalExt
-                    });
-                }
-            } catch (error) {
-                console.warn('Failed to process TikTok proto fetch metadata:', error);
-            }
-        }
-
-        startHealthCheck() {
-            if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
-            
-            // Track connection start time for proactive refresh
-            if (!this.connectionStartTime) {
-                this.connectionStartTime = Date.now();
-            }
-
-            this.healthCheckInterval = setInterval(() => {
-                const now = Date.now();
-                const timeSinceLastMessage = now - this.lastMessageTime;
-                const connectionDuration = now - this.connectionStartTime;
-                
-                // Proactively reconnect after 1.5 hours to avoid 2-hour timeout
-                if (connectionDuration > 90 * 60 * 1000) { // 90 minutes
-                    console.info('Proactively refreshing connection after 90 minutes');
-                    this.connectionStartTime = Date.now();
-                    this.forceReconnect();
-                } else if (this.connection && this.connection.isConnected) {
-                    const adaptiveTimeout = this.getAdaptiveMessageTimeout();
-                    if (timeSinceLastMessage > adaptiveTimeout) {
-                        console.info(`Connection appears stale - no messages for ${Math.round(timeSinceLastMessage/1000)}s (threshold ${Math.round(adaptiveTimeout/1000)}s), forcing reconnect`);
-                        this.forceReconnect();
+                if (buffer && typeof buffer.length === 'number') {
+                    length = buffer.length;
+                    if (length > 0) {
+                        const slice = typeof buffer.slice === 'function'
+                            ? buffer.slice(0, Math.min(length, 16))
+                            : (Buffer.isBuffer(buffer) ? buffer.subarray(0, Math.min(length, 16)) : null);
+                        if (slice) {
+                            preview = Buffer.from(slice).toString('hex');
+                        }
                     }
                 }
-            }, CONFIG.CONNECTION.HEALTH_CHECK_INTERVAL);
-        }
+            } catch (_) {
+                preview = null;
+            }
+            this.logDebug('control.websocketData', {
+                length,
+                preview
+            });
+        });
+        this.connection.on('rawData', (messageType) => {
+            this.logDebug('control.rawData', {
+                messageType
+            });
+        });
+        this.connection.on('decodedData', (messageType, decodedData, rawPayload) => {
+            this.lastMessageTime = Date.now();
+            const suppressed = suppressedDecodedLogTypes.has(messageType);
+            const logEntry = {
+                messageType
+            };
+            if (!suppressed) {
+                logEntry.decodedData = decodedData;
+                if (rawPayload && typeof rawPayload === 'object') {
+                    const payloadLength = Array.isArray(rawPayload.data) ? rawPayload.data.length : undefined;
+                    if (payloadLength !== undefined) {
+                        logEntry.rawPayloadLength = payloadLength;
+                    }
+                }
+            }
+            this.logDebug('control.decodedData', logEntry);
+        });
+        this.connection.on('enterRoom', (data) => {
+            this.logDebug('control.enterRoom', data);
+        });
+        this.connection.on('websocketConnected', () => {
+            this.logDebug('control.websocketConnected');
+            this.handleConnect();
+        });
+        this.connection.on('disconnect', () => {
+            this.logDebug('control.disconnect');
+            this.handleDisconnect();
+        });
+        this.connection.on('error', (err) => {
+            this.logDebug('control.error', err);
+            this.handleError(err);
+        });
+        this.connection.on('streamEnd', () => {
+            this.logDebug('control.streamEnd');
+            this.handleStreamEnd();
+        });
+        this.connection.on('chat', (data) => {
+            this.logDebug('event.chat', data);
+            this.recordActivity();
+            this.messageProcessor.addToQueue(data);
+        });
+        this.connection.on('gift', (data) => {
+            this.logDebug('event.gift', data);
+            this.recordActivity();
+            this.giftProcessor.addToQueue(data);
+        });
 
-        startViewerUpdateInterval() {
-            // Clear any existing interval
-            if (this.viewerUpdateInterval) clearInterval(this.viewerUpdateInterval);
-            
-            // Send viewer count every 30 seconds
-            this.viewerUpdateInterval = setInterval(() => {
-                if (this.connection && this.connection.isConnected) {
+        const eventHandlers = {
+            follow: (data) => {
+                this.recordActivity();
+                const identity = extractTikTokIdentity(data);
+                const displayName = identity.nickname || identity.uniqueId || 'Viewer';
+                if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
+                if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
+                this.sendEventMessage(data, "follow", `${displayName} followed!`);
+            },
+            subscribe: (data) => {
+                this.recordActivity();
+                const identity = extractTikTokIdentity(data);
+                const displayName = identity.nickname || identity.uniqueId || 'Viewer';
+                if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
+                if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
+                this.sendEventMessage(data, "subscribed", `${displayName} subscribed!`);
+            },
+            social: (data = {}) => {
+                this.recordActivity();
+                const devMode = isDevBuild();
+                const meta = normalizeSocialMeta(data);
+
+                if (SOCIAL_SUPPRESSED_DISPLAY_TYPES.has(meta.baseDisplayType)) {
+                    if (devMode) {
+                        console.debug('[TikTok] suppressed placeholder social event', { meta });
+                    }
+                    return;
+                }
+                if (isRedundantFollowOrSub(meta)) {
+                    if (devMode) {
+                        console.debug('[TikTok] suppressed redundant follow/sub social event', { meta });
+                    }
+                    return;
+                }
+                if (isSocialGiftEcho(meta)) {
+                    if (devMode) {
+                        console.debug('[TikTok] suppressed social gift echo', { meta });
+                    }
+                    return;
+                }
+                if (isGenericSocialLabel(meta)) {
+                    if (devMode) {
+                        console.debug('[TikTok] suppressed generic social label', { meta });
+                    }
+                    return;
+                }
+
+                const classification = classifySocialEvent(meta);
+                if (!classification) {
+                    if (devMode) {
+                        console.debug('[TikTok] unknown social event (dev log only)', { meta, raw: data });
+                    }
+                    return;
+                }
+
+                const identity = extractTikTokIdentity(data);
+                const displayName = identity.nickname || identity.uniqueId || 'Viewer';
+                if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
+                if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
+
+                const message = `${displayName} ${classification.message}!`;
+                this.sendEventMessage(data, classification.event, message);
+            },
+            member: (data = {}) => {
+                this.recordActivity();
+                if (!isCaptureEventsEnabled() || !isCaptureJoinedEventEnabled()) {
+                    return;
+                }
+
+                const action = data?.action;
+                const actionCode = typeof action === 'number' ? action : Number(action);
+                const actionIsJoin = actionCode === 1 ||
+                    (typeof action === 'string' && action.toLowerCase().trim() === 'join');
+                const descriptionMentionsJoin = [
+                    data?.actionDescription,
+                    data?.displayText?.defaultPattern,
+                    data?.anchorDisplayText?.defaultPattern
+                ].some(text => typeof text === 'string' && text.toLowerCase().includes('join'));
+
+                if (!actionIsJoin && !descriptionMentionsJoin) {
+                    return;
+                }
+
+                if (typeof data.nickname === 'string') {
+                    const cleaned = data.nickname.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+                    if (cleaned) {
+                        data.nickname = cleaned;
+                    } else {
+                        delete data.nickname;
+                    }
+                }
+
+                const identity = extractTikTokIdentity(data);
+                if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
+                if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
+
+                this.sendEventMessage(data, 'joined', 'joined');
+            },
+            roomUser: (data) => {
+                this.recordActivity();
+                if ("viewerCount" in data) {
+                    this.lastViewerCount = parseInt(data.viewerCount) || 0;
                     if (isViewerUpdateAllowed()) {
                         sendToBackground({
                             meta: this.lastViewerCount,
@@ -3510,941 +3114,1415 @@ function resolveFirstImageUrl(candidates = []) {
                         });
                     }
                 }
-            }, 30000); // 30 seconds
-        }
+            },
+            oecLiveShopping: (data = {}) => {
+                this.recordActivity();
 
-        async connect() {
-            if (this.isStopped) return false;
+                const shopData = data?.shopData && typeof data.shopData === 'object' ? data.shopData : {};
+                const details = data?.details && typeof data.details === 'object' ? data.details : {};
+                const rawTitle = (typeof shopData.title === 'string' && shopData.title.trim()) ? shopData.title.trim() : 'Product';
+                const isGenericTitle = !rawTitle || /^product$/i.test(rawTitle);
+                const meaningfulTitle = isGenericTitle ? null : rawTitle;
+                const title = rawTitle || 'Product';
+                const phaseRaw = data?.data1;
+                const phaseNumber = Number(phaseRaw);
+                const phase = Number.isFinite(phaseNumber) ? phaseNumber : null;
+                const detailId = details?.id1 || shopData?.data1 || data?.id1 || null;
+                const detailTimestamp = details?.timestamp || details?.data?.timestamp || null;
+                const detailDataValueNumber = Number(details?.data?.data);
+                const detailDataValue = Number.isFinite(detailDataValueNumber) ? detailDataValueNumber : null;
 
-            if (this.connection && this.connection.isConnected) {
-                console.info('Already connected, skipping reconnect');
-                return true;
-            }
+                const priceText = shopData.priceString ? ` – ${shopData.priceString}` : '';
+                const shopText = shopData.shopName ? ` (${shopData.shopName})` : '';
+                const identity = extractTikTokIdentity(data);
+                const buyerName = identity?.nickname || identity?.uniqueId || null;
 
-            if (this.activeConnectPromise) {
-                this.logDebug('lifecycle.connect.pending', { reason: 'promise_in_flight' });
-                return this.activeConnectPromise;
-            }
-
-            const runConnect = async () => {
-                try {
-                    this.logDebug('lifecycle.connect.start');
-                    try {
-                        emitStatus({
-                            wssID: this.wssID,
-                            status: 'connecting'
+                const labelSources = [
+                    details?.data?.label,
+                    details?.data?.label2,
+                    details?.data?.label3,
+                    details?.label,
+                    details?.describe,
+                    data?.describe,
+                    data?.label,
+                    data?.labels,
+                    data?.eventLabel,
+                    data?.eventLabels
+                ];
+                const labelCandidates = [];
+                for (const source of labelSources) {
+                    if (!source) continue;
+                    if (Array.isArray(source)) {
+                        source.forEach((item) => {
+                            if (typeof item === 'string') {
+                                const trimmed = item.trim();
+                                if (trimmed) labelCandidates.push(trimmed);
+                            }
                         });
-                    } catch (_) { /* renderer may be gone */ }
-                    await this.connection.connect();
-                    console.info('Connected successfully');
-                    this.logDebug('lifecycle.connect.success');
-                    this.signServerFailureCount = 0;
-
-                    if (this.reconnectTimer) {
-                        clearTimeout(this.reconnectTimer);
-                        this.reconnectTimer = null;
+                    } else if (typeof source === 'string') {
+                        const trimmed = source.trim();
+                        if (trimmed) labelCandidates.push(trimmed);
                     }
+                }
 
-                    this.offlineRetry = false;
-                    this.offlineReason = null;
-                    return true;
-                } catch (err) {
-                    const primaryError = err instanceof Error ? err : (err && err.exception instanceof Error ? err.exception : err);
-                    const errorName = primaryError && primaryError.name;
-                    const errorMessage = primaryError && primaryError.message ? primaryError.message : '';
-                    if (primaryError?.ssappFallback) {
-                        const fallbackHandled = await this.tryFallbackToPolling(primaryError, 'connect');
-                        if (fallbackHandled) {
-                            return this.connect();
-                        }
+                const displayLabel = labelCandidates[0] || null;
+                const normalizedLabelSignals = labelCandidates.map((label) => label.toLowerCase());
+                const purchaseSignal = normalizedLabelSignals.some(label => /purchase|sold\s?out|checkout|order|paid|bayar|beli|soldout/.test(label));
+                const likelyPurchase = purchaseSignal || phase === 4 || (detailDataValue !== null && detailDataValue >= 2);
+
+                const eventType = likelyPurchase ? 'shopping_purchase' : 'oec_live_shopping';
+                const phaseDescriptions = {
+                    1: 'Product preview',
+                    2: 'Product spotlight',
+                    3: 'Product spotlight',
+                    4: 'Purchase event',
+                    5: 'Post-purchase update'
+                };
+                const phaseDescription = (phase !== null && phaseDescriptions[phase]) || null;
+
+                let message = null;
+                if (likelyPurchase) {
+                    if (buyerName && meaningfulTitle) {
+                        message = `${buyerName} purchased ${meaningfulTitle}${priceText}${shopText}`;
+                    } else if (buyerName) {
+                        message = `${buyerName} made a purchase${priceText}${shopText}`;
+                    } else if (meaningfulTitle) {
+                        message = `Purchase: ${meaningfulTitle}${priceText}${shopText}`;
                     }
-
-                    if (errorName === 'AlreadyConnectingError') {
-                        console.warn('Connect request ignored because a connection attempt is already in progress');
-                        this.logDebug('lifecycle.connect.alreadyConnecting', {
-                            message: errorMessage || null
-                        });
-                        return false;
-                    }
-
-                    const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, errorMessage);
-                    const isSignServerIssue = this.isSignServerError(primaryError, errorMessage);
-
-                    this.logDebug('lifecycle.connect.error', {
-                        errorName: primaryError?.name || null,
-                        errorReason: primaryError?.reason || null,
-                        rawMessage: errorMessage || null,
-                        userMessage: userFacingMessage
-                    });
-
-                    const isOffline = primaryError && (
-                        primaryError.name === 'UserOfflineError' ||
-                        (errorMessage && (errorMessage.includes('LIVE has ended') || errorMessage.includes('Live stream has ended') || errorMessage.includes('live has ended')))
-                    );
-                    const isLikelyFatal = errorMessage && (
-                        errorMessage.includes("User doesn't exist") ||
-                        errorMessage.includes('Failed to retrieve room_id')
-                    );
-                    const isRateLimited = errorMessage && (errorMessage.includes('429') || errorMessage.toLowerCase().includes('too many requests'));
-
-                    if (isLikelyFatal) {
-                        console.error('Fatal error - user might not exist or might be a display name:', this.username);
-                        this.handleFatalError(primaryError || err);
-                        return false;
-                    }
-
-                    if (isSignServerIssue) {
-                        this.signServerFailureCount = (this.signServerFailureCount || 0) + 1;
-                        const fallbackThresholdReached = this.signServerFailureCount >= SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD;
-
-                        if (this.sessionId || (fallbackThresholdReached && !this.pollingFallbackActivated)) {
-                            const fallbackStage = this.sessionId ? 'connect_sign_error_session' : 'connect_sign_error_threshold';
-                            const fallbackHandled = await this.tryFallbackToPolling(primaryError, fallbackStage);
-                            if (fallbackHandled) {
-                                return this.connect();
-                            }
-                            if (this.sessionId) {
-                                this.handleSignServerRejection(primaryError instanceof Error ? primaryError : err);
-                                return false;
-                            }
-                        }
-
-                        if (this.maybeBoostSignRequestTimeout(primaryError, errorMessage)) {
-                            this.logDebug('lifecycle.connect.retryImmediate', {
-                                reason: 'sign_server_timeout',
-                                timeoutMs: this.signRequestTimeoutMs,
-                                maxTimeoutMs: this.signRequestTimeoutMaxMs
-                            });
-
-                            const retryDelay = this.signRequestImmediateRetryDelayMs || 0;
-                            if (retryDelay > 0) {
-                                await ConnectionManager.delay(retryDelay);
-                            }
-
-                            return this.connect();
-                        }
-
-                        this.handleSignServerFailure(primaryError instanceof Error ? primaryError : err, errorMessage, userFacingMessage);
-                        return false;
+                } else if (meaningfulTitle) {
+                    if (displayLabel && !displayLabel.toLowerCase().includes(meaningfulTitle.toLowerCase())) {
+                        message = `${displayLabel} — ${meaningfulTitle}${priceText}${shopText}`;
+                    } else if (displayLabel) {
+                        message = `${displayLabel}${priceText}${shopText}`;
                     } else {
-                        this.signServerFailureCount = 0;
+                        message = `Live shopping: ${meaningfulTitle}${priceText}${shopText}`;
                     }
+                } else if (displayLabel && /deal|drop|promo|flash|offer|discount/.test(displayLabel.toLowerCase())) {
+                    message = displayLabel;
+                }
 
-                    this.logConsoleFailure(userFacingMessage, primaryError instanceof Error ? primaryError : null);
+                const summaryParts = [];
+                if (phaseDescription) summaryParts.push(phaseDescription);
+                if (meaningfulTitle) summaryParts.push(meaningfulTitle);
+                else if (displayLabel) summaryParts.push(displayLabel);
+                if (shopData.priceString) summaryParts.push(shopData.priceString);
+                if (shopData.shopName) summaryParts.push(shopData.shopName);
+                if (likelyPurchase && buyerName) summaryParts.push(`Buyer: ${buyerName}`);
+                const summary = summaryParts.length ? summaryParts.join(' • ') : null;
 
-                    try {
-                        emitStatus({
-                            wssID: this.wssID,
-                            status: 'failed',
-                            error: userFacingMessage
+                const chatMessage = (typeof message === 'string' && message.trim().length) ? message.trim() : '';
+                const chatSuppressed = !chatMessage;
+
+                const now = Date.now();
+                const eventKey = detailId || (displayLabel ? `${phase ?? 'phaseX'}:${displayLabel}` : `${phase ?? 'phaseX'}:${meaningfulTitle || title}`);
+                if (!this.recentShoppingEvents) {
+                    this.recentShoppingEvents = new Map();
+                }
+
+                if (eventKey) {
+                    const previous = this.recentShoppingEvents.get(eventKey);
+                    if (previous && previous.type === eventType && (now - previous.timestamp) < 2000) {
+                        this.logDebug('event.oecLiveShopping.suppressedDuplicate', {
+                            eventKey,
+                            eventType,
+                            phase,
+                            deltaMs: now - previous.timestamp
                         });
-                    } catch (sendErr) {
-                        console.warn('Failed to send TikTok connection failure status:', sendErr);
+                        return;
                     }
-
-                    if (!this.isStopped) {
-                        try {
-                            connectionStates.set(this.wssID, {
-                                isConnected: false,
-                                lastAttempt: Date.now(),
-                                isReconnecting: false,
-                                attemptInProgress: false
-                            });
-                        } catch (_) { /* noop */ }
-
-                        if (isRateLimited) {
-                            this.offlineRetry = false;
-                            this.offlineReason = 'Rate limited by TikTok';
-                            this.attemptReconnect(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS, { fixed: true, offline: false });
-                        } else if (isOffline) {
-                            this.offlineRetry = true;
-                            this.offlineReason = userFacingMessage || 'User is not live';
-                            this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
-                        } else {
-                            this.offlineRetry = false;
-                            this.offlineReason = null;
-                            this.attemptReconnect();
+                    this.recentShoppingEvents.set(eventKey, {
+                        timestamp: now,
+                        type: eventType
+                    });
+                    for (const [key, info] of [...this.recentShoppingEvents.entries()]) {
+                        if (now - info.timestamp > 15000) {
+                            this.recentShoppingEvents.delete(key);
                         }
                     }
-                    return false;
                 }
-            };
 
-            const connectPromise = runConnect();
-            this.activeConnectPromise = connectPromise;
-            connectPromise.finally(() => {
-                if (this.activeConnectPromise === connectPromise) {
-                    this.activeConnectPromise = null;
-                }
-            }).catch(() => {});
-            return connectPromise;
-        }
-
-        logConsoleFailure(userMessage, primaryError) {
-            if (userMessage) {
-                console.error('Connection failed:', userMessage);
-            } else {
-                console.error('Connection failed');
-            }
-
-            if (!primaryError) {
-                return;
-            }
-
-            const detail = this.truncateForLog(primaryError.message || '', 600);
-            if (detail && detail !== userMessage) {
-                console.error('Connection failure detail:', detail);
-            }
-
-            if (primaryError.stack) {
-                const stackSnippet = this.truncateForLog(primaryError.stack, 800);
-                if (stackSnippet && stackSnippet !== detail && !/<html/i.test(stackSnippet)) {
-                    console.error(stackSnippet);
-                }
-            }
-        }
-
-        truncateForLog(text, maxLength = 600) {
-            if (!text || typeof text !== 'string') return '';
-            const trimmed = text.trim();
-            if (!trimmed) return '';
-            if (trimmed.length > maxLength) {
-                return trimmed.slice(0, maxLength) + '…';
-            }
-            return trimmed;
-        }
-
-        getSigningServiceHelpMessage() {
-            const base = 'Sign in failed. Get an API key to use the Euler signing service';
-            if (SIGNING_SERVICE_HELP_URL) {
-                return `${base}: ${SIGNING_SERVICE_HELP_URL}`;
-            }
-            return `${base}.`;
-        }
-
-        isSignServerError(primaryError, rawMessage = '') {
-            const reason = typeof primaryError?.reason === 'string'
-                ? primaryError.reason.toLowerCase()
-                : '';
-            if (reason && (reason.includes('sign') || reason.includes('premium') || reason.includes('authenticated'))) {
-                return true;
-            }
-
-            const name = typeof primaryError?.name === 'string'
-                ? primaryError.name.toLowerCase()
-                : '';
-            if (name === 'signapierror' || name === 'premiumfeatureerror' || name === 'schemadecodeerror') {
-                return true;
-            }
-
-            const combined = `${rawMessage || ''} ${primaryError?.message || ''}`.toLowerCase();
-            return combined.includes('sign server')
-                || combined.includes('signapi')
-                || combined.includes('proto messagefetchresult')
-                || combined.includes('schema decode')
-                || combined.includes('premature eof')
-                || combined.includes('not authorized');
-        }
-
-        getUserFriendlyErrorMessage(primaryError, fallbackMessage = '') {
-            const candidates = [fallbackMessage, primaryError?.message, primaryError?.info];
-            let message = '';
-            for (const candidate of candidates) {
-                if (typeof candidate === 'string' && candidate.trim().length) {
-                    message = candidate.trim();
-                    break;
-                }
-            }
-
-            if (!message) {
-                return 'Connection failed';
-            }
-
-            const firstLine = message.split(/\r?\n/).find(line => line.trim().length) || message;
-            const normalized = firstLine.toLowerCase();
-
-            const isPremiumError = primaryError && primaryError.name === 'PremiumFeatureError';
-            const isSignRateLimited = primaryError && primaryError.name === 'SignatureRateLimitError';
-            const mentionsPaywall = normalized.includes('payment required') || normalized.includes('premium feature');
-
-            if (this.sessionId && (isPremiumError || isSignRateLimited || mentionsPaywall)) {
-                return this.getSigningServiceHelpMessage();
-            }
-
-            if (normalized.includes('unexpected sign server status 524') || normalized.includes('524: a timeout occurred')) {
-                return 'Euler sign server timed out (524). Please try again later or switch TikTok to standard mode.';
-            }
-
-            if (normalized.includes('failed to connect to sign server') || normalized.includes('connect error')) {
-                return 'Unable to reach the Euler sign server. Please try again shortly.';
-            }
-
-            if (normalized.includes('timeout') || primaryError?.code === 'ECONNABORTED') {
-                return 'Sign server request timed out. Please try again shortly.';
-            }
-
-            if (/<html/i.test(message)) {
-                return 'Sign server returned an HTML error page. Please try again in a moment.';
-            }
-
-            if (firstLine.length > 320) {
-                return firstLine.slice(0, 320) + '…';
-            }
-
-            return firstLine;
-        }
-
-        handleConnect() {
-            console.info('Websocket connected, starting health check');
-            connectionStates.set(this.wssID, {
-                isConnected: true,
-                lastAttempt: Date.now(),
-                isReconnecting: false,
-                attemptInProgress: false
-            });
-            this.startHealthCheck();
-            this.startViewerUpdateInterval();
-            this.reconnectAttempts = 0;
-
-            if (Number.isFinite(this.signRequestTimeoutBaseMs) && this.signRequestTimeoutBaseMs > 0 && this.signRequestTimeoutMs !== this.signRequestTimeoutBaseMs) {
-                const previousTimeout = this.signRequestTimeoutMs;
-                this.applySignRequestTimeout(this.signRequestTimeoutBaseMs);
-                this.logDebug('sign.timeout.reset', {
-                    previousTimeoutMs: previousTimeout,
-                    baseTimeoutMs: this.signRequestTimeoutBaseMs
-                });
-            }
-
-            emitStatus( {
-                wssID: this.wssID,
-                status: 'connected',
-                hasSession: !!this.sessionId
-            });
-        }
-
-        handleDisconnect() {
-            console.info('Disconnect detected');
-            this.replayActive = false;
-            connectionStates.set(this.wssID, {
-                isConnected: false,
-                lastAttempt: Date.now(),
-                isReconnecting: false,
-                attemptInProgress: false
-            });
-            if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
-            if (this.viewerUpdateInterval) clearInterval(this.viewerUpdateInterval);
-
-            if (!this.isStopped) {
-                emitStatus( {
-                    wssID: this.wssID,
-                    status: 'disconnected'
+                this.logDebug('event.oecLiveShopping.classified', {
+                    eventKey,
+                    eventType,
+                    phase,
+                    phaseDescription,
+                    labels: labelCandidates,
+                    detailId,
+                    detailDataValue,
+                    price: shopData.priceString || null,
+                    shopName: shopData.shopName || null,
+                    buyer: buyerName || null,
+                    likelyPurchase,
+                    chatSuppressed
                 });
 
-                this.attemptReconnect();
-            }
-        }
-
-        handleError(err) {
-            if (this.isStopped) return;
-
-            const infoText = typeof err?.info === 'string' ? err.info : '';
-            const primaryError = err instanceof Error ? err : (err?.exception instanceof Error ? err.exception : err);
-            const errorName = primaryError && primaryError.name;
-            const msg = primaryError && primaryError.message ? primaryError.message : '';
-            const errorMessageCandidates = [
-                msg,
-                infoText,
-                typeof err?.message === 'string' ? err.message : '',
-                typeof primaryError?.cause?.message === 'string' ? primaryError.cause.message : ''
-            ];
-            const rawErrorMessage = errorMessageCandidates.find(value => typeof value === 'string' && value.trim().length) || '';
-
-            if (rawErrorMessage && /failed to decode message type/i.test(rawErrorMessage)) {
-                const truncatedDetail = this.truncateForLog(rawErrorMessage, 400);
-                const messageTypeMatch = rawErrorMessage.match(/Failed to decode message type:\s*([^:\s]+)/i);
-                const messageType = messageTypeMatch ? messageTypeMatch[1] : null;
-
-                const logPieces = ['[TikTok] Ignoring decode error'];
-                if (messageType) logPieces.push(`(${messageType})`);
-                logPieces.push(truncatedDetail);
-                console.warn(logPieces.join(' '));
-                this.logDebug('control.error.ignoredDecode', {
-                    info: infoText || null,
-                    errorName: primaryError?.name || null,
-                    messageType: messageType || null,
-                    detail: truncatedDetail
+                console.info('[TikTok] Live shopping event', {
+                    username: this.username,
+                    title: meaningfulTitle || title,
+                    price: shopData.priceString || null,
+                    shopName: shopData.shopName || null,
+                    detailId,
+                    phase,
+                    likelyPurchase,
+                    labels: labelCandidates
                 });
-                return;
-            }
 
-            if (infoText) {
-                const normalizedInfo = infoText.toLowerCase();
-                if (normalizedInfo.includes('falling back')) {
-                    console.info('TikTok connection fallback:', infoText);
-                    this.logDebug('control.error.fallbackNotice', {
-                        info: infoText,
-                        message: msg || null
-                    });
+                const payload = {
+                    ...data,
+                    nickname: shopData.shopName || data?.nickname || 'TikTok Shop',
+                    profilePictureUrl: normalizeTikTokImageUrl(shopData.imageUrl)
+                        || normalizeTikTokImageUrl(data?.profilePictureUrl)
+                        || normalizeTikTokImageUrl(data?.profilePicture)
+                        || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+                        || normalizeTikTokImageUrl(data?.user?.profilePicture)
+                        || null
+                };
+
+                const shoppingMeta = {
+                    source: 'oec_live_shopping',
+                    productTitle: title,
+                    productTitleNormalized: meaningfulTitle || null,
+                    phase,
+                    eventKey,
+                    likelyPurchase,
+                    phaseDescription,
+                    buyer: buyerName || null,
+                    chatSuppressed
+                };
+                if (shopData.priceString) shoppingMeta.price = shopData.priceString;
+                if (shopData.shopName) shoppingMeta.shopName = shopData.shopName;
+                const primaryShopUrl = shopData.shopUrl || shopData.shopUrl2;
+                if (primaryShopUrl) shoppingMeta.shopUrl = primaryShopUrl;
+                if (detailId) shoppingMeta.detailId = detailId;
+                if (detailTimestamp) shoppingMeta.detailTimestamp = detailTimestamp;
+                if (detailDataValue !== null) shoppingMeta.detailDataValue = detailDataValue;
+                if (labelCandidates.length) shoppingMeta.labels = labelCandidates;
+                if (data?.shopTimings) shoppingMeta.shopTimings = data.shopTimings;
+                if (phase !== null) shoppingMeta.phaseRaw = phaseRaw;
+                if (summary) shoppingMeta.summary = summary;
+
+                this.sendEventMessage(payload, eventType, chatMessage, shoppingMeta);
+            },
+            goalUpdate: (data = {}) => {
+                this.recordActivity();
+                const normalized = this.normalizeGoalUpdate(data);
+                if (!normalized) {
                     return;
                 }
-            }
+                this.emitGoalEvent(normalized);
+            },
+            pollMessage: (data = {}) => {
+                this.recordActivity();
+                const basicInfo = data?.pollBasicInfo || {};
+                const pollTitle = basicInfo.title || data?.startContent?.Title || 'Poll';
 
-            if (errorName === 'AlreadyConnectingError') {
-                console.warn('TikTok connection already in progress; ignoring duplicate error event');
-                this.logDebug('control.error.alreadyConnecting', {
-                    info: infoText || null,
-                    message: msg || null
-                });
-                return;
-            }
-
-            const combinedMessage = msg || infoText || '';
-            const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, combinedMessage);
-            const isSignServerIssue = this.isSignServerError(primaryError, combinedMessage);
-
-            this.logDebug('control.error.processed', {
-                info: infoText || null,
-                errorName: primaryError?.name || null,
-                errorReason: primaryError?.reason || null,
-                rawMessage: msg || null,
-                userMessage: userFacingMessage
-            });
-
-            this.logConsoleFailure(userFacingMessage, primaryError instanceof Error ? primaryError : null);
-
-            // Check if error is fatal
-            const isOffline = primaryError && (
-                primaryError.name === 'UserOfflineError' ||
-                (msg && (msg.includes('LIVE has ended') || msg.includes('Live stream has ended') || msg.includes('live has ended')))
-            );
-            const isLikelyFatal = msg && (
-                msg.includes("User doesn't exist") ||
-                msg.includes('Failed to retrieve room_id')
-            );
-            const isRateLimited = msg && (msg.includes('429') || msg.toLowerCase().includes('too many requests'));
-            if (isLikelyFatal) {
-                this.handleFatalError(primaryError || err);
-                return;
-            }
-
-            connectionStates.set(this.wssID, {
-                isConnected: false,
-                lastAttempt: Date.now(),
-                isReconnecting: false,
-                attemptInProgress: false
-            });
-
-            try {
-                emitStatus( {
-                    wssID: this.wssID,
-                    status: 'error',
-                    error: userFacingMessage
-                });
-            } catch (sendErr) {
-                console.warn('Failed to send TikTok error status to renderer:', sendErr);
-            }
-
-            if (!this.isStopped) {
-                if (isRateLimited) {
-                    this.offlineRetry = false;
-                    this.offlineReason = 'Rate limited by TikTok';
-                    this.attemptReconnect(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS, { fixed: true, offline: false });
-                } else if (isOffline) {
-                    this.offlineRetry = true;
-                    this.offlineReason = userFacingMessage || 'User is not live';
-                    this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
-                } else {
-                    this.offlineRetry = false;
-                    this.offlineReason = isSignServerIssue ? userFacingMessage : null;
-                    this.attemptReconnect();
-                }
-            }
-        }
-
-        handleStreamEnd() {
-            console.info('Stream ended');
-            this.replayActive = false;
-            this.resumeCursorState = null;
-            this.previousRoomId = null;
-            // Broadcast zero viewers when the stream ends so overlays reset
-            this.lastViewerCount = 0;
-            if (isViewerUpdateAllowed()) {
-                try {
-                    sendToBackground({
-                        meta: 0,
-                        type: "tiktok",
-                        event: "viewer_update",
-                        tid: this.virtualTabId
+                const summarizeOptions = (optionList) => {
+                    if (!Array.isArray(optionList) || !optionList.length) return [];
+                    return optionList.map(opt => {
+                        const label = opt?.DisplayContent || `Option ${opt?.OptionIdx ?? ''}`;
+                        const votes = typeof opt?.Votes === 'number' ? opt.Votes : (opt?.Votes ? Number(opt.Votes) : 0);
+                        return {
+                            label,
+                            votes: Number.isFinite(votes) ? votes : 0
+                        };
                     });
-                } catch (error) {
-                    console.error('Failed to send final TikTok viewer update:', error);
+                };
+
+                let status = 'update';
+                let options = [];
+                if (data?.startContent) {
+                    status = 'started';
+                    options = summarizeOptions(data.startContent.OptionList);
+                } else if (data?.endContent) {
+                    status = 'ended';
+                    options = summarizeOptions(data.endContent.OptionList);
+                } else if (data?.updateContent) {
+                    status = 'votes';
+                    options = summarizeOptions(data.updateContent.OptionList);
                 }
-            }
-            // Treat stream end as offline and keep retrying periodically
-            if (!this.isStopped) {
-                this.offlineRetry = true;
-                this.offlineReason = 'Live stream has ended';
-                this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
-            }
-        }
 
-        disconnect() {
-            this.isStopped = true;
-            if (this.connection) {
-                this.connection.disconnect();
-                this.connection.removeAllListeners();
-            }
-            if (this.healthCheckInterval) {
-                clearInterval(this.healthCheckInterval);
-            }
-            if (this.viewerUpdateInterval) {
-                clearInterval(this.viewerUpdateInterval);
-            }
-            if (this.reconnectTimer) {
-                clearTimeout(this.reconnectTimer);
-                this.reconnectTimer = null;
-            }
-            this.resetGoalAggregates({ flush: false });
-            this.logDebug('lifecycle.disconnect', { method: 'disconnect()' });
-            this.closeLogWriter('disconnect');
-        }
+                const optionsText = options.length ? options.map(opt => `${opt.label}: ${opt.votes}`).join(', ') : null;
+                const message = optionsText ? `Poll ${status}: ${pollTitle} — ${optionsText}` : `Poll ${status}: ${pollTitle}`;
 
-        forceReconnect() {
-            console.info('Force reconnecting...');
-            try {
-                this.connection.disconnect();
-            } catch (e) {
-                console.error('Error during disconnect:', e);
-            }
-            this.attemptReconnect();
-        }
+                console.info('[TikTok] Poll message', {
+                    username: this.username,
+                    title: pollTitle,
+                    status,
+                    optionCount: options.length,
+                    pollId: basicInfo.pollIdStr || null
+                });
 
-        attemptReconnect(delay = CONFIG.CONNECTION.RECONNECT_DELAY, options = {}) {
-            const {
-                fixed = false,
-                offline = false,
-                immediate = false,
-                silent = false,
-                reason = undefined
-            } = options || {};
-
-            if (this.isStopped) return;
-
-            // Guard: avoid scheduling duplicate reconnect timers
-            const st = connectionStates.get(this.wssID);
-            if (this.reconnectTimer || (st && st.isReconnecting)) {
-                if (!silent) {
-                    console.info('Reconnect already scheduled; skipping');
-                }
-                return;
-            }
-
-            // Do not stop on max attempts; retry indefinitely
-
-            this.reconnectAttempts++;
-
-            // Update connection state to prevent cleanup during reconnection
-            connectionStates.set(this.wssID, {
-                isConnected: false,
-                lastAttempt: Date.now(),
-                isReconnecting: true,
-                attemptInProgress: false
-            });
-
-            // Delay calculation
-            let backoffDelay;
-            if (immediate) {
-                backoffDelay = Number.isFinite(delay) ? Math.max(0, delay) : 0;
-            } else if (fixed || offline || this.offlineRetry) {
-                backoffDelay = (typeof delay === 'number' ? delay : CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS) || CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS;
-            } else {
-                // Exponential backoff for transient errors, capped by config
-                const base = (typeof delay === 'number' ? delay : CONFIG.CONNECTION.RECONNECT_DELAY) || CONFIG.CONNECTION.RECONNECT_DELAY;
-                backoffDelay = Math.min(base * Math.pow(2, this.reconnectAttempts - 1), CONFIG.CONNECTION.MAX_RECONNECT_DELAY_MS);
-            }
-            // Add jitter to reduce thundering herd when we're not doing an immediate retry
-            if (!immediate) {
-                const jitter = CONFIG.CONNECTION.BACKOFF_JITTER || 0;
-                if (jitter > 0) {
-                    const delta = backoffDelay * jitter;
-                    const min = backoffDelay - delta;
-                    const max = backoffDelay + delta;
-                    backoffDelay = Math.max(0, Math.floor(min + Math.random() * (max - min)));
-                }
-            }
-
-            // Safety: ensure a positive, non-zero delay to avoid edge cases
-            if (!Number.isFinite(backoffDelay) || backoffDelay < 0 || (!immediate && backoffDelay <= 0)) {
-                backoffDelay = immediate ? 0 : Math.max(1000, CONFIG.CONNECTION.RECONNECT_DELAY);
-            }
-
-            const attemptLabel = (offline || this.offlineRetry) ? 'offline-retry' : `${this.reconnectAttempts}`;
-            const reasonForLog = (reason !== undefined) ? reason : (this.offlineReason || null);
-            this.logDebug('lifecycle.reconnect.scheduled', {
-                attempt: this.reconnectAttempts,
-                delayMs: backoffDelay,
-                offline: !!(offline || this.offlineRetry),
-                reason: reasonForLog,
-                silent: !!silent
-            });
-            if (!silent) {
-                const seconds = Math.round(backoffDelay / 1000);
-                const reasonSuffix = reasonForLog ? ` (reason: ${reasonForLog})` : '';
-                console.info(`Reconnect attempt ${attemptLabel} - waiting ${seconds}s${reasonSuffix}`);
-
-                // Send reconnection status to the renderer
-                try {
-                    if (getMainWindow() && getMainWindow().webContents) {
-                        emitStatus( {
-                            wssID: this.wssID,
-                            status: 'reconnecting',
-                            attempt: this.reconnectAttempts,
-                            maxAttempts: undefined,
-                            nextAttemptIn: backoffDelay,
-                            reason: reasonForLog || undefined
-                        });
-                    }
-                } catch (sendErr) {
-                    console.warn('Failed to send reconnect status update:', sendErr);
-                }
-            }
-
-            // Clear any existing reconnect timer
-            if (this.reconnectTimer) {
-                clearTimeout(this.reconnectTimer);
-            }
-
-            this.reconnectTimer = setTimeout(() => {
-                this.reconnectTimer = null;
-                // Mark the active attempt so cleanup logic does not dispose the manager mid-connect.
-                try {
-                    connectionStates.set(this.wssID, {
-                        isConnected: false,
-                        lastAttempt: Date.now(),
-                        isReconnecting: true,
-                        attemptInProgress: true
-                    });
-                } catch (_) { /* noop */ }
-                if (!this.isStopped) {
-                    try {
-                        this.logDebug('lifecycle.reconnect.attempt', {
-                            attempt: this.reconnectAttempts,
-                            offline: !!this.offlineRetry,
-                            reason: this.offlineReason || null
-                        });
-                        this.connect();
-                    } catch (e) {
-                        console.error('Reconnect attempt threw before promise handling:', e);
-                        // If an immediate error occurs synchronously, queue another attempt with base delay
-                        this.attemptReconnect(CONFIG.CONNECTION.RECONNECT_DELAY);
-                    }
-                }
-            }, backoffDelay);
-        }
-
-        sendEventMessage(data, eventType, message, extraMeta = {}) {
-            // Per-connection reply-only guard
-            if (this.replyOnly) {
-                return; // do not forward captured events from this connection
-            }
-            // Gifts are handled separately and always forwarded.
-            // For other event types, respect captureevents setting.
-            if (!isCaptureEventsEnabled()) {
-                return; // drop non-gift events if captureevents disabled
-            }
-
-            const includeChatPayload = typeof message === 'string' && message.trim().length > 0;
-            const payload = {
-                type: "tiktok",
-                event: eventType,
-                tid: this.virtualTabId
-            };
-
-            if (includeChatPayload) {
-                const identity = extractTikTokIdentity(data);
-                const displayName = identity.nickname || identity.uniqueId;
-                const avatarUrl = identity.profilePictureUrl
+                const operator = data?.startContent?.Operator || data?.endContent?.Operator;
+                const operatorAvatarUrl = normalizeTikTokImageUrl(operator?.profilePicture?.url)
+                    || normalizeTikTokImageUrl(operator?.profilePictureUrl)
                     || normalizeTikTokImageUrl(data?.profilePictureUrl)
                     || normalizeTikTokImageUrl(data?.profilePicture)
                     || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
                     || normalizeTikTokImageUrl(data?.user?.profilePicture);
+                const payload = {
+                    ...data,
+                    nickname: data?.nickname || basicInfo.pollSponsor || pollTitle,
+                    profilePictureUrl: operatorAvatarUrl || null
+                };
 
-                payload.chatmessage = message.trim();
-                payload.chatname = displayName || "System";
-                payload.chatimg = avatarUrl || null;
-                payload.moderator = resolveTikTokModeratorStatus(data);
-                payload.membership = resolveTikTokSubscriberStatus(data);
-                payload.textonly = isTextOnlyModeEnabled();
+                const pollMeta = { status };
+                if (basicInfo.pollIdStr) pollMeta.pollId = basicInfo.pollIdStr;
+                if (options.length) pollMeta.options = options;
+                if (basicInfo.pollDuration) pollMeta.duration = basicInfo.pollDuration;
+                if (basicInfo.timeRemain) pollMeta.remaining = basicInfo.timeRemain;
 
-                if (identity.uniqueId) {
-                    payload.userid = identity.uniqueId;
+                this.sendEventMessage(payload, 'poll_message', message, pollMeta);
+            },
+            roomPin: (data = {}) => {
+                this.recordActivity();
+                const action = data?.pin ? 'Pinned' : (data?.unpin ? 'Unpinned' : 'Pin updated');
+                const operatorName = data?.operator?.nickname || data?.operator?.uniqueId || 'Host';
+
+                let sourceMessage;
+                if (data?.chatMessage?.comment) {
+                    sourceMessage = {
+                        text: data.chatMessage.comment,
+                        author: data.chatMessage.user?.nickname || data.chatMessage.user?.uniqueId || 'Viewer',
+                        avatar: data.chatMessage.user?.profilePicture?.url
+                    };
+                } else if (data?.socialMessage?.shareInfo) {
+                    sourceMessage = {
+                        text: data.socialMessage.shareInfo?.shareText || 'Social action pinned',
+                        author: data.socialMessage.user?.nickname || data.socialMessage.user?.uniqueId || 'Viewer',
+                        avatar: data.socialMessage.user?.profilePicture?.url
+                    };
                 }
 
-                const rawColor = data?.nameColor || data?.name_color || data?.user?.nameColor;
-                if (rawColor) {
-                    const safeColor = normalizeNameColor(rawColor);
-                    if (safeColor) {
-                        payload.nameColor = safeColor;
-                    }
-                }
+                const author = sourceMessage?.author || 'Viewer';
+                const text = sourceMessage?.text || 'Pinned message';
+                const avatarArray = sourceMessage?.avatar;
+                const avatarUrl = normalizeTikTokImageUrl(avatarArray)
+                    || normalizeTikTokImageUrl(data?.profilePictureUrl)
+                    || normalizeTikTokImageUrl(data?.profilePicture)
+                    || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+                    || normalizeTikTokImageUrl(data?.user?.profilePicture);
+                const message = `${action} by ${operatorName}: ${author} — ${text}`;
+
+                console.info('[TikTok] Room pin update', {
+                    username: this.username,
+                    action,
+                    operator: operatorName,
+                    author,
+                    pinId: data?.pinId || null
+                });
+
+                const payload = {
+                    ...data,
+                    nickname: data?.nickname || author,
+                    profilePictureUrl: avatarUrl || null
+                };
+
+                const pinMeta = { action, operator: operatorName };
+                if (data?.pinId) pinMeta.pinId = data.pinId;
+                if (data?.displayDuration) pinMeta.displayDuration = data.displayDuration;
+
+                this.sendEventMessage(payload, 'room_pin', message, pinMeta);
             }
+        };
 
-            const metaPayload = sanitizeEventMeta({
-                eventType,
-                ...extraMeta
+        Object.entries(eventHandlers).forEach(([event, handler]) => {
+            this.connection.on(event, (data) => {
+                this.logDebug(`event.${event}`, data);
+                handler(data);
             });
-            if (metaPayload) {
-                payload.meta = metaPayload;
+        });
+    }
+
+    handleProtoFetch(fetchResult) {
+        if (!fetchResult || typeof fetchResult !== 'object') {
+            return;
+        }
+        try {
+            const roomId = this.connection?.roomId || this.connection?.webClient?.roomId || null;
+            if (roomId) {
+                if (this.previousRoomId && roomId !== this.previousRoomId && this.resumeCursorState && this.resumeCursorState.roomId !== roomId) {
+                    this.resumeCursorState = null;
+                }
+                this.previousRoomId = roomId;
             }
 
-            sendToBackground(payload);
+            const isFirst = fetchResult.isFirst === true;
+            const historyNoMore = fetchResult.historyNoMore === true;
+
+            if (isFirst) {
+                this.replayActive = true;
+            }
+            if (!isFirst || historyNoMore) {
+                this.replayActive = false;
+            }
+
+            if ((!isFirst || historyNoMore) && fetchResult.cursor && roomId) {
+                this.resumeCursorState = {
+                    cursor: fetchResult.cursor,
+                    internalExt: fetchResult.internalExt || null,
+                    roomId,
+                    capturedAt: Date.now()
+                };
+                this.logDebug('lifecycle.cursor.captured', {
+                    roomId,
+                    hasInternalExt: !!fetchResult.internalExt
+                });
+            }
+        } catch (error) {
+            console.warn('Failed to process TikTok proto fetch metadata:', error);
+        }
+    }
+
+    startHealthCheck() {
+        if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
+
+        // Track connection start time for proactive refresh
+        if (!this.connectionStartTime) {
+            this.connectionStartTime = Date.now();
         }
 
-        shouldUseDirectChatRoute() {
-            if (!(this.enableDirectChatRoute && SendRoomChatRoute)) {
+        this.healthCheckInterval = setInterval(() => {
+            const now = Date.now();
+            const timeSinceLastMessage = now - this.lastMessageTime;
+            const connectionDuration = now - this.connectionStartTime;
+
+            // Proactively reconnect after 1.5 hours to avoid 2-hour timeout
+            if (connectionDuration > 90 * 60 * 1000) { // 90 minutes
+                console.info('Proactively refreshing connection after 90 minutes');
+                this.connectionStartTime = Date.now();
+                this.forceReconnect();
+            } else if (this.connection && this.connection.isConnected) {
+                const adaptiveTimeout = this.getAdaptiveMessageTimeout();
+                if (timeSinceLastMessage > adaptiveTimeout) {
+                    console.info(`Connection appears stale - no messages for ${Math.round(timeSinceLastMessage / 1000)}s (threshold ${Math.round(adaptiveTimeout / 1000)}s), forcing reconnect`);
+                    this.forceReconnect();
+                }
+            }
+        }, CONFIG.CONNECTION.HEALTH_CHECK_INTERVAL);
+    }
+
+    startViewerUpdateInterval() {
+        // Clear any existing interval
+        if (this.viewerUpdateInterval) clearInterval(this.viewerUpdateInterval);
+
+        // Send viewer count every 30 seconds
+        this.viewerUpdateInterval = setInterval(() => {
+            if (this.connection && this.connection.isConnected) {
+                if (isViewerUpdateAllowed()) {
+                    sendToBackground({
+                        meta: this.lastViewerCount,
+                        type: "tiktok",
+                        event: "viewer_update",
+                        tid: this.virtualTabId
+                    });
+                }
+            }
+        }, 30000); // 30 seconds
+    }
+
+    async connect() {
+        if (this.isStopped) return false;
+
+        if (this.connection && this.connection.isConnected) {
+            console.info('Already connected, skipping reconnect');
+            return true;
+        }
+
+        if (this.activeConnectPromise) {
+            this.logDebug('lifecycle.connect.pending', { reason: 'promise_in_flight' });
+            return this.activeConnectPromise;
+        }
+
+        // If this is a manual connect (implied by calling connect() when stopped or failed), 
+        // and we are not in a recursive retry loop, we might want to reset the fallback 
+        // to give Websocket another chance if the user desires.
+        // However, for now, we rely on the fact that `websocketFailureCount` is reset on success.
+        // If the user explicitly wants to retry Websocket, they might need to toggle settings or we need a way to know it's a "manual" click.
+        // For this implementation, we will assume that if the user calls connect() and we are stopped, it's a fresh attempt.
+        if (this.isStopped) {
+            // Reset fallback state on fresh start to allow trying preferred strategy again
+            this.pollingFallbackActivated = false;
+        }
+
+        // 3-Strike Rule: If we've failed Websocket connections too many times, force legacy mode
+        if (this.websocketFailureCount >= this.WEBSOCKET_FAILURE_THRESHOLD && !this.pollingFallbackActivated) {
+            console.warn(`[TikTok] Websocket failure threshold reached (${this.websocketFailureCount}), forcing Polling Fallback.`);
+            this.pollingFallbackActivated = true;
+
+            // Notify UI of the fallback
+            try {
+                emitStatus({
+                    wssID: this.wssID,
+                    status: 'fallback_warning',
+                    message: 'Connection unstable. Switched to compatibility mode.'
+                });
+            } catch (_) { }
+        }
+
+        const runConnect = async () => {
+            try {
+                this.logDebug('lifecycle.connect.start');
+                try {
+                    emitStatus({
+                        wssID: this.wssID,
+                        status: 'connecting'
+                    });
+                } catch (_) { /* renderer may be gone */ }
+
+                // Setup signedWebSocketProvider if we have a local signer helper and no explicit signing config
+                // This allows us to use the local electron-signer without an external URL
+                // Determine signing strategy
+                const isLocalSignerExplicit = this.signingProvider === 'local';
+                const isAuto = this.signingProvider === 'auto';
+                const isCustom = this.signingProvider === 'custom';
+
+                // If we have a signer helper and:
+                // 1. Local is explicitly requested OR
+                // 2. Auto is requested AND we don't have a custom signing config (API key)
+                // Then use the local signer.
+                if (this.signerHelper && (isLocalSignerExplicit || (isAuto && !this.signingConfig))) {
+                    if (!this.connection.signedWebSocketProvider) {
+                        this.logDebug('lifecycle.connect.setup_signer', { provider: 'local' });
+                        this.connection.signedWebSocketProvider = async (url, params) => {
+                            try {
+                                const signedParams = await this.signerHelper.signWebcastRequest(url, params, this.wssID);
+                                return signedParams;
+                            } catch (err) {
+                                console.error('[TikTok] Local signing failed:', err);
+                                throw err;
+                            }
+                        };
+                    }
+                } else if (isCustom || (isAuto && this.signingConfig)) {
+                    if (isCustom && this.connection.signedWebSocketProvider) {
+                        this.connection.signedWebSocketProvider = null;
+                    }
+                }
+
+                await this.connection.connect();
+                console.info('Connected successfully');
+                this.logDebug('lifecycle.connect.success');
+                this.signServerFailureCount = 0;
+                this.websocketFailureCount = 0; // Reset strikes on success
+
+                if (this.reconnectTimer) {
+                    clearTimeout(this.reconnectTimer);
+                    this.reconnectTimer = null;
+                }
+
+                this.offlineRetry = false;
+                this.offlineReason = null;
+                return true;
+            } catch (err) {
+                const primaryError = err instanceof Error ? err : (err && err.exception instanceof Error ? err.exception : err);
+                const errorName = primaryError && primaryError.name;
+                const errorMessage = primaryError && primaryError.message ? primaryError.message : '';
+                if (primaryError?.ssappFallback) {
+                    const fallbackHandled = await this.tryFallbackToPolling(primaryError, 'connect');
+                    if (fallbackHandled) {
+                        return this.connect();
+                    }
+                }
+
+                if (errorName === 'AlreadyConnectingError') {
+                    console.warn('Connect request ignored because a connection attempt is already in progress');
+                    this.logDebug('lifecycle.connect.alreadyConnecting', {
+                        message: errorMessage || null
+                    });
+                    return false;
+                }
+
+                const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, errorMessage);
+                const isSignServerIssue = this.isSignServerError(primaryError, errorMessage);
+
+                // Increment Websocket failure count if we are in Websocket mode
+                // We check !usingLegacyTikTokConnector because if we are already in legacy mode, this doesn't apply
+                if (!usingLegacyTikTokConnector && !this.pollingFallbackActivated && !this.connection.enableExtendedGiftInfo) {
+                    // Note: enableExtendedGiftInfo is a proxy for "is using V2 connector" in some contexts, 
+                    // but simpler is just to check if we are NOT using the fallback class.
+                    // However, here we just want to count failures that might be solved by polling.
+                    this.websocketFailureCount++;
+                    this.logDebug('lifecycle.connect.websocket_strike', {
+                        count: this.websocketFailureCount,
+                        threshold: this.WEBSOCKET_FAILURE_THRESHOLD
+                    });
+                }
+
+                this.logDebug('lifecycle.connect.error', {
+                    errorName: primaryError?.name || null,
+                    errorReason: primaryError?.reason || null,
+                    rawMessage: errorMessage || null,
+                    userMessage: userFacingMessage
+                });
+
+                const isOffline = primaryError && (
+                    primaryError.name === 'UserOfflineError' ||
+                    (errorMessage && (errorMessage.includes('LIVE has ended') || errorMessage.includes('Live stream has ended') || errorMessage.includes('live has ended')))
+                );
+                const isLikelyFatal = errorMessage && (
+                    errorMessage.includes("User doesn't exist") ||
+                    errorMessage.includes('Failed to retrieve room_id')
+                );
+                const isRateLimited = errorMessage && (errorMessage.includes('429') || errorMessage.toLowerCase().includes('too many requests'));
+
+                if (isLikelyFatal) {
+                    console.error('Fatal error - user might not exist or might be a display name:', this.username);
+                    this.handleFatalError(primaryError || err);
+                    return false;
+                }
+
+                if (isSignServerIssue) {
+                    this.signServerFailureCount = (this.signServerFailureCount || 0) + 1;
+                    const fallbackThresholdReached = this.signServerFailureCount >= SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD;
+
+                    if (this.sessionId || (fallbackThresholdReached && !this.pollingFallbackActivated)) {
+                        const fallbackStage = this.sessionId ? 'connect_sign_error_session' : 'connect_sign_error_threshold';
+                        const fallbackHandled = await this.tryFallbackToPolling(primaryError, fallbackStage);
+                        if (fallbackHandled) {
+                            return this.connect();
+                        }
+                        if (this.sessionId) {
+                            this.handleSignServerRejection(primaryError instanceof Error ? primaryError : err);
+                            return false;
+                        }
+                    }
+
+                    if (this.maybeBoostSignRequestTimeout(primaryError, errorMessage)) {
+                        this.logDebug('lifecycle.connect.retryImmediate', {
+                            reason: 'sign_server_timeout',
+                            timeoutMs: this.signRequestTimeoutMs,
+                            maxTimeoutMs: this.signRequestTimeoutMaxMs
+                        });
+
+                        const retryDelay = this.signRequestImmediateRetryDelayMs || 0;
+                        if (retryDelay > 0) {
+                            await ConnectionManager.delay(retryDelay);
+                        }
+
+                        return this.connect();
+                    }
+
+                    this.handleSignServerFailure(primaryError instanceof Error ? primaryError : err, errorMessage, userFacingMessage);
+                    return false;
+                } else {
+                    this.signServerFailureCount = 0;
+                }
+
+                this.logConsoleFailure(userFacingMessage, primaryError instanceof Error ? primaryError : null);
+
+                try {
+                    emitStatus({
+                        wssID: this.wssID,
+                        status: 'failed',
+                        error: userFacingMessage
+                    });
+                } catch (sendErr) {
+                    console.warn('Failed to send TikTok connection failure status:', sendErr);
+                }
+
+                if (!this.isStopped) {
+                    try {
+                        connectionStates.set(this.wssID, {
+                            isConnected: false,
+                            lastAttempt: Date.now(),
+                            isReconnecting: false,
+                            attemptInProgress: false
+                        });
+                    } catch (_) { /* noop */ }
+
+                    if (isRateLimited) {
+                        this.offlineRetry = false;
+                        this.offlineReason = 'Rate limited by TikTok';
+                        this.attemptReconnect(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS, { fixed: true, offline: false });
+                    } else if (isOffline) {
+                        this.offlineRetry = true;
+                        this.offlineReason = userFacingMessage || 'User is not live';
+                        this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
+                    } else {
+                        this.offlineRetry = false;
+                        this.offlineReason = null;
+                        this.attemptReconnect();
+                    }
+                }
                 return false;
             }
-            return !!(this.connection && this.connection.webClient);
+        };
+
+        const connectPromise = runConnect();
+        this.activeConnectPromise = connectPromise;
+        connectPromise.finally(() => {
+            if (this.activeConnectPromise === connectPromise) {
+                this.activeConnectPromise = null;
+            }
+        }).catch(() => { });
+        return connectPromise;
+    }
+
+    logConsoleFailure(userMessage, primaryError) {
+        if (userMessage) {
+            console.error('Connection failed:', userMessage);
+        } else {
+            console.error('Connection failed');
         }
 
-        ensureDirectChatRoute() {
-            if (!this.shouldUseDirectChatRoute()) {
-                return null;
+        if (!primaryError) {
+            return;
+        }
+
+        const detail = this.truncateForLog(primaryError.message || '', 600);
+        if (detail && detail !== userMessage) {
+            console.error('Connection failure detail:', detail);
+        }
+
+        if (primaryError.stack) {
+            const stackSnippet = this.truncateForLog(primaryError.stack, 800);
+            if (stackSnippet && stackSnippet !== detail && !/<html/i.test(stackSnippet)) {
+                console.error(stackSnippet);
             }
-            const connection = this.connection;
-            if (!connection || !connection.webClient) {
-                return null;
+        }
+    }
+
+    truncateForLog(text, maxLength = 600) {
+        if (!text || typeof text !== 'string') return '';
+        const trimmed = text.trim();
+        if (!trimmed) return '';
+        if (trimmed.length > maxLength) {
+            return trimmed.slice(0, maxLength) + '…';
+        }
+        return trimmed;
+    }
+
+    getSigningServiceHelpMessage() {
+        const base = 'Sign in failed. Get an API key to use the Euler signing service';
+        if (SIGNING_SERVICE_HELP_URL) {
+            return `${base}: ${SIGNING_SERVICE_HELP_URL}`;
+        }
+        return `${base}.`;
+    }
+
+    isSignServerError(primaryError, rawMessage = '') {
+        const reason = typeof primaryError?.reason === 'string'
+            ? primaryError.reason.toLowerCase()
+            : '';
+        if (reason && (reason.includes('sign') || reason.includes('premium') || reason.includes('authenticated'))) {
+            return true;
+        }
+
+        const name = typeof primaryError?.name === 'string'
+            ? primaryError.name.toLowerCase()
+            : '';
+        if (name === 'signapierror' || name === 'premiumfeatureerror' || name === 'schemadecodeerror') {
+            return true;
+        }
+
+        const combined = `${rawMessage || ''} ${primaryError?.message || ''}`.toLowerCase();
+        return combined.includes('sign server')
+            || combined.includes('signapi')
+            || combined.includes('proto messagefetchresult')
+            || combined.includes('schema decode')
+            || combined.includes('premature eof')
+            || combined.includes('not authorized');
+    }
+
+    getUserFriendlyErrorMessage(primaryError, fallbackMessage = '') {
+        const candidates = [fallbackMessage, primaryError?.message, primaryError?.info];
+        let message = '';
+        for (const candidate of candidates) {
+            if (typeof candidate === 'string' && candidate.trim().length) {
+                message = candidate.trim();
+                break;
             }
-            const webClient = connection.webClient;
-            if (this.directChatRoute && this.directChatRouteClient === webClient) {
-                return this.directChatRoute;
-            }
-            try {
-                this.directChatRoute = new SendRoomChatRoute(webClient);
-                this.directChatRouteClient = webClient;
-                this.logDebug('chat.send.direct.route_ready', {
-                    roomId: webClient.roomId || null
+        }
+
+        if (!message) {
+            return 'Connection failed';
+        }
+
+        const firstLine = message.split(/\r?\n/).find(line => line.trim().length) || message;
+        const normalized = firstLine.toLowerCase();
+
+        const isPremiumError = primaryError && primaryError.name === 'PremiumFeatureError';
+        const isSignRateLimited = primaryError && primaryError.name === 'SignatureRateLimitError';
+        const mentionsPaywall = normalized.includes('payment required') || normalized.includes('premium feature');
+
+        if (this.sessionId && (isPremiumError || isSignRateLimited || mentionsPaywall)) {
+            return this.getSigningServiceHelpMessage();
+        }
+
+        if (normalized.includes('unexpected sign server status 524') || normalized.includes('524: a timeout occurred')) {
+            return 'Euler sign server timed out (524). Please try again later or switch TikTok to standard mode.';
+        }
+
+        if (normalized.includes('failed to connect to sign server') || normalized.includes('connect error')) {
+            return 'Unable to reach the Euler sign server. Please try again shortly.';
+        }
+
+        if (normalized.includes('timeout') || primaryError?.code === 'ECONNABORTED') {
+            return 'Sign server request timed out. Please try again shortly.';
+        }
+
+        if (/<html/i.test(message)) {
+            return 'Sign server returned an HTML error page. Please try again in a moment.';
+        }
+
+        if (firstLine.length > 320) {
+            return firstLine.slice(0, 320) + '…';
+        }
+
+        return firstLine;
+    }
+
+    handleConnect() {
+        console.info('Websocket connected, starting health check');
+        connectionStates.set(this.wssID, {
+            isConnected: true,
+            lastAttempt: Date.now(),
+            isReconnecting: false,
+            attemptInProgress: false
+        });
+        this.startHealthCheck();
+        this.startViewerUpdateInterval();
+        this.reconnectAttempts = 0;
+
+        if (Number.isFinite(this.signRequestTimeoutBaseMs) && this.signRequestTimeoutBaseMs > 0 && this.signRequestTimeoutMs !== this.signRequestTimeoutBaseMs) {
+            const previousTimeout = this.signRequestTimeoutMs;
+            this.applySignRequestTimeout(this.signRequestTimeoutBaseMs);
+            this.logDebug('sign.timeout.reset', {
+                previousTimeoutMs: previousTimeout,
+                baseTimeoutMs: this.signRequestTimeoutBaseMs
+            });
+        }
+
+        emitStatus({
+            wssID: this.wssID,
+            status: 'connected',
+            hasSession: !!this.sessionId
+        });
+    }
+
+    handleDisconnect() {
+        console.info('Disconnect detected');
+        this.replayActive = false;
+        connectionStates.set(this.wssID, {
+            isConnected: false,
+            lastAttempt: Date.now(),
+            isReconnecting: false,
+            attemptInProgress: false
+        });
+        if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
+        if (this.viewerUpdateInterval) clearInterval(this.viewerUpdateInterval);
+
+        if (!this.isStopped) {
+            emitStatus({
+                wssID: this.wssID,
+                status: 'disconnected'
+            });
+
+            this.attemptReconnect();
+        }
+    }
+
+    handleError(err) {
+        if (this.isStopped) return;
+
+        const infoText = typeof err?.info === 'string' ? err.info : '';
+        const primaryError = err instanceof Error ? err : (err?.exception instanceof Error ? err.exception : err);
+        const errorName = primaryError && primaryError.name;
+        const msg = primaryError && primaryError.message ? primaryError.message : '';
+        const errorMessageCandidates = [
+            msg,
+            infoText,
+            typeof err?.message === 'string' ? err.message : '',
+            typeof primaryError?.cause?.message === 'string' ? primaryError.cause.message : ''
+        ];
+        const rawErrorMessage = errorMessageCandidates.find(value => typeof value === 'string' && value.trim().length) || '';
+
+        if (rawErrorMessage && /failed to decode message type/i.test(rawErrorMessage)) {
+            const truncatedDetail = this.truncateForLog(rawErrorMessage, 400);
+            const messageTypeMatch = rawErrorMessage.match(/Failed to decode message type:\s*([^:\s]+)/i);
+            const messageType = messageTypeMatch ? messageTypeMatch[1] : null;
+
+            const logPieces = ['[TikTok] Ignoring decode error'];
+            if (messageType) logPieces.push(`(${messageType})`);
+            logPieces.push(truncatedDetail);
+            console.warn(logPieces.join(' '));
+            this.logDebug('control.error.ignoredDecode', {
+                info: infoText || null,
+                errorName: primaryError?.name || null,
+                messageType: messageType || null,
+                detail: truncatedDetail
+            });
+            return;
+        }
+
+        if (infoText) {
+            const normalizedInfo = infoText.toLowerCase();
+            if (normalizedInfo.includes('falling back')) {
+                console.info('TikTok connection fallback:', infoText);
+                this.logDebug('control.error.fallbackNotice', {
+                    info: infoText,
+                    message: msg || null
                 });
-                return this.directChatRoute;
+                return;
+            }
+        }
+
+        if (errorName === 'AlreadyConnectingError') {
+            console.warn('TikTok connection already in progress; ignoring duplicate error event');
+            this.logDebug('control.error.alreadyConnecting', {
+                info: infoText || null,
+                message: msg || null
+            });
+            return;
+        }
+
+        const combinedMessage = msg || infoText || '';
+        const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, combinedMessage);
+        const isSignServerIssue = this.isSignServerError(primaryError, combinedMessage);
+
+        this.logDebug('control.error.processed', {
+            info: infoText || null,
+            errorName: primaryError?.name || null,
+            errorReason: primaryError?.reason || null,
+            rawMessage: msg || null,
+            userMessage: userFacingMessage
+        });
+
+        this.logConsoleFailure(userFacingMessage, primaryError instanceof Error ? primaryError : null);
+
+        // Check if error is fatal
+        const isOffline = primaryError && (
+            primaryError.name === 'UserOfflineError' ||
+            (msg && (msg.includes('LIVE has ended') || msg.includes('Live stream has ended') || msg.includes('live has ended')))
+        );
+        const isLikelyFatal = msg && (
+            msg.includes("User doesn't exist") ||
+            msg.includes('Failed to retrieve room_id')
+        );
+        const isRateLimited = msg && (msg.includes('429') || msg.toLowerCase().includes('too many requests'));
+        if (isLikelyFatal) {
+            this.handleFatalError(primaryError || err);
+            return;
+        }
+
+        connectionStates.set(this.wssID, {
+            isConnected: false,
+            lastAttempt: Date.now(),
+            isReconnecting: false,
+            attemptInProgress: false
+        });
+
+        try {
+            emitStatus({
+                wssID: this.wssID,
+                status: 'error',
+                error: userFacingMessage
+            });
+        } catch (sendErr) {
+            console.warn('Failed to send TikTok error status to renderer:', sendErr);
+        }
+
+        if (!this.isStopped) {
+            if (isRateLimited) {
+                this.offlineRetry = false;
+                this.offlineReason = 'Rate limited by TikTok';
+                this.attemptReconnect(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS, { fixed: true, offline: false });
+            } else if (isOffline) {
+                this.offlineRetry = true;
+                this.offlineReason = userFacingMessage || 'User is not live';
+                this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
+            } else {
+                this.offlineRetry = false;
+                this.offlineReason = isSignServerIssue ? userFacingMessage : null;
+                this.attemptReconnect();
+            }
+        }
+    }
+
+    handleStreamEnd() {
+        console.info('Stream ended');
+        this.replayActive = false;
+        this.resumeCursorState = null;
+        this.previousRoomId = null;
+        // Broadcast zero viewers when the stream ends so overlays reset
+        this.lastViewerCount = 0;
+        if (isViewerUpdateAllowed()) {
+            try {
+                sendToBackground({
+                    meta: 0,
+                    type: "tiktok",
+                    event: "viewer_update",
+                    tid: this.virtualTabId
+                });
             } catch (error) {
-                console.warn('Failed to initialize TikTok direct chat route:', error);
-                this.logDebug('chat.send.direct.route_error', {
-                    message: error?.message || String(error)
-                });
-                this.directChatRoute = null;
-                this.directChatRouteClient = null;
-                return null;
+                console.error('Failed to send final TikTok viewer update:', error);
+            }
+        }
+        // Treat stream end as offline and keep retrying periodically
+        if (!this.isStopped) {
+            this.offlineRetry = true;
+            this.offlineReason = 'Live stream has ended';
+            this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
+        }
+    }
+
+    disconnect() {
+        this.isStopped = true;
+        if (this.connection) {
+            this.connection.disconnect();
+            this.connection.removeAllListeners();
+        }
+        if (this.healthCheckInterval) {
+            clearInterval(this.healthCheckInterval);
+        }
+        if (this.viewerUpdateInterval) {
+            clearInterval(this.viewerUpdateInterval);
+        }
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        this.resetGoalAggregates({ flush: false });
+        this.logDebug('lifecycle.disconnect', { method: 'disconnect()' });
+        this.closeLogWriter('disconnect');
+    }
+
+    forceReconnect() {
+        console.info('Force reconnecting...');
+        try {
+            this.connection.disconnect();
+        } catch (e) {
+            console.error('Error during disconnect:', e);
+        }
+        this.attemptReconnect();
+    }
+
+    attemptReconnect(delay = CONFIG.CONNECTION.RECONNECT_DELAY, options = {}) {
+        const {
+            fixed = false,
+            offline = false,
+            immediate = false,
+            silent = false,
+            reason = undefined
+        } = options || {};
+
+        if (this.isStopped) return;
+
+        // Guard: avoid scheduling duplicate reconnect timers
+        const st = connectionStates.get(this.wssID);
+        if (this.reconnectTimer || (st && st.isReconnecting)) {
+            if (!silent) {
+                console.info('Reconnect already scheduled; skipping');
+            }
+            return;
+        }
+
+        // Do not stop on max attempts; retry indefinitely
+
+        this.reconnectAttempts++;
+
+        // Update connection state to prevent cleanup during reconnection
+        connectionStates.set(this.wssID, {
+            isConnected: false,
+            lastAttempt: Date.now(),
+            isReconnecting: true,
+            attemptInProgress: false
+        });
+
+        // Delay calculation
+        let backoffDelay;
+        if (immediate) {
+            backoffDelay = Number.isFinite(delay) ? Math.max(0, delay) : 0;
+        } else if (fixed || offline || this.offlineRetry) {
+            backoffDelay = (typeof delay === 'number' ? delay : CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS) || CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS;
+        } else {
+            // Exponential backoff for transient errors, capped by config
+            const base = (typeof delay === 'number' ? delay : CONFIG.CONNECTION.RECONNECT_DELAY) || CONFIG.CONNECTION.RECONNECT_DELAY;
+            backoffDelay = Math.min(base * Math.pow(2, this.reconnectAttempts - 1), CONFIG.CONNECTION.MAX_RECONNECT_DELAY_MS);
+        }
+        // Add jitter to reduce thundering herd when we're not doing an immediate retry
+        if (!immediate) {
+            const jitter = CONFIG.CONNECTION.BACKOFF_JITTER || 0;
+            if (jitter > 0) {
+                const delta = backoffDelay * jitter;
+                const min = backoffDelay - delta;
+                const max = backoffDelay + delta;
+                backoffDelay = Math.max(0, Math.floor(min + Math.random() * (max - min)));
             }
         }
 
-        async ensureRoomIdForChat() {
-            const connectionForFetch = this.connection;
-            if (!connectionForFetch) {
-                return null;
-            }
-            if (connectionForFetch.roomId) {
-                return connectionForFetch.roomId;
-            }
-            if (this.pendingRoomIdPromise) {
-                try {
-                    await this.pendingRoomIdPromise;
-                } catch (_) {
-                    return null;
-                }
-                return this.connection ? this.connection.roomId : null;
-            }
-            if (typeof connectionForFetch.fetchRoomId !== 'function') {
-                return null;
-            }
-            this.pendingRoomIdPromise = connectionForFetch.fetchRoomId()
-                .then((resolvedRoomId) => {
-                    const normalizedId = resolvedRoomId ? String(resolvedRoomId) : null;
-                    if (!normalizedId) {
-                        return null;
-                    }
-                    if (this.connection !== connectionForFetch) {
-                        return null;
-                    }
-                    connectionForFetch.roomId = normalizedId;
-                    if (connectionForFetch.webClient) {
-                        connectionForFetch.webClient.roomId = normalizedId;
-                    }
-                    return normalizedId;
-                })
-                .catch((error) => {
-                    console.warn('Failed to fetch TikTok roomId for chat send:', error);
-                    return null;
-                })
-                .finally(() => {
-                    this.pendingRoomIdPromise = null;
-                });
+        // Safety: ensure a positive, non-zero delay to avoid edge cases
+        if (!Number.isFinite(backoffDelay) || backoffDelay < 0 || (!immediate && backoffDelay <= 0)) {
+            backoffDelay = immediate ? 0 : Math.max(1000, CONFIG.CONNECTION.RECONNECT_DELAY);
+        }
+
+        const attemptLabel = (offline || this.offlineRetry) ? 'offline-retry' : `${this.reconnectAttempts}`;
+        const reasonForLog = (reason !== undefined) ? reason : (this.offlineReason || null);
+        this.logDebug('lifecycle.reconnect.scheduled', {
+            attempt: this.reconnectAttempts,
+            delayMs: backoffDelay,
+            offline: !!(offline || this.offlineRetry),
+            reason: reasonForLog,
+            silent: !!silent
+        });
+        if (!silent) {
+            const seconds = Math.round(backoffDelay / 1000);
+            const reasonSuffix = reasonForLog ? ` (reason: ${reasonForLog})` : '';
+            console.info(`Reconnect attempt ${attemptLabel} - waiting ${seconds}s${reasonSuffix}`);
+
+            // Send reconnection status to the renderer
             try {
-                const resolved = await this.pendingRoomIdPromise;
-                if (resolved) {
-                    return resolved;
+                if (getMainWindow() && getMainWindow().webContents) {
+                    emitStatus({
+                        wssID: this.wssID,
+                        status: 'reconnecting',
+                        attempt: this.reconnectAttempts,
+                        maxAttempts: undefined,
+                        nextAttemptIn: backoffDelay,
+                        reason: reasonForLog || undefined
+                    });
                 }
+            } catch (sendErr) {
+                console.warn('Failed to send reconnect status update:', sendErr);
+            }
+        }
+
+        // Clear any existing reconnect timer
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+        }
+
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            // Mark the active attempt so cleanup logic does not dispose the manager mid-connect.
+            try {
+                connectionStates.set(this.wssID, {
+                    isConnected: false,
+                    lastAttempt: Date.now(),
+                    isReconnecting: true,
+                    attemptInProgress: true
+                });
+            } catch (_) { /* noop */ }
+            if (!this.isStopped) {
+                try {
+                    this.logDebug('lifecycle.reconnect.attempt', {
+                        attempt: this.reconnectAttempts,
+                        offline: !!this.offlineRetry,
+                        reason: this.offlineReason || null
+                    });
+                    this.connect();
+                } catch (e) {
+                    console.error('Reconnect attempt threw before promise handling:', e);
+                    // If an immediate error occurs synchronously, queue another attempt with base delay
+                    this.attemptReconnect(CONFIG.CONNECTION.RECONNECT_DELAY);
+                }
+            }
+        }, backoffDelay);
+    }
+
+    sendEventMessage(data, eventType, message, extraMeta = {}) {
+        // Per-connection reply-only guard
+        if (this.replyOnly) {
+            return; // do not forward captured events from this connection
+        }
+        // Gifts are handled separately and always forwarded.
+        // For other event types, respect captureevents setting.
+        if (!isCaptureEventsEnabled()) {
+            return; // drop non-gift events if captureevents disabled
+        }
+
+        const includeChatPayload = typeof message === 'string' && message.trim().length > 0;
+        const payload = {
+            type: "tiktok",
+            event: eventType,
+            tid: this.virtualTabId
+        };
+
+        if (includeChatPayload) {
+            const identity = extractTikTokIdentity(data);
+            const displayName = identity.nickname || identity.uniqueId;
+            const avatarUrl = identity.profilePictureUrl
+                || normalizeTikTokImageUrl(data?.profilePictureUrl)
+                || normalizeTikTokImageUrl(data?.profilePicture)
+                || normalizeTikTokImageUrl(data?.user?.profilePictureUrl)
+                || normalizeTikTokImageUrl(data?.user?.profilePicture);
+
+            payload.chatmessage = message.trim();
+            payload.chatname = displayName || "System";
+            payload.chatimg = avatarUrl || null;
+            payload.moderator = resolveTikTokModeratorStatus(data);
+            payload.membership = resolveTikTokSubscriberStatus(data);
+            payload.textonly = isTextOnlyModeEnabled();
+
+            if (identity.uniqueId) {
+                payload.userid = identity.uniqueId;
+            }
+
+            const rawColor = data?.nameColor || data?.name_color || data?.user?.nameColor;
+            if (rawColor) {
+                const safeColor = normalizeNameColor(rawColor);
+                if (safeColor) {
+                    payload.nameColor = safeColor;
+                }
+            }
+        }
+
+        const metaPayload = sanitizeEventMeta({
+            eventType,
+            ...extraMeta
+        });
+        if (metaPayload) {
+            payload.meta = metaPayload;
+        }
+
+        sendToBackground(payload);
+    }
+
+    shouldUseDirectChatRoute() {
+        if (!(this.enableDirectChatRoute && SendRoomChatRoute)) {
+            return false;
+        }
+        return !!(this.connection && this.connection.webClient);
+    }
+
+    ensureDirectChatRoute() {
+        if (!this.shouldUseDirectChatRoute()) {
+            return null;
+        }
+        const connection = this.connection;
+        if (!connection || !connection.webClient) {
+            return null;
+        }
+        const webClient = connection.webClient;
+        if (this.directChatRoute && this.directChatRouteClient === webClient) {
+            return this.directChatRoute;
+        }
+        try {
+            this.directChatRoute = new SendRoomChatRoute(webClient);
+            this.directChatRouteClient = webClient;
+            this.logDebug('chat.send.direct.route_ready', {
+                roomId: webClient.roomId || null
+            });
+            return this.directChatRoute;
+        } catch (error) {
+            console.warn('Failed to initialize TikTok direct chat route:', error);
+            this.logDebug('chat.send.direct.route_error', {
+                message: error?.message || String(error)
+            });
+            this.directChatRoute = null;
+            this.directChatRouteClient = null;
+            return null;
+        }
+    }
+
+    async ensureRoomIdForChat() {
+        const connectionForFetch = this.connection;
+        if (!connectionForFetch) {
+            return null;
+        }
+        if (connectionForFetch.roomId) {
+            return connectionForFetch.roomId;
+        }
+        if (this.pendingRoomIdPromise) {
+            try {
+                await this.pendingRoomIdPromise;
             } catch (_) {
                 return null;
             }
             return this.connection ? this.connection.roomId : null;
         }
+        if (typeof connectionForFetch.fetchRoomId !== 'function') {
+            return null;
+        }
+        this.pendingRoomIdPromise = connectionForFetch.fetchRoomId()
+            .then((resolvedRoomId) => {
+                const normalizedId = resolvedRoomId ? String(resolvedRoomId) : null;
+                if (!normalizedId) {
+                    return null;
+                }
+                if (this.connection !== connectionForFetch) {
+                    return null;
+                }
+                connectionForFetch.roomId = normalizedId;
+                if (connectionForFetch.webClient) {
+                    connectionForFetch.webClient.roomId = normalizedId;
+                }
+                return normalizedId;
+            })
+            .catch((error) => {
+                console.warn('Failed to fetch TikTok roomId for chat send:', error);
+                return null;
+            })
+            .finally(() => {
+                this.pendingRoomIdPromise = null;
+            });
+        try {
+            const resolved = await this.pendingRoomIdPromise;
+            if (resolved) {
+                return resolved;
+            }
+        } catch (_) {
+            return null;
+        }
+        return this.connection ? this.connection.roomId : null;
+    }
 
-        async sendChatMessageViaDirectRoute(content) {
-            const route = this.ensureDirectChatRoute();
-            if (!route) {
-                return {
-                    success: false,
-                    error: 'Direct TikTok chat route unavailable',
-                    routeUnavailable: true
-                };
-            }
-            const roomId = await this.ensureRoomIdForChat();
-            if (!roomId) {
-                console.warn('Unable to resolve TikTok roomId for direct chat send.');
-                this.logDebug('chat.send.direct.missing_room');
-                return {
-                    success: false,
-                    error: 'Unable to resolve TikTok room for chat send'
-                };
-            }
-            const normalizedRoomId = typeof roomId === 'string' ? roomId : String(roomId);
-            try {
-                const response = await route.call({
-                    roomId: normalizedRoomId,
-                    content
-                });
-                const statusCode = Number.isFinite(response?.status_code) ? response.status_code
-                    : Number.isFinite(response?.statusCode) ? response.statusCode
+    async sendChatMessageViaDirectRoute(content) {
+        const route = this.ensureDirectChatRoute();
+        if (!route) {
+            return {
+                success: false,
+                error: 'Direct TikTok chat route unavailable',
+                routeUnavailable: true
+            };
+        }
+        const roomId = await this.ensureRoomIdForChat();
+        if (!roomId) {
+            console.warn('Unable to resolve TikTok roomId for direct chat send.');
+            this.logDebug('chat.send.direct.missing_room');
+            return {
+                success: false,
+                error: 'Unable to resolve TikTok room for chat send'
+            };
+        }
+        const normalizedRoomId = typeof roomId === 'string' ? roomId : String(roomId);
+        try {
+            const response = await route.call({
+                roomId: normalizedRoomId,
+                content
+            });
+            const statusCode = Number.isFinite(response?.status_code) ? response.status_code
+                : Number.isFinite(response?.statusCode) ? response.statusCode
                     : null;
-                const errCode = Number.isFinite(response?.err_code) ? response.err_code : null;
-                const statusFlag = typeof response?.status === 'string' ? response.status.toLowerCase() : null;
-                const statusMessage = typeof response?.status_msg === 'string' && response.status_msg.trim()
-                    ? response.status_msg.trim()
-                    : typeof response?.statusMessage === 'string' && response.statusMessage.trim()
-                        ? response.statusMessage.trim()
-                        : typeof response?.message === 'string' && response.message.trim()
-                            ? response.message.trim()
-                            : null;
-                const isSuccess = (statusCode === null || statusCode === 0) &&
-                    (errCode === null || errCode === 0) &&
-                    (statusFlag === null || statusFlag === 'success');
-                if (!isSuccess) {
-                    const detail = statusMessage || `TikTok chat API returned status ${statusCode ?? errCode ?? statusFlag ?? 'unknown'}`;
-                    this.logDebug('chat.send.direct.rejected', {
-                        statusCode,
-                        errCode,
-                        statusFlag,
-                        detail
-                    });
-                    console.warn('TikTok direct chat send rejected:', detail);
-                    return {
-                        success: false,
-                        error: detail
-                    };
-                }
-                console.log('Message sent to TikTok chat via direct room/chat endpoint.');
-                this.logDebug('chat.send.direct.success', {
-                    roomId: normalizedRoomId
+            const errCode = Number.isFinite(response?.err_code) ? response.err_code : null;
+            const statusFlag = typeof response?.status === 'string' ? response.status.toLowerCase() : null;
+            const statusMessage = typeof response?.status_msg === 'string' && response.status_msg.trim()
+                ? response.status_msg.trim()
+                : typeof response?.statusMessage === 'string' && response.statusMessage.trim()
+                    ? response.statusMessage.trim()
+                    : typeof response?.message === 'string' && response.message.trim()
+                        ? response.message.trim()
+                        : null;
+            const isSuccess = (statusCode === null || statusCode === 0) &&
+                (errCode === null || errCode === 0) &&
+                (statusFlag === null || statusFlag === 'success');
+            if (!isSuccess) {
+                const detail = statusMessage || `TikTok chat API returned status ${statusCode ?? errCode ?? statusFlag ?? 'unknown'}`;
+                this.logDebug('chat.send.direct.rejected', {
+                    statusCode,
+                    errCode,
+                    statusFlag,
+                    detail
                 });
-                return {
-                    success: true
-                };
-            } catch (error) {
-                const status = typeof error?.response?.status === 'number' ? error.response.status : null;
-                const detail = typeof error?.message === 'string' && error.message.trim()
-                    ? error.message.trim()
-                    : 'TikTok direct chat send failed';
-                this.logDebug('chat.send.direct.error', {
-                    statusCode: status,
-                    message: detail
-                });
-                console.error('Direct TikTok chat send failed:', error);
-                if (status === 401 || status === 403) {
-                    return {
-                        success: false,
-                        error: 'TikTok rejected the provided session for chat send'
-                    };
-                }
+                console.warn('TikTok direct chat send rejected:', detail);
                 return {
                     success: false,
                     error: detail
                 };
             }
-        }
-
-        async sendChatMessageViaEuler(content) {
-            try {
-                await this.connection.sendMessage(content);
-                console.log('Message sent to TikTok chat via Euler endpoint.');
-                return {
-                    success: true
-                };
-            } catch (error) {
-                console.error('Failed to send TikTok message:', error);
-                const detail = typeof error?.message === 'string' && error.message.trim()
-                    ? error.message.trim()
-                    : 'Failed to send message';
-                return {
-                    success: false,
-                    error: detail
-                };
-            }
-        }
-
-        async sendChatMessage(message) {
-            if (typeof message !== 'string' || !message.trim()) {
+            console.log('Message sent to TikTok chat via direct room/chat endpoint.');
+            this.logDebug('chat.send.direct.success', {
+                roomId: normalizedRoomId
+            });
+            return {
+                success: true
+            };
+        } catch (error) {
+            const status = typeof error?.response?.status === 'number' ? error.response.status : null;
+            const detail = typeof error?.message === 'string' && error.message.trim()
+                ? error.message.trim()
+                : 'TikTok direct chat send failed';
+            this.logDebug('chat.send.direct.error', {
+                statusCode: status,
+                message: detail
+            });
+            console.error('Direct TikTok chat send failed:', error);
+            if (status === 401 || status === 403) {
                 return {
                     success: false,
-                    error: 'Message must be a non-empty string'
+                    error: 'TikTok rejected the provided session for chat send'
                 };
             }
-
-            if (!this.sessionId) {
-                console.warn('Skipping TikTok chat send: sessionid cookie missing');
-                return {
-                    success: false,
-                    error: 'TikTok chat sending requires the sessionid cookie'
-                };
-            }
-
-            if (!this.ttTargetIdc && !this.warnedMissingTtTargetIdc) {
-                console.warn('TikTok chat send proceeding without tt-target-idc cookie');
-                this.warnedMissingTtTargetIdc = true;
-            }
-
-            if (!this.connection || this.isStopped || !this.connection.isConnected) {
-                console.warn('Cannot send TikTok message: Connection not active');
-                return {
-                    success: false,
-                    error: 'Connection not active'
-                };
-            }
-
-            const trimmedMessage = message.trim();
-            if (this.shouldUseDirectChatRoute()) {
-                const directResult = await this.sendChatMessageViaDirectRoute(trimmedMessage);
-                if (directResult?.success) {
-                    return directResult;
-                }
-
-                const routeUnavailable = !!directResult?.routeUnavailable;
-                const fallbackReason = directResult?.error || (routeUnavailable ? 'route_unavailable' : 'direct_route_failed');
-
-                if (routeUnavailable) {
-                    console.info('Direct TikTok chat route unavailable, falling back to Euler endpoint.');
-                } else {
-                    console.warn('Direct TikTok chat send failed, falling back to Euler endpoint:', fallbackReason);
-                }
-
-                this.logDebug('chat.send.direct.fallback', {
-                    reason: fallbackReason || null,
-                    routeUnavailable
-                });
-            }
-
-            return this.sendChatMessageViaEuler(trimmedMessage);
+            return {
+                success: false,
+                error: detail
+            };
         }
     }
+
+    async sendChatMessageViaEuler(content) {
+        try {
+            await this.connection.sendMessage(content);
+            console.log('Message sent to TikTok chat via Euler endpoint.');
+            return {
+                success: true
+            };
+        } catch (error) {
+            console.error('Failed to send TikTok message:', error);
+            const detail = typeof error?.message === 'string' && error.message.trim()
+                ? error.message.trim()
+                : 'Failed to send message';
+            return {
+                success: false,
+                error: detail
+            };
+        }
+    }
+
+    async sendChatMessage(message) {
+        if (typeof message !== 'string' || !message.trim()) {
+            return {
+                success: false,
+                error: 'Message must be a non-empty string'
+            };
+        }
+
+        if (!this.sessionId) {
+            console.warn('Skipping TikTok chat send: sessionid cookie missing');
+            return {
+                success: false,
+                error: 'TikTok chat sending requires the sessionid cookie'
+            };
+        }
+
+        if (!this.ttTargetIdc && !this.warnedMissingTtTargetIdc) {
+            console.warn('TikTok chat send proceeding without tt-target-idc cookie');
+            this.warnedMissingTtTargetIdc = true;
+        }
+
+        if (!this.connection || this.isStopped || !this.connection.isConnected) {
+            console.warn('Cannot send TikTok message: Connection not active');
+            return {
+                success: false,
+                error: 'Connection not active'
+            };
+        }
+
+        const trimmedMessage = message.trim();
+        if (this.shouldUseDirectChatRoute()) {
+            const directResult = await this.sendChatMessageViaDirectRoute(trimmedMessage);
+            if (directResult?.success) {
+                return directResult;
+            }
+
+            const routeUnavailable = !!directResult?.routeUnavailable;
+            const fallbackReason = directResult?.error || (routeUnavailable ? 'route_unavailable' : 'direct_route_failed');
+
+            if (routeUnavailable) {
+                console.info('Direct TikTok chat route unavailable, falling back to Euler endpoint.');
+            } else {
+                console.warn('Direct TikTok chat send failed, falling back to Euler endpoint:', fallbackReason);
+            }
+
+            this.logDebug('chat.send.direct.fallback', {
+                reason: fallbackReason || null,
+                routeUnavailable
+            });
+        }
+
+        return this.sendChatMessageViaEuler(trimmedMessage);
+    }
+}
 
 function logTikTokForwardedMessage(msg, context = 'single', meta = {}) {
     try {
@@ -4532,11 +4610,11 @@ function sendBatchToBackground(messages) {
                             return false;
                         }
                     }
-                } catch (_) {}
+                } catch (_) { }
                 return true;
             });
         }
-    } catch (_) {}
+    } catch (_) { }
 
     if (Array.isArray(messages)) {
         messages.forEach((m, idx) => {
