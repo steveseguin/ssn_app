@@ -93,7 +93,7 @@ async function waitForDomReady(win, timeout = PAGE_LOAD_TIMEOUT_MS) {
         wc.removeListener("did-finish-load", onFinish);
         wc.removeListener("did-fail-load", onFail);
         wc.removeListener("destroyed", onDestroyed);
-      } catch (_) {}
+      } catch (_) { }
       clearTimeout(timer);
     };
 
@@ -130,7 +130,7 @@ async function waitForDomReady(win, timeout = PAGE_LOAD_TIMEOUT_MS) {
       let readyState = null;
       try {
         readyState = await wc.executeJavaScript("document.readyState", true);
-      } catch (_) {}
+      } catch (_) { }
       if (readyState === "interactive" || readyState === "complete") {
         cleanup();
         resolve();
@@ -302,6 +302,30 @@ async function readMsTokenFromSession(win) {
   }
 }
 
+async function readSessionIdFromSession(win) {
+  try {
+    const electronSession = win && win.webContents ? win.webContents.session : null;
+    if (!electronSession || !electronSession.cookies) {
+      return "";
+    }
+    const cookies = await electronSession.cookies.get({
+      url: "https://www.tiktok.com/",
+      name: "sessionid"
+    });
+    if (!cookies || !cookies.length) {
+      return "";
+    }
+    const cookie = cookies.find((entry) => entry && entry.name === "sessionid");
+    if (!cookie || !cookie.value) {
+      return "";
+    }
+    return decodeURIComponent(cookie.value);
+  } catch (error) {
+    console.warn("[tiktok-signing] Failed to read sessionid from Electron session:", error);
+    return "";
+  }
+}
+
 function buildWebcastFetchParams({
   roomId,
   deviceId,
@@ -402,15 +426,15 @@ async function generateSigningParameters(win, options = {}) {
     typeof activeUrlOverride === "string" && activeUrlOverride.trim()
       ? activeUrlOverride.trim()
       : (() => {
-          try {
-            const current = win && win.webContents && typeof win.webContents.getURL === "function"
-              ? win.webContents.getURL()
-              : "";
-            return typeof current === "string" && current ? current : "https://www.tiktok.com/";
-          } catch (error) {
-            return "https://www.tiktok.com/";
-          }
-        })();
+        try {
+          const current = win && win.webContents && typeof win.webContents.getURL === "function"
+            ? win.webContents.getURL()
+            : "";
+          return typeof current === "string" && current ? current : "https://www.tiktok.com/";
+        } catch (error) {
+          return "https://www.tiktok.com/";
+        }
+      })();
 
   async function tryFetchFromWebcast() {
     if (!roomId) {
@@ -419,10 +443,10 @@ async function generateSigningParameters(win, options = {}) {
     const fetchScript = `
       (() => {
         const requestConfig = ${JSON.stringify({
-          url: "https://webcast.tiktok.com/webcast/im/fetch/",
-          referer: activeUrl,
-          params: fetchParams
-        })};
+      url: "https://webcast.tiktok.com/webcast/im/fetch/",
+      referer: activeUrl,
+      params: fetchParams
+    })};
         try {
           const requestUrl = new URL(requestConfig.url);
           const search = new URLSearchParams(requestConfig.params || {});
@@ -648,5 +672,6 @@ async function generateSigningParameters(win, options = {}) {
 module.exports = {
   injectCrawlerBundle,
   generateSigningParameters,
-  randomDeviceId
+  randomDeviceId,
+  readSessionIdFromSession
 };

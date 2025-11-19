@@ -5878,23 +5878,27 @@
                 Experimental option — these sign-in and session workflows may not work reliably yet. Please share feedback or bug reports at
                 <a href="https://discord.socialstream.ninja" target="_blank" style="color: #fde68a;">discord.socialstream.ninja</a>.
             </p>
+            
+            <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
+                <h4 style="margin: 0 0 10px 0; font-size: 15px;">Local Signer Status</h4>
+                <div id="tiktok-signin-status-${sourceId}" style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px;">
+                    <span style="color: #94a3b8;">Checking status...</span>
+                </div>
+                <button onclick="tiktokShowSigningWindow('${sourceId}')" class="button" style="background: #2563eb; width: 100%; justify-content: center;">
+                    Open Sign-in Window
+                </button>
+                <p style="margin: 8px 0 0 0; font-size: 12px; color: #94a3b8;">
+                    Opens a hidden browser window. Sign in to TikTok there, then close it (or leave it open).
+                </p>
+            </div>
+
             ${isAuthenticated ?
-                    `<p style="color: #4ade80; margin-bottom: 15px;">✓ TikTok session cookie saved for this source.</p>` :
-                    `<p style="margin-bottom: 15px;">Add your TikTok session cookie to unlock:</p>
-                <ul style="margin-bottom: 15px; margin-left: 20px;">
-                    <li>Sending chat messages from the app</li>
-                    <li>Improved connection stability</li>
-                    <li>Access to additional TikTok metadata</li>
-                </ul>`
+                    `<p style="color: #4ade80; margin-bottom: 15px;">✓ TikTok session cookie manually saved for this source.</p>` :
+                    `<p style="margin-bottom: 15px;">Or manually add your TikTok session cookie:</p>`
                 }
-            <p style="margin: 0 0 16px 0; line-height: 1.4;">
-                <strong>Tip:</strong> Clicking <em>Sign in with Browser</em> opens TikTok inside the app and automatically saves your <code>sessionid</code> once you finish signing in. Use the manual option only if you prefer to copy the cookie yourself.
-            </p>
-            <p style="margin: 0 0 16px 0; font-size: 13px; color: #e2e8f0;">
-                Leave the TikTok window open and navigate to the live room you want to monitor before generating signing keys. The helper reuses that same window so the signatures match the page you have loaded.
-            </p>
+            
             <div style="background: rgba(148, 163, 184, 0.12); border-radius: 6px; padding: 12px 14px; margin-bottom: 18px;">
-                <h4 style="margin: 0 0 10px 0; font-size: 15px;">Manual session cookie steps</h4>
+                <h4 style="margin: 0 0 10px 0; font-size: 15px;">Manual session cookie (Advanced)</h4>
                 <ol style="margin: 0 0 10px 18px; padding: 0; line-height: 1.4;">
                     <li>Open <strong>tiktok.com</strong> in your browser and sign in.</li>
                     <li>Press <strong>F12</strong> (or right-click → Inspect) to open Developer Tools.</li>
@@ -5959,6 +5963,51 @@
                 closeModal();
             }
         }
+
+        // Helper to check status
+        async function checkTikTokSignInStatus(sourceId) {
+            const statusEl = document.getElementById(`tiktok-signin-status-${sourceId}`);
+            if (!statusEl) return;
+
+            try {
+                const result = await ipcRenderer.invoke('getTikTokSignInStatus');
+                if (result && result.signedIn) {
+                    statusEl.innerHTML = `
+                        <span style="color: #4ade80; font-size: 16px;">●</span>
+                        <span style="color: #f8fafc; font-weight: 500;">Signed In</span>
+                    `;
+                } else {
+                    statusEl.innerHTML = `
+                        <span style="color: #94a3b8; font-size: 16px;">○</span>
+                        <span style="color: #cbd5f5;">Not Signed In</span>
+                    `;
+                }
+            } catch (err) {
+                console.error('Failed to check sign-in status:', err);
+                statusEl.innerHTML = `<span style="color: #ef4444;">Error checking status</span>`;
+            }
+        }
+
+        // Poll while menu is open
+        let tiktokStatusInterval = null;
+        const startTikTokStatusPolling = (sourceId) => {
+            if (tiktokStatusInterval) clearInterval(tiktokStatusInterval);
+            checkTikTokSignInStatus(sourceId);
+            tiktokStatusInterval = setInterval(() => checkTikTokSignInStatus(sourceId), 2000);
+        };
+
+        // Hook into modal close to stop polling
+        const originalCloseModal = window.closeModal;
+        window.closeModal = function () {
+            if (tiktokStatusInterval) {
+                clearInterval(tiktokStatusInterval);
+                tiktokStatusInterval = null;
+            }
+            if (originalCloseModal) originalCloseModal();
+        };
+
+        // Start polling immediately after render
+        setTimeout(() => startTikTokStatusPolling(sourceId), 100);
 
         function renderTikTokSigningResults(sourceId) {
             const container = document.getElementById(`tiktok-signing-result-${sourceId}`);

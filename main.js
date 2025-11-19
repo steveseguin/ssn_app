@@ -6888,662 +6888,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         eventRet.returnValue = app.getVersion();
     });
 
-    ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
-        if (CLI_FORCE_TIKTOK_CLASSIC) {
-            runtimeForceTikTokClassic = true;
-            process.env.SSAPP_FORCE_TIKTOK_CLASSIC = '1';
-            return;
-        }
-        const next = !!enabled;
-        runtimeForceTikTokClassic = next;
-        process.env.SSAPP_FORCE_TIKTOK_CLASSIC = next ? '1' : '0';
-    });
-
-    function normalizeTikTokSigningServiceUrl(rawValue) {
-        if (!rawValue || typeof rawValue !== 'string') {
-            return null;
-        }
-        let value = rawValue.trim();
-        if (!value) {
-            return null;
-        }
-        if (!/^https?:\/\//i.test(value)) {
-            value = `https://${value}`;
-        }
-        try {
-            const parsed = new URL(value);
-            return `${parsed.protocol}//${parsed.host}`.replace(/\/+$/, '');
-        } catch (_) {
-            return value.replace(/\/+$/, '');
-        }
-    }
-
-    const DEFAULT_TIKTOK_SIGNING_URL = 'https://www.tiktok.com/';
-
-    function normalizeTikTokLandingUrl(rawValue) {
-        if (!rawValue || typeof rawValue !== 'string') {
-            return DEFAULT_TIKTOK_SIGNING_URL;
-        }
-        const trimmed = rawValue.trim();
-        if (!trimmed) {
-            return DEFAULT_TIKTOK_SIGNING_URL;
-        }
-        try {
-            return new URL(trimmed).toString();
-        } catch (_) {
-            try {
-                return new URL(trimmed, DEFAULT_TIKTOK_SIGNING_URL).toString();
-            } catch (__error) {
-                return DEFAULT_TIKTOK_SIGNING_URL;
-            }
-        }
-    }
-
-    function ensureDeviceId(value) {
-        const digits = typeof value === 'string' ? value.replace(/\D+/g, '') : '';
-        if (digits && digits.length >= 19) {
-            return digits.slice(0, 19);
-        }
-        if (digits && digits.length > 0) {
-            return (digits + '0000000000000000000').slice(0, 19);
-        }
-        const random = String(crypto.randomInt(1e6, 9e6)) + Date.now().toString();
-        return random.slice(0, 19).padEnd(19, '0');
-    }
-
-    async function validateTikTokFetch(parameters, options = {}) {
-        const roomId = typeof options.roomId === 'string' && options.roomId.trim()
-            ? options.roomId.trim()
-            : (typeof parameters?.room_id === 'string' ? parameters.room_id.trim() : '');
-        const msToken = typeof parameters?.msToken === 'string' ? parameters.msToken.trim() : '';
-        const xBogus = typeof parameters?.["X-Bogus"] === 'string' ? parameters["X-Bogus"].trim() : '';
-        const signatureParam = typeof parameters?._signature === 'string' ? parameters._signature.trim() : '';
-        if (!roomId || !msToken || !xBogus) {
-            return {
-                attempted: false,
-                ok: false,
-                error: !roomId ? 'Room ID missing for validation.' : 'Missing msToken or X-Bogus for validation.'
-            };
-        }
-        const browserName = typeof parameters?.browserName === 'string' && parameters.browserName.trim()
-            ? parameters.browserName.trim()
-            : 'Electron';
-        const browserVersion = typeof parameters?.browserVersion === 'string' && parameters.browserVersion.trim()
-            ? parameters.browserVersion.trim()
-            : (process.versions.chrome || '1.0.0');
-        const userAgent = typeof parameters?.userAgent === 'string' && parameters.userAgent.trim()
-            ? parameters.userAgent
-            : `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browserVersion} Safari/537.36`;
-        const deviceId = ensureDeviceId(parameters?.device_id);
-
-        const qs = new URLSearchParams({
-            aid: '1988',
-            app_language: 'en',
-            app_name: 'tiktok_web',
-            browser_language: 'en-US',
-            browser_name: browserName,
-            browser_online: 'true',
-            browser_version: browserVersion,
-            cookie_enabled: 'true',
-            cursor: '',
-            debug: 'false',
-            device_id: deviceId,
-            device_platform: 'web',
-            did_rule: '3',
-            fetch_rule: '1',
-            history_comment_count: '0',
-            identity: 'audience',
-            internal_ext: '',
-            live_id: '12',
-            notice: 'SSAPP_SIGN_VALIDATE',
-            resp_content_type: 'protobuf',
-            room_id: roomId,
-            screen_height: '1080',
-            screen_width: '1920',
-            tz_name: 'UTC',
-            version_code: '331310',
-            msToken,
-            'X-Bogus': xBogus,
-            user_agent: userAgent
-        });
-
-        if (typeof parameters?.["X-Gnarly"] === 'string' && parameters["X-Gnarly"].trim()) {
-            qs.set('X-Gnarly', parameters["X-Gnarly"].trim());
-        }
-        if (signatureParam) {
-            qs.set('_signature', signatureParam);
-        }
-        if (typeof options.email === 'string' && options.email.trim()) {
-            qs.set('contact_us', options.email.trim());
-        }
-
-        const requestUrl = `https://webcast.tiktok.com/webcast/im/fetch/?${qs.toString()}`;
-        try {
-            const response = await fetch(requestUrl, {
-                method: 'GET',
-                headers: {
-                    'User-Agent': userAgent,
-                    'Referer': typeof options.referer === 'string' && options.referer ? options.referer : 'https://www.tiktok.com/',
-                    'Accept': '*/*',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Cookie': `msToken=${encodeURIComponent(msToken)}`
-                }
-            });
-            return {
-                attempted: true,
-                ok: response.ok,
-                status: response.status,
-                statusText: response.statusText,
-                timestamp: new Date().toISOString(),
-                error: response.ok ? null : `HTTP ${response.status} ${response.statusText || ''}`.trim()
-            };
-        } catch (error) {
-            return {
-                attempted: true,
-                ok: false,
-                status: null,
-                statusText: null,
-                timestamp: new Date().toISOString(),
-                error: error && error.message ? error.message : String(error)
-            };
-        }
-    }
-
-    function attachSigningWindow(win) {
-        if (!win || win.isDestroyed()) {
-            return;
-        }
-        if (detachSigningWindowHook && typeof detachSigningWindowHook === 'function') {
-            try {
-                detachSigningWindowHook();
-            } catch (_) { }
-            detachSigningWindowHook = null;
-        }
-        const handleClosed = () => {
-            if (tiktokSigningWindow === win) {
-                tiktokSigningWindow = null;
-            }
-        };
-        win.once('closed', handleClosed);
-        detachSigningWindowHook = () => {
-            try {
-                win.removeListener('closed', handleClosed);
-            } catch (_) { }
-        };
-    }
-
-    async function ensureTikTokSigningWindow(targetUrl, options = {}) {
-        const normalizedTarget = typeof targetUrl === 'string' && targetUrl.trim()
-            ? normalizeTikTokLandingUrl(targetUrl.trim())
-            : null;
-        const landingUrl = normalizedTarget || DEFAULT_TIKTOK_SIGNING_URL;
-        if (!tiktokSigningWindow || tiktokSigningWindow.isDestroyed()) {
-            tiktokSigningWindow = new BrowserWindow({
-                show: true,
-                width: 1100,
-                height: 720,
-                webPreferences: {
-                    nodeIntegration: false,
-                    contextIsolation: true,
-                    partition: TIKTOK_AUTH_PARTITION
-                }
-            });
-            try {
-                tiktokSigningWindow.setMenuBarVisibility(false);
-            } catch (_) { }
-            attachSigningWindow(tiktokSigningWindow);
-            await tiktokSigningWindow.loadURL(landingUrl);
-        } else if (normalizedTarget && options.allowNavigation !== false) {
-            await tiktokSigningWindow.loadURL(normalizedTarget);
-        }
-        try {
-            tiktokSigningWindow.show();
-            tiktokSigningWindow.focus();
-        } catch (_) { }
-        return tiktokSigningWindow;
-    }
-
-    function disposeTikTokSigningWindow() {
-        if (tiktokSigningWindow && !tiktokSigningWindow.isDestroyed()) {
-            tiktokSigningWindow.destroy();
-        }
-        tiktokSigningWindow = null;
-    }
-
-    function normalizeTikTokSigningArgs(input) {
-        if (!input || typeof input !== 'object') {
-            return null;
-        }
-        const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
-        const serviceUrl = normalizeTikTokSigningServiceUrl(typeof input.serviceUrl === 'string' ? input.serviceUrl : '');
-        const payload = {};
-        if (apiKey) {
-            payload.apiKey = apiKey;
-        }
-        if (serviceUrl) {
-            payload.serviceUrl = serviceUrl;
-        }
-        return Object.keys(payload).length ? payload : null;
-    }
-
-    ipcMain.handle("createTikTokConnection", async function (_event, args) {
-        if (runtimeForceTikTokClassic) {
-            console.info('[TikTok] Skipping WebSocket connection - classic mode is forced.');
-            const fallbackError = new Error('SSAPP_TIKTOK_FORCED_CLASSIC: TikTok WebSocket disabled by classic mode preference');
-            fallbackError.code = 'SSAPP_TIKTOK_FORCED_CLASSIC';
-            fallbackError.ssappFallback = true;
-            fallbackError.ssappFallbackMode = 'classic';
-            fallbackError.ssappFallbackMessage = 'TikTok WebSocket disabled by classic mode preference';
-            fallbackError.payloadLength = 0;
-            throw fallbackError;
-        }
-
-        if (!ConnectionManager) {
-            console.warn('[TikTok] ConnectionManager unavailable (tiktok-live-connector missing); falling back to classic mode');
-            const fallbackError = new Error('SSAPP_TIKTOK_CONNECTOR_MISSING: TikTok WebSocket connector not installed');
-            fallbackError.code = 'SSAPP_TIKTOK_CONNECTOR_MISSING';
-            fallbackError.ssappFallback = true;
-            fallbackError.ssappFallbackMode = 'classic';
-            fallbackError.ssappFallbackMessage = 'TikTok WebSocket connector not installed';
-            fallbackError.payloadLength = 0;
-            throw fallbackError;
-        }
-
-        wssID++;
-        const sourceIdFromRenderer = typeof args.sourceId === 'string' ? args.sourceId : null;
-        let username = args.username;
-        if (username) {
-            username = username.replace("@", "").toLowerCase().trim();
-            // Warn if username contains spaces or special chars (might be display name)
-            if (username.includes(' ') || username.match(/[^a-z0-9._]/)) {
-                console.warn('Username contains invalid characters - might be a display name:', username);
-                // Remove spaces and special chars to try to extract username
-                username = username.replace(/[^a-z0-9._]/g, '');
-            }
-        }
-        if (!username) {
-            return null;
-        }
-        console.log('Attempting TikTok connection with username:', username);
-
-        // Extract session credentials if provided
-        const rawSessionId = typeof args.sessionId === 'string' ? args.sessionId.trim() : '';
-        const rawTtTargetIdc = typeof args.ttTargetIdc === 'string' ? args.ttTargetIdc.trim() : '';
-        const sessionId = rawSessionId || null;
-        const ttTargetIdc = rawTtTargetIdc || null;
-        const signing = normalizeTikTokSigningArgs(args?.signing);
-        const signingProvider = args?.signingProvider || 'auto';
-
-        const requestedStrategy = args && args.strategy === 'websocket' ? 'websocket' : 'legacy';
-        const manager = new ConnectionManager(
-            username,
-            wssID,
-            sessionId,
-            ttTargetIdc,
-            { forceLegacyConnector: requestedStrategy === 'legacy', signing, signingProvider }
-        );
-        if (args && args.replyOnly === true) {
-            manager.replyOnly = true;
-        }
-        manager.sourceId = sourceIdFromRenderer || null;
-        websocketConnections[wssID] = manager;
-
-        connectionStates.set(wssID, {
-            isConnected: false,
-            lastAttempt: Date.now(),
-            isReconnecting: false,
-            attemptInProgress: false
-        });
-
-        // Create a virtual tab entry for the TikTok connection
-        // Use a special tab ID that won't conflict with real browser tabs
-        const virtualTabId = 900000 + wssID; // High number to avoid conflicts
-        browserViews[virtualTabId] = {
-            isTikTokVirtual: true,
-            wssID: wssID,
-            sourceId: sourceIdFromRenderer || null,
-            username: username,
-            args: {
-                url: `https://www.tiktok.com/@${username}/live`
-            },
-            webContents: {
-                getURL: () => `https://www.tiktok.com/@${username}/live`,
-                send: (channel, data) => {
-                    // Handle messages sent to this virtual tab
-                    if (channel !== "sendToTab") return;
-
-                    const text = typeof data?.text === 'string' ? data.text.trim() : '';
-                    if (!text) {
-                        console.warn('Ignoring empty TikTok chat send request');
-                        return;
-                    }
-
-                    if (!manager.sessionId) {
-                        console.warn('TikTok outbound messaging ignored: sessionid cookie missing');
-                        return;
-                    }
-
-                    if (!manager.ttTargetIdc && !manager.warnedMissingTtTargetIdc) {
-                        console.warn('TikTok outbound messaging proceeding without tt-target-idc cookie');
-                        manager.warnedMissingTtTargetIdc = true;
-                    }
-
-                    manager.sendChatMessage(text).then(result => {
-                        if (!result?.success && result?.error) {
-                            console.log('Failed to send TikTok message:', result.error);
-                        }
-                    }).catch(error => {
-                        console.error('Failed to send TikTok message:', error);
-                    });
-                }
-            }
-        };
-
-        // Store the virtual tab ID in the manager for reference
-        manager.virtualTabId = virtualTabId;
-        manager.wssID = wssID; // Store wssID for reference too
-        if (typeof manager.logDebug === 'function') {
-            manager.logDebug('lifecycle.virtualTab.assigned', { virtualTabId });
-        }
-
-        try {
-            await manager.initialize();
-        } catch (e) {
-            console.error('Error creating TikTok connection:', e);
-            // Propagate the error to the renderer so the UI can react accordingly
-            throw e;
-        }
-
-        // Return the virtual tab ID instead of wssID so it can be used with browserViews
-        return virtualTabId;
-    });
-
-    ipcMain.on("disconnectTikTokConnection", function (eventRet, args) {
-        if (!args.wssID) {
-            eventRet.returnValue = false;
-            return;
-        }
-
-        try {
-            const managerMeta = websocketConnections[args.wssID];
-            const sourceId = managerMeta && managerMeta.sourceId ? managerMeta.sourceId : null;
-            try {
-                // Notify renderer to clear UI/countdowns
-                mainWindow.webContents.send('tiktokConnectionStatus', {
-                    wssID: args.wssID,
-                    status: 'stopped_by_user',
-                    sourceId
-                });
-            } catch (_) { }
-            cleanupConnection(args.wssID);
-            eventRet.returnValue = true;
-        } catch (e) {
-            console.error('Error in disconnectTikTokConnection:', e);
-            eventRet.returnValue = false;
-        }
-    });
-
-    // TikTok authentication handlers
-    ipcMain.handle("authenticateTikTok", async () => {
-        try {
-            const auth = new TikTokAuth(mainWindow);
-            const credentials = await auth.authenticate();
-            if (auth.authWindow && !auth.authWindow.isDestroyed()) {
-                tiktokSigningWindow = auth.authWindow;
-                attachSigningWindow(tiktokSigningWindow);
-                try {
-                    tiktokSigningWindow.show();
-                    tiktokSigningWindow.focus();
-                } catch (_) { }
-            }
-            return {
-                success: true,
-                credentials
-            };
-        } catch (error) {
-            console.error('TikTok authentication failed:', error);
-            return {
-                success: false,
-                error: error.message
-            };
-        }
-    });
-
-    ipcMain.handle("tiktokShowSigningWindow", async (_event, args = {}) => {
-        try {
-            const landingUrl = typeof args?.landingUrl === 'string' && args.landingUrl.trim()
-                ? args.landingUrl.trim()
-                : null;
-            await ensureTikTokSigningWindow(landingUrl, { allowNavigation: Boolean(landingUrl) });
-            return { success: true };
-        } catch (error) {
-            console.error('[TikTok] Failed to show signing window:', error);
-            return {
-                success: false,
-                error: error && error.message ? error.message : 'Unable to show the TikTok window.'
-            };
-        }
-    });
-
-    ipcMain.handle("getTikTokCookies", async () => {
-        try {
-            const auth = new TikTokAuth(mainWindow);
-            const credentials = await auth.getCookiesFromSession();
-            return {
-                success: true,
-                credentials
-            };
-        } catch (error) {
-            console.error('Failed to get TikTok cookies:', error);
-            return {
-                success: false,
-                error: error.message
-            };
-        }
-    });
-
-    ipcMain.handle("promptTikTokCookies", async () => {
-        try {
-            const auth = new TikTokAuth(mainWindow);
-            const credentials = await auth.promptForCookies();
-            if (credentials) {
-                return {
-                    success: true,
-                    credentials
-                };
-            } else {
-                return {
-                    success: false,
-                    error: 'User cancelled'
-                };
-            }
-        } catch (error) {
-            console.error('Failed to prompt for TikTok cookies:', error);
-            return {
-                success: false,
-                error: error.message
-            };
-        }
-    });
-
-    ipcMain.handle("tiktokGenerateSigningParameters", async (_event, args = {}) => {
-        if (!tikTokSignerHelper || typeof tikTokSignerHelper.injectCrawlerBundle !== 'function' || typeof tikTokSignerHelper.generateSigningParameters !== 'function') {
-            return {
-                success: false,
-                error: 'TikTok signing helper is not available in this build.'
-            };
-        }
-
-        const {
-            pathWithQuery,
-            urlToSign,
-            landingUrl,
-            browserName,
-            browserVersion,
-            userAgent,
-            msToken,
-            deviceId,
-            roomId,
-            email,
-            validate
-        } = args;
-
-        const normalizedLanding = typeof landingUrl === 'string' && landingUrl.trim()
-            ? landingUrl.trim()
-            : null;
-
-        try {
-            const signingWindow = await ensureTikTokSigningWindow(normalizedLanding, { allowNavigation: Boolean(normalizedLanding) });
-            const activeUrl = (() => {
-                try {
-                    const current = typeof signingWindow.webContents.getURL === 'function'
-                        ? signingWindow.webContents.getURL()
-                        : signingWindow.webContents.getURL;
-                    return typeof current === 'string' && current ? current : null;
-                } catch (_) {
-                    return null;
-                }
-            })();
-            const isTikTokOrigin = (() => {
-                if (!activeUrl) {
-                    return false;
-                }
-                try {
-                    const parsed = new URL(activeUrl);
-                    return /(?:^|\.)tiktok\.com$/.test(parsed.hostname);
-                } catch (_) {
-                    return false;
-                }
-            })();
-            if (!isTikTokOrigin) {
-                return {
-                    success: false,
-                    error: 'Open a TikTok live room in the helper window before generating signing keys.'
-                };
-            }
-            const normalizedRoomId = typeof roomId === 'string' && roomId.trim() ? roomId.trim() : null;
-            const normalizedEmail = typeof email === 'string' && email.trim() ? email.trim() : null;
-            await tikTokSignerHelper.injectCrawlerBundle(signingWindow);
-            const parameters = await tikTokSignerHelper.generateSigningParameters(signingWindow, {
-                browserName: typeof browserName === 'string' && browserName.trim() ? browserName.trim() : 'Electron',
-                browserVersion: typeof browserVersion === 'string' && browserVersion.trim() ? browserVersion.trim() : process.versions.electron,
-                userAgent: typeof userAgent === 'string' && userAgent.trim() ? userAgent.trim() : signingWindow.webContents.getUserAgent(),
-                pathWithQuery: typeof pathWithQuery === 'string' && pathWithQuery.trim() ? pathWithQuery.trim() : null,
-                urlToSign: typeof urlToSign === 'string' && urlToSign.trim() ? urlToSign.trim() : activeUrl,
-                msToken: typeof msToken === 'string' && msToken.trim() ? msToken.trim() : null,
-                deviceId: typeof deviceId === 'string' && deviceId.trim() ? deviceId.trim() : undefined,
-                roomId: normalizedRoomId,
-                email: normalizedEmail,
-                activeUrl: activeUrl || null
-            });
-            const sanitized = {
-                device_id: parameters?.device_id || null,
-                msToken: parameters?.msToken || '',
-                "X-Bogus": parameters?.["X-Bogus"] || '',
-                "X-Gnarly": parameters?.["X-Gnarly"] || '',
-                "_signature": parameters?._signature || parameters?.signature || '',
-                browserName: parameters?.browserName || 'Electron',
-                browserVersion: parameters?.browserVersion || process.versions.electron,
-                userAgent: parameters?.userAgent || signingWindow.webContents.getUserAgent(),
-                pathWithQuery: parameters?.pathWithQuery || (typeof pathWithQuery === 'string' ? pathWithQuery : null)
-            };
-            if (parameters?.room_id) {
-                sanitized.room_id = parameters.room_id;
-            }
-            if (parameters?.cursor) {
-                sanitized.cursor = parameters.cursor;
-            }
-            if (parameters?.notice) {
-                sanitized.notice = parameters.notice;
-            }
-            const warnings = [];
-            if (!sanitized.msToken) {
-                warnings.push('msToken cookie not found. Stay signed into TikTok in the helper window and reload the live room.');
-            }
-            if (!sanitized["X-Bogus"]) {
-                warnings.push('X-Bogus signature is empty. Ensure the helper window is on the same path or API URL you plan to call.');
-            }
-            if (!sanitized["X-Gnarly"]) {
-                warnings.push('X-Gnarly signature was not returned. TikTok sometimes omits it, but double-check before relying on this payload.');
-            }
-            if (!sanitized["_signature"]) {
-                warnings.push('_signature parameter missing from TikTok response.');
-            }
-            let validation = null;
-            if (validate && normalizedRoomId) {
-                validation = await validateTikTokFetch(sanitized, {
-                    roomId: normalizedRoomId,
-                    email: normalizedEmail,
-                    referer: activeUrl
-                }).catch(error => ({
-                    attempted: true,
-                    ok: false,
-                    error: error && error.message ? error.message : String(error),
-                    timestamp: new Date().toISOString()
-                }));
-                if (validation && validation.error && !validation.ok) {
-                    warnings.push(validation.error);
-                }
-            }
-            return {
-                success: true,
-                parameters: sanitized,
-                warnings,
-                validation
-            };
-        } catch (error) {
-            console.error('Failed to generate TikTok signing parameters:', error?.stack || error);
-            return {
-                success: false,
-                error: error && error.message ? error.message : 'Failed to generate signing parameters.'
-            };
-        }
-    });
-
-    // Handler for sending TikTok chat messages
-    ipcMain.handle("sendTikTokMessage", async (event, args) => {
-        try {
-            const {
-                wssID,
-                message
-            } = args || {};
-
-            const numericWssID = typeof wssID === 'number' ? wssID : Number.parseInt(wssID, 10);
-
-            if (!Number.isFinite(numericWssID)) {
-                return {
-                    success: false,
-                    error: 'Missing wssID or message'
-                };
-            }
-
-            if (typeof message !== 'string' || !message.trim()) {
-                return {
-                    success: false,
-                    error: 'Message must be a non-empty string'
-                };
-            }
-
-            const connection = websocketConnections[numericWssID];
-            if (!connection) {
-                return {
-                    success: false,
-                    error: 'Connection not found'
-                };
-            }
-
-            // Send the message
-            const result = await connection.sendChatMessage(message);
-            return result;
-
-        } catch (error) {
-            console.error('Error in sendTikTokMessage handler:', error);
-            return {
-                success: false,
-                error: error.message
-            };
-        }
-    });
+    // TikTok handlers moved to top level
 
     /* ipcMain.on('inject', function(eventRet,args) {
         const view = browserViews[args.vid];
@@ -9952,4 +9297,682 @@ electron.powerMonitor.on("on-battery", () => {
         icon: path.join(__dirname, "assets", "icons", "png", "256x256.png"),
     });
     notification.show();
+});
+
+ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
+    if (CLI_FORCE_TIKTOK_CLASSIC) {
+        runtimeForceTikTokClassic = true;
+        process.env.SSAPP_FORCE_TIKTOK_CLASSIC = '1';
+        return;
+    }
+    const next = !!enabled;
+    runtimeForceTikTokClassic = next;
+    process.env.SSAPP_FORCE_TIKTOK_CLASSIC = next ? '1' : '0';
+});
+
+function normalizeTikTokSigningServiceUrl(rawValue) {
+    if (!rawValue || typeof rawValue !== 'string') {
+        return null;
+    }
+    let value = rawValue.trim();
+    if (!value) {
+        return null;
+    }
+    if (!/^https?:\/\//i.test(value)) {
+        value = `https://${value}`;
+    }
+    try {
+        const parsed = new URL(value);
+        return `${parsed.protocol}//${parsed.host}`.replace(/\/+$/, '');
+    } catch (_) {
+        return value.replace(/\/+$/, '');
+    }
+}
+
+const DEFAULT_TIKTOK_SIGNING_URL = 'https://www.tiktok.com/';
+
+function normalizeTikTokLandingUrl(rawValue) {
+    if (!rawValue || typeof rawValue !== 'string') {
+        return DEFAULT_TIKTOK_SIGNING_URL;
+    }
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+        return DEFAULT_TIKTOK_SIGNING_URL;
+    }
+    try {
+        return new URL(trimmed).toString();
+    } catch (_) {
+        try {
+            return new URL(trimmed, DEFAULT_TIKTOK_SIGNING_URL).toString();
+        } catch (__error) {
+            return DEFAULT_TIKTOK_SIGNING_URL;
+        }
+    }
+}
+
+function ensureDeviceId(value) {
+    const digits = typeof value === 'string' ? value.replace(/\D+/g, '') : '';
+    if (digits && digits.length >= 19) {
+        return digits.slice(0, 19);
+    }
+    if (digits && digits.length > 0) {
+        return (digits + '0000000000000000000').slice(0, 19);
+    }
+    const random = String(crypto.randomInt(1e6, 9e6)) + Date.now().toString();
+    return random.slice(0, 19).padEnd(19, '0');
+}
+
+async function validateTikTokFetch(parameters, options = {}) {
+    const roomId = typeof options.roomId === 'string' && options.roomId.trim()
+        ? options.roomId.trim()
+        : (typeof parameters?.room_id === 'string' ? parameters.room_id.trim() : '');
+    const msToken = typeof parameters?.msToken === 'string' ? parameters.msToken.trim() : '';
+    const xBogus = typeof parameters?.["X-Bogus"] === 'string' ? parameters["X-Bogus"].trim() : '';
+    const signatureParam = typeof parameters?._signature === 'string' ? parameters._signature.trim() : '';
+    if (!roomId || !msToken || !xBogus) {
+        return {
+            attempted: false,
+            ok: false,
+            error: !roomId ? 'Room ID missing for validation.' : 'Missing msToken or X-Bogus for validation.'
+        };
+    }
+    const browserName = typeof parameters?.browserName === 'string' && parameters.browserName.trim()
+        ? parameters.browserName.trim()
+        : 'Electron';
+    const browserVersion = typeof parameters?.browserVersion === 'string' && parameters.browserVersion.trim()
+        ? parameters.browserVersion.trim()
+        : (process.versions.chrome || '1.0.0');
+    const userAgent = typeof parameters?.userAgent === 'string' && parameters.userAgent.trim()
+        ? parameters.userAgent
+        : `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browserVersion} Safari/537.36`;
+    const deviceId = ensureDeviceId(parameters?.device_id);
+
+    const qs = new URLSearchParams({
+        aid: '1988',
+        app_language: 'en',
+        app_name: 'tiktok_web',
+        browser_language: 'en-US',
+        browser_name: browserName,
+        browser_online: 'true',
+        browser_version: browserVersion,
+        cookie_enabled: 'true',
+        cursor: '',
+        debug: 'false',
+        device_id: deviceId,
+        device_platform: 'web',
+        did_rule: '3',
+        fetch_rule: '1',
+        history_comment_count: '0',
+        identity: 'audience',
+        internal_ext: '',
+        live_id: '12',
+        notice: 'SSAPP_SIGN_VALIDATE',
+        resp_content_type: 'protobuf',
+        room_id: roomId,
+        screen_height: '1080',
+        screen_width: '1920',
+        tz_name: 'UTC',
+        version_code: '331310',
+        msToken,
+        'X-Bogus': xBogus,
+        user_agent: userAgent
+    });
+
+    if (typeof parameters?.["X-Gnarly"] === 'string' && parameters["X-Gnarly"].trim()) {
+        qs.set('X-Gnarly', parameters["X-Gnarly"].trim());
+    }
+    if (signatureParam) {
+        qs.set('_signature', signatureParam);
+    }
+    if (typeof options.email === 'string' && options.email.trim()) {
+        qs.set('contact_us', options.email.trim());
+    }
+
+    const requestUrl = `https://webcast.tiktok.com/webcast/im/fetch/?${qs.toString()}`;
+    try {
+        const response = await fetch(requestUrl, {
+            method: 'GET',
+            headers: {
+                'User-Agent': userAgent,
+                'Referer': typeof options.referer === 'string' && options.referer ? options.referer : 'https://www.tiktok.com/',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Cookie': `msToken=${encodeURIComponent(msToken)}`
+            }
+        });
+        return {
+            attempted: true,
+            ok: response.ok,
+            status: response.status,
+            statusText: response.statusText,
+            timestamp: new Date().toISOString(),
+            error: response.ok ? null : `HTTP ${response.status} ${response.statusText || ''}`.trim()
+        };
+    } catch (error) {
+        return {
+            attempted: true,
+            ok: false,
+            status: null,
+            statusText: null,
+            timestamp: new Date().toISOString(),
+            error: error && error.message ? error.message : String(error)
+        };
+    }
+}
+
+function attachSigningWindow(win) {
+    if (!win || win.isDestroyed()) {
+        return;
+    }
+    if (detachSigningWindowHook && typeof detachSigningWindowHook === 'function') {
+        try {
+            detachSigningWindowHook();
+        } catch (_) { }
+        detachSigningWindowHook = null;
+    }
+    const handleClosed = () => {
+        if (tiktokSigningWindow === win) {
+            tiktokSigningWindow = null;
+        }
+    };
+    win.once('closed', handleClosed);
+    detachSigningWindowHook = () => {
+        try {
+            win.removeListener('closed', handleClosed);
+        } catch (_) { }
+    };
+}
+
+async function ensureTikTokSigningWindow(targetUrl, options = {}) {
+    const normalizedTarget = typeof targetUrl === 'string' && targetUrl.trim()
+        ? normalizeTikTokLandingUrl(targetUrl.trim())
+        : null;
+    // Use feedback page as it's lighter but still loads necessary SDKs
+    const DEFAULT_TIKTOK_SIGNING_URL = "https://www.tiktok.com/feedback";
+    const landingUrl = normalizedTarget || DEFAULT_TIKTOK_SIGNING_URL;
+    if (!tiktokSigningWindow || tiktokSigningWindow.isDestroyed()) {
+        tiktokSigningWindow = new BrowserWindow({
+            show: true,
+            width: 1100,
+            height: 720,
+            webPreferences: {
+                nodeIntegration: false,
+                contextIsolation: true,
+                partition: TIKTOK_AUTH_PARTITION
+            }
+        });
+        try {
+            tiktokSigningWindow.setMenuBarVisibility(false);
+        } catch (_) { }
+        attachSigningWindow(tiktokSigningWindow);
+        await tiktokSigningWindow.loadURL(landingUrl);
+    } else if (normalizedTarget && options.allowNavigation !== false) {
+        await tiktokSigningWindow.loadURL(normalizedTarget);
+    }
+    try {
+        tiktokSigningWindow.show();
+        tiktokSigningWindow.focus();
+    } catch (_) { }
+    return tiktokSigningWindow;
+}
+
+function disposeTikTokSigningWindow() {
+    if (tiktokSigningWindow && !tiktokSigningWindow.isDestroyed()) {
+        tiktokSigningWindow.destroy();
+    }
+    tiktokSigningWindow = null;
+}
+
+function normalizeTikTokSigningArgs(input) {
+    if (!input || typeof input !== 'object') {
+        return null;
+    }
+    const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
+    const serviceUrl = normalizeTikTokSigningServiceUrl(typeof input.serviceUrl === 'string' ? input.serviceUrl : '');
+    const payload = {};
+    if (apiKey) {
+        payload.apiKey = apiKey;
+    }
+    if (serviceUrl) {
+        payload.serviceUrl = serviceUrl;
+    }
+    return Object.keys(payload).length ? payload : null;
+}
+
+ipcMain.handle("createTikTokConnection", async function (_event, args) {
+    if (runtimeForceTikTokClassic) {
+        console.info('[TikTok] Skipping WebSocket connection - classic mode is forced.');
+        const fallbackError = new Error('SSAPP_TIKTOK_FORCED_CLASSIC: TikTok WebSocket disabled by classic mode preference');
+        fallbackError.code = 'SSAPP_TIKTOK_FORCED_CLASSIC';
+        fallbackError.ssappFallback = true;
+        fallbackError.ssappFallbackMode = 'classic';
+        fallbackError.ssappFallbackMessage = 'TikTok WebSocket disabled by classic mode preference';
+        fallbackError.payloadLength = 0;
+        throw fallbackError;
+    }
+
+    if (!ConnectionManager) {
+        console.warn('[TikTok] ConnectionManager unavailable (tiktok-live-connector missing); falling back to classic mode');
+        const fallbackError = new Error('SSAPP_TIKTOK_CONNECTOR_MISSING: TikTok WebSocket connector not installed');
+        fallbackError.code = 'SSAPP_TIKTOK_CONNECTOR_MISSING';
+        fallbackError.ssappFallback = true;
+        fallbackError.ssappFallbackMode = 'classic';
+        fallbackError.ssappFallbackMessage = 'TikTok WebSocket connector not installed';
+        fallbackError.payloadLength = 0;
+        throw fallbackError;
+    }
+
+    wssID++;
+    const sourceIdFromRenderer = typeof args.sourceId === 'string' ? args.sourceId : null;
+    let username = args.username;
+    if (username) {
+        username = username.replace("@", "").toLowerCase().trim();
+        // Warn if username contains spaces or special chars (might be display name)
+        if (username.includes(' ') || username.match(/[^a-z0-9._]/)) {
+            console.warn('Username contains invalid characters - might be a display name:', username);
+            // Remove spaces and special chars to try to extract username
+            username = username.replace(/[^a-z0-9._]/g, '');
+        }
+    }
+    if (!username) {
+        return null;
+    }
+    console.log('Attempting TikTok connection with username:', username);
+
+    // Extract session credentials if provided
+    const rawSessionId = typeof args.sessionId === 'string' ? args.sessionId.trim() : '';
+    const rawTtTargetIdc = typeof args.ttTargetIdc === 'string' ? args.ttTargetIdc.trim() : '';
+    const sessionId = rawSessionId || null;
+    const ttTargetIdc = rawTtTargetIdc || null;
+    const signing = normalizeTikTokSigningArgs(args?.signing);
+    const signingProvider = args?.signingProvider || 'auto';
+
+    const requestedStrategy = args && args.strategy === 'websocket' ? 'websocket' : 'legacy';
+    const manager = new ConnectionManager(
+        username,
+        wssID,
+        sessionId,
+        ttTargetIdc,
+        { forceLegacyConnector: requestedStrategy === 'legacy', signing, signingProvider }
+    );
+    if (args && args.replyOnly === true) {
+        manager.replyOnly = true;
+    }
+    manager.sourceId = sourceIdFromRenderer || null;
+    websocketConnections[wssID] = manager;
+
+    connectionStates.set(wssID, {
+        isConnected: false,
+        lastAttempt: Date.now(),
+        isReconnecting: false,
+        attemptInProgress: false
+    });
+
+    // Create a virtual tab entry for the TikTok connection
+    // Use a special tab ID that won't conflict with real browser tabs
+    const virtualTabId = 900000 + wssID; // High number to avoid conflicts
+    browserViews[virtualTabId] = {
+        isTikTokVirtual: true,
+        wssID: wssID,
+        sourceId: sourceIdFromRenderer || null,
+        username: username,
+        args: {
+            url: `https://www.tiktok.com/@${username}/live`
+        },
+        webContents: {
+            getURL: () => `https://www.tiktok.com/@${username}/live`,
+            send: (channel, data) => {
+                // Handle messages sent to this virtual tab
+                if (channel !== "sendToTab") return;
+
+                const text = typeof data?.text === 'string' ? data.text.trim() : '';
+                if (!text) {
+                    console.warn('Ignoring empty TikTok chat send request');
+                    return;
+                }
+
+                if (!manager.sessionId) {
+                    console.warn('TikTok outbound messaging ignored: sessionid cookie missing');
+                    return;
+                }
+
+                if (!manager.ttTargetIdc && !manager.warnedMissingTtTargetIdc) {
+                    console.warn('TikTok outbound messaging proceeding without tt-target-idc cookie');
+                    manager.warnedMissingTtTargetIdc = true;
+                }
+
+                manager.sendChatMessage(text).then(result => {
+                    if (!result?.success && result?.error) {
+                        console.log('Failed to send TikTok message:', result.error);
+                    }
+                }).catch(error => {
+                    console.error('Failed to send TikTok message:', error);
+                });
+            }
+        }
+    };
+
+    // Store the virtual tab ID in the manager for reference
+    manager.virtualTabId = virtualTabId;
+    manager.wssID = wssID; // Store wssID for reference too
+    if (typeof manager.logDebug === 'function') {
+        manager.logDebug('lifecycle.virtualTab.assigned', { virtualTabId });
+    }
+
+    try {
+        await manager.initialize();
+    } catch (e) {
+        console.error('Error creating TikTok connection:', e);
+        // Propagate the error to the renderer so the UI can react accordingly
+        throw e;
+    }
+
+    // Return the virtual tab ID instead of wssID so it can be used with browserViews
+    return virtualTabId;
+});
+
+ipcMain.on("disconnectTikTokConnection", function (eventRet, args) {
+    if (!args.wssID) {
+        eventRet.returnValue = false;
+        return;
+    }
+
+    try {
+        const managerMeta = websocketConnections[args.wssID];
+        const sourceId = managerMeta && managerMeta.sourceId ? managerMeta.sourceId : null;
+        try {
+            // Notify renderer to clear UI/countdowns
+            mainWindow.webContents.send('tiktokConnectionStatus', {
+                wssID: args.wssID,
+                status: 'stopped_by_user',
+                sourceId
+            });
+        } catch (_) { }
+        cleanupConnection(args.wssID);
+        eventRet.returnValue = true;
+    } catch (e) {
+        console.error('Error in disconnectTikTokConnection:', e);
+        eventRet.returnValue = false;
+    }
+});
+
+// TikTok authentication handlers
+ipcMain.handle("authenticateTikTok", async () => {
+    try {
+        const auth = new TikTokAuth(mainWindow);
+        const credentials = await auth.authenticate();
+        if (auth.authWindow && !auth.authWindow.isDestroyed()) {
+            tiktokSigningWindow = auth.authWindow;
+            attachSigningWindow(tiktokSigningWindow);
+            try {
+                tiktokSigningWindow.show();
+                tiktokSigningWindow.focus();
+            } catch (_) { }
+        }
+        return {
+            success: true,
+            credentials
+        };
+    } catch (error) {
+        console.error('TikTok authentication failed:', error);
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+});
+
+ipcMain.handle("tiktokShowSigningWindow", async (_event, args = {}) => {
+    try {
+        const landingUrl = typeof args?.landingUrl === 'string' && args.landingUrl.trim()
+            ? args.landingUrl.trim()
+            : null;
+        await ensureTikTokSigningWindow(landingUrl, { allowNavigation: Boolean(landingUrl) });
+        return { success: true };
+    } catch (error) {
+        console.error('[TikTok] Failed to show signing window:', error);
+        return {
+            success: false,
+            error: error && error.message ? error.message : 'Unable to show the TikTok window.'
+        };
+    }
+});
+
+ipcMain.handle("getTikTokCookies", async () => {
+    try {
+        const auth = new TikTokAuth(mainWindow);
+        const credentials = await auth.getCookiesFromSession();
+        return {
+            success: true,
+            credentials
+        };
+    } catch (error) {
+        console.error('Failed to get TikTok cookies:', error);
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+});
+
+ipcMain.handle("promptTikTokCookies", async () => {
+    try {
+        const auth = new TikTokAuth(mainWindow);
+        const credentials = await auth.promptForCookies();
+        if (credentials) {
+            return {
+                success: true,
+                credentials
+            };
+        } else {
+            return {
+                success: false,
+                error: 'User cancelled'
+            };
+        }
+    } catch (error) {
+        console.error('Failed to prompt for TikTok cookies:', error);
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+});
+
+ipcMain.handle("getTikTokSignInStatus", async () => {
+    if (!tiktokSigningWindow || tiktokSigningWindow.isDestroyed()) {
+        // If window is closed, we assume not signed in (or unknown).
+        // We could try to open it hidden to check, but that might be intrusive.
+        // For now, let's just return false.
+        return { signedIn: false, username: null };
+    }
+    if (!tikTokSignerHelper || typeof tikTokSignerHelper.readSessionIdFromSession !== 'function') {
+        return { signedIn: false, error: 'Signer helper missing' };
+    }
+    try {
+        const sessionId = await tikTokSignerHelper.readSessionIdFromSession(tiktokSigningWindow);
+        return { signedIn: !!sessionId };
+    } catch (error) {
+        console.error('Failed to check TikTok sign-in status:', error);
+        return { signedIn: false, error: error.message };
+    }
+});
+
+ipcMain.handle("tiktokGenerateSigningParameters", async (_event, args = {}) => {
+    if (!tikTokSignerHelper || typeof tikTokSignerHelper.injectCrawlerBundle !== 'function' || typeof tikTokSignerHelper.generateSigningParameters !== 'function') {
+        return {
+            success: false,
+            error: 'TikTok signing helper is not available in this build.'
+        };
+    }
+
+    const {
+        pathWithQuery,
+        urlToSign,
+        landingUrl,
+        browserName,
+        browserVersion,
+        userAgent,
+        msToken,
+        deviceId,
+        roomId,
+        email,
+        validate
+    } = args;
+
+    const normalizedLanding = typeof landingUrl === 'string' && landingUrl.trim()
+        ? landingUrl.trim()
+        : null;
+
+    try {
+        const signingWindow = await ensureTikTokSigningWindow(normalizedLanding, { allowNavigation: Boolean(normalizedLanding) });
+        const activeUrl = (() => {
+            try {
+                const current = typeof signingWindow.webContents.getURL === 'function'
+                    ? signingWindow.webContents.getURL()
+                    : signingWindow.webContents.getURL;
+                return typeof current === 'string' && current ? current : null;
+            } catch (_) {
+                return null;
+            }
+        })();
+        const isTikTokOrigin = (() => {
+            if (!activeUrl) {
+                return false;
+            }
+            try {
+                const parsed = new URL(activeUrl);
+                return /(?:^|\.)tiktok\.com$/.test(parsed.hostname);
+            } catch (_) {
+                return false;
+            }
+        })();
+        if (!isTikTokOrigin) {
+            return {
+                success: false,
+                error: 'Open a TikTok live room in the helper window before generating signing keys.'
+            };
+        }
+        const normalizedRoomId = typeof roomId === 'string' && roomId.trim() ? roomId.trim() : null;
+        const normalizedEmail = typeof email === 'string' && email.trim() ? email.trim() : null;
+        await tikTokSignerHelper.injectCrawlerBundle(signingWindow);
+        const parameters = await tikTokSignerHelper.generateSigningParameters(signingWindow, {
+            browserName: typeof browserName === 'string' && browserName.trim() ? browserName.trim() : 'Electron',
+            browserVersion: typeof browserVersion === 'string' && browserVersion.trim() ? browserVersion.trim() : process.versions.electron,
+            userAgent: typeof userAgent === 'string' && userAgent.trim() ? userAgent.trim() : signingWindow.webContents.getUserAgent(),
+            pathWithQuery: typeof pathWithQuery === 'string' && pathWithQuery.trim() ? pathWithQuery.trim() : null,
+            urlToSign: typeof urlToSign === 'string' && urlToSign.trim() ? urlToSign.trim() : activeUrl,
+            msToken: typeof msToken === 'string' && msToken.trim() ? msToken.trim() : null,
+            deviceId: typeof deviceId === 'string' && deviceId.trim() ? deviceId.trim() : undefined,
+            roomId: normalizedRoomId,
+            email: normalizedEmail,
+            activeUrl: activeUrl || null
+        });
+        const sanitized = {
+            device_id: parameters?.device_id || null,
+            msToken: parameters?.msToken || '',
+            "X-Bogus": parameters?.["X-Bogus"] || '',
+            "X-Gnarly": parameters?.["X-Gnarly"] || '',
+            "_signature": parameters?._signature || parameters?.signature || '',
+            browserName: parameters?.browserName || 'Electron',
+            browserVersion: parameters?.browserVersion || process.versions.electron,
+            userAgent: parameters?.userAgent || signingWindow.webContents.getUserAgent(),
+            pathWithQuery: parameters?.pathWithQuery || (typeof pathWithQuery === 'string' ? pathWithQuery : null)
+        };
+        if (parameters?.room_id) {
+            sanitized.room_id = parameters.room_id;
+        }
+        if (parameters?.cursor) {
+            sanitized.cursor = parameters.cursor;
+        }
+        if (parameters?.notice) {
+            sanitized.notice = parameters.notice;
+        }
+        const warnings = [];
+        if (!sanitized.msToken) {
+            warnings.push('msToken cookie not found. Stay signed into TikTok in the helper window and reload the live room.');
+        }
+        if (!sanitized["X-Bogus"]) {
+            warnings.push('X-Bogus signature is empty. Ensure the helper window is on the same path or API URL you plan to call.');
+        }
+        if (!sanitized["X-Gnarly"]) {
+            warnings.push('X-Gnarly signature was not returned. TikTok sometimes omits it, but double-check before relying on this payload.');
+        }
+        if (!sanitized["_signature"]) {
+            warnings.push('_signature parameter missing from TikTok response.');
+        }
+        let validation = null;
+        if (validate && normalizedRoomId) {
+            validation = await validateTikTokFetch(sanitized, {
+                roomId: normalizedRoomId,
+                email: normalizedEmail,
+                referer: activeUrl
+            }).catch(error => ({
+                attempted: true,
+                ok: false,
+                error: error && error.message ? error.message : String(error),
+                timestamp: new Date().toISOString()
+            }));
+            if (validation && validation.error && !validation.ok) {
+                warnings.push(validation.error);
+            }
+        }
+        return {
+            success: true,
+            parameters: sanitized,
+            warnings,
+            validation
+        };
+    } catch (error) {
+        console.error('Failed to generate TikTok signing parameters:', error?.stack || error);
+        return {
+            success: false,
+            error: error && error.message ? error.message : 'Failed to generate signing parameters.'
+        };
+    }
+});
+
+// Handler for sending TikTok chat messages
+ipcMain.handle("sendTikTokMessage", async (event, args) => {
+    try {
+        const {
+            wssID,
+            message
+        } = args || {};
+
+        const numericWssID = typeof wssID === 'number' ? wssID : Number.parseInt(wssID, 10);
+
+        if (!Number.isFinite(numericWssID)) {
+            return {
+                success: false,
+                error: 'Missing wssID or message'
+            };
+        }
+
+        if (typeof message !== 'string' || !message.trim()) {
+            return {
+                success: false,
+                error: 'Message must be a non-empty string'
+            };
+        }
+
+        const connection = websocketConnections[numericWssID];
+        if (!connection) {
+            return {
+                success: false,
+                error: 'Connection not found'
+            };
+        }
+
+        // Send the message
+        const result = await connection.sendChatMessage(message);
+        return result;
+
+    } catch (error) {
+        console.error('Error in sendTikTokMessage handler:', error);
+        return {
+            success: false,
+            error: error.message
+        };
+    }
 });
