@@ -41,9 +41,10 @@
 ## Task List Toward Independence
 
 1.  **In-House Signing Path (High Priority)**
-    - [ ] Wire `tiktok-signing/electron-signer.js` into `tiktok/connection-manager.js`.
-    - [ ] Create a `signedWebSocketProvider` adapter that uses the local Electron window to sign requests.
-    - [ ] Verify `msToken` and `userAgent` are correctly passed from the signing window.
+    - [x] Wire `tiktok-signing/electron-signer.js` into `tiktok/connection-manager.js`.
+    - [x] Create a `signedWebSocketProvider` adapter that uses the local Electron window to sign requests.
+    - [x] Verify `msToken` and `userAgent` are correctly passed from the signing window.
+    - [x] **FIXED**: Implemented in-window fetch to bypass 403 errors and deserialized the protobuf response using `tiktok-live-connector`'s internal utilities.
 
 2.  **Connection Guard Rails & Fallback Logic**
     - [ ] Implement the "3-strike" rule: after 3 failed Websocket connection attempts, switch `usingLegacyTikTokConnector` to `true` for that session.

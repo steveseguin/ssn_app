@@ -75,6 +75,9 @@ class StateManager {
                 if (source.tiktokSigningParameters === undefined) {
                     source.tiktokSigningParameters = null;
                 }
+                if (source.showTikTokSigningTools === undefined) {
+                    source.showTikTokSigningTools = false;
+                }
                 if (source.tiktokSigningRoomId === undefined) {
                     source.tiktokSigningRoomId = null;
                 }
@@ -83,6 +86,12 @@ class StateManager {
                 }
                 if (source.tiktokSigningAutoValidate === undefined) {
                     source.tiktokSigningAutoValidate = false;
+                }
+                if (source.tiktokSigningProvider === undefined || !source.tiktokSigningProvider) {
+                    source.tiktokSigningProvider = 'auto';
+                }
+                if (source.tiktokSigningProvider === 'custom' && source.showTikTokSigningTools !== true) {
+                    source.showTikTokSigningTools = true;
                 }
             });
         }
@@ -180,10 +189,12 @@ class StateManager {
                         disableTikTokAutoFallback: false,
                         tiktokSigningApiKey: null,
                         tiktokSigningServiceUrl: null,
+                        showTikTokSigningTools: false,
                         tiktokSigningParameters: null,
                         tiktokSigningRoomId: null,
                         tiktokSigningEmail: null,
-                        tiktokSigningAutoValidate: false
+                        tiktokSigningAutoValidate: false,
+                        tiktokSigningProvider: 'auto'
                     });
                 });
             }
@@ -445,6 +456,15 @@ class StateManager {
         if (source.tiktokSigningParameters === undefined) {
             source.tiktokSigningParameters = null;
         }
+        if (source.showTikTokSigningTools === undefined) {
+            source.showTikTokSigningTools = false;
+        }
+        if (source.tiktokSigningProvider === undefined || !source.tiktokSigningProvider) {
+            source.tiktokSigningProvider = 'auto';
+        }
+        if (source.tiktokSigningProvider === 'custom') {
+            source.showTikTokSigningTools = true;
+        }
 
         this.applyRememberedSessionToSource(source);
         const initialSession = typeof source.customSession === 'string' ? source.customSession.trim() : '';
@@ -489,6 +509,14 @@ class StateManager {
         
         const oldState = { ...source };
         Object.assign(source, updates);
+
+        const providerValue = typeof source.tiktokSigningProvider === 'string' && source.tiktokSigningProvider.trim()
+            ? source.tiktokSigningProvider.trim()
+            : 'auto';
+        source.tiktokSigningProvider = providerValue;
+        if (providerValue === 'custom' && source.showTikTokSigningTools !== true) {
+            source.showTikTokSigningTools = true;
+        }
 
         const sessionUpdated = Object.prototype.hasOwnProperty.call(updates, 'customSession');
         const keysChanged = this.sessionBindingKeysChanged(source, oldState);
