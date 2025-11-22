@@ -1249,6 +1249,7 @@ const CONFIG = {
         RECONNECT_DELAY: 3000,
         // Fixed retry cadence when user is offline / not live
         OFFLINE_RETRY_INTERVAL_MS: 60000, // 1 minute
+        OFFLINE_RETRY_SEQUENCE_MS: [15000, 60000, 900000], // 15s, 1m, 15m
         // Cap exponential backoff for transient errors (5 minutes max)
         MAX_RECONNECT_DELAY_MS: 300000, // 5 minutes
         // Backoff jitter factor (e.g., 0.1 => ±10%)
@@ -2103,7 +2104,7 @@ class ConnectionManager {
         const normalizedTtTargetIdc = typeof ttTargetIdc === 'string' ? ttTargetIdc.trim() : null;
         this.sessionId = normalizedSessionId || null;
         this.ttTargetIdc = normalizedTtTargetIdc || null;
-        const { forceLegacyConnector = false, signing = null } = options || {};
+        const { forceLegacyConnector = false, signing = null, autoActivate = false } = options || {};
         this.preferredStrategy = (usingLegacyTikTokConnector || forceLegacyConnector) ? 'legacy' : 'websocket';
         this.connection = null;
         this.lastMessageTime = Date.now();
@@ -2121,6 +2122,8 @@ class ConnectionManager {
         // When true, we keep retrying at a fixed interval to detect when the user goes live
         this.offlineRetry = false;
         this.offlineReason = null;
+        this.offlineRetryCount = 0;
+        this.autoActivate = !!autoActivate;
         // Per-connection reply-only flag (skip forwarding captured events)
         this.replyOnly = false;
         this.tiktokLogWriter = createTikTokLogWriter(this.username, this.wssID);
@@ -2181,6 +2184,27 @@ class ConnectionManager {
             ttTargetIdcProvided: !!this.ttTargetIdc,
             virtualTabId: this.virtualTabId || null
         };
+    }
+
+    getConnectionMethodForDisplay() {
+        const usingPolling = this.pollingFallbackActivated
+            || this.preferredStrategy === 'legacy'
+            || this.connectionStrategy === 'legacy'
+            || usingLegacyTikTokConnector;
+        if (usingPolling) {
+            return 'Polling';
+        }
+        if (this.shouldUseLocalSigner()) {
+            return 'Local signing';
+        }
+        const hasApiKey = !!(this.signingConfig && this.signingConfig.apiKey);
+        if (this.signingProvider === 'custom') {
+            return hasApiKey ? 'API key' : 'Custom signer';
+        }
+        if (this.signingProvider === 'auto') {
+            return hasApiKey ? 'Euler (API key)' : 'Euler';
+        }
+        return 'Unknown';
     }
 
     isReplayActive() {
@@ -2269,7 +2293,7 @@ class ConnectionManager {
         if (this.signingProvider === 'local') {
             return true;
         }
-        return this.signingProvider === 'auto' && !this.signingConfig;
+        return false;
     }
 
     createLocalSignedWebSocketProvider() {
@@ -2883,6 +2907,7 @@ class ConnectionManager {
             });
         } catch (_) { /* noop */ }
         this.offlineRetry = false;
+        this.offlineRetryCount = 0;
         this.offlineReason = null;
         try {
             emitStatus({
@@ -2941,6 +2966,7 @@ class ConnectionManager {
         }
 
         this.offlineRetry = false;
+        this.offlineRetryCount = 0;
         this.offlineReason = null;
         this.reconnectAttempts = Math.max(0, this.reconnectAttempts - 1);
 
@@ -3906,8 +3932,21 @@ class ConnectionManager {
                 }
 
                 await this.connection.connect();
-                console.info('Connected successfully');
-                this.logDebug('lifecycle.connect.success');
+
+                // Determine effective mode for logging
+                let effectiveMode = 'Unknown';
+                if (this.pollingFallbackActivated) {
+                    effectiveMode = 'Polling/Legacy';
+                } else if (this.shouldUseLocalSigner()) {
+                    effectiveMode = 'Local Signer';
+                } else if (isCustom) {
+                    effectiveMode = 'Custom API';
+                } else if (isAuto) {
+                    effectiveMode = 'Auto (Euler)';
+                }
+
+                console.info(`Connected successfully using ${effectiveMode} mode.`);
+                this.logDebug('lifecycle.connect.success', { effectiveMode });
                 this.signServerFailureCount = 0;
                 this.websocketFailureCount = 0; // Reset strikes on success
 
@@ -3940,10 +3979,12 @@ class ConnectionManager {
 
                 const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, errorMessage);
                 const isSignServerIssue = this.isSignServerError(primaryError, errorMessage);
+                const offlineMessage = errorMessage || userFacingMessage || (primaryError && primaryError.reason) || '';
+                const isOffline = this.isOfflineError(primaryError, offlineMessage);
 
-                // Increment Websocket failure count if we are in Websocket mode
+                // Increment Websocket failure count if we are in Websocket mode and not dealing with an offline user
                 // We check !usingLegacyTikTokConnector because if we are already in legacy mode, this doesn't apply
-                if (!usingLegacyTikTokConnector && !this.pollingFallbackActivated && !this.connection.enableExtendedGiftInfo) {
+                if (!isOffline && !usingLegacyTikTokConnector && !this.pollingFallbackActivated && !this.connection.enableExtendedGiftInfo) {
                     // Note: enableExtendedGiftInfo is a proxy for "is using V2 connector" in some contexts, 
                     // but simpler is just to check if we are NOT using the fallback class.
                     // However, here we just want to count failures that might be solved by polling.
@@ -3958,13 +3999,10 @@ class ConnectionManager {
                     errorName: primaryError?.name || null,
                     errorReason: primaryError?.reason || null,
                     rawMessage: errorMessage || null,
-                    userMessage: userFacingMessage
+                    userMessage: userFacingMessage,
+                    offline: isOffline
                 });
 
-                const isOffline = primaryError && (
-                    primaryError.name === 'UserOfflineError' ||
-                    (errorMessage && (errorMessage.includes('LIVE has ended') || errorMessage.includes('Live stream has ended') || errorMessage.includes('live has ended')))
-                );
                 const isLikelyFatal = errorMessage && (
                     errorMessage.includes("User doesn't exist") ||
                     errorMessage.includes('Failed to retrieve room_id')
@@ -4038,14 +4076,19 @@ class ConnectionManager {
 
                     if (isRateLimited) {
                         this.offlineRetry = false;
+                        this.offlineRetryCount = 0;
                         this.offlineReason = 'Rate limited by TikTok';
                         this.attemptReconnect(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS, { fixed: true, offline: false });
                     } else if (isOffline) {
+                        if (!this.offlineRetry) {
+                            this.offlineRetryCount = 0;
+                        }
                         this.offlineRetry = true;
-                        this.offlineReason = userFacingMessage || 'User is not live';
+                        this.offlineReason = this.buildOfflineReason(userFacingMessage || 'User is not live');
                         this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
                     } else {
                         this.offlineRetry = false;
+                        this.offlineRetryCount = 0;
                         this.offlineReason = null;
                         this.attemptReconnect();
                     }
@@ -4189,6 +4232,9 @@ class ConnectionManager {
         this.startHealthCheck();
         this.startViewerUpdateInterval();
         this.reconnectAttempts = 0;
+        this.offlineRetry = false;
+        this.offlineRetryCount = 0;
+        this.offlineReason = null;
 
         if (Number.isFinite(this.signRequestTimeoutBaseMs) && this.signRequestTimeoutBaseMs > 0 && this.signRequestTimeoutMs !== this.signRequestTimeoutBaseMs) {
             const previousTimeout = this.signRequestTimeoutMs;
@@ -4199,10 +4245,34 @@ class ConnectionManager {
             });
         }
 
+        // Determine effective mode for UI
+        let effectiveMode = 'Unknown';
+        const isAuto = this.signingProvider === 'auto';
+        const isCustom = this.signingProvider === 'custom';
+        const hasApiKey = !!(this.signingConfig && this.signingConfig.apiKey);
+
+        if (this.pollingFallbackActivated) {
+            effectiveMode = 'Polling/Legacy';
+        } else if (this.shouldUseLocalSigner()) {
+            effectiveMode = 'Local Signer';
+        } else if (isCustom) {
+            effectiveMode = hasApiKey ? 'API Key' : 'Custom API';
+        } else if (isAuto) {
+            effectiveMode = hasApiKey ? 'Auto (Euler API Key)' : 'Auto (Euler)';
+        }
+
+        const connectionMethod = this.getConnectionMethodForDisplay();
+        const connectionLabel = connectionMethod
+            ? (connectionMethod.toLowerCase().includes('api key') ? `Connected with ${connectionMethod}` : `Connected via ${connectionMethod}`)
+            : 'Connected';
+
         emitStatus({
             wssID: this.wssID,
             status: 'connected',
-            hasSession: !!this.sessionId
+            hasSession: !!this.sessionId,
+            effectiveMode,
+            connectionLabel,
+            connectionMethod
         });
     }
 
@@ -4285,22 +4355,21 @@ class ConnectionManager {
         const combinedMessage = msg || infoText || '';
         const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, combinedMessage);
         const isSignServerIssue = this.isSignServerError(primaryError, combinedMessage);
+        const offlineMessage = combinedMessage || userFacingMessage || (primaryError && primaryError.reason) || '';
+        const isOffline = this.isOfflineError(primaryError, offlineMessage);
 
         this.logDebug('control.error.processed', {
             info: infoText || null,
             errorName: primaryError?.name || null,
             errorReason: primaryError?.reason || null,
             rawMessage: msg || null,
-            userMessage: userFacingMessage
+            userMessage: userFacingMessage,
+            offline: isOffline
         });
 
         this.logConsoleFailure(userFacingMessage, primaryError instanceof Error ? primaryError : null);
 
         // Check if error is fatal
-        const isOffline = primaryError && (
-            primaryError.name === 'UserOfflineError' ||
-            (msg && (msg.includes('LIVE has ended') || msg.includes('Live stream has ended') || msg.includes('live has ended')))
-        );
         const isLikelyFatal = msg && (
             msg.includes("User doesn't exist") ||
             msg.includes('Failed to retrieve room_id')
@@ -4331,14 +4400,19 @@ class ConnectionManager {
         if (!this.isStopped) {
             if (isRateLimited) {
                 this.offlineRetry = false;
+                this.offlineRetryCount = 0;
                 this.offlineReason = 'Rate limited by TikTok';
                 this.attemptReconnect(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS, { fixed: true, offline: false });
             } else if (isOffline) {
+                if (!this.offlineRetry) {
+                    this.offlineRetryCount = 0;
+                }
                 this.offlineRetry = true;
-                this.offlineReason = userFacingMessage || 'User is not live';
+                this.offlineReason = this.buildOfflineReason(userFacingMessage || 'User is not live');
                 this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
             } else {
                 this.offlineRetry = false;
+                this.offlineRetryCount = 0;
                 this.offlineReason = isSignServerIssue ? userFacingMessage : null;
                 this.attemptReconnect();
             }
@@ -4366,8 +4440,9 @@ class ConnectionManager {
         }
         // Treat stream end as offline and keep retrying periodically
         if (!this.isStopped) {
+            this.offlineRetryCount = 0;
             this.offlineRetry = true;
-            this.offlineReason = 'Live stream has ended';
+            this.offlineReason = this.buildOfflineReason('Live stream has ended');
             this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
         }
     }
@@ -4388,6 +4463,9 @@ class ConnectionManager {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
         }
+        this.offlineRetry = false;
+        this.offlineRetryCount = 0;
+        this.offlineReason = null;
         this.resetGoalAggregates({ flush: false });
         this.logDebug('lifecycle.disconnect', { method: 'disconnect()' });
         this.closeLogWriter('disconnect');
@@ -4403,6 +4481,81 @@ class ConnectionManager {
         this.attemptReconnect();
     }
 
+    getOfflineRetrySequence() {
+        const sequence = CONFIG.CONNECTION.OFFLINE_RETRY_SEQUENCE_MS;
+        if (Array.isArray(sequence) && sequence.length > 0) {
+            const normalized = sequence
+                .map(value => Number(value))
+                .filter(value => Number.isFinite(value) && value > 0);
+            if (normalized.length > 0) {
+                return normalized;
+            }
+        }
+        const fallback = Number(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS);
+        return [Number.isFinite(fallback) && fallback > 0 ? fallback : 60000];
+    }
+
+    resolveOfflineReconnectPlan() {
+        const sequence = this.getOfflineRetrySequence();
+        const attemptIndex = Math.max(0, this.offlineRetryCount || 0);
+        const autoActivateEnabled = !!this.autoActivate;
+        const maxAttempts = autoActivateEnabled ? null : sequence.length;
+
+        if (!autoActivateEnabled && attemptIndex >= sequence.length) {
+            return {
+                shouldRetry: false,
+                delay: null,
+                attempt: attemptIndex,
+                maxAttempts
+            };
+        }
+
+        const delay = sequence[Math.min(attemptIndex, sequence.length - 1)];
+        return {
+            shouldRetry: true,
+            delay,
+            attempt: attemptIndex + 1,
+            maxAttempts
+        };
+    }
+
+    isOfflineError(primaryError, rawMessage = '') {
+        if (primaryError && primaryError.name === 'UserOfflineError') {
+            return true;
+        }
+        const message = typeof rawMessage === 'string' ? rawMessage : '';
+        if (!message) return false;
+        const normalized = message.toLowerCase();
+        const offlineIndicators = [
+            "isn't online",
+            'isnt online',
+            'is not online',
+            'not online',
+            'not currently live',
+            'not live',
+            'user is not live',
+            'user is offline',
+            'user offline',
+            'offline',
+            'live stream has ended',
+            'live has ended',
+            'live ended',
+            'stream has ended'
+        ];
+        return offlineIndicators.some(token => normalized.includes(token));
+    }
+
+    buildOfflineReason(baseMessage = 'User is not live') {
+        const method = this.getConnectionMethodForDisplay();
+        const normalized = typeof baseMessage === 'string' && baseMessage.trim()
+            ? baseMessage.trim()
+            : 'User is not live';
+        if (method && method !== 'Unknown') {
+            return `${normalized} (${method})`;
+        }
+        return normalized;
+    }
+
     attemptReconnect(delay = CONFIG.CONNECTION.RECONNECT_DELAY, options = {}) {
         const {
             fixed = false,
@@ -4411,6 +4564,8 @@ class ConnectionManager {
             silent = false,
             reason = undefined
         } = options || {};
+
+        const isOfflineFlow = !!(offline || this.offlineRetry);
 
         if (this.isStopped) return;
 
@@ -4435,11 +4590,54 @@ class ConnectionManager {
             attemptInProgress: false
         });
 
+        const reasonForLog = (reason !== undefined) ? reason : (this.offlineReason || null);
+        const connectionMethod = this.getConnectionMethodForDisplay();
+
         // Delay calculation
         let backoffDelay;
+        let attemptForStatus = this.reconnectAttempts;
+        let maxAttemptsForStatus = undefined;
+
         if (immediate) {
             backoffDelay = Number.isFinite(delay) ? Math.max(0, delay) : 0;
-        } else if (fixed || offline || this.offlineRetry) {
+        } else if (isOfflineFlow) {
+            const plan = this.resolveOfflineReconnectPlan();
+            if (!plan || !plan.shouldRetry) {
+                const exhaustedMessage = reasonForLog
+                    ? `${reasonForLog} (offline retries exhausted)`
+                    : 'Offline retries exhausted';
+                this.logDebug('lifecycle.reconnect.offline_exhausted', {
+                    attempt: this.reconnectAttempts,
+                    offlineAttempt: this.offlineRetryCount,
+                    autoActivate: !!this.autoActivate,
+                    reason: reasonForLog || null
+                });
+                console.warn(`[TikTok] Offline retries exhausted${this.autoActivate ? ' (auto-activate enabled; unexpected path)' : ''}.`);
+                connectionStates.set(this.wssID, {
+                    isConnected: false,
+                    lastAttempt: Date.now(),
+                    isReconnecting: false,
+                    attemptInProgress: false
+                });
+                this.offlineRetry = false;
+                this.offlineRetryCount = 0;
+                this.offlineReason = reasonForLog || this.offlineReason || null;
+                try {
+                    emitStatus({
+                        wssID: this.wssID,
+                        status: 'failed',
+                        error: exhaustedMessage,
+                        offline: true,
+                        connectionMethod
+                    });
+                } catch (_) { /* renderer might be gone */ }
+                return;
+            }
+            backoffDelay = plan.delay;
+            attemptForStatus = plan.attempt;
+            maxAttemptsForStatus = plan.maxAttempts || undefined;
+            this.offlineRetryCount = plan.attempt;
+        } else if (fixed) {
             backoffDelay = (typeof delay === 'number' ? delay : CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS) || CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS;
         } else {
             // Exponential backoff for transient errors, capped by config
@@ -4447,7 +4645,7 @@ class ConnectionManager {
             backoffDelay = Math.min(base * Math.pow(2, this.reconnectAttempts - 1), CONFIG.CONNECTION.MAX_RECONNECT_DELAY_MS);
         }
         // Add jitter to reduce thundering herd when we're not doing an immediate retry
-        if (!immediate) {
+        if (!immediate && !isOfflineFlow) {
             const jitter = CONFIG.CONNECTION.BACKOFF_JITTER || 0;
             if (jitter > 0) {
                 const delta = backoffDelay * jitter;
@@ -4462,19 +4660,22 @@ class ConnectionManager {
             backoffDelay = immediate ? 0 : Math.max(1000, CONFIG.CONNECTION.RECONNECT_DELAY);
         }
 
-        const attemptLabel = (offline || this.offlineRetry) ? 'offline-retry' : `${this.reconnectAttempts}`;
-        const reasonForLog = (reason !== undefined) ? reason : (this.offlineReason || null);
+        const attemptLabel = isOfflineFlow ? `offline-${attemptForStatus}` : `${this.reconnectAttempts}`;
         this.logDebug('lifecycle.reconnect.scheduled', {
-            attempt: this.reconnectAttempts,
+            attempt: attemptForStatus,
+            totalAttempts: this.reconnectAttempts,
             delayMs: backoffDelay,
-            offline: !!(offline || this.offlineRetry),
+            offline: isOfflineFlow,
             reason: reasonForLog,
-            silent: !!silent
+            silent: !!silent,
+            maxAttempts: maxAttemptsForStatus || null
         });
         if (!silent) {
             const seconds = Math.round(backoffDelay / 1000);
             const reasonSuffix = reasonForLog ? ` (reason: ${reasonForLog})` : '';
-            console.info(`Reconnect attempt ${attemptLabel} - waiting ${seconds}s${reasonSuffix}`);
+            const attemptInfo = maxAttemptsForStatus ? `${attemptLabel}/${maxAttemptsForStatus}` : attemptLabel;
+            const prefix = isOfflineFlow ? 'Offline retry' : 'Reconnect attempt';
+            console.info(`${prefix} ${attemptInfo} - waiting ${seconds}s${reasonSuffix}`);
 
             // Send reconnection status to the renderer
             try {
@@ -4482,10 +4683,12 @@ class ConnectionManager {
                     emitStatus({
                         wssID: this.wssID,
                         status: 'reconnecting',
-                        attempt: this.reconnectAttempts,
-                        maxAttempts: undefined,
+                        attempt: attemptForStatus,
+                        maxAttempts: maxAttemptsForStatus,
                         nextAttemptIn: backoffDelay,
-                        reason: reasonForLog || undefined
+                        reason: reasonForLog || undefined,
+                        offline: isOfflineFlow,
+                        connectionMethod
                     });
                 }
             } catch (sendErr) {
@@ -4513,6 +4716,7 @@ class ConnectionManager {
                 try {
                     this.logDebug('lifecycle.reconnect.attempt', {
                         attempt: this.reconnectAttempts,
+                        offlineAttempt: isOfflineFlow ? attemptForStatus : null,
                         offline: !!this.offlineRetry,
                         reason: this.offlineReason || null
                     });

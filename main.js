@@ -3634,16 +3634,21 @@ async function createWindow(args, reuse = false, mainApp = false) {
         // from background
 
         log("\nstorageSave:");
-        //log(value);
-        ////log(cachedState);
-        Object.keys(value).forEach((key) => {
-            cachedState[key] = value[key];
+        const incoming = (value && typeof value === "object") ? value : {};
+        const sanitized = {};
+        Object.entries(incoming).forEach(([key, val]) => {
+            if (val === undefined || val === null) {
+                return;
+            }
+            if (key === "streamID" && typeof val === "string" && val.trim() === "") {
+                return; // avoid clearing a good stream ID with an empty value
+            }
+            sanitized[key] = val;
         });
-        //log(cachedState);
+        cachedState = { ...cachedState, ...sanitized };
         log("saving to storage");
         try {
-            fs.writeFileSync(path.join(folder, "savedSync.json"), JSON.stringify(cachedState));
-            //fs.writeFileSync(path.join(settingsPath, "savedSync.json"), JSON.stringify(cachedState));
+            saveCachedStateAtomic(cachedState);
         } catch (e) {
             console.error(e);
         }
@@ -3671,6 +3676,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
         log("\n >>>>>      getting from storage");
         ////log("!!!!!!!!!!!!!cachedState");
         //log(cachedState);
+
+        if (cachedState && (!cachedState.streamID && !cachedState.password && cachedState.state === undefined)) {
+            const diskState = loadCachedStateWithBackup();
+            if (diskState && typeof diskState === "object") {
+                cachedState = { ...diskState, ...cachedState };
+            }
+        }
 
         value.forEach((key) => {
             //log(key);
@@ -8401,6 +8413,53 @@ if (!fs.existsSync(folder)) {
 app.setPath("userData", folder);
 log("folder: " + folder);
 
+function getSavedSyncPaths() {
+    const mainPath = path.join(folder, "savedSync.json");
+    return {
+        mainPath,
+        tmpPath: `${mainPath}.tmp`,
+        bakPath: path.join(folder, "savedSync.json.bak")
+    };
+}
+
+function loadCachedStateWithBackup() {
+    const { mainPath, bakPath } = getSavedSyncPaths();
+    const tryRead = (p) => {
+        const txt = fs.readFileSync(p, "utf8");
+        const parsed = JSON.parse(txt);
+        if (!parsed || typeof parsed !== "object") {
+            throw new Error("empty cached state");
+        }
+        return parsed;
+    };
+    try {
+        return tryRead(mainPath);
+    } catch (e) {
+        try {
+            const backup = tryRead(bakPath);
+            console.warn("Recovered cachedState from backup");
+            return backup;
+        } catch (e2) {
+            console.error("Failed to load cachedState", e2);
+            return null;
+        }
+    }
+}
+
+function saveCachedStateAtomic(state) {
+    const { mainPath, tmpPath, bakPath } = getSavedSyncPaths();
+    const data = JSON.stringify(state);
+    fs.writeFileSync(tmpPath, data);
+    try {
+        if (fs.existsSync(mainPath)) {
+            fs.renameSync(mainPath, bakPath);
+        }
+    } catch (e) {
+        console.warn("Failed to rotate cachedState backup", e);
+    }
+    fs.renameSync(tmpPath, mainPath);
+}
+
 app.whenReady().then(async function () {
     //app.allowRendererProcessReuse = false;
     log("APP READY");
@@ -8487,11 +8546,9 @@ app.whenReady().then(async function () {
         }
     });
 
-    try {
-        ////log("READING CACHE STATE FROM DISK");
-        cachedState = JSON.parse(fs.readFileSync(path.join(folder, "savedSync.json")));
-        //log(cachedState);
-
+    const diskState = loadCachedStateWithBackup();
+    if (diskState) {
+        cachedState = diskState;
         if ("streamID" in cachedState && !cachedState.streamID) {
             log("invalid cachedState");
         } else {
@@ -8508,10 +8565,8 @@ app.whenReady().then(async function () {
         if (cachedState.wsServer) {
             wsServer.start();
         }
-    } catch (e) {
+    } else {
         log("Failed to load cachedState -- it probably doesn't yet exist");
-        //console.error(e);
-        //log("saving file");
         // fs.writeFileSync(path.join(folder, "savedSync.json"), JSON.stringify(cachedState));
     }
 
@@ -9644,6 +9699,7 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     const ttTargetIdc = rawTtTargetIdc || null;
     const signing = normalizeTikTokSigningArgs(args?.signing);
     const signingProvider = args?.signingProvider || 'auto';
+    const autoActivate = args?.autoActivate === true;
 
     const requestedStrategy = args && args.strategy === 'websocket' ? 'websocket' : 'legacy';
     const manager = new ConnectionManager(
@@ -9651,7 +9707,7 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
         wssID,
         sessionId,
         ttTargetIdc,
-        { forceLegacyConnector: requestedStrategy === 'legacy', signing, signingProvider }
+        { forceLegacyConnector: requestedStrategy === 'legacy', signing, signingProvider, autoActivate }
     );
     if (args && args.replyOnly === true) {
         manager.replyOnly = true;

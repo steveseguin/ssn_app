@@ -275,17 +275,11 @@
                     <span data-sourcename></span>
                 </div>
                 <div class="badges" style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
-                    <span data-replyonly-badge
-                        style="display: none; font-size: 11px; padding: 2px 6px; border-radius: 10px; background: rgba(255,255,255,0.12); color: #fff;">
+                    <span data-replyonly-badge class="badge-chip badge-warning" style="display: none;">
                         📨 Reply only
                     </span>
-                    <span data-session-badge
-                        style="font-size: 11px; padding: 2px 6px; border-radius: 10px; background: rgba(255,255,255,0.08); color: #ddd;">
+                    <span data-session-badge class="badge-chip badge-muted">
                         Session: AUTO
-                    </span>
-                    <span data-signer-status-badge
-                        style="display: none; font-size: 11px; padding: 2px 6px; border-radius: 10px; background: rgba(255,255,255,0.08); color: #ddd; cursor: help;">
-                        Signer: Auto
                     </span>
                 </div>
             </div>
@@ -1327,32 +1321,7 @@
                     sessionBadge.textContent = `Session: ${label}`;
                     sessionBadge.title = `Current browser session: ${label}.\nChange via ⚙️ → Browser Session Settings.`;
                 }
-                const signerBadge = element.querySelector('[data-signer-status-badge]');
-                if (signerBadge) {
-                    if (source.target === 'tiktok') {
-                        const provider = source.tiktokSigningProvider || 'auto';
-                        let label = 'Auto';
-                        let title = 'Using Euler\'s community signing keys automatically.';
-                        let color = 'rgba(255,255,255,0.08)'; // Default gray
 
-                        if (provider === 'local') {
-                            label = 'Local';
-                            title = 'Using local Electron signer.';
-                            color = 'rgba(40, 167, 69, 0.2)'; // Greenish
-                        } else if (provider === 'custom') {
-                            label = 'Custom';
-                            title = 'Using custom API key.';
-                            color = 'rgba(255, 193, 7, 0.2)'; // Yellowish
-                        }
-
-                        signerBadge.textContent = `Signer: ${label}`;
-                        signerBadge.title = title + '\nChange via ⚙️ → Manage TikTok Signing.';
-                        signerBadge.style.background = color;
-                        signerBadge.style.display = 'inline-block';
-                    } else {
-                        signerBadge.style.display = 'none';
-                    }
-                }
             } catch (_) { }
 
             // Hide sign-in button when in websocket mode
@@ -3405,6 +3374,19 @@
 
 
 
+        function setSigningProviderLocked(entryElement, locked) {
+            if (!entryElement) return;
+            const select = entryElement.querySelector('.signing-provider-selector select');
+            if (!select) return;
+            select.disabled = !!locked;
+            select.classList.toggle('locked', !!locked);
+            if (locked) {
+                select.title = 'Stop the connection to change signing provider.';
+            } else {
+                select.removeAttribute('title');
+            }
+        }
+
         function updateSigningProviderVisibility(entryElement, mode) {
             if (!entryElement) return;
             const selector = entryElement.querySelector('.signing-provider-selector');
@@ -3575,7 +3557,7 @@
                 </div>
                 <div class="signing-provider-selector hidden" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.1);">
     <div class="mode-selector-label" style="font-size: 11px; margin-bottom: 4px;">Signing Provider:</div>
-    <select onchange="setTikTokSigningProvider(this.closest('.entry'), this.value); updateSigningProviderHelpText(this);" style="width: 100%; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.2); color: #eee; padding: 4px; border-radius: 4px; font-size: 11px; margin-bottom: 4px;">
+    <select onchange="setTikTokSigningProvider(this.closest('.entry'), this.value); updateSigningProviderHelpText(this);" class="signing-provider-select">
         <option value="auto">Auto / Euler (Default)</option>
         <option value="local">Local Signer (In-House)</option>
         <option value="custom">Custom API Key</option>
@@ -3609,6 +3591,8 @@
                             providerSelect.value = source.tiktokSigningProvider;
                         }
                         updateSigningProviderHelpText(providerSelect);
+                        const shouldLockProvider = source?.status === 'active' || source?.status === 'activating';
+                        setSigningProviderLocked(sourceElement, shouldLockProvider);
                     }
                 }
             } else {
@@ -5892,7 +5876,8 @@
                     strategy: strategy,
                     sourceId: source.id,
                     signing,
-                    signingProvider // Pass the provider preference to the backend
+                    signingProvider, // Pass the provider preference to the backend
+                    autoActivate: !!source.autoActivate
                 });
 
                 if (wssID === null || typeof wssID === 'undefined') {
@@ -6552,8 +6537,13 @@
                 if (sid && window.stateManager) sourceCtx = window.stateManager.getSource(sid);
             } catch (_) { }
 
+            // Lock signing provider while active/connecting
+            const lockProvider = (locked) => {
+                try { setSigningProviderLocked(element, locked); } catch (_) { }
+            };
             switch (status) {
                 case 'connecting':
+                    lockProvider(true);
                     statusElement.classList.add('connecting');
                     {
                         let tipHtml = '';
@@ -6568,18 +6558,25 @@
                     }
                     break;
                 case 'connected':
+                    lockProvider(true);
                     statusElement.classList.add('connected');
-                    statusElement.innerHTML = '<i class="las la-check-circle"></i> WebSocket Connected';
+                    {
+                        const label = message || 'WebSocket Connected';
+                        statusElement.innerHTML = `<i class="las la-check-circle"></i> ${label}`;
+                    }
                     break;
                 case 'error':
+                    lockProvider(false);
                     statusElement.classList.add('error');
                     statusElement.innerHTML = `<i class="las la-exclamation-circle"></i> ${message || 'Connection error'}`;
                     break;
                 case 'retry':
+                    lockProvider(true);
                     statusElement.classList.add('retry');
                     statusElement.innerHTML = `<i class="las la-sync fa-spin"></i> ${message || 'Retrying connection...'}`;
                     break;
                 case 'stopped':
+                    lockProvider(false);
                     statusElement.classList.add('stopped');
                     statusElement.innerHTML = `<i class="las la-hand-paper"></i> ${message || 'Connection stopped'}`;
                     setTimeout(() => {
@@ -6587,6 +6584,7 @@
                     }, 5000);
                     break;
                 case 'info':
+                    lockProvider(false);
                     statusElement.classList.add('info');
                     statusElement.innerHTML = `<i class="las la-info-circle"></i> ${message || ''}`;
                     setTimeout(() => {
@@ -6595,6 +6593,7 @@
                     break;
                 case 'clear':
                 default:
+                    lockProvider(false);
                     statusElement.style.display = 'none';
                     statusElement.innerHTML = '';
                     break;
@@ -8041,8 +8040,12 @@
 
                     switch (data.status) {
                         case 'connecting':
-                            if (currentState.status !== 'activating') {
-                                stateManager.updateSource(sourceId, { status: 'activating' });
+                            {
+                                const updatePayload = { tiktokConnectionMethod: null };
+                                if (currentState.status !== 'activating') {
+                                    updatePayload.status = 'activating';
+                                }
+                                stateManager.updateSource(sourceId, updatePayload);
                             }
                             if (entryElement) {
                                 if (entryElement._tiktokRetryTimer) {
@@ -8066,8 +8069,15 @@
                                 entryElement._tiktokRetryAttempt = null;
                                 entryElement._tiktokRetryMax = null;
                             }
-                            stateManager.updateSource(sourceId, { status: 'active', tiktokFallbackMode: null });
-                            if (entryElement) updateConnectionStatus(entryElement, 'connected');
+                            stateManager.updateSource(sourceId, {
+                                status: 'active',
+                                tiktokFallbackMode: null,
+                                tiktokConnectionMethod: data.connectionMethod || data.effectiveMode || null
+                            });
+                            {
+                                const connectedLabel = data.connectionLabel || (data.effectiveMode ? `Connected via ${data.effectiveMode}` : null);
+                                if (entryElement) updateConnectionStatus(entryElement, 'connected', connectedLabel);
+                            }
                             if (entryElement && entryElement._tiktokFallback) {
                                 try {
                                     const latestSource = stateManager.getSource(sourceId);
@@ -8083,7 +8093,7 @@
                             restoreActivateUI();
                             break;
                         case 'disconnected':
-                            stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection lost.', vid: null, tiktokFallbackMode: null });
+                            stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection lost.', vid: null, tiktokFallbackMode: null, tiktokConnectionMethod: null });
                             if (entryElement) {
                                 if (entryElement._tiktokRetryEndAt) {
                                     const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
@@ -8099,7 +8109,7 @@
                             }
                             break;
                         case 'error':
-                            stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection error', tiktokFallbackMode: null });
+                            stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection error', tiktokFallbackMode: null, tiktokConnectionMethod: null });
                             if (entryElement) {
                                 if (entryElement._tiktokRetryEndAt) {
                                     const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
@@ -8117,7 +8127,8 @@
                         case 'failed':
                             {
                                 const isSigningIssue = data.sessionRejected === true;
-                                if (isSigningIssue && entryElement) {
+                                const offlineExhausted = data.offline === true;
+                                if ((isSigningIssue || offlineExhausted) && entryElement) {
                                     if (entryElement._tiktokRetryTimer) {
                                         clearInterval(entryElement._tiktokRetryTimer);
                                         entryElement._tiktokRetryTimer = null;
@@ -8130,9 +8141,9 @@
                                     ? 'TikTok sign-in failed. Provide your Euler API key.'
                                     : 'Connection failed';
                                 const errorMessage = data.error || defaultMessage;
-                                stateManager.updateSource(sourceId, { status: 'error', error: errorMessage, vid: null, tiktokFallbackMode: null });
+                                stateManager.updateSource(sourceId, { status: 'error', error: errorMessage, vid: null, tiktokFallbackMode: null, tiktokConnectionMethod: null });
                                 if (entryElement) {
-                                    if (!isSigningIssue && entryElement._tiktokRetryEndAt) {
+                                    if (!isSigningIssue && !offlineExhausted && entryElement._tiktokRetryEndAt) {
                                         const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
                                         const secs = Math.ceil(remainingMs / 1000);
                                         const attemptInfo = entryElement._tiktokRetryAttempt ? ` (attempt ${entryElement._tiktokRetryAttempt}${entryElement._tiktokRetryMax ? '/' + entryElement._tiktokRetryMax : ''})` : '';
@@ -8161,7 +8172,7 @@
                                 entryElement._tiktokRetryAttempt = null;
                                 entryElement._tiktokRetryMax = null;
                             }
-                            stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection failed', vid: null, wssId: null, tiktokWssId: null, tiktokFallbackMode: null });
+                            stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection failed', vid: null, wssId: null, tiktokWssId: null, tiktokFallbackMode: null, tiktokConnectionMethod: null });
                             if (entryElement) {
                                 updateConnectionStatus(entryElement, 'error', data.error || 'Connection failed');
                                 if (entryElement._tiktokFallback) {
@@ -8177,7 +8188,8 @@
                             stateManager.updateSource(sourceId, {
                                 status: 'activating',
                                 error: null,
-                                tiktokFallbackMode: 'polling'
+                                tiktokFallbackMode: 'polling',
+                                tiktokConnectionMethod: null
                             });
                             if (entryElement) {
                                 updateConnectionStatus(entryElement, 'info', data.error || 'TikTok signer unavailable. Switching to legacy connector...');
@@ -8198,7 +8210,11 @@
                                 }
                                 const endAt = Date.now() + (data.nextAttemptIn || 0);
                                 const attemptInfo = (data.attempt ? ` (attempt ${data.attempt}${data.maxAttempts ? '/' + data.maxAttempts : ''})` : '');
-                                const baseMsg = data.reason ? `Connection error: ${data.reason}` : 'Connection failed';
+                                const baseMsg = data.offline
+                                    ? (data.reason || (data.connectionMethod ? `User is offline (${data.connectionMethod})` : 'User is offline'))
+                                    : data.reason
+                                        ? `Connection error: ${data.reason}`
+                                        : 'Connection failed';
                                 const update = () => {
                                     const remainingMs = Math.max(0, endAt - Date.now());
                                     const secs = Math.ceil(remainingMs / 1000);
@@ -8220,7 +8236,7 @@
                             }
                             break;
                         case 'stopped_by_user':
-                            stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, tiktokWssId: null, activeConnectionMode: null });
+                            stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, tiktokWssId: null, activeConnectionMode: null, tiktokConnectionMethod: null });
                             if (entryElement) {
                                 updateConnectionStatus(entryElement, 'stopped', 'Connection stopped by user.');
                                 entryElement._tiktokFallback = null;

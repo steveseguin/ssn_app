@@ -31,6 +31,72 @@ body {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
+.badge-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  line-height: 1.35;
+  background: #e8edf4;
+  color: #0b1b2a;
+  border: 1px solid #cfd8e3;
+}
+
+.badge-chip.badge-muted {
+  background: rgba(232, 237, 244, 0.8);
+  color: #0b1b2a;
+  border-color: rgba(207, 216, 227, 0.9);
+}
+
+.badge-chip.badge-info {
+  background: #e7f2ff;
+  color: #0a3172;
+  border-color: #c9defa;
+}
+
+.badge-chip.badge-warning {
+  background: #fff4da;
+  color: #7a4a00;
+  border-color: #f0d8a8;
+}
+
+.badge-chip[style*="display: none"] {
+  display: none !important;
+}
+
+.signing-provider-select {
+  width: 80%;
+  max-width: 260px;
+  background: rgba(18, 28, 42, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #e5edf7;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  margin-bottom: 6px;
+  appearance: none;
+}
+
+.signing-provider-select:focus,
+.signing-provider-select:active {
+  outline: none;
+  border-color: #5b8def;
+  box-shadow: 0 0 0 3px rgba(91, 141, 239, 0.18);
+  background: rgba(18, 28, 42, 0.95);
+}
+
+.signing-provider-select option {
+  color: #e5edf7;
+  background: #111b2a;
+}
+
+.signing-provider-select.locked {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 #main-navigation {
   background-color: #00000078;
   padding: 10px 5px;
