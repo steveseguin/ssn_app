@@ -407,7 +407,9 @@ async function generateSigningParameters(win, options = {}) {
     pathWithQuery: explicitPath = null,
     msToken: msTokenOverride = null,
     activeUrl: activeUrlOverride = null,
-    performFetch = false
+    performFetch = false,
+    method = "GET",
+    fetchOptions = {}
   } = options;
 
   const pathWithQuery = deriveSigningPath(win, roomId, urlToSign, explicitPath);
@@ -444,22 +446,34 @@ async function generateSigningParameters(win, options = {}) {
     const fetchScript = `
       (() => {
         const requestConfig = ${JSON.stringify({
-      url: "https://webcast.tiktok.com/webcast/im/fetch/",
+      url: fetchOptions.url || "https://webcast.tiktok.com/webcast/im/fetch/",
       referer: activeUrl,
-      params: fetchParams,
-      includeBody: Boolean(performFetch)
+      params: fetchOptions.params || fetchParams,
+      includeBody: Boolean(performFetch),
+      method: fetchOptions.method || "GET",
+      body: fetchOptions.body || null,
+      headers: fetchOptions.headers || {}
     })};
         try {
           const requestUrl = new URL(requestConfig.url);
-          const search = new URLSearchParams(requestConfig.params || {});
-          requestUrl.search = search.toString();
-          return fetch(requestUrl.toString(), {
-            method: "GET",
+          const extraParams = new URLSearchParams(requestConfig.params || {});
+          extraParams.forEach((value, key) => {
+            requestUrl.searchParams.set(key, value);
+          });
+          
+          const fetchInit = {
+            method: requestConfig.method || "GET",
             credentials: "include",
             headers: {
-              "Referer": requestConfig.referer || window.location.href
+              "Referer": requestConfig.referer || window.location.href,
+              ...(requestConfig.headers || {})
             }
-          }).then(async (response) => {
+          };
+          if (requestConfig.body) {
+             fetchInit.body = requestConfig.body;
+          }
+
+          return fetch(requestUrl.toString(), fetchInit).then(async (response) => {
             const summary = {
               ok: Boolean(response && response.ok),
               status: response ? response.status : null,
@@ -565,11 +579,11 @@ async function generateSigningParameters(win, options = {}) {
     const fetchResultPayload =
       fetchResult && fetchResult.bodyBase64
         ? {
-            status: fetchResult.status || null,
-            statusText: fetchResult.statusText || null,
-            headers: fetchResult.headers || null,
-            bodyBase64: fetchResult.bodyBase64
-          }
+          status: fetchResult.status || null,
+          statusText: fetchResult.statusText || null,
+          headers: fetchResult.headers || null,
+          bodyBase64: fetchResult.bodyBase64
+        }
         : null;
     if (fetchResultPayload) {
       payload.fetchResult = fetchResultPayload;
@@ -587,7 +601,10 @@ async function generateSigningParameters(win, options = {}) {
 
   const fetchedResult = await tryFetchFromWebcast().catch(() => null);
   const fallbackPayload = fetchedResult && fetchedResult.payload ? fetchedResult.payload : null;
-  if (fallbackPayload && !performFetch) {
+  // If we have a specific path to sign that isn't the fetch endpoint, we must proceed to the signing script
+  // so that we sign the CORRECT path.
+  const isFetchRequest = pathWithQuery && pathWithQuery.includes('/webcast/im/fetch/');
+  if (fallbackPayload && !performFetch && (!pathWithQuery || isFetchRequest)) {
     return fallbackPayload;
   }
 
@@ -617,8 +634,9 @@ async function generateSigningParameters(win, options = {}) {
         const browserName = ${JSON.stringify(browserName)};
         const browserVersion = ${JSON.stringify(browserVersion)};
         const providedPath = ${JSON.stringify(pathWithQuery)};
-        const msTokenFallback = ${JSON.stringify(msTokenFromSession || "")};
+        const msTokenFallback = ${JSON.stringify(fallbackPayload?.msToken || msTokenFromSession || "")};
         const performFetch = ${JSON.stringify(options.performFetch || false)};
+        const method = ${JSON.stringify(method)};
 
         const activeUrl = new URL(window.location.href);
         
@@ -674,7 +692,7 @@ async function generateSigningParameters(win, options = {}) {
                 path: pathWithQuery,
                 query,
                 user_agent: userAgent,
-                method: "GET",
+                method: method,
                 headers: {}
               }) || {};
           } catch (frontierError) {

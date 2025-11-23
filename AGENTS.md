@@ -58,3 +58,70 @@
 4.  **Legacy Mode Enhancements**
     - [ ] Audit reconnects to ensure we resume from the latest cursor (prevent duplicate floods).
     - [ ] (Low Priority) Batch logging optimizations.
+
+## TikTok Chat Send (Local Signer, Non-Euler) — Current Behavior
+
+- We open the local signer window at `https://livecenter.tiktok.com/realtime`, scrape msToken/cookies/X-Bogus/etc., and use that payload to establish the tiktok-live-connector WebSocket via the local signer adapter (no Euler services involved).
+- On `sendChatMessage` we first try the direct `/webcast/room/chat/` POST signed by the local signer; headers include live cookies, CSRF, Referer/Origin pointing at the live page, and the content is part of the signed URL.
+- If the HTTP send fails or returns an empty body, we allow fallback to the live WebSocket’s `connection.sendMessage` (again using the locally signed session), never calling Euler.
+- **Status:** not working end-to-end. Direct POSTs return HTTP 200 with empty bodies and the subsequent WebSocket fallback is not producing visible chat messages yet. Needs further investigation before this path can be trusted.
+
+## TikTok Chat POST Structure (Reference)
+
+**URL**: `https://webcast.tiktok.com/webcast/room/chat/`
+**Method**: `POST`
+**Content-Type**: `application/json; charset=utf-8`
+
+**Query Parameters (Signed)**:
+- `aid`: `1988`
+- `app_language`: `en-GB` (or similar)
+- `app_name`: `tiktok_web`
+- `browser_language`: `en-GB`
+- `browser_name`: `Mozilla`
+- `browser_online`: `true`
+- `browser_platform`: `Win32`
+- `browser_version`: (User Agent version)
+- `channel`: `tiktok_web`
+- `client_start_timestamp_millisecond`: (Current timestamp)
+- `content`: (The message content)
+- `cookie_enabled`: `true`
+- `data_collection_enabled`: `true`
+- `device_id`: (Numeric ID)
+- `device_platform`: `web_pc`
+- `focus_state`: `true`
+- `history_len`: `3`
+- `input_type`: `0`
+- `is_fullscreen`: `false`
+- `is_page_visible`: `true`
+- `os`: `windows`
+- `priority_region`: (Region code, e.g., `CA`)
+- `referer`: (Live room URL)
+- `region`: (Region code)
+- `room_id`: (Numeric Room ID)
+- `root_referer`: (Live room URL)
+- `screen_height`: `1080` (or similar)
+- `screen_width`: `1920` (or similar)
+- `tz_name`: (Timezone, e.g., `America/Toronto`)
+- `user_is_login`: `true`
+- `verifyFp`: (Verify Fingerprint from cookie)
+- `webcast_language`: `en-GB`
+- `msToken`: (Signed Token)
+- `X-Bogus`: (Signature)
+- `X-Gnarly`: (Signature)
+
+**JSON Body**:
+```json
+{
+  "room_id": "7575903733403110165",
+  "content": "hi",
+  "emotes_with_index": "",
+  "input_type": 0,
+  "client_start_timestamp_millisecond": 1763905763322
+}
+```
+
+**Important Headers**:
+- `Cookie`: Must include `sessionid`, `msToken`, `tt_target_idc`, etc.
+- `Referer`: `https://www.tiktok.com/@username/live`
+- `Origin`: `https://www.tiktok.com`
+- `User-Agent`: Must match the one used for signing.

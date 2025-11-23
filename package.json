@@ -169,6 +169,7 @@
     "tsx": "^4.20.5"
   },
   "dependencies": {
+    "@eulerstream/euler-websocket-sdk": "^0.0.6",
     "@grpc/grpc-js": "^1.14.0",
     "@grpc/proto-loader": "^0.7.15",
     "@huggingface/transformers": "git+https://github.com/steveseguin/transformers.js",

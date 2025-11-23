@@ -144,6 +144,7 @@ if (!isDebugLoggingEnabled) {
 const forceTikTokLogging = process.argv.includes('--enable-tiktok-logs') || process.env.SSAPP_TIKTOK_LOGS === '1';
 const disableTikTokLogging = process.argv.includes('--disable-tiktok-logs') || process.env.SSAPP_TIKTOK_LOGS === '0';
 const shouldEnableTikTokLogging = !disableTikTokLogging && (forceTikTokLogging); // !disableTikTokLogging && (forceTikTokLogging || isDevMode);
+const DEFAULT_TIKTOK_SIGNING_URL = 'https://livecenter.tiktok.com/realtime';
 
 let TikTokLiveConnectionClass = null;
 let TikTokPollingFallbackClass = null;
@@ -170,19 +171,44 @@ try {
                 throw new Error('TikTok signer helper not available');
             }
             console.log('[TikTok] localSigner.sign called. Options:', JSON.stringify(options));
-            const targetUrl = options?.activeUrl || options?.landingUrl || null;
-            const win = await ensureTikTokSigningWindow(targetUrl, { allowNavigation: false });
-            const parameters = await tikTokSignerHelper.generateSigningParameters(win, {
-                urlToSign: url,
-                ...options
-            });
+            const primaryUrl = normalizeTikTokLandingUrl(options?.landingUrl || options?.activeUrl || DEFAULT_TIKTOK_SIGNING_URL);
+            const fallbackUrl = (typeof options?.fallbackUrl === 'string' && options.fallbackUrl.trim())
+                ? normalizeTikTokLandingUrl(options.fallbackUrl.trim())
+                : null;
+
+            let activeUrlUsed = primaryUrl;
+            let win = await ensureTikTokSigningWindow(primaryUrl, { allowNavigation: false });
+            let parameters;
+
+            try {
+                parameters = await tikTokSignerHelper.generateSigningParameters(win, {
+                    urlToSign: url,
+                    ...options,
+                    landingUrl: primaryUrl,
+                    activeUrl: primaryUrl
+                });
+            } catch (primaryError) {
+                if (fallbackUrl && fallbackUrl !== primaryUrl) {
+                    console.warn('[TikTok] Local signer primary page failed; retrying fallback URL.', primaryError?.message || primaryError);
+                    activeUrlUsed = fallbackUrl;
+                    win = await ensureTikTokSigningWindow(fallbackUrl, { allowNavigation: true });
+                    parameters = await tikTokSignerHelper.generateSigningParameters(win, {
+                        urlToSign: url,
+                        ...options,
+                        landingUrl: fallbackUrl,
+                        activeUrl: fallbackUrl
+                    });
+                } else {
+                    throw primaryError;
+                }
+            }
 
             const enriched = { ...(parameters || {}) };
-            if (targetUrl && !enriched.referer) {
-                enriched.referer = targetUrl;
+            if (activeUrlUsed && !enriched.referer) {
+                enriched.referer = activeUrlUsed;
             }
-            if (targetUrl && !enriched.activeUrl) {
-                enriched.activeUrl = targetUrl;
+            if (activeUrlUsed && !enriched.activeUrl) {
+                enriched.activeUrl = activeUrlUsed;
             }
             try {
                 if (!enriched.sessionid && typeof tikTokSignerHelper.readSessionIdFromSession === 'function') {
@@ -250,6 +276,61 @@ try {
     TikTokLiveConnectionClass = null; // Allow app to boot; TikTok features disabled until module present
     ConnectionManager = null;
 }
+
+// --- AUTOMATED TEST HARNESS ---
+// Watch for a trigger file to send test messages. This allows external agents/scripts to trigger a chat send.
+const TEST_TRIGGER_FILE = path.join(app.getPath('userData'), '.test-trigger');
+try {
+    console.log('[Test Harness] Watching for test trigger at:', TEST_TRIGGER_FILE);
+    fs.watchFile(TEST_TRIGGER_FILE, { interval: 1000 }, async (curr, prev) => {
+        if (curr.mtime > prev.mtime) {
+            console.log('[Test Harness] Trigger file modified, attempting to send test message...');
+            try {
+                const content = await fsp.readFile(TEST_TRIGGER_FILE, 'utf8');
+                if (!content.trim()) return;
+
+                const payload = JSON.parse(content);
+                const targetWssID = payload.wssID || Object.keys(connectionStates)[0]; // Default to first active connection
+
+                if (!targetWssID) {
+                    console.warn('[Test Harness] No active connection found to send message.');
+                    return;
+                }
+
+                console.log(`[Test Harness] Sending message to WSS ID ${targetWssID}:`, payload.message);
+
+                // Find the connection instance - ConnectionManager is a static class/singleton wrapper in this context?
+                // Actually ConnectionManager is the class. We need the instance.
+                // The 'connectionStates' map holds state, but 'websocketConnections' holds the actual instances?
+                // Let's look at how sendToTikTok works.
+
+                // Based on line 265: sendToTikTok = tikTokEnv.sendToTikTok;
+                // And sendToTikTok usually handles routing.
+                // But we want to call sendChatMessage specifically.
+
+                // We need to find the ConnectionManager instance for this WSS ID.
+                // In this codebase, it seems 'tikTokEnv' manages instances but doesn't expose them easily?
+                // Wait, 'websocketConnections' (line 162) might hold them?
+                // Let's try to find the connection in websocketConnections.
+
+                const connection = websocketConnections[targetWssID];
+                if (connection && typeof connection.sendChatMessage === 'function') {
+                    const result = await connection.sendChatMessage(payload.message || 'Test message');
+                    console.log('[Test Harness] Result:', result);
+                } else {
+                    console.warn('[Test Harness] Connection instance not found or invalid for WSS ID:', targetWssID);
+                    console.log('Available WSS IDs:', Object.keys(websocketConnections));
+                }
+
+            } catch (err) {
+                console.error('[Test Harness] Failed to execute test trigger:', err);
+            }
+        }
+    });
+} catch (err) {
+    console.warn('[Test Harness] Failed to setup file watcher:', err);
+}
+// ------------------------------
 
 // Generate a random flag for this session to authenticate injected scripts
 const INJECTED_SCRIPT_FLAG = '_ssapp_' + Math.random().toString(36).substring(2) + Date.now().toString(36);
@@ -4218,6 +4299,56 @@ async function createWindow(args, reuse = false, mainApp = false) {
         var tabID = -1;
         var options = {};
 
+        const handleDockChatSend = (overlay = {}) => {
+            try {
+                console.log('[Dock IPC] handleDockChatSend called', { overlay });
+                const text = typeof overlay.response === 'string' ? overlay.response.trim() : '';
+                if (!text) {
+                    console.warn('[Dock IPC] Empty text in handleDockChatSend');
+                    return;
+                }
+
+                const rawTargets = [];
+                if (Array.isArray(overlay.tid)) {
+                    rawTargets.push(...overlay.tid);
+                } else if (overlay.tid !== undefined && overlay.tid !== null) {
+                    rawTargets.push(overlay.tid);
+                }
+
+                const parsedTargets = rawTargets
+                    .map((t) => {
+                        if (typeof t === 'number' && Number.isFinite(t)) return t;
+                        const num = Number(t);
+                        return Number.isFinite(num) && num !== 0 ? num : null;
+                    })
+                    .filter((t) => t !== null);
+
+                const availableWssIds = Object.keys(websocketConnections).map((key) => Number(key)).filter((n) => Number.isFinite(n));
+                console.log('[Dock IPC] Target resolution', { rawTargets, parsedTargets, availableWssIds });
+
+                const targetWssIds = parsedTargets.length
+                    ? parsedTargets.map((t) => (t >= 900000 ? t - 900000 : t))
+                    : availableWssIds;
+
+                console.log('[Dock IPC] Final target WSS IDs:', targetWssIds);
+
+                if (!targetWssIds.length) {
+                    console.warn('[Dock IPC] No valid targets found');
+                    return;
+                }
+
+                for (const wssId of targetWssIds) {
+                    if (!Number.isFinite(wssId)) continue;
+                    console.log(`[Dock IPC] Sending to TikTok WSS ID: ${wssId}`);
+                    sendToTikTok({ wssID: wssId, message: text }).catch((error) => {
+                        console.warn('[Dock IPC] TikTok chat send failed', { wssId, error: error?.message || error });
+                    });
+                }
+            } catch (error) {
+                console.warn('[Dock IPC] Failed to route chat to TikTok', error);
+            }
+        };
+
         if (args.length >= 2) {
             if (args[1] && args[1].tabID) {
                 tabID = args[1].tabID;
@@ -4231,12 +4362,28 @@ async function createWindow(args, reuse = false, mainApp = false) {
             // Don't delete it here as it might be needed by background.html
         }
 
+        let senderUrl = '';
         try {
-            let sssurl = eventRet.sender.getURL().toLowerCase();
-            if (sssurl.startsWith("https://socialstream.ninja/dock.html?") || sssurl.startsWith("https://beta.socialstream.ninja/dock.html?") || (sssurl.startsWith("file://") && sssurl.includes("/dock.html?"))) {
+            senderUrl = eventRet.sender.getURL().toLowerCase();
+            if (senderUrl.startsWith("https://socialstream.ninja/featured.html?") || senderUrl.startsWith("https://beta.socialstream.ninja/featured.html?") || (senderUrl.startsWith("file://") && senderUrl.includes("/featured.html?"))) {
                 return;
-            } else if (sssurl.startsWith("https://socialstream.ninja/featured.html?") || sssurl.startsWith("https://beta.socialstream.ninja/featured.html?") || (sssurl.startsWith("file://") && sssurl.includes("/featured.html?"))) {
-                return;
+            }
+
+            if (senderUrl.includes('/dock.html') || senderUrl.includes('/background.html')) {
+                const payload = args && args[0] ? args[0] : null;
+                console.log('[Dock IPC] Received postMessage from dock.html', { payloadKeys: payload ? Object.keys(payload) : 'null' });
+                if (payload && payload.overlayNinja && payload.overlayNinja.response !== undefined) {
+                    console.log('[Dock IPC] Calling handleDockChatSend');
+                    handleDockChatSend(payload.overlayNinja);
+                } else {
+                    console.log('[Dock IPC] Payload does not match overlayNinja response structure');
+                }
+                try {
+                    const preview = args && args[0] ? JSON.stringify(args[0]).slice(0, 400) : '';
+                    console.log('[Dock IPC] postMessage received', { senderUrl, preview });
+                } catch (err) {
+                    console.log('[Dock IPC] postMessage received (unserializable payload)', { senderUrl });
+                }
             }
         } catch (e) { }
 
@@ -7319,9 +7466,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     // Original synchronous handler for backward compatibility
     ipcMain.on("sendToTab", function (eventRet, args) {
-        log("sendToTab 1");
+        // log("sendToTab 1");
         const tabId = args.tab || args.tabID;
         const message = args.message || args;
+
+        // Debug log for TikTok chat messages
+        if (message && message.text && typeof message.text === 'string') {
+            console.log('[IPC Debug] sendToTab received potential chat message:', { tabId, text: message.text });
+        }
 
         const view = getActiveBrowserView(tabId);
         if (view && view.webContents) {
@@ -7333,6 +7485,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 eventRet.returnValue = false;
             }
         } else {
+            console.warn('[IPC Debug] sendToTab failed: view not found for tabId', tabId);
             eventRet.returnValue = false;
         }
     });
@@ -9433,27 +9586,6 @@ function normalizeTikTokSigningServiceUrl(rawValue) {
     }
 }
 
-const DEFAULT_TIKTOK_SIGNING_URL = 'https://livecenter.tiktok.com/realtime';
-
-function normalizeTikTokLandingUrl(rawValue) {
-    if (!rawValue || typeof rawValue !== 'string') {
-        return DEFAULT_TIKTOK_SIGNING_URL;
-    }
-    const trimmed = rawValue.trim();
-    if (!trimmed) {
-        return DEFAULT_TIKTOK_SIGNING_URL;
-    }
-    try {
-        return new URL(trimmed).toString();
-    } catch (_) {
-        try {
-            return new URL(trimmed, DEFAULT_TIKTOK_SIGNING_URL).toString();
-        } catch (__error) {
-            return DEFAULT_TIKTOK_SIGNING_URL;
-        }
-    }
-}
-
 function ensureDeviceId(value) {
     const digits = typeof value === 'string' ? value.replace(/\D+/g, '') : '';
     if (digits && digits.length >= 19) {
@@ -9584,6 +9716,42 @@ function attachSigningWindow(win) {
         try {
             win.removeListener('closed', handleClosed);
         } catch (_) { }
+    };
+}
+
+function normalizeTikTokLandingUrl(rawValue) {
+    if (!rawValue || typeof rawValue !== 'string') {
+        return DEFAULT_TIKTOK_SIGNING_URL;
+    }
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+        return DEFAULT_TIKTOK_SIGNING_URL;
+    }
+    try {
+        return new URL(trimmed).toString();
+    } catch (_) {
+        try {
+            return new URL(trimmed, DEFAULT_TIKTOK_SIGNING_URL).toString();
+        } catch (__error) {
+            return DEFAULT_TIKTOK_SIGNING_URL;
+        }
+    }
+}
+
+function getTikTokSigningWindowState() {
+    const exists = !!(tiktokSigningWindow && !tiktokSigningWindow.isDestroyed());
+    const isVisible = exists ? tiktokSigningWindow.isVisible() && !tiktokSigningWindow.isMinimized() : false;
+    const isMuted = exists && tiktokSigningWindow.webContents && typeof tiktokSigningWindow.webContents.isAudioMuted === 'function'
+        ? tiktokSigningWindow.webContents.isAudioMuted()
+        : false;
+    const currentUrl = exists && tiktokSigningWindow.webContents && typeof tiktokSigningWindow.webContents.getURL === 'function'
+        ? tiktokSigningWindow.webContents.getURL()
+        : null;
+    return {
+        exists,
+        visible: isVisible,
+        muted: isMuted,
+        url: currentUrl
     };
 }
 
@@ -9740,6 +9908,8 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
                 if (channel !== "sendToTab") return;
 
                 const text = typeof data?.text === 'string' ? data.text.trim() : '';
+                console.log('[TikTok Virtual Tab] send called', { channel, text, hasSession: !!manager.sessionId });
+
                 if (!text) {
                     console.warn('Ignoring empty TikTok chat send request');
                     return;
@@ -9756,6 +9926,7 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
                 }
 
                 manager.sendChatMessage(text).then(result => {
+                    console.log('[TikTok Virtual Tab] sendChatMessage result:', result);
                     if (!result?.success && result?.error) {
                         console.log('Failed to send TikTok message:', result.error);
                     }
@@ -9842,12 +10013,96 @@ ipcMain.handle("tiktokShowSigningWindow", async (_event, args = {}) => {
             ? args.landingUrl.trim()
             : null;
         await ensureTikTokSigningWindow(landingUrl, { allowNavigation: Boolean(landingUrl) });
-        return { success: true };
+        return { success: true, state: getTikTokSigningWindowState() };
     } catch (error) {
         console.error('[TikTok] Failed to show signing window:', error);
         return {
             success: false,
             error: error && error.message ? error.message : 'Unable to show the TikTok window.'
+        };
+    }
+});
+
+ipcMain.handle('tiktokSigningWindowCommand', async (_event, args = {}) => {
+    const action = typeof args?.action === 'string' ? args.action : 'state';
+    const currentState = () => getTikTokSigningWindowState();
+
+    const ensureWindow = async () => {
+        if (tiktokSigningWindow && !tiktokSigningWindow.isDestroyed()) {
+            return tiktokSigningWindow;
+        }
+        const win = await ensureTikTokSigningWindow(DEFAULT_TIKTOK_SIGNING_URL, { allowNavigation: true });
+        return win;
+    };
+
+    try {
+        switch (action) {
+            case 'state':
+                return { success: true, state: currentState() };
+            case 'show':
+            case 'reveal': {
+                const win = await ensureWindow();
+                try { win.show(); win.focus(); } catch (_) { }
+                return { success: true, state: currentState() };
+            }
+            case 'hide': {
+                if (!tiktokSigningWindow || tiktokSigningWindow.isDestroyed()) {
+                    return { success: false, error: 'Signing window not open', state: currentState() };
+                }
+                try { tiktokSigningWindow.hide(); } catch (_) { }
+                return { success: true, state: currentState() };
+            }
+            case 'toggle-visibility': {
+                if (!tiktokSigningWindow || tiktokSigningWindow.isDestroyed()) {
+                    const win = await ensureWindow();
+                    try { win.show(); win.focus(); } catch (_) { }
+                    return { success: true, state: currentState() };
+                }
+                if (tiktokSigningWindow.isVisible() && !tiktokSigningWindow.isMinimized()) {
+                    try { tiktokSigningWindow.hide(); } catch (_) { }
+                } else {
+                    try { tiktokSigningWindow.show(); tiktokSigningWindow.focus(); } catch (_) { }
+                }
+                return { success: true, state: currentState() };
+            }
+            case 'refresh': {
+                if (!tiktokSigningWindow || tiktokSigningWindow.isDestroyed()) {
+                    const win = await ensureWindow();
+                    try { win.webContents.reload(); } catch (_) { }
+                } else {
+                    try { await tiktokSigningWindow.webContents.reload(); } catch (_) { }
+                }
+                return { success: true, state: currentState() };
+            }
+            case 'mute':
+            case 'unmute':
+            case 'toggle-mute': {
+                if (!tiktokSigningWindow || tiktokSigningWindow.isDestroyed()) {
+                    return { success: false, error: 'Signing window not open', state: currentState() };
+                }
+                const desired = action === 'mute'
+                    ? true
+                    : (action === 'unmute'
+                        ? false
+                        : !(tiktokSigningWindow.webContents?.isAudioMuted?.() || false));
+                try {
+                    tiktokSigningWindow.webContents.setAudioMuted(!!desired);
+                } catch (_) { }
+                return { success: true, state: currentState() };
+            }
+            case 'stop': {
+                disposeTikTokSigningWindow();
+                return { success: true, state: currentState() };
+            }
+            default:
+                return { success: false, error: `Unknown action: ${action}`, state: currentState() };
+        }
+    } catch (error) {
+        console.error('[TikTok] Signing window command failed:', error);
+        return {
+            success: false,
+            error: error?.message || String(error),
+            state: currentState()
         };
     }
 });

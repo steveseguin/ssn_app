@@ -1326,34 +1326,89 @@
 
             // Hide sign-in button when in websocket mode
             const effectiveMode = getEffectiveConnectionMode(source);
+            const isTikTokLocalSigner = source.target === 'tiktok' && source.tiktokSigningProvider === 'local';
 
             const signinButton = element.querySelector("[data-signin]");
             if (signinButton) {
                 const isWebsocketMode = effectiveMode === 'websocket' ||
                     effectiveMode === 'tiktok-websocket' ||
                     effectiveMode === 'tiktok-legacy';
-                signinButton.classList.toggle("hidden", isWebsocketMode);
-                applySigninPolicy(signinButton, source);
+                if (isTikTokLocalSigner && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy')) {
+                    signinButton.classList.remove('hidden');
+                    signinButton.innerHTML = '🪟 Signing window';
+                    signinButton.title = 'Open the TikTok signing window (local signer)';
+                    signinButton.onclick = () => tiktokShowSigningWindow(source.id);
+                } else {
+                    signinButton.classList.toggle("hidden", isWebsocketMode);
+                    applySigninPolicy(signinButton, source);
+                }
             }
 
             const visibilityControl = element.querySelector('[data-togglehtml]');
             if (visibilityControl) {
-                visibilityControl.textContent = source.isVisible ? '👁️' : '🙈';
-                // Show for regular WSS once a window exists (even while connecting); keep hidden for TikTok special mode
                 const isTikTokApiMode = source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy');
                 const showDuringConnect = (effectiveMode === 'websocket' && !!source.vid);
                 const showWhenActive = (source.status === 'active' && !!source.vid);
-                const hide = isTikTokApiMode || (!showDuringConnect && !showWhenActive);
+                const hide = (!isTikTokLocalSigner && isTikTokApiMode) || (!isTikTokApiMode && !showDuringConnect && !showWhenActive);
                 visibilityControl.classList.toggle('hidden', hide);
+                if (isTikTokLocalSigner && isTikTokApiMode) {
+                    visibilityControl.textContent = '👁️';
+                } else {
+                    visibilityControl.textContent = source.isVisible ? '👁️' : '🙈';
+                }
+                if (isTikTokLocalSigner && isTikTokApiMode) {
+                    visibilityControl.onclick = () => tiktokSigningWindowControl(source.id, 'toggle-visibility');
+                } else {
+                    visibilityControl.onclick = () => toggleSourceVisibility(visibilityControl);
+                }
             }
 
             const muteControl = element.querySelector('[data-togglemute]');
             if (muteControl) {
-                muteControl.textContent = source.isMuted ? '🔇' : '🔊';
                 muteControl.classList.toggle('active', source.isMuted);
-                // Hide only for TikTok websocket mode (which doesn't support mute)
                 const isTikTokApiMode = source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy');
-                muteControl.classList.toggle('hidden', isTikTokApiMode);
+                const hide = (!isTikTokLocalSigner && isTikTokApiMode);
+                muteControl.classList.toggle('hidden', hide);
+                if (isTikTokLocalSigner && isTikTokApiMode) {
+                    muteControl.textContent = '🔇';
+                } else {
+                    muteControl.textContent = source.isMuted ? '🔇' : '🔊';
+                }
+                if (isTikTokLocalSigner && isTikTokApiMode) {
+                    muteControl.onclick = () => tiktokSigningWindowControl(source.id, 'toggle-mute');
+                } else {
+                    muteControl.onclick = () => toggleSourceMute(muteControl);
+                }
+            }
+
+            // Repurpose refresh/stop for local signer window when using TikTok WS + local signer
+            const reloadButton = element.querySelector('[data-reloadhtml]');
+            const stopButton = element.querySelector('[data-stophtml]');
+            if (reloadButton) {
+                const showReload = isTikTokLocalSigner
+                    ? true
+                    : (source.status === 'active' || source.status === 'activating' || !!source.vid);
+                reloadButton.classList.toggle('hidden', !showReload);
+                if (isTikTokLocalSigner && source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy')) {
+                    reloadButton.onclick = () => tiktokSigningWindowControl(source.id, 'refresh');
+                } else {
+                    reloadButton.onclick = () => refreshWindow(reloadButton);
+                }
+            }
+            if (stopButton) {
+                const showStop = isTikTokLocalSigner
+                    ? true
+                    : (source.status === 'active' || source.status === 'activating' || !!source.vid);
+                stopButton.classList.toggle('hidden', !showStop);
+                if (isTikTokLocalSigner && source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy')) {
+                    stopButton.onclick = () => tiktokSigningWindowControl(source.id, 'stop');
+                } else {
+                    stopButton.onclick = () => stopThis(stopButton);
+                }
+            }
+
+            if (isTikTokLocalSigner && source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy')) {
+                tiktokSigningWindowControl(source.id, 'state', { silent: true });
             }
 
             const autoActivateCheckbox = element.querySelector('.auto-activate-toggle input[data-state-key="autoActivate"]');
@@ -1411,8 +1466,6 @@
             }
 
             const activateButton = element.querySelector('[data-activatehtml]');
-            const stopButton = element.querySelector('[data-stophtml]');
-            const reloadButton = element.querySelector('[data-reloadhtml]');
             // If not actively connecting, ensure any transient "connecting" flag is cleared
             if (activateButton && source.status !== 'activating') {
                 delete activateButton.dataset.connecting;
@@ -1420,8 +1473,6 @@
 
             // While activating a regular WSS, allow stopping
             if ((source.connectionMode === 'websocket' || (source.target === 'tiktok' && (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy'))) && source.status === 'activating') {
-                const stopButton = element.querySelector('[data-stophtml]');
-                const reloadButton = element.querySelector('[data-reloadhtml]');
                 setActivateButtonConnecting(element);
                 stopButton?.classList.add('hidden');
                 if (reloadButton) reloadButton.classList.add('hidden');
@@ -3209,8 +3260,12 @@
                         tikTokSource = stateManager.getSource(resolvedSourceId);
                     }
                     const hasSession = !!(tikTokSource && typeof tikTokSource.tiktokSessionId === 'string' && tikTokSource.tiktokSessionId.trim());
+                    const provider = tikTokSource?.tiktokSigningProvider || 'auto';
                     const hasCustomSigningConfig = !!(tikTokSource?.tiktokSigningApiKey || tikTokSource?.tiktokSigningServiceUrl);
-                    const providerRequiresSigningTools = tikTokSource?.tiktokSigningProvider === 'custom';
+                    const providerRequiresSigningTools = provider === 'custom'
+                        || provider === 'local'
+                        || provider === 'euler-ws';
+                    const providerRequiresApiKey = provider === 'custom' || provider === 'euler-ws';
                     const showTools = providerRequiresSigningTools || !!tikTokSource?.showTikTokSigningTools;
                     const shouldShowSigninButton = hasCustomSigningConfig || showTools;
 
@@ -3225,7 +3280,7 @@
                         } else {
                             signinButton.onclick = null;
                         }
-                        const needsApiKeyPrompt = providerRequiresSigningTools && !hasCustomSigningConfig;
+                        const needsApiKeyPrompt = providerRequiresApiKey && !hasCustomSigningConfig;
                         if (needsApiKeyPrompt) {
                             signinButton.innerHTML = '🔑 Enter TikTok API key';
                             signinButton.title = 'Enter your custom TikTok signing API key and service URL.';
@@ -3277,7 +3332,9 @@
             const signingToolsMenuItem = settingsMenu?.querySelector('.settings-menu-item[data-tiktok-signing-tools]');
             if (signingToolsMenuItem) {
                 if (source && target === 'tiktok') {
-                    const providerRequiresTools = source.tiktokSigningProvider === 'custom';
+                    const providerRequiresTools = source.tiktokSigningProvider === 'custom'
+                        || source.tiktokSigningProvider === 'local'
+                        || source.tiktokSigningProvider === 'euler-ws';
                     const showTools = providerRequiresTools || !!source.showTikTokSigningTools;
                     signingToolsMenuItem.classList.remove('hidden');
                     signingToolsMenuItem.classList.toggle('active', showTools);
@@ -3402,14 +3459,14 @@
         function setTikTokSigningProvider(entryElement, provider) {
             if (!entryElement) return;
             const sourceId = entryElement.dataset.sourceId;
-            if (sourceId && stateManager) {
-                const updates = { tiktokSigningProvider: provider };
-                if (provider === 'custom' || provider === 'local') {
-                    updates.showTikTokSigningTools = true;
-                }
-                stateManager.updateSource(sourceId, updates);
-                console.log(`[TikTok] Signing provider for ${sourceId} set to: ${provider}`);
-                if (provider === 'custom' && typeof showTikTokSignInMenu === 'function') {
+        if (sourceId && stateManager) {
+            const updates = { tiktokSigningProvider: provider };
+            if (provider === 'custom' || provider === 'local' || provider === 'euler-ws') {
+                updates.showTikTokSigningTools = true;
+            }
+            stateManager.updateSource(sourceId, updates);
+            console.log(`[TikTok] Signing provider for ${sourceId} set to: ${provider}`);
+            if (provider === 'custom' && typeof showTikTokSignInMenu === 'function') {
                     setTimeout(() => {
                         try {
                             showTikTokSignInMenu(sourceId);
@@ -3432,6 +3489,8 @@
                 html = `Using Euler's community signing keys automatically. Best for most users. <a href="#" onclick="window.open('${window.SSAPP_SIGNING_HELP_URL || 'https://github.com/SocialStreamNinja/ssapp/wiki/TikTok-Signing'}', '_blank'); return false;" style="color: #63a4d8; text-decoration: underline;">Learn more</a>`;
             } else if (val === 'local') {
                 html = "Use your own local signing keys. Requires keeping a TikTok window open.";
+            } else if (val === 'euler-ws') {
+                html = "Use Euler's hosted WebSocket relay with your API key/JWT to bypass IP rate limits.";
             } else if (val === 'custom') {
                 html = "Use a custom API key or signing service. For advanced users.";
             }
@@ -3560,6 +3619,7 @@
     <select onchange="setTikTokSigningProvider(this.closest('.entry'), this.value); updateSigningProviderHelpText(this);" class="signing-provider-select">
         <option value="auto">Auto / Euler (Default)</option>
         <option value="local">Local Signer (In-House)</option>
+        <option value="euler-ws">Euler WebSocket Relay</option>
         <option value="custom">Custom API Key</option>
     </select>
     <div class="provider-help-text" style="font-size: 10px; color: #94a3b8; line-height: 1.3; font-style: italic; min-height: 2.6em;">
@@ -5860,6 +5920,9 @@
 
                 // Suppress warning if using Local Signer explicitly
                 const isLocalSigner = signingProvider === 'local';
+                if (signingProvider === 'euler-ws' && (!signing || !signing.apiKey)) {
+                    Toast.warning('Euler WebSocket', 'Enter your Euler API key or JWT to use the hosted WebSocket relay.');
+                }
 
                 if (strategy === 'websocket' && !signing && !isLocalSigner && !tiktokWebsocketSigningWarningShown) {
                     tiktokWebsocketSigningWarningShown = true;
@@ -6009,6 +6072,16 @@
             const autoValidateEnabled = !!source.tiktokSigningAutoValidate;
 
             // --- Building Blocks ---
+            const credentialsTitle = providerValue === 'custom'
+                ? 'Custom Signing Credentials'
+                : (providerValue === 'euler-ws'
+                    ? 'Euler WebSocket Credentials'
+                    : 'Euler Signing Credentials (Optional)');
+            const credentialsDescription = providerValue === 'custom'
+                ? 'Enter the API key and signing service URL you received from Euler or your custom signer.'
+                : (providerValue === 'euler-ws'
+                    ? 'Enter your Euler API key (or JWT-enabled key) to use the hosted WebSocket relay.'
+                    : 'Provide your Euler API key to keep TikTok WebSocket mode authenticated even when Euler enforces API limits.');
 
             // 1. Euler / Custom API Inputs
             const signingHelpBlock = signingHelpUrl
@@ -6019,11 +6092,9 @@
 
             const apiInputsBlock = `
                 <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
-                    <h4 style="margin: 0 0 10px 0; font-size: 15px;">${providerValue === 'custom' ? 'Custom Signing Credentials' : 'Euler Signing Credentials (Optional)'}</h4>
+                    <h4 style="margin: 0 0 10px 0; font-size: 15px;">${credentialsTitle}</h4>
                     <p style="margin: 0 0 12px 0; font-size: 13px; color: #e2e8f0;">
-                        ${providerValue === 'custom'
-                    ? 'Enter the API key and signing service URL you received from Euler or your custom signer.'
-                    : 'Provide your Euler API key to keep TikTok WebSocket mode authenticated even when Euler enforces API limits.'}
+                        ${credentialsDescription}
                     </p>
                     <label for="${apiKeyInputId}" style="display: block; font-size: 13px; color: #cbd5f5; margin-bottom: 4px;">API key</label>
                     <input id="${apiKeyInputId}" type="password" autocomplete="off" spellcheck="false" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #f8fafc;" value="${ssappEscapeHtml(existingSigningApiKey)}" placeholder="Euler API key">
@@ -6055,6 +6126,20 @@
                         </button>
                         <button id="tiktok-signing-generate-${sourceId}" onclick="tiktokGenerateSigningParameters('${sourceId}')" class="button" style="background: #0ea5e9; flex: 1; justify-content: center;">
                             🔐 Generate Keys
+                        </button>
+                    </div>
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
+                        <button id="tiktok-signing-reveal-${sourceId}" onclick="tiktokSigningWindowControl('${sourceId}', 'toggle-visibility')" class="button" style="background: #334155; flex: 1; justify-content: center;">
+                            👁️ Show window
+                        </button>
+                        <button id="tiktok-signing-refresh-${sourceId}" onclick="tiktokSigningWindowControl('${sourceId}', 'refresh')" class="button" style="background: #1e293b; flex: 1; justify-content: center;">
+                            🔄 Refresh
+                        </button>
+                        <button id="tiktok-signing-mute-${sourceId}" onclick="tiktokSigningWindowControl('${sourceId}', 'toggle-mute')" class="button" style="background: #334155; flex: 1; justify-content: center;">
+                            🔇 Mute
+                        </button>
+                        <button id="tiktok-signing-stop-${sourceId}" onclick="tiktokSigningWindowControl('${sourceId}', 'stop')" class="button" style="background: #ef4444; flex: 1; justify-content: center;">
+                            ⏹️ Close window
                         </button>
                     </div>
                     <div style="background: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6; padding: 8px 12px; margin: 12px 0; font-size: 13px; color: #dbeafe;">
@@ -6123,7 +6208,20 @@
             } else if (providerValue === 'local') {
                 headerTitle = 'TikTok Signing: Local Signer';
                 mainContent = localSignerBlock;
-                advancedContent = apiInputsBlock + manualAndDebugBlock;
+                advancedContent = manualAndDebugBlock;
+
+            } else if (providerValue === 'euler-ws') {
+                headerTitle = 'TikTok Signing: Euler WebSocket';
+                mainContent = `
+                    <div style="background: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6; padding: 12px 16px; border-radius: 6px; margin-bottom: 20px;">
+                        <h4 style="margin: 0 0 6px 0; color: #93c5fd; font-size: 15px;">Hosted WebSocket Relay</h4>
+                        <p style="margin: 0; font-size: 13px; color: #dbeafe;">
+                            Use Euler's WebSocket relay (API key or JWT) to bypass local IP rate limits and avoid signing traffic on this machine.
+                        </p>
+                    </div>
+                    ${apiInputsBlock}
+                `;
+                advancedContent = localSignerBlock + manualAndDebugBlock;
 
             } else if (providerValue === 'custom') {
                 headerTitle = 'TikTok Signing: Custom API Key';
@@ -6157,6 +6255,9 @@
             showModal(menuContent);
             renderTikTokSigningResults(sourceId);
             startTikTokStatusPolling(sourceId);
+            if (providerValue === 'local') {
+                tiktokSigningWindowControl(sourceId, 'state', { silent: true });
+            }
 
             // Auto-focus if custom
             if (providerValue === 'custom') {
@@ -6346,10 +6447,92 @@
                     Toast.error('TikTok Signing', errorMsg);
                     return;
                 }
+                tiktokSigningWindowControl(sourceId, 'state', { silent: true });
                 Toast.info('TikTok Signing', 'TikTok window opened. Navigate to the live room, then click Generate signing keys.');
             } catch (error) {
                 console.error('Failed to show TikTok signing window:', error);
                 Toast.error('TikTok Signing', error.message || 'Unable to show the TikTok window.');
+            }
+        }
+
+        function updateTikTokSigningWindowControlState(sourceId, state) {
+            const hasWindow = !!state?.exists;
+            const revealBtn = document.getElementById(`tiktok-signing-reveal-${sourceId}`);
+            const refreshBtn = document.getElementById(`tiktok-signing-refresh-${sourceId}`);
+            const muteBtn = document.getElementById(`tiktok-signing-mute-${sourceId}`);
+            const stopBtn = document.getElementById(`tiktok-signing-stop-${sourceId}`);
+
+            if (revealBtn) {
+                const visible = !!state?.visible;
+                revealBtn.innerHTML = visible ? '🙈 Hide window' : '👁️ Show window';
+                revealBtn.title = visible ? 'Hide the TikTok signing window' : 'Show the TikTok signing window';
+            }
+            if (refreshBtn) {
+                refreshBtn.disabled = !hasWindow;
+                refreshBtn.title = hasWindow ? 'Reload the signing window' : 'Open the signing window first';
+            }
+            if (muteBtn) {
+                muteBtn.disabled = !hasWindow;
+                const muted = !!state?.muted;
+                muteBtn.innerHTML = muted ? '🔊 Unmute' : '🔇 Mute';
+                muteBtn.title = muted ? 'Unmute the signing window' : 'Mute the signing window';
+            }
+            if (stopBtn) {
+                stopBtn.disabled = !hasWindow;
+                stopBtn.title = hasWindow ? 'Close the signing window' : 'Signing window not open';
+            }
+
+            // Mirror state into the main entry action buttons when in local signer mode
+            const entry = document.querySelector(`[data-source-id="${sourceId}"]`);
+            if (entry) {
+                const visibilityControl = entry.querySelector('[data-togglehtml]');
+                const muteControl = entry.querySelector('[data-togglemute]');
+                const reloadButton = entry.querySelector('[data-reloadhtml]');
+                const stopButton = entry.querySelector('[data-stophtml]');
+
+                if (visibilityControl && !visibilityControl.classList.contains('hidden')) {
+                    const visible = !!state?.visible;
+                    visibilityControl.textContent = visible ? '👁️' : '🙈';
+                    visibilityControl.title = visible ? 'Hide signing window' : 'Show signing window';
+                }
+                if (muteControl && !muteControl.classList.contains('hidden')) {
+                    const muted = !!state?.muted;
+                    muteControl.textContent = muted ? '🔇' : '🔊';
+                    muteControl.classList.toggle('active', muted);
+                    muteControl.title = muted ? 'Unmute signing window' : 'Mute signing window';
+                }
+                if (reloadButton && !reloadButton.classList.contains('hidden')) {
+                    reloadButton.disabled = !hasWindow;
+                }
+                if (stopButton && !stopButton.classList.contains('hidden')) {
+                    stopButton.disabled = !hasWindow;
+                }
+            }
+        }
+
+        async function tiktokSigningWindowControl(sourceId, action = 'state', options = {}) {
+            if (!ipcRenderer) return null;
+            try {
+                const result = await ipcRenderer.invoke('tiktokSigningWindowCommand', { action });
+                if (result && result.state) {
+                    updateTikTokSigningWindowControlState(sourceId, result.state);
+                }
+                if (result && result.success === false && !options.silent) {
+                    Toast.error('TikTok Signing', result.error || 'Signing window unavailable.');
+                } else if (!options.silent && result && result.success) {
+                    if (action === 'refresh') {
+                        Toast.info('TikTok Signing', 'Signing window refreshed.');
+                    } else if (action === 'stop') {
+                        Toast.info('TikTok Signing', 'Signing window closed.');
+                    }
+                }
+                return result;
+            } catch (error) {
+                console.error('Failed to control TikTok signing window:', error);
+                if (!options.silent) {
+                    Toast.error('TikTok Signing', error.message || 'Failed to control signing window.');
+                }
+                return null;
             }
         }
 
@@ -6561,8 +6744,14 @@
                     lockProvider(true);
                     statusElement.classList.add('connected');
                     {
-                        const label = message || 'WebSocket Connected';
-                        statusElement.innerHTML = `<i class="las la-check-circle"></i> ${label}`;
+                        let label = message || null;
+                        if (!label && sourceCtx && sourceCtx.target === 'tiktok' && sourceCtx.tiktokConnectionMethod) {
+                            const normalized = String(sourceCtx.tiktokConnectionMethod);
+                            const lower = normalized.toLowerCase();
+                            const prefix = lower.includes('polling') ? 'Connected via' : 'Websocket connected via';
+                            label = `${prefix} ${normalized}`;
+                        }
+                        statusElement.innerHTML = `<i class="las la-check-circle"></i> ${label || 'WebSocket Connected'}`;
                     }
                     break;
                 case 'error':
@@ -8033,6 +8222,13 @@
                     const restoreActivateUI = () => {
                         if (entryElement) restoreActivateButton(entryElement);
                     };
+                    const formatTikTokConnectionLabel = (method) => {
+                        if (!method) return null;
+                        const normalized = String(method);
+                        const lower = normalized.toLowerCase();
+                        const prefix = lower.includes('polling') ? 'Connected via' : 'Websocket connected via';
+                        return `${prefix} ${normalized}`;
+                    };
 
                     if (currentState.status === 'inactive' && !currentState.vid && !currentState.wssId && !currentState.tiktokWssId && (data.status === 'error' || data.status === 'failed' || data.status === 'disconnected')) {
                         return;
@@ -8069,13 +8265,16 @@
                                 entryElement._tiktokRetryAttempt = null;
                                 entryElement._tiktokRetryMax = null;
                             }
+                            const connectionMethod = data.connectionMethod || data.effectiveMode || null;
                             stateManager.updateSource(sourceId, {
                                 status: 'active',
                                 tiktokFallbackMode: null,
-                                tiktokConnectionMethod: data.connectionMethod || data.effectiveMode || null
+                                tiktokConnectionMethod: connectionMethod
                             });
                             {
-                                const connectedLabel = data.connectionLabel || (data.effectiveMode ? `Connected via ${data.effectiveMode}` : null);
+                                const connectedLabel = data.connectionLabel
+                                    || formatTikTokConnectionLabel(connectionMethod)
+                                    || (data.effectiveMode ? `Connected via ${data.effectiveMode}` : null);
                                 if (entryElement) updateConnectionStatus(entryElement, 'connected', connectedLabel);
                             }
                             if (entryElement && entryElement._tiktokFallback) {

@@ -451,6 +451,72 @@ try {
 	}
 }
 
+function injectDockBridge() {
+	try {
+		const href = window.location && typeof window.location.href === 'string' ? window.location.href : '';
+		if (!href.includes('/dock.html')) return;
+
+		const scriptContent = `
+			(() => {
+				const resolveToken = () => {
+					try {
+						if (window.ninjafy && typeof window.ninjafy.getAuthToken === 'function') {
+							return window.ninjafy.getAuthToken();
+						}
+						if (window.ninjafy && typeof window.ninjafy._authToken === 'string') {
+							return window.ninjafy._authToken;
+						}
+					} catch (_) {}
+					return null;
+				};
+
+				const postToElectron = (payload) => {
+					const token = resolveToken();
+					const message = { ...payload };
+					if (token) {
+						message._authToken = token;
+					}
+					try {
+						window.postMessage(message, '*');
+					} catch (_) {}
+				};
+
+				const originalSend2Extension = window.send2Extension;
+				window.send2Extension = function(data, uid = null) {
+					try {
+						postToElectron({
+							overlayNinja: data,
+							__tabID__: uid,
+							fromDock: true
+						});
+					} catch (_) {}
+					if (typeof originalSend2Extension === 'function') {
+						return originalSend2Extension.apply(this, arguments);
+					}
+				};
+
+				const originalRespondP2P = window.respondP2P;
+				window.respondP2P = function(data, tid = false) {
+					try {
+						// respondP2P calls send2Extension internally; the send2Extension wrapper will forward to Electron.
+					} catch (_) {}
+					if (typeof originalRespondP2P === 'function') {
+						return originalRespondP2P.apply(this, arguments);
+					}
+				};
+			})();`;
+
+		const script = document.createElement('script');
+		script.textContent = scriptContent;
+		(document.head || document.documentElement).appendChild(script);
+		script.remove();
+	} catch (_) {
+		// Ignore dock bridge errors
+	}
+}
+
+window.addEventListener('DOMContentLoaded', injectDockBridge);
+
 
 // Handle sendToTab-request messages that expect a response
 ipcRenderer.on('sendToTab-request', (event, data) => {

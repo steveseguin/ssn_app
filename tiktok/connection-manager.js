@@ -3,6 +3,8 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { EventEmitter } = require('events');
+const WebSocket = require('ws');
 
 const {
     cleanVisibleString,
@@ -32,6 +34,14 @@ try {
 
 const isDirectChatRouteSupported = typeof SendRoomChatRoute === 'function';
 const disableDirectChatRoute = process.env.SSAPP_DISABLE_DIRECT_TIKTOK_CHAT === '1';
+const {
+    createWebSocketUrl: createEulerWebSocketUrl,
+    normalizeUniqueId: normalizeEulerUniqueId,
+    deserializeWebSocketMessage,
+    SchemaVersion
+} = require('@eulerstream/euler-websocket-sdk');
+const { WebcastEventMap, WebcastEvent } = require('tiktok-live-connector/dist/types/events');
+const { ControlAction } = require('tiktok-live-connector/dist/types/tiktok/enums');
 
 const env = {
     shouldEnableTikTokLogging: false,
@@ -63,6 +73,183 @@ let usingLegacyTikTokConnector = false;
 let EulerSignerClass = null;
 const SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD = 3;
 const DEFAULT_TIKTOK_WEB_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const EULER_WS_PROVIDER = 'euler-ws';
+
+class EulerWebsocketServerConnection extends EventEmitter {
+    constructor(uniqueId, options = {}) {
+        super();
+        this.uniqueId = normalizeEulerUniqueId(typeof uniqueId === 'string' ? uniqueId : '');
+        this.apiKey = typeof options.apiKey === 'string' && options.apiKey.trim() ? options.apiKey.trim() : null;
+        this.jwtKey = typeof options.jwtKey === 'string' && options.jwtKey.trim() ? options.jwtKey.trim() : null;
+        this.features = options.features || {};
+        this.roomId = options.roomId || null;
+        this.isConnected = false;
+        this.enableExtendedGiftInfo = false;
+        this.ws = null;
+    }
+
+    async connect() {
+        const url = createEulerWebSocketUrl({
+            uniqueId: this.uniqueId,
+            ...(this.apiKey ? { apiKey: this.apiKey } : {}),
+            ...(this.jwtKey ? { jwtKey: this.jwtKey } : {}),
+            features: {
+                rawMessages: true,
+                bundleEvents: true,
+                ...(this.features || {})
+            }
+        });
+
+        return new Promise((resolve, reject) => {
+            try {
+                const socket = new WebSocket(url);
+                this.ws = socket;
+
+                const finalize = (fn) => {
+                    try {
+                        fn();
+                    } catch (_) { }
+                };
+
+                socket.on('open', () => {
+                    this.isConnected = true;
+                    this.emit('websocketConnected');
+                    resolve(true);
+                });
+
+                socket.on('message', (data) => this.handleMessage(data));
+
+                socket.on('close', (code, reason) => {
+                    this.isConnected = false;
+                    this.emit('disconnect', {
+                        code,
+                        reason: reason ? reason.toString() : ''
+                    });
+                });
+
+                socket.on('error', (error) => {
+                    this.emit('error', error);
+                    if (!this.isConnected) {
+                        reject(error);
+                    }
+                });
+
+                socket.on('unexpected-response', (_req, res) => {
+                    const status = res && res.statusCode ? res.statusCode : null;
+                    const statusText = res && res.statusMessage ? res.statusMessage : '';
+                    const err = new Error(`Euler WebSocket server rejected connection${status ? ` (${status}${statusText ? ` ${statusText}` : ''})` : ''}`);
+                    this.emit('error', err);
+                    if (!this.isConnected) {
+                        reject(err);
+                    }
+                    finalize(() => socket.close());
+                });
+            } catch (error) {
+                reject(error);
+            }
+        });
+    }
+
+    async disconnect() {
+        if (this.ws) {
+            try {
+                this.ws.removeAllListeners();
+            } catch (_) { }
+            try {
+                this.ws.close();
+            } catch (_) { }
+        }
+        this.ws = null;
+        this.isConnected = false;
+    }
+
+    handleMessage(data) {
+        const buffer = Buffer.isBuffer(data)
+            ? data
+            : (data instanceof ArrayBuffer ? Buffer.from(data) : Buffer.from(String(data)));
+
+        this.emit('websocketData', buffer);
+
+        let decodedFrame = null;
+        try {
+            decodedFrame = deserializeWebSocketMessage(buffer, SchemaVersion.v2);
+        } catch (error) {
+            this.emit('error', error);
+            return;
+        }
+
+        const messages = decodedFrame?.protoMessageFetchResult?.messages;
+        if (!Array.isArray(messages)) {
+            return;
+        }
+
+        for (const message of messages) {
+            const decodedData = message?.decodedData;
+            if (!decodedData) continue;
+
+            this.emit('decodedData', decodedData.type, decodedData.data, message.payload);
+            this.forwardDecodedData(decodedData);
+        }
+    }
+
+    forwardDecodedData(decoded) {
+        if (!decoded || !decoded.type) return;
+        const { type, data } = decoded;
+
+        switch (type) {
+            case 'WebcastSocialMessage': {
+                const displayType = data?.common?.displayText?.displayType || '';
+                if (typeof displayType === 'string') {
+                    if (displayType.includes('follow')) {
+                        this.emit(WebcastEvent.FOLLOW, data);
+                        return;
+                    }
+                    if (displayType.includes('share')) {
+                        this.emit(WebcastEvent.SHARE, data);
+                        return;
+                    }
+                    if (displayType.toLowerCase().includes('sub')) {
+                        this.emit('subscribe', data);
+                        return;
+                    }
+                }
+                this.emit(WebcastEvent.SOCIAL, data);
+                return;
+            }
+            case 'WebcastControlMessage': {
+                this.emit(WebcastEvent.CONTROL_MESSAGE, data);
+                if (data && (data.action === ControlAction.CONTROL_ACTION_STREAM_ENDED || data.action === ControlAction.CONTROL_ACTION_STREAM_SUSPENDED)) {
+                    this.emit(WebcastEvent.STREAM_END, { action: data.action });
+                    this.disconnect();
+                }
+                return;
+            }
+            case 'WebcastGiftMessage': {
+                this.emit(WebcastEvent.GIFT, data);
+                return;
+            }
+            case 'WebcastBarrageMessage': {
+                if (data?.content?.displayType?.includes('ttlive_superFan')) {
+                    this.emit(WebcastEvent.SUPER_FAN, data);
+                }
+                this.emit(WebcastEvent.BARRAGE, data);
+                return;
+            }
+            default: {
+                const basicEvent = WebcastEventMap[type];
+                if (basicEvent) {
+                    this.emit(basicEvent, data);
+                } else {
+                    this.emit('rawData', type, data);
+                }
+            }
+        }
+    }
+
+    async sendMessage() {
+        throw new Error('Euler WebSocket relay does not support outbound chat sends.');
+    }
+}
 
 function log(...args) {
     try {
@@ -2147,6 +2334,8 @@ class ConnectionManager {
         if (!Number.isFinite(this.signRequestImmediateRetryDelayMs) || this.signRequestImmediateRetryDelayMs < 0) {
             this.signRequestImmediateRetryDelayMs = 750;
         }
+        this.lastSignerPayload = null;
+        this.eulerChatClient = null;
         if (this.tiktokLogWriter) {
             this.tiktokLogWriter.append({
                 timestamp: new Date().toISOString(),
@@ -2186,25 +2375,76 @@ class ConnectionManager {
         };
     }
 
-    getConnectionMethodForDisplay() {
+    getConnectionModeDetails() {
         const usingPolling = this.pollingFallbackActivated
             || this.preferredStrategy === 'legacy'
             || this.connectionStrategy === 'legacy'
             || usingLegacyTikTokConnector;
-        if (usingPolling) {
-            return 'Polling';
-        }
-        if (this.shouldUseLocalSigner()) {
-            return 'Local signing';
-        }
+
         const hasApiKey = !!(this.signingConfig && this.signingConfig.apiKey);
-        if (this.signingProvider === 'custom') {
-            return hasApiKey ? 'API key' : 'Custom signer';
+        const isAuto = this.signingProvider === 'auto';
+        const isCustom = this.signingProvider === 'custom';
+        const isEulerWs = this.signingProvider === EULER_WS_PROVIDER;
+        const useLocalSigner = this.shouldUseLocalSigner();
+
+        if (usingPolling) {
+            const legacySuffix = this.pollingFallbackActivated
+                ? ' (legacy fallback)'
+                : ((usingLegacyTikTokConnector || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy') ? ' (legacy connector)' : '');
+            return {
+                effectiveMode: 'Polling/Legacy',
+                method: `Polling${legacySuffix}`,
+                label: `Connected via polling${legacySuffix}`
+            };
         }
-        if (this.signingProvider === 'auto') {
-            return hasApiKey ? 'Euler (API key)' : 'Euler';
+
+        if (useLocalSigner) {
+            return {
+                effectiveMode: 'Local Signer',
+                method: 'Local signer',
+                label: 'Websocket connected via local signer'
+            };
         }
-        return 'Unknown';
+
+        if (isEulerWs) {
+            const method = hasApiKey ? 'Euler WS relay (API key)' : 'Euler WS relay';
+            return {
+                effectiveMode: 'Euler WS relay',
+                method,
+                label: `Websocket connected via ${method}`
+            };
+        }
+
+        if (isCustom) {
+            const method = hasApiKey ? 'Custom signer (API key)' : 'Custom signer';
+            const effectiveMode = hasApiKey ? 'API Key' : 'Custom API';
+            return {
+                effectiveMode,
+                method,
+                label: `Websocket connected via ${method}`
+            };
+        }
+
+        if (isAuto) {
+            const method = hasApiKey ? 'Euler signing (API key)' : 'Euler signing (auto)';
+            const effectiveMode = hasApiKey ? 'Auto (Euler API Key)' : 'Auto (Euler)';
+            return {
+                effectiveMode,
+                method,
+                label: `Websocket connected via ${method}`
+            };
+        }
+
+        return {
+            effectiveMode: 'Unknown',
+            method: 'Unknown',
+            label: 'Websocket connected'
+        };
+    }
+
+    getConnectionMethodForDisplay() {
+        const details = this.getConnectionModeDetails();
+        return details.method;
     }
 
     isReplayActive() {
@@ -2311,16 +2551,26 @@ class ConnectionManager {
         }
         const targetRoomId = requestPayload.roomId || this.connection?.clientParams?.room_id || this.connection?.roomId || null;
         const uniqueId = requestPayload.uniqueId || this.username;
+        const liveCenterUrl = 'https://livecenter.tiktok.com/realtime';
+        const userLiveUrl = `https://www.tiktok.com/@${uniqueId || this.username}/live`;
+
+        // Prefer the public live URL for the signing window to ensure correct Origin/Referer for chat sending
+        const targetUrl = userLiveUrl;
+
         const signOptions = {
             roomId: targetRoomId,
-            uniqueId,
-            sessionId: this.sessionId || undefined,
-            ttTargetIdc: this.ttTargetIdc || undefined,
-            activeUrl: `https://www.tiktok.com/@${uniqueId || this.username}/live`,
-            landingUrl: `https://www.tiktok.com/@${uniqueId || this.username}/live`,
-            performFetch: true
+            uniqueId: uniqueId || this.username,
+            activeUrl: targetUrl,
+            landingUrl: targetUrl,
+            fallbackUrl: userLiveUrl,
+            performFetch: true,
+            fetchOptions: {
+                headers: {
+                    'Referer': userLiveUrl,
+                    'Origin': 'https://www.tiktok.com'
+                }
+            }
         };
-
         let signerPayload;
         try {
             signerPayload = await this.localSigner.sign('https://webcast.tiktok.com/webcast/im/fetch/', signOptions);
@@ -2350,7 +2600,14 @@ class ConnectionManager {
 
                 if (typeof connectorDeserializeMessage === 'function') {
                     try {
-                        const proto = connectorDeserializeMessage('ProtoMessageFetchResult', bytes);
+                        // Try 'WebcastResponse' first as it is the standard wrapper for im/fetch
+                        let proto;
+                        try {
+                            proto = connectorDeserializeMessage('WebcastResponse', bytes);
+                        } catch (e) {
+                            proto = connectorDeserializeMessage('ProtoMessageFetchResult', bytes);
+                        }
+
                         this.logDebug('sign.local.fetchResult', {
                             hasCursor: Boolean(proto?.cursor),
                             wsUrl: proto?.wsUrl ? '[present]' : '[missing]',
@@ -2397,13 +2654,17 @@ class ConnectionManager {
                 }
 
                 if (protobufHandler && typeof protobufHandler.deserializeMessage === 'function') {
-                    return protobufHandler.deserializeMessage('ProtoMessageFetchResult', bytes);
+                    try {
+                        return protobufHandler.deserializeMessage('WebcastResponse', bytes);
+                    } catch (e) {
+                        return protobufHandler.deserializeMessage('ProtoMessageFetchResult', bytes);
+                    }
                 }
 
                 // Try to find 'deserializeMessage' directly
                 const deserializer = findProperty(this.connection, 'deserializeMessage');
                 if (typeof deserializer === 'function') {
-                    // We need to bind it to the correct context? 
+                    // We need to bind it to the correct context?
                     // Or maybe it's a method on webClient?
                     // If found on webClient prototype, call it on webClient
                     if (typeof this.connection.webClient.deserializeMessage === 'function') {
@@ -2465,6 +2726,9 @@ class ConnectionManager {
     }
 
     updateSessionCredentialsFromSigner(payload) {
+        if (payload && typeof payload === 'object') {
+            this.lastSignerPayload = payload;
+        }
         const nextSessionId = payload?.sessionid || payload?.session_id || null;
         const nextTtTargetIdc = payload?.tt_target_idc || payload?.ttTargetIdc || null;
         if (nextSessionId && !this.sessionId) {
@@ -2487,6 +2751,15 @@ class ConnectionManager {
                     this.connection.webClient.cookieJar.setSession(sessionToStore, ttTargetToStore);
                 } catch (_) {
                     // ignore cookie jar errors
+                }
+            }
+
+            const msToken = payload?.msToken || payload?.ms_token || null;
+            if (msToken) {
+                try {
+                    this.connection.webClient.cookieJar.msToken = msToken;
+                } catch (_) {
+                    // ignore cookie jar assignment issues
                 }
             }
 
@@ -2585,6 +2858,76 @@ class ConnectionManager {
         return cookies.length ? cookies.join('; ') : null;
     }
 
+    getEulerChatClient() {
+        if (this.eulerChatClient) {
+            return this.eulerChatClient;
+        }
+        if (!this.signingConfig?.apiKey) {
+            return null;
+        }
+        let TikTokWebClientClass = null;
+        try {
+            const connector = require('tiktok-live-connector');
+            TikTokWebClientClass = connector?.TikTokWebClient || (connector?.web && connector.web.TikTokWebClient);
+        } catch (error) {
+            console.warn('[TikTok] Euler chat client unavailable:', error?.message || error);
+            this.logDebug('chat.euler.client_unavailable', {
+                message: error?.message || String(error)
+            });
+            return null;
+        }
+        if (!TikTokWebClientClass) {
+            return null;
+        }
+        try {
+            const clientParams = {
+                app_language: "en-US",
+                device_platform: "web"
+            };
+            this.eulerChatClient = new TikTokWebClientClass({
+                clientParams,
+                signApiKey: this.signingConfig.apiKey
+            });
+            return this.eulerChatClient;
+        } catch (error) {
+            console.warn('[TikTok] Failed to initialize Euler chat client:', error);
+            this.logDebug('chat.euler.client_init_failed', {
+                message: error?.message || String(error)
+            });
+            this.eulerChatClient = null;
+            return null;
+        }
+    }
+
+    applySessionToEulerClient(client) {
+        if (!client || !client.cookieJar) {
+            return;
+        }
+        if (this.sessionId && this.ttTargetIdc) {
+            try {
+                client.cookieJar.setSession(this.sessionId, this.ttTargetIdc);
+            } catch (_) {
+                // ignore
+            }
+        }
+    }
+
+    async resolveEulerChatRoomId(client) {
+        const existing = await this.ensureRoomIdForChat();
+        if (existing) {
+            return existing;
+        }
+        if (!client || typeof client.fetchRoomId !== 'function') {
+            return null;
+        }
+        try {
+            return await client.fetchRoomId(this.username);
+        } catch (error) {
+            console.warn('[TikTok] Failed to resolve roomId via Euler client:', error?.message || error);
+            return null;
+        }
+    }
+
     createCustomSigner() {
         if (this.signingProvider === 'local') {
             return null;
@@ -2618,6 +2961,24 @@ class ConnectionManager {
     }
 
     initializeConnectionInstance({ forceLegacy = false, context = 'primary' } = {}) {
+        if (!forceLegacy && this.signingProvider === EULER_WS_PROVIDER) {
+            const rawKey = this.signingConfig?.apiKey || null;
+            const looksLikeJwt = rawKey && rawKey.split('.').length === 3;
+            this.connectionStrategy = 'websocket';
+            this.connection = new EulerWebsocketServerConnection(this.username, {
+                apiKey: looksLikeJwt ? null : rawKey,
+                jwtKey: looksLikeJwt ? rawKey : (this.signingConfig?.jwtKey || null),
+                features: { rawMessages: true, bundleEvents: true }
+            });
+            this.applyResumeCursorToConnection();
+            this.logDebug('lifecycle.initialize.euler_ws', {
+                provider: this.signingProvider,
+                hasApiKey: !!this.signingConfig?.apiKey
+            });
+            this.setupEventHandlers();
+            return;
+        }
+
         const useLegacyConnector = forceLegacy || this.preferredStrategy === 'legacy' || usingLegacyTikTokConnector;
         let ConnectorClass = null;
         if (!useLegacyConnector && TikTokLiveConnectionClass && TikTokLiveConnectionClass !== TikTokPollingFallbackClass) {
@@ -3933,20 +4294,16 @@ class ConnectionManager {
 
                 await this.connection.connect();
 
-                // Determine effective mode for logging
-                let effectiveMode = 'Unknown';
-                if (this.pollingFallbackActivated) {
-                    effectiveMode = 'Polling/Legacy';
-                } else if (this.shouldUseLocalSigner()) {
-                    effectiveMode = 'Local Signer';
-                } else if (isCustom) {
-                    effectiveMode = 'Custom API';
-                } else if (isAuto) {
-                    effectiveMode = 'Auto (Euler)';
-                }
+                const modeDetails = this.getConnectionModeDetails();
+                const effectiveMode = modeDetails.effectiveMode;
+                const connectionMethod = modeDetails.method;
+                const successLabel = modeDetails.label || `Connected successfully using ${effectiveMode} mode.`;
 
-                console.info(`Connected successfully using ${effectiveMode} mode.`);
-                this.logDebug('lifecycle.connect.success', { effectiveMode });
+                console.info(successLabel);
+                this.logDebug('lifecycle.connect.success', {
+                    effectiveMode,
+                    connectionMethod
+                });
                 this.signServerFailureCount = 0;
                 this.websocketFailureCount = 0; // Reset strikes on success
 
@@ -4222,7 +4579,9 @@ class ConnectionManager {
     }
 
     handleConnect() {
-        console.info('Websocket connected, starting health check');
+        const modeDetails = this.getConnectionModeDetails();
+        const connectionLabel = modeDetails.label || 'Websocket connected';
+        console.info(`${connectionLabel}, starting health check`);
         connectionStates.set(this.wssID, {
             isConnected: true,
             lastAttempt: Date.now(),
@@ -4245,34 +4604,13 @@ class ConnectionManager {
             });
         }
 
-        // Determine effective mode for UI
-        let effectiveMode = 'Unknown';
-        const isAuto = this.signingProvider === 'auto';
-        const isCustom = this.signingProvider === 'custom';
-        const hasApiKey = !!(this.signingConfig && this.signingConfig.apiKey);
-
-        if (this.pollingFallbackActivated) {
-            effectiveMode = 'Polling/Legacy';
-        } else if (this.shouldUseLocalSigner()) {
-            effectiveMode = 'Local Signer';
-        } else if (isCustom) {
-            effectiveMode = hasApiKey ? 'API Key' : 'Custom API';
-        } else if (isAuto) {
-            effectiveMode = hasApiKey ? 'Auto (Euler API Key)' : 'Auto (Euler)';
-        }
-
-        const connectionMethod = this.getConnectionMethodForDisplay();
-        const connectionLabel = connectionMethod
-            ? (connectionMethod.toLowerCase().includes('api key') ? `Connected with ${connectionMethod}` : `Connected via ${connectionMethod}`)
-            : 'Connected';
-
         emitStatus({
             wssID: this.wssID,
             status: 'connected',
             hasSession: !!this.sessionId,
-            effectiveMode,
+            effectiveMode: modeDetails.effectiveMode,
             connectionLabel,
-            connectionMethod
+            connectionMethod: modeDetails.method
         });
     }
 
@@ -4788,11 +5126,37 @@ class ConnectionManager {
         sendToBackground(payload);
     }
 
-    shouldUseDirectChatRoute() {
-        if (!(this.enableDirectChatRoute && SendRoomChatRoute)) {
+    shouldAllowEulerChatEndpoint() {
+        if (this.shouldUseLocalSigner()) {
             return false;
         }
-        return !!(this.connection && this.connection.webClient);
+        const hasApiKey = !!(this.signingConfig && this.signingConfig.apiKey);
+        if (this.signingProvider === EULER_WS_PROVIDER && hasApiKey) {
+            return true;
+        }
+        if ((this.signingProvider === 'auto' || this.signingProvider === 'custom') && hasApiKey) {
+            return true;
+        }
+        return false;
+    }
+
+    shouldUseDirectChatRoute() {
+        if (!this.enableDirectChatRoute) {
+            return false;
+        }
+        if (!(this.connection && this.connection.webClient)) {
+            return false;
+        }
+        if (!this.shouldAllowEulerChatEndpoint() || this.shouldUseLocalSigner()) {
+            return true;
+        }
+        return !!SendRoomChatRoute;
+    }
+
+    canUseConnectionChatFallback() {
+        return !!(this.connection &&
+            typeof this.connection.sendMessage === 'function' &&
+            !(this.connection instanceof EulerWebsocketServerConnection));
     }
 
     ensureDirectChatRoute() {
@@ -4877,9 +5241,270 @@ class ConnectionManager {
         return this.connection ? this.connection.roomId : null;
     }
 
+    async sendChatMessageViaWebcastApi(roomId, content) {
+        console.log('[TikTok] sendChatMessageViaWebcastApi called', { roomId, content });
+        if (!this.connection || !this.connection.webClient || typeof this.connection.webClient.postJsonObjectToWebcastApi !== 'function') {
+            console.warn('[TikTok] Direct chat route unavailable: webClient missing or invalid');
+            const err = new Error('Direct TikTok chat route unavailable');
+            err.routeUnavailable = true;
+            throw err;
+        }
+
+        const paramsSource = this.connection.webClient.clientParams || {};
+        const { room_id: rId, cursor, internal_ext, ...rest } = paramsSource;
+        const resolvedRoomId = roomId || rId;
+        if (!resolvedRoomId) {
+            throw new Error('Unable to resolve TikTok room for chat send');
+        }
+
+        const clientTimestamp = Date.now();
+        const livePageUrl = `https://www.tiktok.com/@${this.username}/live`;
+        const refererUrl = this.lastSignerPayload?.referer
+            || this.lastSignerPayload?.activeUrl
+            || this.lastSignerPayload?.landingUrl
+            || this.lastSignerPayload?.fallbackUrl
+            || livePageUrl;
+        const rootReferer = this.lastSignerPayload?.rootReferer || 'https://www.tiktok.com/';
+        const userAgentHeader = (this.lastSignerPayload && this.buildLocalSignerHeaders(this.lastSignerPayload)['User-Agent'])
+            || DEFAULT_TIKTOK_WEB_USER_AGENT;
+        const screenHeight = this.lastSignerPayload?.screen_height || rest?.screen_height;
+        const screenWidth = this.lastSignerPayload?.screen_width || rest?.screen_width;
+        const tzName = this.lastSignerPayload?.tz_name || rest?.tz_name;
+
+        // Build params to mirror browser request as closely as possible
+        let requestParams = {
+            ...rest,
+            channel: 'tiktok_web',
+            device_platform: 'web_pc',
+            os: 'windows',
+            priority_region: this.ttTargetIdc || rest?.priority_region || undefined,
+            region: this.ttTargetIdc || rest?.region || undefined,
+            browser_name: 'Mozilla',
+            browser_platform: 'Win32',
+            browser_version: userAgentHeader,
+            cookie_enabled: true,
+            data_collection_enabled: true,
+            focus_state: true,
+            is_fullscreen: false,
+            is_page_visible: true,
+            client_start_timestamp_millisecond: clientTimestamp,
+            webcast_language: rest?.webcast_language || rest?.app_language || 'en',
+            app_language: rest?.app_language || 'en',
+            browser_language: rest?.browser_language || 'en',
+            user_is_login: true,
+            from_page: rest?.from_page || '',
+            history_len: Number.isFinite(rest?.history_len) ? rest.history_len : 5,
+            referer: refererUrl,
+            root_referer: rest?.root_referer || rootReferer,
+            screen_height: screenHeight,
+            screen_width: screenWidth,
+            tz_name: tzName,
+            room_id: resolvedRoomId,
+            content
+        };
+        let requestBody = {
+            room_id: resolvedRoomId,
+            content,
+            emotes_with_index: '',
+            input_type: 0,
+            client_start_timestamp_millisecond: clientTimestamp
+        };
+        let headers = this.lastSignerPayload ? this.buildLocalSignerHeaders(this.lastSignerPayload) : {};
+        if (!headers['Referer']) headers['Referer'] = livePageUrl;
+        if (!headers['Origin']) headers['Origin'] = 'https://www.tiktok.com';
+        const cookieSource = headers?.Cookie || this.lastSignerPayload?.allCookies || null;
+        const getCookie = (name) => {
+            if (!cookieSource || typeof cookieSource !== 'string') return null;
+            const match = cookieSource.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+            return match && match[1] ? decodeURIComponent(match[1]) : null;
+        };
+
+        if (this.shouldUseLocalSigner()) {
+            console.log('[TikTok] Signing chat message via local signer');
+            try {
+                const signOptions = {
+                    roomId: resolvedRoomId,
+                    uniqueId: this.username,
+                    sessionId: this.sessionId || undefined,
+                    ttTargetIdc: this.ttTargetIdc || undefined,
+                    method: 'POST',
+                    activeUrl: livePageUrl,
+                    landingUrl: livePageUrl
+                };
+
+                // Construct the URL to sign
+                const baseUrl = 'https://webcast.tiktok.com/webcast/room/chat/';
+                const urlObj = new URL(baseUrl);
+                Object.entries(requestParams).forEach(([k, v]) => {
+                    if (v !== undefined && v !== null) {
+                        urlObj.searchParams.append(k, String(v));
+                    }
+                });
+
+                const signerPayload = await this.localSigner.sign(urlObj.toString(), signOptions);
+
+                if (signerPayload) {
+                    console.log('[TikTok] Local signer returned payload', signerPayload);
+                    if (signerPayload['X-Bogus']) requestParams['X-Bogus'] = signerPayload['X-Bogus'];
+                    if (signerPayload['_signature']) requestParams['_signature'] = signerPayload['_signature'];
+                    if (signerPayload['msToken']) requestParams['msToken'] = signerPayload['msToken'];
+                    if (signerPayload['ms_token']) requestParams['msToken'] = signerPayload['ms_token'];
+
+                    // If using local signer, we MUST send the request from the browser window to avoid
+                    // "Premium Feature" errors or empty bodies caused by missing browser context.
+                    if (this.shouldUseLocalSigner()) {
+                        console.log('[TikTok] Executing chat send via local signer window fetch...');
+
+                        // Reconstruct the full URL with the signed parameters
+                        const signedUrlObj = new URL(baseUrl);
+                        Object.entries(requestParams).forEach(([k, v]) => {
+                            if (v !== undefined && v !== null) {
+                                signedUrlObj.searchParams.append(k, String(v));
+                            }
+                        });
+
+                        const fetchOptions = {
+                            url: signedUrlObj.toString(),
+                            method: 'POST',
+                            body: JSON.stringify(requestBody),
+                            headers: {
+                                'Content-Type': 'application/json; charset=utf-8',
+                                'Referer': livePageUrl, // Explicitly set Referer to the public live page
+                                'Origin': 'https://www.tiktok.com'
+                            },
+                            params: {} // Params are already in the URL
+                        };
+
+                        const fetchResult = await this.localSigner.sign(signedUrlObj.toString(), {
+                            ...signOptions,
+                            performFetch: true,
+                            fetchOptions
+                        });
+
+                        if (fetchResult && fetchResult.fetchResult) {
+                            const { status, bodyBase64, bodyError } = fetchResult.fetchResult;
+                            console.log('[TikTok] Local signer fetch completed', { status, bodyError });
+
+                            if (status === 200) {
+                                // Success!
+                                return {
+                                    status: 200,
+                                    data: bodyBase64 ? 'success' : '', // We don't really need the body content if it's 200
+                                    headers: {}
+                                };
+                            }
+                            throw new Error(`Local signer fetch failed with status ${status}`);
+                        }
+                        throw new Error('Local signer fetch returned no result');
+                    }
+
+                    if (signerPayload['X-Gnarly']) requestParams['X-Gnarly'] = signerPayload['X-Gnarly'];
+
+                    // Update headers with fresh signer data
+                    const signedHeaders = this.buildLocalSignerHeaders(signerPayload);
+                    headers = { ...headers, ...signedHeaders };
+                } else {
+                    console.warn('[TikTok] Local signer returned empty payload');
+                }
+            } catch (error) {
+                console.warn('[TikTok] Failed to sign chat message via local signer:', error);
+                // Fallback to proceeding without fresh signature, though it will likely fail
+            }
+        } else {
+            console.log('[TikTok] Not using local signer for chat message');
+        }
+
+        // Extract verifyFp from cookies if available (matches browser request shape)
+        if (!requestParams.verifyFp) {
+            const vfp = getCookie('s_v_web_id') || getCookie('verifyFp');
+            if (vfp) {
+                requestParams.verifyFp = vfp;
+            }
+        }
+
+        // Pass CSRF token when available (mirrors browser headers)
+        const csrfToken = getCookie('csrfToken') || getCookie('tt_csrf_token') || getCookie('tt_csrf_token_v2');
+        if (csrfToken && !headers['x-secsdk-csrf-token']) {
+            headers['x-secsdk-csrf-token'] = csrfToken;
+        }
+
+        const options = headers ? { headers } : undefined;
+
+        // Use axios directly to avoid tiktok-live-connector's wrapper which might be swallowing the response
+        try {
+            // First, try using the webClient wrapper so we mimic its defaults (cookies, agents, etc.)
+            try {
+                const wrapped = await this.connection.webClient.postJsonObjectToWebcastApi(
+                    'room/chat/',
+                    requestParams,
+                    requestBody,
+                    false,
+                    options
+                );
+                if (wrapped && typeof wrapped === 'object') {
+                    return wrapped;
+                }
+            } catch (wrappedErr) {
+                console.warn('[TikTok] webClient room/chat send failed, falling back to direct axios:', wrappedErr?.message || wrappedErr);
+            }
+
+            const axios = require('axios');
+            console.log('[TikTok] Sending direct axios request to room/chat/');
+            const directResponse = await axios({
+                method: 'POST',
+                url: 'https://webcast.tiktok.com/webcast/room/chat/',
+                params: requestParams,
+                headers: {
+                    ...headers,
+                    'Content-Type': 'application/json'
+                },
+                data: requestBody,
+                withCredentials: true
+            });
+
+            console.log('[TikTok] Direct axios response status:', directResponse.status);
+            console.log('[TikTok] Direct axios response data:', JSON.stringify(directResponse.data));
+            console.log('[TikTok] Direct axios response type:', typeof directResponse.data);
+            console.log('[TikTok] Direct axios content-type:', directResponse.headers ? directResponse.headers['content-type'] : null);
+            if (directResponse.data === '' || directResponse.data === null || typeof directResponse.data === 'undefined') {
+                console.warn('[TikTok] Direct chat API returned empty body');
+                return {
+                    status_code: directResponse.status,
+                    err_code: -1,
+                    status: 'error',
+                    message: 'empty_response_body',
+                    raw: directResponse.data
+                };
+            }
+            if (directResponse && typeof directResponse.data === 'object' && directResponse.data !== null) {
+                return directResponse.data;
+            }
+            return {
+                status_code: directResponse.status,
+                err_code: -2,
+                status: 'error',
+                message: 'unexpected_response_shape',
+                raw: directResponse.data
+            };
+
+        } catch (err) {
+            console.error('[TikTok] Direct axios request failed:', err.message);
+            if (err.response) {
+                console.error('[TikTok] Error response status:', err.response.status);
+                console.error('[TikTok] Error response data:', JSON.stringify(err.response.data));
+            }
+            throw err;
+        }
+    }
+
     async sendChatMessageViaDirectRoute(content) {
-        const route = this.ensureDirectChatRoute();
-        if (!route) {
+        console.log('[TikTok] sendChatMessageViaDirectRoute called');
+        const allowEulerChat = this.shouldAllowEulerChatEndpoint();
+        const preferLocalHttp = !allowEulerChat || this.shouldUseLocalSigner();
+        console.log('[TikTok] Route decision:', { allowEulerChat, preferLocalHttp, shouldUseLocalSigner: this.shouldUseLocalSigner() });
+
+        const route = preferLocalHttp ? null : this.ensureDirectChatRoute();
+        if (!preferLocalHttp && !route) {
             return {
                 success: false,
                 error: 'Direct TikTok chat route unavailable',
@@ -4897,10 +5522,12 @@ class ConnectionManager {
         }
         const normalizedRoomId = typeof roomId === 'string' ? roomId : String(roomId);
         try {
-            const response = await route.call({
-                roomId: normalizedRoomId,
-                content
-            });
+            const response = preferLocalHttp
+                ? await this.sendChatMessageViaWebcastApi(normalizedRoomId, content)
+                : await route.call({
+                    roomId: normalizedRoomId,
+                    content
+                });
             const statusCode = Number.isFinite(response?.status_code) ? response.status_code
                 : Number.isFinite(response?.statusCode) ? response.statusCode
                     : null;
@@ -4913,7 +5540,15 @@ class ConnectionManager {
                     : typeof response?.message === 'string' && response.message.trim()
                         ? response.message.trim()
                         : null;
-            const isSuccess = (statusCode === null || statusCode === 0) &&
+            const emptyResponseBody = response?.message === 'empty_response_body' || response?.raw === '' || response === '';
+            const hasStructuredResponse = response && typeof response === 'object';
+            const isSuccess = preferLocalHttp
+                ? hasStructuredResponse &&
+                (statusCode === 200 || statusCode === 0 || statusCode === null) &&
+                (errCode === null || errCode === 0) &&
+                !emptyResponseBody
+                : hasStructuredResponse &&
+                (statusCode === null || statusCode === 0) &&
                 (errCode === null || errCode === 0) &&
                 (statusFlag === null || statusFlag === 'success');
             if (!isSuccess) {
@@ -4922,7 +5557,8 @@ class ConnectionManager {
                     statusCode,
                     errCode,
                     statusFlag,
-                    detail
+                    detail,
+                    path: preferLocalHttp ? 'webcast_api' : 'connector_route'
                 });
                 console.warn('TikTok direct chat send rejected:', detail);
                 return {
@@ -4932,7 +5568,8 @@ class ConnectionManager {
             }
             console.log('Message sent to TikTok chat via direct room/chat endpoint.');
             this.logDebug('chat.send.direct.success', {
-                roomId: normalizedRoomId
+                roomId: normalizedRoomId,
+                path: preferLocalHttp ? 'webcast_api' : 'connector_route'
             });
             return {
                 success: true
@@ -4942,31 +5579,88 @@ class ConnectionManager {
             const detail = typeof error?.message === 'string' && error.message.trim()
                 ? error.message.trim()
                 : 'TikTok direct chat send failed';
+            const routeUnavailable = !!error?.routeUnavailable;
             this.logDebug('chat.send.direct.error', {
                 statusCode: status,
-                message: detail
+                message: detail,
+                path: preferLocalHttp ? 'webcast_api' : 'connector_route',
+                routeUnavailable
             });
             console.error('Direct TikTok chat send failed:', error);
             if (status === 401 || status === 403) {
                 return {
                     success: false,
-                    error: 'TikTok rejected the provided session for chat send'
+                    error: 'TikTok rejected the provided session for chat send',
+                    routeUnavailable
                 };
             }
             return {
                 success: false,
-                error: detail
+                error: detail,
+                routeUnavailable
             };
         }
     }
 
     async sendChatMessageViaEuler(content) {
+        if (this.shouldUseLocalSigner()) {
+            return {
+                success: false,
+                error: 'Euler chat endpoint is disabled while using the local signer'
+            };
+        }
+        const canUseConnectionSend = this.canUseConnectionChatFallback();
+
+        if (canUseConnectionSend) {
+            try {
+                await this.connection.sendMessage(content);
+                console.log('Message sent to TikTok chat via Euler endpoint.');
+                return {
+                    success: true
+                };
+            } catch (error) {
+                console.error('Failed to send TikTok message via connection:', error);
+            }
+        }
+
+        const eulerClient = this.getEulerChatClient();
+        if (eulerClient) {
+            this.applySessionToEulerClient(eulerClient);
+            const resolvedRoomId = await this.resolveEulerChatRoomId(eulerClient);
+            if (resolvedRoomId) {
+                try {
+                    await eulerClient.sendRoomChatFromEuler.call({
+                        roomId: typeof resolvedRoomId === 'string' ? resolvedRoomId : String(resolvedRoomId),
+                        content,
+                        sessionId: this.sessionId || undefined,
+                        ttTargetIdc: this.ttTargetIdc || undefined
+                    });
+                    console.log('Message sent to TikTok chat via Euler endpoint.');
+                    return { success: true };
+                } catch (error) {
+                    console.error('Failed to send TikTok message via Euler API:', error);
+                    const detail = typeof error?.message === 'string' && error.message.trim()
+                        ? error.message.trim()
+                        : 'Failed to send message';
+                    return {
+                        success: false,
+                        error: detail
+                    };
+                }
+            }
+        }
+
+        if (!this.connection || typeof this.connection.sendMessage !== 'function') {
+            return {
+                success: false,
+                error: 'Euler chat endpoint unavailable for current mode'
+            };
+        }
+
         try {
             await this.connection.sendMessage(content);
             console.log('Message sent to TikTok chat via Euler endpoint.');
-            return {
-                success: true
-            };
+            return { success: true };
         } catch (error) {
             console.error('Failed to send TikTok message:', error);
             const detail = typeof error?.message === 'string' && error.message.trim()
@@ -4980,6 +5674,7 @@ class ConnectionManager {
     }
 
     async sendChatMessage(message) {
+        console.log('[TikTok] sendChatMessage called', { message });
         if (typeof message !== 'string' || !message.trim()) {
             return {
                 success: false,
@@ -5009,25 +5704,78 @@ class ConnectionManager {
         }
 
         const trimmedMessage = message.trim();
+        const usingLocalSigner = this.shouldUseLocalSigner();
+        const allowEulerChat = usingLocalSigner ? false : this.shouldAllowEulerChatEndpoint();
+        const allowConnectionFallback = this.canUseConnectionChatFallback();
+        const allowAnyFallback = allowEulerChat || allowConnectionFallback;
+        let lastDirectResult = null;
+        let lastDirectError = null;
+        console.log('[TikTok] Checking direct chat route', { shouldUseDirectChatRoute: this.shouldUseDirectChatRoute() });
         if (this.shouldUseDirectChatRoute()) {
             const directResult = await this.sendChatMessageViaDirectRoute(trimmedMessage);
+            lastDirectResult = directResult;
             if (directResult?.success) {
                 return directResult;
             }
 
             const routeUnavailable = !!directResult?.routeUnavailable;
             const fallbackReason = directResult?.error || (routeUnavailable ? 'route_unavailable' : 'direct_route_failed');
+            const fallbackTarget = allowEulerChat ? 'Euler endpoint' : 'websocket connection';
+            lastDirectError = fallbackReason || null;
+
+            if (!allowAnyFallback) {
+                this.logDebug('chat.send.direct.fallback_blocked', {
+                    reason: fallbackReason || null,
+                    routeUnavailable
+                });
+                return {
+                    success: false,
+                    error: fallbackReason || 'Direct chat send failed and no fallback transport is available for this signing mode'
+                };
+            }
 
             if (routeUnavailable) {
-                console.info('Direct TikTok chat route unavailable, falling back to Euler endpoint.');
+                console.info(`Direct TikTok chat route unavailable, falling back to ${fallbackTarget}.`);
             } else {
-                console.warn('Direct TikTok chat send failed, falling back to Euler endpoint:', fallbackReason);
+                console.warn(`Direct TikTok chat send failed, falling back to ${fallbackTarget}:`, fallbackReason);
             }
 
             this.logDebug('chat.send.direct.fallback', {
                 reason: fallbackReason || null,
-                routeUnavailable
+                routeUnavailable,
+                target: fallbackTarget
             });
+        }
+
+        if (!allowAnyFallback) {
+            return {
+                success: false,
+                error: lastDirectError || 'No chat fallback transport available for current connection'
+            };
+        }
+
+        // Prefer the active connection send when available; Euler is blocked under local signer
+        if (usingLocalSigner && allowConnectionFallback) {
+            try {
+                await this.connection.sendMessage(trimmedMessage);
+                console.log('Message sent to TikTok chat via websocket connection.');
+                return { success: true };
+            } catch (error) {
+                console.error('Failed to send TikTok message via websocket connection:', error);
+                return {
+                    success: false,
+                    error: typeof error?.message === 'string' && error.message.trim()
+                        ? error.message.trim()
+                        : 'Failed to send message via websocket connection'
+                };
+            }
+        }
+
+        if (usingLocalSigner) {
+            return {
+                success: false,
+                error: 'Chat send failed and Euler fallback is disabled for local signer'
+            };
         }
 
         return this.sendChatMessageViaEuler(trimmedMessage);
