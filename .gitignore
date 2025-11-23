@@ -1,9 +1,6 @@
 /dist
-/node_modules
 package-lock.json
 mac.sh
-resources/social_stream_fallback/
-/tiktok-signing
 # Certificates and keys
 certs/
 *.pem
@@ -16,6 +13,7 @@ certs/
 old-certs-backup/
 referenceonly/
 vdoninja/
+/node_modules
 
 # Claude-related files
 .claude/

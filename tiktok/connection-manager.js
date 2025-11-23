@@ -2566,8 +2566,7 @@ class ConnectionManager {
             performFetch: true,
             fetchOptions: {
                 headers: {
-                    'Referer': userLiveUrl,
-                    'Origin': 'https://www.tiktok.com'
+                    'Content-Type': 'application/json; charset=utf-8'
                 }
             }
         };
@@ -5394,6 +5393,7 @@ class ConnectionManager {
                             if (status === 200) {
                                 // Success!
                                 return {
+                                    success: true,
                                     status: 200,
                                     data: bodyBase64 ? 'success' : '', // We don't really need the body content if it's 200
                                     headers: {}

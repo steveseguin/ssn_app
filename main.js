@@ -7512,6 +7512,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Check if this is a TikTok virtual tab
             if (view && view.isTikTokVirtual) {
+                log("TikTok virtual tab - input received. Skipping direct sendToTikTok to avoid double-send (handled by handleDockChatSend).");
+                eventRet.returnValue = true;
+                return;
+
+                /* 
+                // LEGACY: This causes double-sends because handleDockChatSend also triggers.
                 log("TikTok virtual tab - sending message via WebSocket");
                 const text = typeof args.text === 'string' ? args.text : '';
                 if (!text.trim() || view.wssID === undefined) {
@@ -7565,6 +7571,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                 log("Sent message to TikTok WebSocket");
                 eventRet.returnValue = true;
+                */
             } else if (view && view.webContents && view.webContents.sendInputEvent) {
                 try {
                     view.focus();
