@@ -3,7 +3,7 @@
 package-lock.json
 mac.sh
 resources/social_stream_fallback/
-
+/tiktok-signing
 # Certificates and keys
 certs/
 *.pem
