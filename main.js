@@ -9791,6 +9791,23 @@ async function ensureTikTokSigningWindow(targetUrl, options = {}) {
         }
     }
     try {
+        // Mute the window to prevent audio playback
+        tiktokSigningWindow.webContents.setAudioMuted(true);
+
+        // Inject script to stop video playback and save resources
+        const resourceSaverScript = `
+            setInterval(() => {
+                const videos = document.querySelectorAll('video');
+                videos.forEach(v => {
+                    if (!v.paused) v.pause();
+                    v.src = '';
+                    v.load();
+                    v.remove(); // Aggressively remove video elements
+                });
+            }, 1000);
+        `;
+        tiktokSigningWindow.webContents.executeJavaScript(resourceSaverScript).catch(() => { });
+
         tiktokSigningWindow.show();
         tiktokSigningWindow.focus();
     } catch (_) { }

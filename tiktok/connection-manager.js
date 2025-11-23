@@ -5383,7 +5383,13 @@ class ConnectionManager {
 
                         if (fetchResult && fetchResult.fetchResult) {
                             const { status, bodyBase64, bodyError } = fetchResult.fetchResult;
-                            console.log('[TikTok] Local signer fetch completed', { status, bodyError });
+                            let decodedBody = null;
+                            if (bodyBase64) {
+                                try {
+                                    decodedBody = Buffer.from(bodyBase64, 'base64').toString('utf8');
+                                } catch (e) { decodedBody = '[Failed to decode]'; }
+                            }
+                            console.log('[TikTok] Local signer fetch completed', { status, bodyError, decodedBody });
 
                             if (status === 200) {
                                 // Success!
