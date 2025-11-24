@@ -2582,6 +2582,8 @@ class ConnectionManager {
             throw new Error('Local signer returned an invalid payload.');
         }
 
+        console.log('[TikTok] signerPayload received:', JSON.stringify(signerPayload, null, 2));
+
         // Update credentials immediately so we persist the session even if we return early
         this.updateSessionCredentialsFromSigner(signerPayload);
 

@@ -177,7 +177,7 @@ try {
                 : null;
 
             let activeUrlUsed = primaryUrl;
-            let win = await ensureTikTokSigningWindow(primaryUrl, { allowNavigation: false });
+            let win = await ensureTikTokSigningWindow(primaryUrl, { allowNavigation: false, mode: 'background' });
             let parameters;
 
             try {
@@ -191,7 +191,7 @@ try {
                 if (fallbackUrl && fallbackUrl !== primaryUrl) {
                     console.warn('[TikTok] Local signer primary page failed; retrying fallback URL.', primaryError?.message || primaryError);
                     activeUrlUsed = fallbackUrl;
-                    win = await ensureTikTokSigningWindow(fallbackUrl, { allowNavigation: true });
+                    win = await ensureTikTokSigningWindow(fallbackUrl, { allowNavigation: true, mode: 'background' });
                     parameters = await tikTokSignerHelper.generateSigningParameters(win, {
                         urlToSign: url,
                         ...options,
@@ -3269,6 +3269,25 @@ async function createWindow(args, reuse = false, mainApp = false) {
         });
         wc.on('destroyed', () => {
             mainWindowReadyForInjectorToasts = false;
+        });
+
+        // Handle permission requests
+        wc.session.setPermissionRequestHandler((webContents, permission, callback) => {
+            const allowedPermissions = [
+                'screen-wake-lock',
+                'media',
+                'notifications',
+                'fullscreen',
+                'clipboard-read',
+                'clipboard-write'
+            ];
+
+            if (allowedPermissions.includes(permission)) {
+                callback(true);
+            } else {
+                console.warn(`[Permission Denied] ${permission}`);
+                callback(false);
+            }
         });
     }
 
@@ -9769,17 +9788,19 @@ async function ensureTikTokSigningWindow(targetUrl, options = {}) {
         : null;
 
     const landingUrl = normalizedTarget || DEFAULT_TIKTOK_SIGNING_URL;
-    console.log('[TikTok] normalizedTarget:', normalizedTarget, 'landingUrl:', landingUrl);
+    const mode = options.mode || 'background'; // 'login' or 'background'
+    console.log('[TikTok] normalizedTarget:', normalizedTarget, 'landingUrl:', landingUrl, 'mode:', mode);
 
     if (!tiktokSigningWindow || tiktokSigningWindow.isDestroyed()) {
         tiktokSigningWindow = new BrowserWindow({
-            show: true,
+            show: mode === 'login',
             width: 1100,
             height: 720,
             webPreferences: {
                 nodeIntegration: false,
                 contextIsolation: true,
-                partition: TIKTOK_AUTH_PARTITION
+                partition: TIKTOK_AUTH_PARTITION,
+                backgroundThrottling: false // Critical for headless signing
             }
         });
         try {
@@ -9797,7 +9818,20 @@ async function ensureTikTokSigningWindow(targetUrl, options = {}) {
             await tiktokSigningWindow.loadURL(normalizedTarget);
         }
     }
+
     try {
+        // Handle visibility based on mode
+        if (mode === 'login') {
+            if (!tiktokSigningWindow.isVisible()) {
+                tiktokSigningWindow.show();
+            }
+            tiktokSigningWindow.focus();
+        } else if (mode === 'background') {
+            if (tiktokSigningWindow.isVisible()) {
+                tiktokSigningWindow.hide();
+            }
+        }
+
         // Mute the window to prevent audio playback
         tiktokSigningWindow.webContents.setAudioMuted(true);
 
@@ -9814,12 +9848,22 @@ async function ensureTikTokSigningWindow(targetUrl, options = {}) {
             }, 1000);
         `;
         tiktokSigningWindow.webContents.executeJavaScript(resourceSaverScript).catch(() => { });
-
-        tiktokSigningWindow.show();
-        tiktokSigningWindow.focus();
     } catch (_) { }
     return tiktokSigningWindow;
 }
+
+// IPC Handlers for TikTok Window Management
+ipcMain.on('tiktok-login', async (event, args) => {
+    log('[IPC] tiktok-login requested');
+    await ensureTikTokSigningWindow(null, { mode: 'login', allowNavigation: false });
+});
+
+ipcMain.on('tiktok-hide-window', (event) => {
+    log('[IPC] tiktok-hide-window requested');
+    if (tiktokSigningWindow && !tiktokSigningWindow.isDestroyed()) {
+        tiktokSigningWindow.hide();
+    }
+});
 
 function disposeTikTokSigningWindow() {
     if (tiktokSigningWindow && !tiktokSigningWindow.isDestroyed()) {
