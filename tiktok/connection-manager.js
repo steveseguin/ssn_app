@@ -5390,15 +5390,30 @@ class ConnectionManager {
                                     decodedBody = Buffer.from(bodyBase64, 'base64').toString('utf8');
                                 } catch (e) { decodedBody = '[Failed to decode]'; }
                             }
+
+                            let parsedBody = null;
+                            if (decodedBody && typeof decodedBody === 'string') {
+                                try {
+                                    parsedBody = JSON.parse(decodedBody);
+                                    if (parsedBody && parsedBody.data && typeof parsedBody.data.message === 'string' && !parsedBody.message) {
+                                        parsedBody.message = parsedBody.data.message;
+                                    }
+                                } catch (e) {
+                                    console.warn('[TikTok] Failed to parse chat response JSON:', e?.message || e);
+                                }
+                            }
+
                             console.log('[TikTok] Local signer fetch completed', { status, bodyError, decodedBody });
 
                             if (status === 200) {
-                                // Success!
+                                // Surface the real TikTok payload so callers can detect failures (e.g., not logged in)
+                                if (parsedBody && typeof parsedBody === 'object') {
+                                    return parsedBody;
+                                }
                                 return {
-                                    success: true,
-                                    status: 200,
-                                    data: bodyBase64 ? 'success' : '', // We don't really need the body content if it's 200
-                                    headers: {}
+                                    status_code: 0,
+                                    status: 'ok',
+                                    raw: decodedBody ?? null
                                 };
                             }
                             throw new Error(`Local signer fetch failed with status ${status}`);

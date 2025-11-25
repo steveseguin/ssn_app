@@ -55,7 +55,7 @@ const youTubeGrpcStreamManager = require('./youtube-grpc-client');
 const {
     setupSpotifyOAuthWithLocalServer,
     setupSpotifyOAuthWithIntercept
-} = require('./resources/social_stream_fallback/main/electron-spotify-handler');
+} = require('./resources/electron-spotify-handler');
 
 const {
     fetch: undiciFetch
@@ -7593,7 +7593,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 */
             } else if (view && view.webContents && view.webContents.sendInputEvent) {
                 try {
-                    view.focus();
+                    // 2025-11-24: Disabled to avoid stealing focus when relaying messages; re-enable if focus is required for input paths.
+                    // view.focus();
                     if (args.key && args.type) {
                         log("inputting: " + args.key);
                         view.webContents.sendInputEvent({

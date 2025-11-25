@@ -130,7 +130,7 @@ function runLoopbackOAuthSession({ authUrl, redirectUri, state }) {
             if (server) {
                 try {
                     server.close();
-                } catch (_) {}
+                } catch (_) { }
                 server = null;
             }
 

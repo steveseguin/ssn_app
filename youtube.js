@@ -1,4 +1,5 @@
-const YT_ACCEPT_LANGUAGE = window.SSAPP_ACCEPT_LANGUAGE || (window.ssappLocale && window.ssappLocale.acceptLanguage) || 'en-US,en;q=0.9';
+// Force a consistent language so our scrape keyword checks (LIVE/UPCOMING/etc.) behave the same across locales.
+const YT_ACCEPT_LANGUAGE = 'en-US,en;q=0.9';
 window.SSAPP_ACCEPT_LANGUAGE = YT_ACCEPT_LANGUAGE;
 
 class YouTubeStreamSelector {

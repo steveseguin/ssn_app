@@ -3023,7 +3023,10 @@
                         videoId: stream.videoId,
                         title: stream.title,
                         autoActivate: true, // Inherit auto-activate from group
-                        connectionMode: group.connectionMode || 'classic'
+                        connectionMode: group.connectionMode || 'classic',
+                        // Respect current group visibility/mute state for newly auto-added streams
+                        isVisible: group.groupVisible !== undefined ? group.groupVisible : true,
+                        isMuted: group.groupMuted !== undefined ? group.groupMuted : true
                     };
 
                     console.log("Adding new YouTube stream:", newSource);
