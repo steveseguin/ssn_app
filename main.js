@@ -9542,19 +9542,9 @@ function createMenu() {
         },
     ];
 
-    // Initialize the tray
-    if (isMac) {
-        var iconPath = path.join(__dirname, "assets", "icons", "png", "24x24.png");
-    } else {
-        var iconPath = path.join(__dirname, "assets", "icons", "png", "256x256.png");
-    }
-
-    // log(iconPath);
-
-    tray = new Tray(iconPath);
-    tray.setToolTip("Social Stream Ninja");
-    tray.setContextMenu(
-        Menu.buildFromTemplate([{
+    // Initialize (or update) the tray; avoid spawning multiple tray icons when createMenu is called repeatedly
+    const trayMenu = Menu.buildFromTemplate([
+        {
             label: "Show App",
             click: () => {
                 mainWindow.show();
@@ -9567,8 +9557,17 @@ function createMenu() {
                 quitApp();
             },
         },
-        ])
-    );
+    ]);
+
+    const iconPath = isMac
+        ? path.join(__dirname, "assets", "icons", "png", "24x24.png")
+        : path.join(__dirname, "assets", "icons", "png", "256x256.png");
+
+    if (!tray || (typeof tray.isDestroyed === 'function' && tray.isDestroyed())) {
+        tray = new Tray(iconPath);
+    }
+    tray.setToolTip("Social Stream Ninja");
+    tray.setContextMenu(trayMenu);
 
     const menu = Menu.buildFromTemplate(template);
     Menu.setApplicationMenu(menu);

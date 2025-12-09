@@ -6700,6 +6700,40 @@
             if (element) updateConnectionStatus(element, 'connected');
         }
 
+        function formatTikTokConnectionLabelFromMode(mode) {
+            const normalized = normalizeTikTokMode(mode);
+            switch (normalized) {
+                case 'classic':
+                    return 'Connected (Standard)';
+                case 'tiktok-legacy':
+                    return 'Connected via polling';
+                case 'tiktok-websocket':
+                    return 'WebSocket connected (TikTok)';
+                default:
+                    return null;
+            }
+        }
+
+        function formatConnectionLabel(sourceCtx) {
+            if (!sourceCtx) return null;
+            if (sourceCtx.target === 'tiktok') {
+                if (sourceCtx.tiktokConnectionMethod) {
+                    const normalized = String(sourceCtx.tiktokConnectionMethod);
+                    const lower = normalized.toLowerCase();
+                    const prefix = lower.includes('polling') ? 'Connected via' : 'Websocket connected via';
+                    return `${prefix} ${normalized}`;
+                }
+                const modeLabel = formatTikTokConnectionLabelFromMode(getEffectiveConnectionMode(sourceCtx));
+                if (modeLabel) return modeLabel;
+            }
+
+            const mode = getEffectiveConnectionMode(sourceCtx);
+            if (!mode) return null;
+            if (mode === 'websocket') return 'WebSocket connected';
+            if (mode === 'classic') return 'Connected (Standard)';
+            return null;
+        }
+
         function updateConnectionStatus(element, status, message = null) {
             if (!element) return;
             let statusElement = element.querySelector('.ws-status');
@@ -6747,14 +6781,9 @@
                     lockProvider(true);
                     statusElement.classList.add('connected');
                     {
-                        let label = message || null;
-                        if (!label && sourceCtx && sourceCtx.target === 'tiktok' && sourceCtx.tiktokConnectionMethod) {
-                            const normalized = String(sourceCtx.tiktokConnectionMethod);
-                            const lower = normalized.toLowerCase();
-                            const prefix = lower.includes('polling') ? 'Connected via' : 'Websocket connected via';
-                            label = `${prefix} ${normalized}`;
-                        }
-                        statusElement.innerHTML = `<i class="las la-check-circle"></i> ${label || 'WebSocket Connected'}`;
+                        const derivedLabel = formatConnectionLabel(sourceCtx);
+                        const label = message || derivedLabel || 'Connected';
+                        statusElement.innerHTML = `<i class="las la-check-circle"></i> ${label}`;
                     }
                     break;
                 case 'error':

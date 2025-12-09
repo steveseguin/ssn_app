@@ -2057,6 +2057,7 @@ class GiftProcessor {
         this.manager = manager;
         this.queue = [];
         this.isProcessing = false;
+        this.streaks = new Map();
     }
 
     addToQueue(data) {
@@ -2089,15 +2090,6 @@ class GiftProcessor {
             }
         }
 
-        const inferredComboInProgress = !data.repeatEnd && (repeatCount > 1 || comboCount > 1 || groupCount > 1);
-        const isComboStarter = !data.repeatEnd && giftType === 1;
-        if (inferredComboInProgress) {
-            return;
-        }
-        if (isComboStarter) {
-            return;
-        }
-
         const aggregatedCount = Math.max(
             repeatCount,
             comboCount,
@@ -2111,9 +2103,87 @@ class GiftProcessor {
             1
         );
 
+        const identity = extractTikTokIdentity(data);
+        const userKey = resolveTikTokUserId(data, identity) || identity.uniqueId || 'unknown';
+        const giftId = pickFirstNonEmptyString([
+            data.giftId,
+            data?.gift?.giftId,
+            data?.gift?.gift_id,
+            data?.gift?.id,
+            data?.gift?.id_str,
+            data?.gift?.giftIdStr,
+            data?.gift?.gift_id_str,
+            data?.giftDetails?.id,
+            data?.giftDetails?.id_str,
+            data?.giftDetails?.giftId,
+            data?.giftDetails?.gift_id,
+            data?.extendedGiftInfo?.id,
+            data?.extendedGiftInfo?.id_str
+        ]) || 'gift';
+        const streakKey = `${userKey}:${giftId}`;
+
+        const streakable = !data.repeatEnd && (aggregatedCount > 1 || giftType === 1 || repeatCount > 1 || comboCount > 1 || groupCount > 1);
+        const existingStreak = this.streaks.get(streakKey);
+
+        // Flush and emit immediately when repeatEnd arrives, merging any pending streak
+        if (data.repeatEnd) {
+            const previousTotal = existingStreak ? existingStreak.lastTotal || 0 : 0;
+            const increment = aggregatedCount > previousTotal ? aggregatedCount - previousTotal : aggregatedCount;
+            if (existingStreak) {
+                clearTimeout(existingStreak.timer);
+                this.streaks.delete(streakKey);
+                const totalCount = existingStreak.count + Math.max(0, increment);
+                this.queue.push({
+                    data: data || existingStreak.lastData,
+                    count: Math.max(1, totalCount)
+                });
+                this.startProcessing();
+                return;
+            }
+            this.queue.push({
+                data,
+                count: aggregatedCount
+            });
+            this.startProcessing();
+            return;
+        }
+
+        // Merge ongoing streaks (even if payload lacks repeatEnd)
+        if (existingStreak || streakable) {
+            const next = existingStreak || { count: 0, lastData: null, lastTotal: 0, timer: null };
+            const prevTotal = Number(next.lastTotal) || 0;
+            const increment = aggregatedCount > prevTotal ? aggregatedCount - prevTotal : aggregatedCount;
+            const safeIncrement = Math.max(0, increment);
+            next.count += safeIncrement;
+            next.lastData = data;
+            next.lastTotal = Math.max(prevTotal, aggregatedCount);
+            if (next.timer) {
+                clearTimeout(next.timer);
+            }
+            next.timer = setTimeout(() => {
+                this.flushStreak(streakKey);
+            }, 600);
+            this.streaks.set(streakKey, next);
+            return;
+        }
+
+        // Single, non-streak gift
         this.queue.push({
             data,
             count: aggregatedCount
+        });
+        this.startProcessing();
+    }
+
+    flushStreak(streakKey) {
+        const streak = this.streaks.get(streakKey);
+        if (!streak) return;
+        clearTimeout(streak.timer);
+        this.streaks.delete(streakKey);
+        const safeCount = Math.max(1, streak.count || 1);
+        this.queue.push({
+            data: streak.lastData,
+            count: safeCount
         });
         this.startProcessing();
     }
@@ -3727,9 +3797,27 @@ class ConnectionManager {
                 this.recordActivity();
                 const identity = extractTikTokIdentity(data);
                 const displayName = identity.nickname || identity.uniqueId || 'Viewer';
+                const subscribeInfo = isPlainObject(data?.user?.subscribeInfo) ? data.user.subscribeInfo : {};
+                const tenureMonths = Number(subscribeInfo.subMonth || subscribeInfo.subscribedMonth || subscribeInfo.months || data?.subscribeMonth);
+                const tier = subscribeInfo?.subscribingStatus || subscribeInfo?.tier || data?.subscribeType;
+                const subtitle = Number.isFinite(tenureMonths) && tenureMonths > 0
+                    ? `${tenureMonths} month${tenureMonths === 1 ? '' : 's'}`
+                    : null;
+                // Ensure subscriber flag is present for downstream membership rendering
+                data.isSubscriber = true;
                 if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
                 if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
-                this.sendEventMessage(data, "subscribed", `${displayName} subscribed!`);
+                const meta = {};
+                if (Number.isFinite(tenureMonths) && tenureMonths > 0) {
+                    meta.tenureMonths = tenureMonths;
+                }
+                if (tier) {
+                    meta.tier = tier;
+                }
+                if (subtitle) {
+                    meta.subtitle = subtitle;
+                }
+                this.sendEventMessage(data, "subscribe", `${displayName} subscribed!`, meta);
             },
             social: (data = {}) => {
                 this.recordActivity();
@@ -3811,6 +3899,106 @@ class ConnectionManager {
                 if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
 
                 this.sendEventMessage(data, 'joined', 'joined');
+            },
+            questionNew: (data = {}) => {
+                this.recordActivity();
+                const identity = extractTikTokIdentity(data);
+                const questionId = data.questionIdStr || data.questionId || data.id || null;
+                const text = data.questionText || data.text || data.question || data.content || null;
+                if (!text) {
+                    return;
+                }
+                this.sendEventMessage(data, 'question_new', null, {
+                    questionId: questionId || undefined,
+                    text,
+                    user: identity.uniqueId || identity.nickname || undefined
+                });
+            },
+            linkMicBattle: (data = {}) => {
+                this.recordActivity();
+                const identity = extractTikTokIdentity(data);
+                const battleId = data.battleIdStr || data.battleId || data.id || null;
+                const homeScore = Number(data.homeScore || data.scoreHome || data.score1);
+                const awayScore = Number(data.awayScore || data.scoreAway || data.score2);
+                const meta = {};
+                if (battleId) meta.battleId = battleId;
+                if (Number.isFinite(homeScore)) meta.homeScore = homeScore;
+                if (Number.isFinite(awayScore)) meta.awayScore = awayScore;
+                if (identity.uniqueId || identity.nickname) {
+                    meta.host = identity.uniqueId || identity.nickname;
+                }
+                this.sendEventMessage(data, 'link_mic_battle', null, meta);
+            },
+            linkMicArmies: (data = {}) => {
+                this.recordActivity();
+                const battleId = data.battleIdStr || data.battleId || data.id || null;
+                const meta = {};
+                if (battleId) meta.battleId = battleId;
+                const armies = Array.isArray(data.armies) ? data.armies : (Array.isArray(data.armyList) ? data.armyList : []);
+                const armyNames = armies.map(a => a?.armyName || a?.name || a?.displayName || null).filter(Boolean);
+                if (armyNames.length) {
+                    meta.armies = armyNames;
+                }
+                const armyScores = Array.isArray(data.armyScores) ? data.armyScores : (Array.isArray(data.scores) ? data.scores : []);
+                const scoreValues = armyScores.map(s => Number(s)).filter(Number.isFinite);
+                if (scoreValues.length) {
+                    meta.scores = scoreValues;
+                }
+                this.sendEventMessage(data, 'link_mic_armies', null, meta);
+            },
+            liveIntro: (data = {}) => {
+                this.recordActivity();
+                const identity = extractTikTokIdentity(data);
+                const meta = {};
+                const title = data.title || data.introTitle || data?.displayText || null;
+                if (title) meta.title = title;
+                if (identity.uniqueId || identity.nickname) {
+                    meta.host = identity.uniqueId || identity.nickname;
+                }
+                if (Number.isFinite(Number(data.duration))) {
+                    meta.duration = Number(data.duration);
+                }
+                if (data.introType) {
+                    meta.introType = data.introType;
+                }
+                this.sendEventMessage(data, 'live_intro', null, meta);
+            },
+            envelope: (data = {}) => {
+                this.recordActivity();
+                const identity = extractTikTokIdentity(data);
+                const coins = Number(data.coinCount || data.coins || data.diamondCount);
+                const meta = {};
+                const envelopeId = data.envelopeId || data.id || data.envelope_id || null;
+                if (envelopeId) meta.envelopeId = envelopeId;
+                if (Number.isFinite(coins)) meta.coins = coins;
+                if (identity.uniqueId || identity.nickname) {
+                    meta.sender = identity.uniqueId || identity.nickname;
+                }
+                this.sendEventMessage(data, 'envelope', null, meta);
+            },
+            emote: (data = {}) => {
+                this.recordActivity();
+                const emotes = Array.isArray(data.emotes) ? data.emotes : [];
+                const emoteIds = [];
+                const emoteLabels = [];
+                const emoteUrls = [];
+                emotes.forEach((emote) => {
+                    if (!emote) return;
+                    const id = emote.emoteId || emote.id || null;
+                    const label = cleanVisibleString(emote.emoteName || emote.name || emote.title || '') || null;
+                    const url = normalizeTikTokImageUrl(emote.emoteImageUrl || emote.imageUrl || emote.url || emote.image?.url) || null;
+                    if (id) emoteIds.push(id);
+                    if (label) emoteLabels.push(label);
+                    if (url) emoteUrls.push(url);
+                });
+                if (!emoteIds.length && !emoteLabels.length && !emoteUrls.length) {
+                    return;
+                }
+                const meta = {};
+                if (emoteIds.length) meta.emoteIds = emoteIds;
+                if (emoteLabels.length) meta.emoteLabels = emoteLabels;
+                if (emoteUrls.length) meta.emoteUrls = emoteUrls;
+                this.sendEventMessage(data, 'emote', null, meta);
             },
             roomUser: (data) => {
                 this.recordActivity();

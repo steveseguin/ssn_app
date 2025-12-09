@@ -5,14 +5,15 @@ class EventFlowSystem {
         this.dbName = options.dbName || 'eventFlowDB';
         this.storeName = options.storeName || 'flowSettings';
         this.pointsSystem = options.pointsSystem || null;
-        this.sendMessageToTabs = options.sendMessageToTabs || null;
-        this.sendToDestinations = options.sendToDestinations || null;
-        this.fetchWithTimeout = options.fetchWithTimeout || window.fetch; // Fallback to window.fetch if not provided
-        this.sanitizeRelay = options.sanitizeRelay || null;
-		this.checkExactDuplicateAlreadyRelayed = options.checkExactDuplicateAlreadyRelayed || null;
-		this.sendTargetP2P = options.sendTargetP2P || null;
-		this.messageStore = options.messageStore || {}; // Share message store from background.js
-		this.handleMessageStore = options.handleMessageStore || null; // Function to handle message storage
+        // Prefer helpers from background.js when available so both surfaces share behavior
+        this.sendMessageToTabs = options.sendMessageToTabs || window.sendMessageToTabs || null;
+        this.sendToDestinations = options.sendToDestinations || window.sendToDestinations || null;
+        this.fetchWithTimeout = options.fetchWithTimeout || window.fetchWithTimeout || window.fetch; // Fallback to window.fetch if not provided
+        this.sanitizeRelay = options.sanitizeRelay || window.sanitizeRelay || null;
+		this.checkExactDuplicateAlreadyRelayed = options.checkExactDuplicateAlreadyRelayed || window.checkExactDuplicateAlreadyRelayed || null;
+		this.sendTargetP2P = options.sendTargetP2P || window.sendTargetP2P || null;
+		this.messageStore = options.messageStore || window.messageStore || {}; // Share message store from background.js
+		this.handleMessageStore = options.handleMessageStore || window.handleMessageStore || null; // Function to handle message storage
 		
 		// MIDI properties
 		this.midiEnabled = false;
@@ -1833,49 +1834,70 @@ class EventFlowSystem {
 			return alt || text;
 		}
 
-		// Extract all emojis from image alt attributes before stripping HTML
+		// Prefer the shared relay sanitizer (from background.js) so editor + background behave identically
+		if (typeof this.sanitizeRelay === 'function') {
+			try {
+				const cleaned = this.sanitizeRelay(text, textonly, alt);
+				if (cleaned || !alt) {
+					return cleaned;
+				}
+				// fall through to return alt if provided and cleaned is empty
+			} catch (e) {
+				console.warn('[EventFlowSystem] sanitizeRelay failed, falling back to local sanitizer:', e);
+			}
+		}
+
+		// Fallback: minimal sanitizer that mirrors the background behavior (including emoji alt preservation)
 		const emojiMap = new Map();
 		if (!textonly) {
 			const tempDiv = document.createElement('div');
 			tempDiv.innerHTML = text;
 
-			// Collect all image elements with alt text that appears to be an emoji
+			const localIsEmoji = (char) => {
+				if (!char) return false;
+				const trimmed = char.trim();
+				const asciiEmoticonRegex = /^[:;=8BxX][-^\'"]?[)(DPOop3/\\|]+$/;
+				if (asciiEmoticonRegex.test(trimmed) || /^<3+$/.test(trimmed)) {
+					return true;
+				}
+				try {
+					const emojiRegex = /(\p{Emoji_Presentation}|\p{Extended_Pictographic})/u;
+					return emojiRegex.test(trimmed);
+				} catch (err) {
+					return false;
+				}
+			};
+
 			const imgElements = tempDiv.querySelectorAll('img');
 			imgElements.forEach((img, index) => {
 				const altText = img.getAttribute('alt');
-				if (altText && isEmoji(altText)) {
+				if (altText && localIsEmoji(altText)) {
 					const placeholder = `__EMOJI_PLACEHOLDER_${index}__`;
 					emojiMap.set(placeholder, altText);
 					img.outerHTML = placeholder;
 				}
 			});
 
-			// Get the potentially modified HTML
 			text = tempDiv.innerHTML;
 
-			// Convert to text from HTML
 			const textArea = document.createElement('textarea');
 			textArea.innerHTML = text;
 			text = textArea.value;
 		}
 
-		// Strip HTML and other unwanted characters
 		text = text.replace(/(<([^>]+)>)/gi, "");
 		text = text.replace(/[!#@]/g, "");
 		text = text.replace(/cheer\d+/gi, " ");
 
-		// Replace periods unless surrounded by non-space characters
-		// (so URLs like example.com are preserved)
 		text = text.replace(/\.(?=\S)/g, (match, offset, str) => {
 			const prev = offset > 0 ? str[offset - 1] : "";
 			const next = str[offset + 1] || "";
 			if (/\S/.test(prev) && /\S/.test(next)) {
-				return "."; // keep the period (inside URL/word)
+				return ".";
 			}
-			return " "; // replace with space otherwise
+			return " ";
 		});
 
-		// Replace all emoji placeholders with their actual emojis
 		emojiMap.forEach((emoji, placeholder) => {
 			text = text.replace(placeholder, emoji);
 		});
@@ -1938,10 +1960,11 @@ class EventFlowSystem {
                 try {
                     // Use sanitized text basis for matching
                     if (message.chatmessage) {
-                        if (typeof this.sanitizeSendMessage === 'function') {
-                            basis = this.sanitizeSendMessage(message.chatmessage, true) || '';
-                        } else if (typeof this.sanitizeRelay === 'function') {
-                            basis = this.sanitizeRelay(message.chatmessage, true) || '';
+                        if (typeof this.sanitizeRelay === 'function') {
+                            // Use the shared sanitizer so emote images collapse to text consistently
+                            basis = this.sanitizeRelay(message.chatmessage, false) || '';
+                        } else if (typeof this.sanitizeSendMessage === 'function') {
+                            basis = this.sanitizeSendMessage(message.chatmessage, false) || '';
                         } else {
                             basis = (message.chatmessage || '').toString();
                         }
@@ -2095,18 +2118,19 @@ class EventFlowSystem {
                 let processedTemplate = config.template || 'Hello from {source}!';
                 
                 // Replace all occurrences of template variables
-                const _src = (message && message.type) || '';
+                const _srcRaw = (message && message.type) || '';
+                const _src = _srcRaw ? _srcRaw.charAt(0).toUpperCase() + _srcRaw.slice(1) : '';
                 const _uname = (message && message.chatname) || '';
                 const _msg = (message && message.chatmessage) || '';
                 processedTemplate = processedTemplate.replace(/\{source\}/g, _src);
-                processedTemplate = processedTemplate.replace(/\{type\}/g, _src);
+                processedTemplate = processedTemplate.replace(/\{type\}/g, _srcRaw);
                 processedTemplate = processedTemplate.replace(/\{username\}/g, _uname);
                 processedTemplate = processedTemplate.replace(/\{chatname\}/g, _uname);
                 processedTemplate = processedTemplate.replace(/\{message\}/g, _msg);
                 processedTemplate = processedTemplate.replace(/\{chatmessage\}/g, _msg);
                 
                 // Sanitize the message
-                let sanitizedSendMessage = this.sanitizeSendMessage(processedTemplate, true).trim();
+                let sanitizedSendMessage = this.sanitizeSendMessage(processedTemplate, false).trim();
                 
                 // Check if sanitized message is empty
                 if (!sanitizedSendMessage) {
@@ -2200,8 +2224,10 @@ class EventFlowSystem {
                 let relayTemplate = config.template || '[{source}] {username}: {message}';
                 
                 // Replace all occurrences of template variables
-                relayTemplate = relayTemplate.replace(/\{source\}/g, message.type || '');
-                relayTemplate = relayTemplate.replace(/\{type\}/g, message.type || '');
+                const relaySourceRaw = message.type || '';
+                const relaySource = relaySourceRaw ? relaySourceRaw.charAt(0).toUpperCase() + relaySourceRaw.slice(1) : '';
+                relayTemplate = relayTemplate.replace(/\{source\}/g, relaySource);
+                relayTemplate = relayTemplate.replace(/\{type\}/g, relaySourceRaw);
                 relayTemplate = relayTemplate.replace(/\{username\}/g, message.chatname || '');
                 relayTemplate = relayTemplate.replace(/\{chatname\}/g, message.chatname || '');
                 relayTemplate = relayTemplate.replace(/\{message\}/g, message.chatmessage || '');
@@ -2338,46 +2364,56 @@ class EventFlowSystem {
 				break;
                 
             case 'addPoints':
-				if (this.pointsSystem && config.amount > 0) {
-					const addResult = await this.pointsSystem.addPoints(
-						message.chatname,
-						message.type,
-						config.amount
-					);
-					
-					if (addResult.success) {
-						//console.log(`[ExecuteAction - addPoints] Added ${config.amount} points to ${message.chatname}. New total: ${addResult.points}`);
-						// You might want to add the new points total to the message for other actions to use
-						result.message = { ...message, pointsTotal: addResult.points };
-						result.modified = true;
-					} else {
-						//console.log(`[ExecuteAction - addPoints] Failed to add points for ${message.chatname}. Reason: ${addResult.message || 'Unknown error'}`);
+				try {
+					if (!this.pointsSystem && typeof window !== 'undefined' && typeof window.pointsSystemReady === 'function') {
+						await window.pointsSystemReady();
+						this.pointsSystem = window.pointsSystem || this.pointsSystem;
 					}
+					const system = this.pointsSystem;
+					if (system && config.amount > 0) {
+						const addResult = await system.addPoints(
+							message.chatname,
+							message.type,
+							config.amount
+						);
+						
+						if (addResult.success) {
+							result.message = { ...message, pointsTotal: addResult.points };
+							result.modified = true;
+							if (typeof window !== 'undefined' && typeof window.requestPointsLeaderboardBroadcast === 'function') {
+								window.requestPointsLeaderboardBroadcast('action-add', { immediate: true });
+							}
+						}
+					}
+				} catch (e) {
+					console.warn('[ExecuteAction - addPoints] failed', e);
 				}
 				break;
                 
             case 'spendPoints':
-				if (this.pointsSystem && config.amount > 0) {
-					const spendResult = await this.pointsSystem.spendPoints( // Capture the result
-						message.chatname,
-						message.type,
-						config.amount
-					);
-
-					if (!spendResult.success) {
-						// If spending points failed (e.g., insufficient points)
-						//console.log(`[ExecuteAction - spendPoints] Failed for ${message.chatname}. Reason: ${spendResult.message}`);
-						result.blocked = true; // This will stop subsequent actions in this flow path.
-						// You might also want to include the error message in the result if needed for debugging or other logic
-						result.message = { ...message, pointsSpendError: spendResult.message };
-						result.modified = true;
-					} else {
-						// Points were successfully spent
-						//console.log(`[ExecuteAction - spendPoints] Success for ${message.chatname}. Spent ${config.amount}. Remaining: ${spendResult.remaining}`);
-						// Optionally, you can add information about the successful transaction to the message
-						// result.message = { ...message, pointsSpentSuccessfully: true, pointsRemaining: spendResult.remaining };
-						// result.modified = true;
+				try {
+					if (!this.pointsSystem && typeof window !== 'undefined' && typeof window.pointsSystemReady === 'function') {
+						await window.pointsSystemReady();
+						this.pointsSystem = window.pointsSystem || this.pointsSystem;
 					}
+					const system = this.pointsSystem;
+					if (system && config.amount > 0) {
+						const spendResult = await system.spendPoints( // Capture the result
+							message.chatname,
+							message.type,
+							config.amount
+						);
+
+						if (!spendResult.success) {
+							result.blocked = true; // This will stop subsequent actions in this flow path.
+							result.message = { ...message, pointsSpendError: spendResult.message };
+							result.modified = true;
+						} else if (typeof window !== 'undefined' && typeof window.requestPointsLeaderboardBroadcast === 'function') {
+							window.requestPointsLeaderboardBroadcast('action-spend', { immediate: true });
+						}
+					}
+				} catch (e) {
+					console.warn('[ExecuteAction - spendPoints] failed', e);
 				}
 				break;
                 
