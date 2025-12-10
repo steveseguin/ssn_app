@@ -2603,6 +2603,10 @@ class ConnectionManager {
         if (this.signingProvider === 'local') {
             return true;
         }
+        // Allow auto to pick local signer when no API key/service is provided
+        if (this.signingProvider === 'auto' && !this.signingConfig?.apiKey && !this.signingConfig?.serviceUrl) {
+            return true;
+        }
         return false;
     }
 
@@ -4447,6 +4451,8 @@ class ConnectionManager {
         if (this.websocketFailureCount >= this.WEBSOCKET_FAILURE_THRESHOLD && !this.pollingFallbackActivated) {
             console.warn(`[TikTok] Websocket failure threshold reached (${this.websocketFailureCount}), forcing Polling Fallback.`);
             this.pollingFallbackActivated = true;
+            this.preferredStrategy = 'legacy';
+            this.websocketFailureCount = 0;
 
             // Notify UI of the fallback
             try {
@@ -4456,6 +4462,18 @@ class ConnectionManager {
                     message: 'Connection unstable. Switched to compatibility mode.'
                 });
             } catch (_) { }
+
+            // Tear down websocket connector and reinitialize with legacy
+            try {
+                await this.teardownConnection({ silent: true });
+            } catch (teardownErr) {
+                console.warn('Failed to teardown websocket before fallback:', teardownErr);
+            }
+            try {
+                this.initializeConnectionInstance({ forceLegacy: true, context: 'websocket_strike' });
+            } catch (initErr) {
+                console.error('Failed to initialize legacy connector after websocket strikes:', initErr);
+            }
         }
 
         const runConnect = async () => {
@@ -4528,9 +4546,9 @@ class ConnectionManager {
                 const offlineMessage = errorMessage || userFacingMessage || (primaryError && primaryError.reason) || '';
                 const isOffline = this.isOfflineError(primaryError, offlineMessage);
 
-                // Increment Websocket failure count if we are in Websocket mode and not dealing with an offline user
-                // We check !usingLegacyTikTokConnector because if we are already in legacy mode, this doesn't apply
-                if (!isOffline && !usingLegacyTikTokConnector && !this.pollingFallbackActivated && !this.connection.enableExtendedGiftInfo) {
+                // Increment Websocket failure count only when using websocket mode
+                const isWebsocketMode = !usingLegacyTikTokConnector && !this.pollingFallbackActivated && this.connectionStrategy !== 'legacy';
+                if (!isOffline && isWebsocketMode && !this.connection.enableExtendedGiftInfo) {
                     // Note: enableExtendedGiftInfo is a proxy for "is using V2 connector" in some contexts, 
                     // but simpler is just to check if we are NOT using the fallback class.
                     // However, here we just want to count failures that might be solved by polling.
@@ -5593,18 +5611,15 @@ class ConnectionManager {
 
                             console.log('[TikTok] Local signer fetch completed', { status, bodyError, decodedBody });
 
-                            if (status === 200) {
+                            if (status === 200 && parsedBody && typeof parsedBody === 'object') {
                                 // Surface the real TikTok payload so callers can detect failures (e.g., not logged in)
-                                if (parsedBody && typeof parsedBody === 'object') {
-                                    return parsedBody;
-                                }
-                                return {
-                                    status_code: 0,
-                                    status: 'ok',
-                                    raw: decodedBody ?? null
-                                };
+                                return parsedBody;
                             }
-                            throw new Error(`Local signer fetch failed with status ${status}`);
+                            // Empty or unparseable body is treated as failure
+                            const errMsg = status === 200
+                                ? 'empty_response_body'
+                                : `Local signer fetch failed with status ${status}`;
+                            throw new Error(errMsg);
                         }
                         throw new Error('Local signer fetch returned no result');
                     }
@@ -5763,7 +5778,7 @@ class ConnectionManager {
                 (errCode === null || errCode === 0) &&
                 (statusFlag === null || statusFlag === 'success');
             if (!isSuccess) {
-                const detail = statusMessage || `TikTok chat API returned status ${statusCode ?? errCode ?? statusFlag ?? 'unknown'}`;
+                const detail = statusMessage || (emptyResponseBody ? 'empty_response_body' : `TikTok chat API returned status ${statusCode ?? errCode ?? statusFlag ?? 'unknown'}`);
                 this.logDebug('chat.send.direct.rejected', {
                     statusCode,
                     errCode,
