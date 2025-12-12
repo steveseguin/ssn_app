@@ -425,6 +425,16 @@ function resolveLocaleOverride() {
         };
     }
 
+    try {
+        const stored = normalizeLocaleCandidate(store.get('startupFlags.locale'));
+        if (stored) {
+            return {
+                value: stored,
+                source: 'preferences'
+            };
+        }
+    } catch (_) { }
+
     return null;
 }
 
@@ -1622,17 +1632,50 @@ function createYargs() {
 
 var Args = createYargs();
 var Argv = Args.argv;
-const cliPreferLocalAssets = Argv.preferlocalassets === true;
-const envPreferLocalAssets = process.env.SSAPP_PREFER_LOCAL_ASSETS === '1';
-const preferLocalAssetsFlag = cliPreferLocalAssets || envPreferLocalAssets;
-const allowMultipleInstances = Argv.multiinstance === true || Argv.standalone === true;
+const storedStartupFlags = (() => {
+    try {
+        const raw = store.get('startupFlags');
+        if (raw && typeof raw === 'object') {
+            return raw;
+        }
+    } catch (_) { }
+    return {};
+})();
 
-const envForceTikTokClassic = process.env.SSAPP_FORCE_TIKTOK_CLASSIC === '1';
-const CLI_FORCE_TIKTOK_CLASSIC = Argv.tiktokclassic === true;
+const cliPreferLocalAssetsProvided = process.argv.includes('--preferlocalassets');
+const cliPreferLocalAssets = cliPreferLocalAssetsProvided || Argv.preferlocalassets === true;
+const storedPreferLocalAssets = storedStartupFlags.preferLocalAssets === true;
+const envPreferLocalAssetsRaw = process.env.SSAPP_PREFER_LOCAL_ASSETS;
+const hasEnvPreferLocalAssets = envPreferLocalAssetsRaw !== undefined;
+
+if (cliPreferLocalAssets) {
+    process.env.SSAPP_PREFER_LOCAL_ASSETS = '1';
+} else if (!hasEnvPreferLocalAssets) {
+    process.env.SSAPP_PREFER_LOCAL_ASSETS = storedPreferLocalAssets ? '1' : '0';
+}
+
+const preferLocalAssetsFlag = process.env.SSAPP_PREFER_LOCAL_ASSETS === '1';
+
+const cliAllowMultipleInstancesProvided = (
+    process.argv.includes('--multiinstance') ||
+    process.argv.includes('--standalone')
+);
+const cliAllowMultipleInstances = cliAllowMultipleInstancesProvided || Argv.multiinstance === true || Argv.standalone === true;
+const storedAllowMultipleInstances = storedStartupFlags.allowMultipleInstances === true;
+const allowMultipleInstances = cliAllowMultipleInstances || storedAllowMultipleInstances;
+
+const cliForceTikTokClassicProvided = (
+    process.argv.includes('--tiktokclassic') ||
+    process.argv.includes('--tc')
+);
+const CLI_FORCE_TIKTOK_CLASSIC = cliForceTikTokClassicProvided || Argv.tiktokclassic === true;
+const storedForceTikTokClassic = storedStartupFlags.forceTikTokClassic === true;
+const envForceTikTokClassicRaw = process.env.SSAPP_FORCE_TIKTOK_CLASSIC;
+const hasEnvForceTikTokClassic = envForceTikTokClassicRaw !== undefined;
 if (CLI_FORCE_TIKTOK_CLASSIC) {
     process.env.SSAPP_FORCE_TIKTOK_CLASSIC = '1';
-} else if (process.env.SSAPP_FORCE_TIKTOK_CLASSIC === undefined) {
-    process.env.SSAPP_FORCE_TIKTOK_CLASSIC = envForceTikTokClassic ? '1' : '0';
+} else if (!hasEnvForceTikTokClassic) {
+    process.env.SSAPP_FORCE_TIKTOK_CLASSIC = storedForceTikTokClassic ? '1' : '0';
 }
 let runtimeForceTikTokClassic = CLI_FORCE_TIKTOK_CLASSIC || process.env.SSAPP_FORCE_TIKTOK_CLASSIC === '1';
 
@@ -9363,40 +9406,344 @@ async function handleLoadFromZip() {
     }
 }
 
+let startupPreferencesWindow = null;
+
+function getStoredStartupFlagsForUI() {
+    const fallback = {
+        locale: '',
+        preferLocalAssets: false,
+        forceTikTokClassic: false,
+        allowMultipleInstances: false
+    };
+    try {
+        const raw = store.get('startupFlags');
+        if (!raw || typeof raw !== 'object') return fallback;
+        return {
+            locale: typeof raw.locale === 'string' ? raw.locale : '',
+            preferLocalAssets: raw.preferLocalAssets === true,
+            forceTikTokClassic: raw.forceTikTokClassic === true,
+            allowMultipleInstances: raw.allowMultipleInstances === true
+        };
+    } catch (_) {
+        return fallback;
+    }
+}
+
+function saveStartupFlagsFromUI(input) {
+    const localeRaw = input && typeof input.locale === 'string' ? input.locale : '';
+    const locale = normalizeLocaleCandidate(localeRaw);
+    const preferLocalAssets = !!(input && input.preferLocalAssets);
+    const forceTikTokClassic = !!(input && input.forceTikTokClassic);
+    const allowMultipleInstances = !!(input && input.allowMultipleInstances);
+
+    if (locale) {
+        store.set('startupFlags.locale', locale);
+    } else {
+        store.delete('startupFlags.locale');
+    }
+    store.set('startupFlags.preferLocalAssets', preferLocalAssets);
+    store.set('startupFlags.forceTikTokClassic', forceTikTokClassic);
+    store.set('startupFlags.allowMultipleInstances', allowMultipleInstances);
+
+    return {
+        locale: locale || '',
+        preferLocalAssets,
+        forceTikTokClassic,
+        allowMultipleInstances
+    };
+}
+
+function shouldShowStartupPreferencesMenu() {
+    // On macOS, prefer placing Preferences under the app menu.
+    return !isMac;
+}
+
+function generateStartupPreferencesHTML() {
+    return `
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' data:; img-src 'self' data:;" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Preferences</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 16px; background: #0b0b0b; color: #eaeaea; }
+      h1 { font-size: 18px; margin: 0 0 10px; }
+      p { margin: 6px 0 12px; color: #bdbdbd; }
+      .card { background: #141414; border: 1px solid #2a2a2a; border-radius: 10px; padding: 12px; margin: 12px 0; }
+      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      label { display: block; font-size: 13px; color: #d6d6d6; margin-bottom: 6px; }
+      select, input[type="text"] { background: #0f0f0f; color: #eaeaea; border: 1px solid #2a2a2a; border-radius: 8px; padding: 8px 10px; min-width: 240px; }
+      input[type="checkbox"] { transform: translateY(1px); }
+      .checkbox { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+      .hint { font-size: 12px; color: #a7a7a7; margin-top: 6px; }
+      .buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+      button { background: #1f6feb; border: 1px solid #1f6feb; color: #fff; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+      button.secondary { background: transparent; border-color: #3a3a3a; color: #eaeaea; }
+      button.danger { background: #b42318; border-color: #b42318; }
+      .status { margin-top: 8px; font-size: 12px; color: #a7a7a7; white-space: pre-wrap; }
+      code { background: #0f0f0f; padding: 2px 5px; border-radius: 6px; border: 1px solid #2a2a2a; }
+    </style>
+  </head>
+  <body>
+    <h1>Preferences (Startup Flags)</h1>
+    <p>These options affect Chromium/Electron startup. Changes require a restart to take effect.</p>
+
+    <div class="card">
+      <label for="localePreset">Chromium Locale</label>
+      <div class="row">
+        <select id="localePreset">
+          <option value="">System default (recommended)</option>
+          <option value="en-US">English (United States) — en-US</option>
+          <option value="en-GB">English (United Kingdom) — en-GB</option>
+          <option value="es-ES">Español (España) — es-ES</option>
+          <option value="es-MX">Español (México) — es-MX</option>
+          <option value="fr-FR">Français (France) — fr-FR</option>
+          <option value="fr-CA">Français (Canada) — fr-CA</option>
+          <option value="pt-BR">Português (Brasil) — pt-BR</option>
+          <option value="de-DE">Deutsch (Deutschland) — de-DE</option>
+          <option value="it-IT">Italiano — it-IT</option>
+          <option value="ja-JP">日本語 — ja-JP</option>
+          <option value="ko-KR">한국어 — ko-KR</option>
+        </select>
+        <input id="localeCustom" type="text" placeholder="Custom (e.g. es-AR)" />
+      </div>
+      <div class="hint">This feeds Chromium <code>--lang</code> and <code>--accept-lang</code>, and can influence available system voices.</div>
+    </div>
+
+    <div class="card">
+      <div class="checkbox">
+        <input id="preferLocalAssets" type="checkbox" />
+        <label for="preferLocalAssets" style="margin:0;">Prefer bundled Social Stream assets on startup</label>
+      </div>
+      <div class="checkbox">
+        <input id="forceTikTokClassic" type="checkbox" />
+        <label for="forceTikTokClassic" style="margin:0;">Force TikTok classic (HTTP) mode on startup</label>
+      </div>
+      <div class="checkbox">
+        <input id="allowMultipleInstances" type="checkbox" />
+        <label for="allowMultipleInstances" style="margin:0;">Allow multiple instances</label>
+      </div>
+      <div class="hint">These mirror existing command-line flags / env vars, but persist via app preferences.</div>
+    </div>
+
+    <div class="card">
+      <div><strong>Current run:</strong></div>
+      <div class="status" id="effectiveStatus">Loading…</div>
+    </div>
+
+    <div class="buttons">
+      <button class="secondary" id="closeBtn">Close</button>
+      <button class="danger" id="resetBtn">Reset</button>
+      <button id="saveBtn">Save</button>
+    </div>
+    <div class="status" id="status"></div>
+
+    <script>
+      const { ipcRenderer } = require('electron');
+
+      const byId = (id) => document.getElementById(id);
+      const localePreset = byId('localePreset');
+      const localeCustom = byId('localeCustom');
+      const preferLocalAssets = byId('preferLocalAssets');
+      const forceTikTokClassic = byId('forceTikTokClassic');
+      const allowMultipleInstances = byId('allowMultipleInstances');
+      const status = byId('status');
+      const effectiveStatus = byId('effectiveStatus');
+
+      function setStatus(msg) {
+        status.textContent = msg || '';
+      }
+
+      function pickLocaleValue() {
+        const custom = (localeCustom.value || '').trim();
+        if (custom) return custom;
+        return localePreset.value || '';
+      }
+
+      async function loadState() {
+        const data = await ipcRenderer.invoke('startupPrefs:get');
+        const stored = data && data.stored ? data.stored : {};
+        const effective = data && data.effective ? data.effective : {};
+
+        const storedLocale = (stored.locale || '').trim();
+        if (storedLocale) {
+          localePreset.value = storedLocale;
+          if (localePreset.value !== storedLocale) {
+            localePreset.value = '';
+            localeCustom.value = storedLocale;
+          }
+        } else {
+          localePreset.value = '';
+          localeCustom.value = '';
+        }
+
+        preferLocalAssets.checked = !!stored.preferLocalAssets;
+        forceTikTokClassic.checked = !!stored.forceTikTokClassic;
+        allowMultipleInstances.checked = !!stored.allowMultipleInstances;
+
+        const lines = [];
+        lines.push(\`Locale: \${effective.locale || ''} (\${effective.localeSource || ''})\`);
+        if (effective.acceptLanguage) lines.push(\`Accept-Language: \${effective.acceptLanguage}\`);
+        lines.push(\`Prefer local assets: \${effective.preferLocalAssets ? 'on' : 'off'}\`);
+        lines.push(\`TikTok classic: \${effective.forceTikTokClassic ? 'on' : 'off'}\`);
+        lines.push(\`Multi-instance: \${effective.allowMultipleInstances ? 'on' : 'off'}\`);
+        effectiveStatus.textContent = lines.join('\\n');
+      }
+
+      byId('closeBtn').addEventListener('click', () => window.close());
+      byId('resetBtn').addEventListener('click', async () => {
+        setStatus('Resetting…');
+        await ipcRenderer.invoke('startupPrefs:reset');
+        setStatus('');
+        await loadState();
+      });
+      byId('saveBtn').addEventListener('click', async () => {
+        setStatus('Saving…');
+        const payload = {
+          locale: pickLocaleValue(),
+          preferLocalAssets: preferLocalAssets.checked,
+          forceTikTokClassic: forceTikTokClassic.checked,
+          allowMultipleInstances: allowMultipleInstances.checked
+        };
+        await ipcRenderer.invoke('startupPrefs:set', payload);
+        setStatus('');
+        await loadState();
+      });
+
+      loadState().catch((e) => {
+        effectiveStatus.textContent = 'Failed to load preferences.';
+        setStatus(String(e && e.message ? e.message : e));
+      });
+    </script>
+  </body>
+</html>
+`;
+}
+
+function showStartupPreferencesWindow() {
+    try {
+        if (startupPreferencesWindow && !startupPreferencesWindow.isDestroyed()) {
+            startupPreferencesWindow.show();
+            startupPreferencesWindow.focus();
+            return;
+        }
+
+        const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+        startupPreferencesWindow = new BrowserWindow({
+            width: 620,
+            height: 560,
+            resizable: false,
+            title: 'Preferences',
+            parent: parent || undefined,
+            modal: false,
+            backgroundColor: '#0b0b0b',
+            webPreferences: {
+                nodeIntegration: true,
+                contextIsolation: false
+            }
+        });
+        startupPreferencesWindow.on('closed', () => {
+            startupPreferencesWindow = null;
+        });
+
+        startupPreferencesWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(generateStartupPreferencesHTML())}`);
+    } catch (error) {
+        console.error('Failed to open preferences window:', error);
+        dialog.showMessageBox({
+            type: 'error',
+            title: 'Preferences Error',
+            message: 'Could not open Preferences window.',
+            detail: error && error.message ? error.message : String(error),
+            buttons: ['OK']
+        });
+    }
+}
+
+async function promptStartupPreferencesRestart(message, detail) {
+    const result = await dialog.showMessageBox(startupPreferencesWindow || mainWindow || undefined, {
+        type: 'info',
+        title: 'Restart Required',
+        message,
+        detail,
+        buttons: ['Restart now', 'Later'],
+        defaultId: 0,
+        cancelId: 1
+    });
+
+    if (result.response === 0) {
+        try {
+            app.relaunch();
+        } catch (e) {
+            console.warn('app.relaunch failed:', e);
+        }
+        app.exit(0);
+        return true;
+    }
+    return false;
+}
+
+ipcMain.handle('startupPrefs:get', () => {
+    const stored = getStoredStartupFlagsForUI();
+    return {
+        stored,
+        effective: {
+            locale: SYSTEM_LOCALE,
+            localeSource: process.env.SSAPP_LOCALE_SOURCE || 'system',
+            acceptLanguage: process.env.SSAPP_ACCEPT_LANGUAGE || null,
+            preferLocalAssets: preferLocalAssetsFlag,
+            forceTikTokClassic: runtimeForceTikTokClassic,
+            allowMultipleInstances
+        }
+    };
+});
+
+ipcMain.handle('startupPrefs:set', async (_event, payload) => {
+    saveStartupFlagsFromUI(payload);
+
+    await promptStartupPreferencesRestart(
+        'Startup preferences saved.',
+        'Restart Social Stream Ninja to apply these startup flags.'
+    );
+
+    return { ok: true };
+});
+
+ipcMain.handle('startupPrefs:reset', async () => {
+    store.delete('startupFlags');
+
+    await promptStartupPreferencesRestart(
+        'Startup preferences reset.',
+        'Restart Social Stream Ninja to apply the defaults.'
+    );
+
+    return { ok: true };
+});
+
 function createMenu() {
     const template = [
         // Mac specific top menu
         ...(isMac ? [{
             label: app.name,
-            submenu: [{
-                role: "about"
-            },
-            {
-                type: "separator"
-            },
-            {
-                role: "services"
-            },
-            {
-                type: "separator"
-            },
-            {
-                role: "hide"
-            },
-            {
-                role: "hideothers"
-            },
-            {
-                role: "unhide"
-            },
-            {
-                type: "separator"
-            },
-            {
-                role: "quit"
-            },
+            submenu: [
+                { role: "about" },
+                { type: "separator" },
+                {
+                    label: 'Preferences…',
+                    accelerator: 'CmdOrCtrl+,',
+                    click: () => showStartupPreferencesWindow()
+                },
+                { type: "separator" },
+                { role: "services" },
+                { type: "separator" },
+                { role: "hide" },
+                { role: "hideothers" },
+                { role: "unhide" },
+                { type: "separator" },
+                { role: "quit" },
             ],
-        },] : []),
+        }] : []),
         // File menu
         {
             label: 'File',
@@ -9591,10 +9938,10 @@ function createMenu() {
             ]
         },
 
-        // Window menu (including your custom "Minimize to Tray")
-        {
-            label: 'Window',
-            submenu: [{
+	        // Window menu (including your custom "Minimize to Tray")
+	        {
+	            label: 'Window',
+	            submenu: [{
                 role: 'minimize'
             },
             {
@@ -9641,12 +9988,35 @@ function createMenu() {
             }, {
                 role: 'window'
             }] : [])
-            ]
-        },
-        // Help menu
-        {
-            role: "help",
-            submenu: [{
+	            ]
+	        },
+	        ...(shouldShowStartupPreferencesMenu() ? [{
+	            label: 'Preferences',
+	            submenu: [
+	                {
+	                    label: 'Startup Flags…',
+	                    accelerator: 'CmdOrCtrl+,',
+	                    click: () => showStartupPreferencesWindow()
+	                },
+	                {
+	                    type: 'separator'
+	                },
+	                {
+	                    label: 'Reset Startup Flags…',
+	                    click: async () => {
+	                        store.delete('startupFlags');
+	                        await promptStartupPreferencesRestart(
+	                            'Startup preferences reset.',
+	                            'Restart Social Stream Ninja to apply the defaults.'
+	                        );
+	                    }
+	                }
+	            ]
+	        }] : []),
+	        // Help menu
+	        {
+	            role: "help",
+	            submenu: [{
                 label: "Get support on Discord",
                 click: async () => {
                     await shell.openExternal("https://discord.socialstream.ninja");

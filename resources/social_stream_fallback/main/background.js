@@ -4829,6 +4829,45 @@ chrome.runtime.onMessage.addListener(async function (request, sender, sendRespon
 			
 			// Respond immediately - tokens are already cleared in memory
 			sendResponse({success: true});
+		} else if (request.spotifyAction) {
+			// Handle Spotify actions from Event Flow
+			if (spotify && settings.spotifyEnabled) {
+				(async () => {
+					try {
+						let result;
+						switch (request.spotifyAction) {
+							case 'skip':
+								result = await spotify.skip();
+								break;
+							case 'previous':
+								result = await spotify.previous();
+								break;
+							case 'pause':
+								result = await spotify.pause();
+								break;
+							case 'resume':
+								result = await spotify.resume();
+								break;
+							case 'volume':
+								result = await spotify.setVolume(request.volume);
+								break;
+							case 'queue':
+								result = await spotify.addToQueue(request.query);
+								break;
+							default:
+								result = { success: false, message: 'Unknown Spotify action' };
+						}
+						console.log('[Spotify Action]', request.spotifyAction, result);
+						sendResponse({ success: result?.success, message: result?.message });
+					} catch (error) {
+						console.error('[Spotify Action Error]', error);
+						sendResponse({ success: false, error: error.message });
+					}
+				})();
+				return true; // Keep message channel open for async response
+			} else {
+				sendResponse({ success: false, error: 'Spotify not enabled or not connected' });
+			}
 		} else if (request.cmd && request.target){
 			sendResponse({ state: isExtensionOn });
 			sendTargetP2P(request, request.target);
@@ -5917,6 +5956,186 @@ function sendToS10(data, fakechat=false, relayed=false) {
 				xhr2.send(JSON.stringify(msg));
 			} catch(e){}
 			
+		} catch (e) {
+			console.warn(e);
+		}
+	}
+}
+
+// Social Stream Chat integration - send messages to chat.socialstream.ninja
+function sendToSSC(data, fakechat=false, relayed=false) {
+	if (settings.ssc && settings.sscapikey && settings.sscapikey.textsetting && settings.sscroomid && settings.sscroomid.textsetting) {
+		try {
+			// Skip messages from our own chat to avoid loops
+			if (data.type && data.type === "socialstreamchat") {
+				return;
+			}
+
+			const checkMessage = data.textContent || data.chatmessage;
+			if (checkMessage && checkMessage.includes(miscTranslations.said)){
+				return null;
+			}
+
+			let cleaned = data.chatmessage;
+			if (data.textonly){
+				cleaned = cleaned.replace(/<\/?[^>]+(>|$)/g, "");
+				cleaned = cleaned.replace(/\s\s+/g, " ");
+			} else {
+				cleaned = decodeAndCleanHtml(cleaned);
+			}
+			if (!cleaned){
+				return;
+			}
+
+			data.textContent = cleaned;
+
+			if (relayed && !verifyOriginalNewIncomingMessage(cleaned, true)){
+				if (data.bot) {
+					return null;
+				}
+				if (checkExactDuplicateAlreadyRelayed(cleaned, data.textonly, data.tid, false)){
+					return;
+				}
+			} else if (!fakechat && checkExactDuplicateAlreadyRelayed(cleaned, data.textonly, data.tid, false)){
+				return null;
+			}
+
+			if (fakechat){
+				lastSentMessage = cleaned;
+				lastSentTimestamp = Date.now();
+				lastMessageCounter = 0;
+			}
+
+			let botname = "🤖💬";
+			if (settings.ollamabotname && settings.ollamabotname.textsetting){
+				botname = settings.ollamabotname.textsetting.trim();
+			}
+
+			let username = "";
+			let isBot = false;
+			if (!settings.noollamabotname && cleaned.startsWith(botname+":")){
+				cleaned = cleaned.replace(botname+":","").trim();
+				username = botname;
+				isBot = true;
+			}
+
+			// Build the payload for Social Stream Chat ingress API
+			// Supports full SSN message format: badges, donations, memberships, events, meta
+			var payload = {
+				type: data.event ? "event" : "chat",
+				payload: {
+					text: cleaned,
+					displayName: username || data.chatname || data.userid || "Guest",
+					userId: data.userid || "ssn-" + (data.chatname || "guest"),
+					source: data.type || "socialstream",
+					sourceIcon: "https://socialstream.ninja/sources/images/" + (data.type || "socialstream") + ".png"
+				}
+			};
+
+			// Avatar
+			if (data.chatimg) {
+				payload.payload.avatar = data.chatimg;
+			}
+
+			if (isBot){
+				payload.payload.sourceIcon = "https://socialstream.ninja/icons/bot.png";
+			}
+
+			// Badges - array of badge objects
+			if (data.chatbadges && data.chatbadges.length > 0) {
+				payload.payload.badges = data.chatbadges;
+			}
+
+			// Donations/Super Chats
+			if (data.hasDonation) {
+				payload.payload.donation = data.hasDonation;
+				if (data.donoValue) {
+					payload.payload.donationValue = data.donoValue;
+				}
+				if (data.backgroundColor) {
+					payload.payload.backgroundColor = data.backgroundColor;
+				}
+				if (data.textColor) {
+					payload.payload.textColor = data.textColor;
+				}
+			}
+
+			// Memberships
+			if (data.membership) {
+				payload.payload.membership = data.membership;
+			}
+
+			// Events (raids, follows, subscriptions, etc.)
+			if (data.event) {
+				payload.payload.event = data.event;
+				if (data.title) {
+					payload.payload.title = data.title;
+				}
+			}
+
+			// Subtitle (membership length, gift info, etc.)
+			if (data.subtitle) {
+				payload.payload.subtitle = data.subtitle;
+			}
+
+			// Stickers/Content images
+			if (data.contentimg) {
+				payload.payload.contentImage = data.contentimg;
+			}
+
+			// Moderator flag
+			if (data.mod) {
+				payload.payload.isModerator = true;
+			}
+
+			// Name color
+			if (data.nameColor) {
+				payload.payload.nameColor = data.nameColor;
+			}
+
+			// Reply info
+			if (data.initial) {
+				payload.payload.replyTo = data.initial;
+			}
+			if (data.reply) {
+				payload.payload.replyText = data.reply;
+			}
+
+			// Source channel info
+			if (data.sourceName) {
+				payload.payload.sourceName = data.sourceName;
+			}
+			if (data.sourceImg) {
+				payload.payload.sourceImage = data.sourceImg;
+			}
+
+			// Meta - passthrough for any additional/custom fields
+			if (data.meta) {
+				payload.meta = data.meta;
+			}
+
+			const roomId = settings.sscroomid.textsetting.trim();
+			const apiKey = settings.sscapikey.textsetting.trim();
+			const apiBase = (settings.sscapibase && settings.sscapibase.textsetting)
+				? settings.sscapibase.textsetting.trim()
+				: "https://chat.socialstream.ninja";
+
+			try {
+				let xhr = new XMLHttpRequest();
+				xhr.open("POST", apiBase + "/rooms/" + roomId + "/ingress");
+				xhr.setRequestHeader("Content-Type", "application/json");
+				xhr.setRequestHeader("Authorization", "Bearer " + apiKey);
+				xhr.onload = function () {
+					// Successfully sent to Social Stream Chat
+				};
+				xhr.onerror = function (e) {
+					console.warn("Error sending to Social Stream Chat:", e);
+				};
+				xhr.send(JSON.stringify(payload));
+			} catch(e){
+				console.warn("Error sending to Social Stream Chat:", e);
+			}
+
 		} catch (e) {
 			console.warn(e);
 		}
@@ -7170,7 +7389,7 @@ socketserver.addEventListener("message", async function (event) {
 			} else if (data.action && data.action === "getpollpresets") {
 				// Return list of saved poll presets
 				getPollPresets(function(presets) {
-					if (data.get && e.data.UUID) {
+					if (data.get) {
 						var ret = {};
 						ret.callback = {};
 						ret.callback.get = data.get;
@@ -8406,8 +8625,8 @@ function loadPollPreset(pollId) {
 function updatePollSettings(newSettings) {
 	try {
 		// Update poll-related settings
-		const pollKeys = ['pollType', 'pollQuestion', 'multipleChoiceOptions', 
-						 'pollStyle', 'pollTimer', 'pollTimerState', 'pollTally', 'pollSpam'];
+		const pollKeys = ['pollType', 'pollQuestion', 'multipleChoiceOptions',
+						 'pollStyle', 'pollTimer', 'pollTimerState', 'pollTally', 'pollSpam', 'pollDonationWeighted'];
 		
 		pollKeys.forEach(key => {
 			if (newSettings.hasOwnProperty(key)) {
@@ -8456,7 +8675,8 @@ function createNewPoll(pollSettings) {
 			pollTimer: '60',
 			pollTimerState: false,
 			pollTally: true,
-			pollSpam: false
+			pollSpam: false,
+			pollDonationWeighted: false
 		};
 		
 		// Merge with provided settings
@@ -10084,11 +10304,12 @@ function messageExistsInTimeWindow(tabId, messageToFind, timeWindowMs = 1000) {
 }
 
 
-// Helper function to handle StageTen
+// Helper function to handle StageTen and Social Stream Chat
 function handleStageTen(data, metadata) {
     if (!data.response) return;
     if (metadata) {
         sendToS10(metadata, true);
+        sendToSSC(metadata, true);
     } else {
         var msg = {
             chatmessage: data.response,
@@ -10096,6 +10317,7 @@ function handleStageTen(data, metadata) {
             chatimg: "https://socialstream.ninja/icons/icon-128.png"
         };
         sendToS10(msg, true);
+        sendToSSC(msg, true);
     }
 }
 
@@ -11483,29 +11705,33 @@ async function applyBotActions(data, tab = false) {
 		
 		// Handle Spotify commands
 		if (spotify && settings.spotifyEnabled && data.chatmessage && data.chatname && !data.bot) {
-			const response = spotify.handleCommand(data.chatmessage);
-			if (response) {
-				const botResponse = {
-					chatname: settings.spotifyBotName?.textsetting || "Spotify Bot",
-					chatbadges: "",
-					backgroundColor: "",
-					textColor: "",
-					chatmessage: response,
-					chatimg: "https://socialstream.ninja/icons/bot.png",
-					hasDonation: "",
-					membership: "",
-					isRelay: false,
-					type: "spotify",
-					bot: "spotify",
-					timestamp: Date.now()
-				};
-				
-				sendToS10({ ...botResponse });
-				setTimeout(() => {
-					sendToDestinations({ ...botResponse });
-				}, 50);
-				return null; // Don't process the original command further
-			}
+			// Pass message data for role-based permission checking
+			spotify.handleCommand(data.chatmessage, data).then(response => {
+				if (response) {
+					const botResponse = {
+						chatname: settings.spotifyBotName?.textsetting || "Spotify Bot",
+						chatbadges: "",
+						backgroundColor: "",
+						textColor: "",
+						chatmessage: response,
+						chatimg: "https://socialstream.ninja/icons/bot.png",
+						hasDonation: "",
+						membership: "",
+						isRelay: false,
+						type: "spotify",
+						bot: "spotify",
+						timestamp: Date.now()
+					};
+
+					sendToS10({ ...botResponse });
+					sendToSSC({ ...botResponse });
+					setTimeout(() => {
+						sendToDestinations({ ...botResponse });
+					}, 50);
+				}
+			}).catch(err => {
+				console.warn('Spotify command error:', err);
+			});
 		}
 		
 		if (settings.dice && data.chatname && data.chatmessage && (data.chatmessage.toLowerCase().startsWith("!dice ") || data.chatmessage.toLowerCase() === "!dice")) {
@@ -11596,6 +11822,11 @@ async function applyBotActions(data, tab = false) {
 			}
 		} else if (settings.s10relay && !data.bot && data.chatmessage && data.chatname && !data.event){
 			sendToS10(data, false, true); // we'll handle the relay logic here instead
+		}
+
+		// Social Stream Chat relay - send all messages to chat.socialstream.ninja
+		if (settings.sscrelay && !data.bot && data.chatmessage && data.chatname && !data.event){
+			sendToSSC(data, false, true);
 		}
 		//console.logdata);
 		

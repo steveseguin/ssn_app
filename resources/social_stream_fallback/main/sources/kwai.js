@@ -59,45 +59,62 @@
 		return resp;
 	}
 	
-	function processMessage(ele){
+	function processMessage(ele, event=false){
 		
-		//console.log(ele);
-		
-		let eventType = "";
-		if (ele.querySelector("[class*='joinedText']")){
-			eventType = "joined";
-		}
+		console.log(ele);
 		
 		var chatimg = "";
-		try{
-		   chatimg = ele.querySelector(".pc-borderRadius-full source")?.srcset.split(" ")[0].replace("w_24,h_24","w_144,h_144") || "";
+		try {
+			chatimg = ele.querySelector(".info-chat-comment-item-avatar>img[src]").src;
 		} catch(e){
 		}
 		
 		var name="";
 		try {
-			name = escapeHtml(ele.querySelector("div > span a[href^='https://substack.com/@']")?.textContent.trim());
+			name = escapeHtml(ele.querySelector(".info-chat-comment-item-user-box-name, .info-feed-list-item-name")?.textContent.trim());
 		} catch(e){
 		}
 		
 		
 		var msg="";
 		try {
-			if (eventType){
-				msg = getAllContentNodes(ele.querySelector(".pencraft.pc-opacity-90")).trim();
-				if (msg!="joined"){
-					msg = getAllContentNodes(ele).trim();
+			msg = getAllContentNodes(ele.querySelector(".info-chat-comment-item-comment, .info-feed-list-item-content")).trim();
+		} catch(e){
+		}
+		
+		var hasDonation = "";
+		
+		var eventType = "";
+		
+		
+		if (event && msg){
+			if (msg.includes("just joined")){
+				eventType = "joined";
+				if (!settings.captureevents){
+					return;
+				}
+			} else if (ele.querySelector(".gift-img")){
+				hasDonation = msg.split("x");
+				hasDonation = hasDonation[hasDonation.length-1];
+				hasDonation = parseInt(hasDonation);
+				if (hasDonation===1){
+					hasDonation = hasDonation+" gift";
+				} else if (hasDonation>1){
+					hasDonation = hasDonation +" gifts";
+				} else {
+					hasDonation = false;
 				}
 			} else {
-				msg = getAllContentNodes(ele.querySelector(".pencraft.pc-opacity-90")).trim();
+				if (!settings.captureevents){
+					return;
+				}
 			}
-		} catch(e){
 		}
 		
 		var contentimg = "";
 		
 		
-		if (!msg && !contentimg){return;}
+		if (!msg){return;}
 		
 		var data = {};
 		data.chatname = name;
@@ -107,13 +124,13 @@
 		
 		data.chatmessage = msg;
 		data.chatimg = chatimg;
-		data.hasDonation = "";
+		data.hasDonation = hasDonation;
 		data.membership = "";
 		data.contentimg = contentimg;
 		data.textonly = settings.textonlymode || false;
-		data.type = "substack";
+		data.type = "kwai";
 		
-		if(eventType){
+		if (eventType){
 			data.event = eventType;
 		}
 		
@@ -133,7 +150,10 @@
 	
 	
 	chrome.runtime.sendMessage(chrome.runtime.id, { "getSettings": true }, function(response){  // {"state":isExtensionOn,"streamID":channel, "settings":settings}
-		if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.lastError) { return; }
+		// Service worker can be cold; guard undefined/lastError so we don't crash before injecting.
+		if (chrome.runtime && chrome.runtime.lastError) {
+			return;
+		}
 		response = response || {};
 		if ("settings" in response){
 			settings = response.settings;
@@ -152,16 +172,11 @@
 					return;
 				}
 				if ("getSource" == request){
-					sendResponse("substack");
+					sendResponse("kwai");
 					return;
 				}
-				if (!isLiveStreamPage(window.location.href)){
+				if ("focusChat" == request){ 
 					sendResponse(false);
-					return;
-				}
-				if ("focusChat" == request){ // if (prev.querySelector('[id^="message-username-"]')){ //slateTextArea-
-					document.querySelector('input[class^="input-"], textarea, input[type="text"]').focus();
-					sendResponse(true);
 					return;
 				}
 				if (typeof request === "object"){
@@ -180,66 +195,49 @@
 	);
 
 	var lastURL = window.location.href;
-	var observer = null;
-	var isWatching = false;
-	
-	function isLiveStreamPage(url) {
-		if (!url) {
-			return false;
-		}
-		try {
-			return /(?:liveStream=|\/live-stream\/)/i.test(url);
-		} catch (e) {
-			return false;
-		}
-	}
-	
-	function resetObserver() {
-		if (observer) {
-			try {
-				observer.disconnect();
-			} catch (e) {}
-			observer = null;
-		}
-		isWatching = false;
-	}
-	
-	
-	function onElementInserted(target) {
+	var chatObserver = null;
+	var feedObserver = null;
+
+	function onElementInserted(target, events=false) {
 		if (!target) {
 			return;
 		}
-		
-		resetObserver();
-		
-		//console.log(target);
-		
+
+		// Determine which observer to use based on events flag
+		var existingObserver = events ? feedObserver : chatObserver;
+
+		// If already observing this target, skip
+		if (existingObserver) {
+			return;
+		}
+
 		var onMutationsObserved = function(mutations) {
 			mutations.forEach(function(mutation) {
 				if (mutation.addedNodes.length) {
-					//console.log(mutation.addedNodes);
 					for (var i = 0, len = mutation.addedNodes.length; i < len; i++) {
 						try {
+							console.warn(mutation.addedNodes);
 							if (mutation.addedNodes[i].skip){continue;}
 							mutation.addedNodes[i].skip = true;
-							processMessage(mutation.addedNodes[i]);
+							processMessage(mutation.addedNodes[i], events);
 						} catch(e){}
 					}
 				}
 			});
 		};
-		
-		var config = { childList: true, subtree: true };
+
+		var config = { childList: true, subtree: false };
 		var MutationObserver = window.MutationObserver || window.WebKitMutationObserver;
-		
-		observer = new MutationObserver(onMutationsObserved);
+
+		var newObserver = new MutationObserver(onMutationsObserved);
 		try {
-			observer.observe(target, config);
-			//console.log("OBSERVING");
-			isWatching = true;
+			newObserver.observe(target, config);
+			if (events) {
+				feedObserver = newObserver;
+			} else {
+				chatObserver = newObserver;
+			}
 		} catch (e) {
-			observer = null;
-			isWatching = false;
 		}
 	}
 	
@@ -266,7 +264,7 @@
 						chrome.runtime.sendMessage(
 							chrome.runtime.id,
 							({message:{
-									type: 'substack',
+									type: 'kwai',
 									event: 'viewer_update',
 									meta: views
 								}
@@ -282,27 +280,25 @@
 
 	setInterval(function(){
 		try {
-		if (lastURL !== window.location.href){
-			lastURL = window.location.href;
-			resetObserver();
-		}
-		if (!isLiveStreamPage(window.location.href)){
-			return;
-		}
-		if (!isWatching){
-			//console.log("searching");
-			var header = document.querySelector("[class*='overflow-auto']");
-			if (header){
-				//console.log("loading?");
-				onElementInserted(header);
+			// Set up chat observer if not already watching
+			if (!chatObserver){
+				var chatContainer = document.querySelector("[class='info-chat-comment']");
+				if (chatContainer){
+					onElementInserted(chatContainer, false);
+				}
 			}
-		}
-		
-		if (isWatching){
-			checkViewers();
-		}} catch(e){}
-		
-		
+			// Set up feed/events observer if not already watching
+			if (!feedObserver){
+				var feedContainer = document.querySelector("[class='info-feed-list']");
+				if (feedContainer){
+					onElementInserted(feedContainer, true);
+				}
+			}
+
+			if (chatObserver || feedObserver){
+				checkViewers();
+			}
+		} catch(e){}
 	},2000);
 
 })();

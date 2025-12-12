@@ -780,7 +780,18 @@ function isFontAvailable(fontName) {
 }
 
 async function populateFontDropdown() {
-    const fonts = ["Roboto", "Tahoma",  "Arial", "Verdana", "Helvetica", "Serif", "Trebuchet MS", "Times New Roman", "Georgia", "Garamond", "Courier New", "Brush Script MT"];
+    const fonts = [
+        // Windows core UI/text
+        'Segoe UI', 'Segoe UI Variable', 'Segoe UI Emoji', 'Segoe UI Historic', 'Segoe UI Symbol', 'Bahnschrift', 'Ebrima', 'Gadugi', 'Javanese Text', 'Leelawadee UI', 'Lucida Sans Unicode', 'Malgun Gothic', 'Meiryo', 'Microsoft Himalaya', 'Microsoft JhengHei', 'Microsoft New Tai Lue', 'Microsoft PhagsPa', 'Microsoft Sans Serif', 'Microsoft Tai Le', 'Microsoft Uighur', 'Microsoft YaHei', 'Microsoft Yi Baiti', 'MingLiU-ExtB', 'Mongolian Baiti', 'MS Gothic', 'MS PGothic', 'MS UI Gothic', 'NSimSun', 'PMingLiU-ExtB', 'SimSun', 'SimSun-ExtB', 'Yu Gothic', 'Yu Gothic UI',
+        // Windows Latin staples
+        'Arial', 'Arial Black', 'Calibri', 'Cambria', 'Candara', 'Comic Sans MS', 'Consolas', 'Constantia', 'Corbel', 'Courier New', 'Franklin Gothic Medium', 'Gabriola', 'Georgia', 'Impact', 'Palatino Linotype', 'Tahoma', 'Times New Roman', 'Trebuchet MS', 'Verdana', 'Symbol', 'Webdings', 'Wingdings', 'Wingdings 2', 'Wingdings 3', 'Sitka Banner', 'Sitka Display', 'Sitka Heading', 'Sitka Small', 'Sitka Subheading', 'Sitka Text', 'Lucida Console',
+        // Developer favorites / code
+        'Cascadia Code', 'Cascadia Mono', 'Fira Code', 'Fira Mono', 'JetBrains Mono', 'Source Code Pro', 'IBM Plex Mono', 'Ubuntu Mono', 'Inconsolata', 'Monaspace Neon', 'Monaspace Argon',
+        // Popular sans/serif families
+        'Inter', 'Roboto', 'Open Sans', 'Noto Sans', 'Noto Serif', 'Noto Sans JP', 'Noto Sans KR', 'Noto Sans SC', 'Noto Serif JP', 'Noto Naskh Arabic', 'Lato', 'Montserrat', 'Poppins', 'Oswald', 'Raleway', 'Nunito', 'Merriweather', 'Playfair Display', 'PT Sans', 'PT Serif', 'Source Sans 3', 'Source Serif 4', 'Source Sans Pro', 'Source Serif Pro', 'IBM Plex Sans', 'IBM Plex Serif', 'Ubuntu', 'Work Sans', 'Sora', 'Avenir', 'Avenir Next', 'SF Pro Text', 'SF Pro Display', 'Helvetica Neue', 'Helvetica', 'Gill Sans',
+        // Other common
+        'Book Antiqua', 'Century Gothic', 'Garamond', 'Didot', 'Bodoni MT', 'Perpetua', 'Rockwell', 'Goudy Old Style', 'Copperplate', 'Brush Script MT'
+    ];
 	
     var select = document.querySelector("[data-optionparam1='font']");
     fonts.forEach(font => {
@@ -1018,6 +1029,99 @@ function updateSourceTypeList(type) {
             <button class="remove-source" data-source-type="${source}">×</button>
         </div>
     `).join('');
+}
+
+// Blocked words tag system functions
+function updateBlockedWordsList() {
+    const input = document.getElementById('blockedwordsInput');
+    const list = document.getElementById('blockedwordsList');
+    if (!input || !list) return;
+
+    const words = input.value.split(',')
+        .map(w => w.trim())
+        .filter(w => w);
+
+    list.innerHTML = words.map(word => `
+        <div class="username-tag">
+            <span>${escapeHtml(word)}</span>
+            <button class="remove-blockedword" data-word="${escapeHtml(word)}">×</button>
+        </div>
+    `).join('');
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function addBlockedWord(word) {
+    const input = document.getElementById('blockedwordsInput');
+    if (!input || !word) return;
+
+    const words = input.value.split(',').map(w => w.trim()).filter(w => w);
+    const trimmedWord = word.trim();
+
+    if (trimmedWord && !words.some(w => w.toLowerCase() === trimmedWord.toLowerCase())) {
+        words.push(trimmedWord);
+        input.value = words.join(', ');
+        updateBlockedWordsList();
+        updateSettings(input);
+    }
+}
+
+function removeBlockedWord(word) {
+    const input = document.getElementById('blockedwordsInput');
+    if (!input) return;
+
+    const words = input.value.split(',').map(w => w.trim()).filter(w => w);
+    const index = words.findIndex(w => w.toLowerCase() === word.toLowerCase());
+
+    if (index > -1) {
+        words.splice(index, 1);
+        input.value = words.join(', ');
+        updateBlockedWordsList();
+        updateSettings(input);
+    }
+}
+
+function setupBlockedWordsInput() {
+    const list = document.getElementById('blockedwordsList');
+    const addBtn = document.getElementById('addBlockedWord');
+    const newWordInput = document.getElementById('newBlockedWord');
+
+    if (!list || !addBtn || !newWordInput) return;
+
+    // Handle clicking remove button on tags
+    list.addEventListener('click', (e) => {
+        if (e.target.classList.contains('remove-blockedword')) {
+            removeBlockedWord(e.target.dataset.word);
+        }
+    });
+
+    // Handle add button click
+    addBtn.addEventListener('click', () => {
+        const word = newWordInput.value.trim();
+        if (word) {
+            addBlockedWord(word);
+            newWordInput.value = '';
+        }
+    });
+
+    // Handle Enter key in input
+    newWordInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            const word = newWordInput.value.trim();
+            if (word) {
+                addBlockedWord(word);
+                newWordInput.value = '';
+            }
+        }
+    });
+
+    // Initialize the list from any existing value
+    updateBlockedWordsList();
 }
 
 // Function to setup source selection for a given input
@@ -2114,6 +2218,11 @@ function processObjectSetting(key, settingObj, sync, paramNums, response) { // A
                 if (paramEle && paramEle.checked) {
                     updateSettings(paramEle, false, settingObj[textParamKey]);
                 }
+
+                // Refresh blocked words tag list if this is the blockedwords input
+                if (key === 'blockedwords') {
+                    updateBlockedWordsList();
+                }
             }
         }
 
@@ -2144,10 +2253,12 @@ function processObjectSetting(key, settingObj, sync, paramNums, response) { // A
 
                     ele.value = storedValue;
 
-                    if (key == "ttsprovider" && paramNum == 2) { 
-                        handleTTSProvider2Visibility(ele.value); 
-                    } else if (key == "ttsprovider" && paramNum == 10) { // Ensure paramNum is compared as number or string consistently
-                        handleTTSProvider10Visibility(ele.value); 
+                    if (key == "ttsprovider" && paramNum == 2) {
+                        handleTTSProvider2Visibility(ele.value);
+                    } else if (key == "ttsprovider" && paramNum == 10) {
+                        handleTTSProvider10Visibility(ele.value);
+                    } else if (key == "ttsprovider" && paramNum == 18) {
+                        handleTTSProvider18Visibility(ele.value);
                     }
                 } else if (storedValue !== undefined) {
                     ele.value = storedValue;
@@ -2789,6 +2900,33 @@ function handleTTSProvider2Visibility(provider) {
     }
 }
 
+// Handle Flow Actions TTS provider visibility (param18)
+function handleTTSProvider18Visibility(provider) {
+    // Hide all TTS18 elements
+    ["systemTTS18", "elevenlabsTTS18", "googleTTS18", "geminiTTS18", "speechifyTTS18", "kokoroTTS18", "kittenTTS18", "openaiTTS18"].forEach(id => {
+        document.getElementById(id)?.classList.add("hidden");
+    });
+
+    // Show element based on selected provider
+    if (provider == "system") {
+        document.getElementById("systemTTS18")?.classList.remove("hidden");
+    } else if (provider == "elevenlabs") {
+        document.getElementById("elevenlabsTTS18")?.classList.remove("hidden");
+    } else if (provider == "google") {
+        document.getElementById("googleTTS18")?.classList.remove("hidden");
+    } else if (provider == "gemini") {
+        document.getElementById("geminiTTS18")?.classList.remove("hidden");
+    } else if (provider == "speechify") {
+        document.getElementById("speechifyTTS18")?.classList.remove("hidden");
+    } else if (provider == "kokoro") {
+        document.getElementById("kokoroTTS18")?.classList.remove("hidden");
+    } else if (provider == "kitten") {
+        document.getElementById("kittenTTS18")?.classList.remove("hidden");
+    } else if (provider == "openai") {
+        document.getElementById("openaiTTS18")?.classList.remove("hidden");
+    }
+}
+
 // Handle the deprecated sentiment setting
 function handleDeprecatedSentiment() {
     try {
@@ -3357,6 +3495,17 @@ function handleOptionParam(ele, targetId, paramType, sync) {
         if (paramValue === 'ttsprovider') {
             // Clean TTS provider-specific parameters when changing providers
             targetElement.raw = removeTTSProviderParams(targetElement.raw, ele.value);
+
+            // Handle visibility for TTS provider options based on paramNum
+            if (paramNum === '18') {
+                handleTTSProvider18Visibility(ele.value);
+            } else if (paramNum === '10') {
+                handleTTSProvider10Visibility(ele.value);
+            } else if (paramNum === '2') {
+                handleTTSProvider2Visibility(ele.value);
+            } else if (paramNum === '' || paramNum === '1') {
+                handleTTSProviderVisibility(ele.value);
+            }
         }
         
         // Check if this is a select element with language/voice options
@@ -3388,15 +3537,15 @@ function handleOptionParam(ele, targetId, paramType, sync) {
                     targetElement.raw = updateURL(`voice${prefix}=${voiceValue}`, targetElement.raw);
                 } else {
                     // Not a language parameter, use standard value
-                    targetElement.raw = updateURL(`${paramKey}=${ele.value}`, targetElement.raw);
+                    targetElement.raw = updateURL(`${paramKey}=${encodeURIComponent(ele.value)}`, targetElement.raw);
                 }
             } else {
                 // Standard select without language/voice data
-                targetElement.raw = updateURL(`${paramKey}=${ele.value}`, targetElement.raw);
+                targetElement.raw = updateURL(`${paramKey}=${encodeURIComponent(ele.value)}`, targetElement.raw);
             }
         } else {
             // Not a select element, use standard value
-            targetElement.raw = updateURL(`${paramKey}=${ele.value}`, targetElement.raw);
+            targetElement.raw = updateURL(`${paramKey}=${encodeURIComponent(ele.value)}`, targetElement.raw);
         }
     }
     
@@ -5323,7 +5472,8 @@ const PollManager = {
             pollTimer: document.querySelector('[data-numbersetting="pollTimer"]').value,
             pollTimerState: document.querySelector('[data-setting="pollTimerState"]').checked,
             pollTally: document.querySelector('[data-setting="pollTally"]').checked,
-            pollSpam: document.querySelector('[data-setting="pollSpam"]').checked
+            pollSpam: document.querySelector('[data-setting="pollSpam"]').checked,
+            pollDonationWeighted: document.querySelector('[data-setting="pollDonationWeighted"]')?.checked || false
         };
     },
 
@@ -5353,7 +5503,8 @@ const PollManager = {
             pollTimer: 60,
             pollTimerState: false,
             pollTally: false,
-            pollSpam: false
+            pollSpam: false,
+            pollDonationWeighted: false
         };
 
         const elements = {
@@ -5364,7 +5515,8 @@ const PollManager = {
             '[data-numbersetting="pollTimer"]': defaultSettings.pollTimer,
             '[data-setting="pollTimerState"]': defaultSettings.pollTimerState,
             '[data-setting="pollTally"]': defaultSettings.pollTally,
-            '[data-setting="pollSpam"]': defaultSettings.pollSpam
+            '[data-setting="pollSpam"]': defaultSettings.pollSpam,
+            '[data-setting="pollDonationWeighted"]': defaultSettings.pollDonationWeighted
         };
 
         for (const [selector, value] of Object.entries(elements)) {
@@ -5399,7 +5551,8 @@ const PollManager = {
             '[data-numbersetting="pollTimer"]': poll.settings.pollTimer,
             '[data-setting="pollTimerState"]': poll.settings.pollTimerState,
             '[data-setting="pollTally"]': poll.settings.pollTally,
-            '[data-setting="pollSpam"]': poll.settings.pollSpam
+            '[data-setting="pollSpam"]': poll.settings.pollSpam,
+            '[data-setting="pollDonationWeighted"]': poll.settings.pollDonationWeighted || false
         };
 
         for (const [selector, value] of Object.entries(elements)) {
@@ -5469,7 +5622,10 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 	
 	// Initialize ProfileManager after DOM is ready
 	ProfileManager.init();
-	
+
+	// Initialize blocked words tag input
+	setupBlockedWordsInput();
+
 	// Add event listener for save profile button
 	const saveProfileBtn = document.querySelector('button[data-action="saveProfile"]');
 	if (saveProfileBtn) {
@@ -5874,6 +6030,7 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 			populateDropdown('systemLanguageSelect');
 			populateDropdown('languageSelect2');
 			populateDropdown('systemLanguageSelect10');
+			populateDropdown('systemLanguageSelect18');
 
 			if (typeof TTSManager !== 'undefined') {
 				try {
@@ -6206,7 +6363,102 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 		spotifyClientSecretInput.addEventListener('change', saveSpotifyCredentials);
 		spotifyClientSecretInput.addEventListener('blur', saveSpotifyCredentials);
 	}
-	
+
+	// Spotify Command Permissions
+	function initSpotifyCommandSettings() {
+		const commandRows = document.querySelectorAll('.spotify-command-row');
+		if (!commandRows.length) return;
+
+		// Load saved settings
+		chrome.storage.local.get(['settings'], function(result) {
+			// Settings stored as { json: string, object: parsed } - access .object
+			const permissions = result.settings?.spotifyCommandPermissions?.object || {};
+			const disabledCommands = result.settings?.spotifyDisabledCommands?.object || [];
+
+			commandRows.forEach(row => {
+				const command = row.dataset.command;
+				const enabledCheckbox = row.querySelector('.spotify-cmd-enabled');
+				const roleCheckboxes = row.querySelectorAll('.spotify-cmd-roles input[type="checkbox"]');
+
+				// Apply saved enabled state
+				if (enabledCheckbox && disabledCommands.includes(command)) {
+					enabledCheckbox.checked = false;
+				}
+
+				// Apply saved role permissions
+				if (permissions[command] && permissions[command].length > 0) {
+					const savedRoles = permissions[command];
+					roleCheckboxes.forEach(cb => {
+						cb.checked = savedRoles.includes(cb.value);
+					});
+				}
+			});
+		});
+
+		// Save on change
+		commandRows.forEach(row => {
+			const enabledCheckbox = row.querySelector('.spotify-cmd-enabled');
+			const roleCheckboxes = row.querySelectorAll('.spotify-cmd-roles input[type="checkbox"]');
+
+			if (enabledCheckbox) {
+				enabledCheckbox.addEventListener('change', () => saveSpotifyCommandSettings());
+			}
+			roleCheckboxes.forEach(cb => {
+				cb.addEventListener('change', () => saveSpotifyCommandSettings());
+			});
+		});
+	}
+
+	function saveSpotifyCommandSettings() {
+		const commandRows = document.querySelectorAll('.spotify-command-row');
+		const permissions = {};
+		const disabledCommands = [];
+
+		commandRows.forEach(row => {
+			const command = row.dataset.command;
+			const enabledCheckbox = row.querySelector('.spotify-cmd-enabled');
+			const roleCheckboxes = row.querySelectorAll('.spotify-cmd-roles input[type="checkbox"]:checked');
+
+			if (enabledCheckbox && !enabledCheckbox.checked) {
+				disabledCommands.push(command);
+			}
+
+			// Collect all checked roles
+			const roles = [];
+			roleCheckboxes.forEach(cb => roles.push(cb.value));
+
+			// If no roles selected, use default from data attribute
+			if (roles.length === 0) {
+				const defaultRoles = row.dataset.defaultRoles;
+				if (defaultRoles) {
+					roles.push(...defaultRoles.split(','));
+				}
+			}
+
+			permissions[command] = roles;
+		});
+
+		// Save to storage
+		chrome.runtime.sendMessage({
+			cmd: "saveSetting",
+			type: "json",
+			setting: "spotifyCommandPermissions",
+			value: JSON.stringify(permissions)
+		});
+
+		chrome.runtime.sendMessage({
+			cmd: "saveSetting",
+			type: "json",
+			setting: "spotifyDisabledCommands",
+			value: JSON.stringify(disabledCommands)
+		});
+
+		console.log('Spotify command settings saved:', { permissions, disabledCommands });
+	}
+
+	// Initialize on page load
+	initSpotifyCommandSettings();
+
 	// Spotify Auth Button
 	const spotifyAuthButton = document.getElementById('spotifyAuthButton');
 	const spotifyAuthStatus = document.getElementById('spotifyAuthStatus');

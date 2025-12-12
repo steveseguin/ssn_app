@@ -726,92 +726,66 @@
 		return tokens;
 	}
 
-	// Common join/enter verbs across several locales; strings should be lowercase and ASCII-friendly.
-	const JOIN_LATIN_WORDS = new Set([
-		"join",
+	// NOTE: Words must be in normalized ASCII form to match after normalizeTextForJoinMatching
+	const JOIN_WORDS = new Set([
+		// English
 		"joined",
-		"joins",
-		"joining",
-		"rejoin",
-		"rejoined",
-		"rejoins",
-		"rejoining",
-		"enter",
-		"entered",
-		"enters",
-		"entering",
-		"entrar",
-		"entra",
-		"entras",
-		"entrado",
-		"entrando",
-		"entran",
-		"entraron",
+
+		// Spanish (unió → unio)
+		"unio",
+
+		// Portuguese
 		"entrou",
-		"entro",
-		"unir",
-		"unido",
-		"unidos",
-		"unidas",
-		"unirse",
+		"ingressou",
+
+		// French
+		"rejoint",
+
+		// German
+		"beigetreten",
+
+		// Italian
 		"unito",
 		"unita",
-		"uniti",
-		"unite",
-		"ingreso",
-		"ingresar",
-		"ingresa",
-		"ingresan",
-		"ingresaron",
-		"ingresado",
-		"ingresada",
-		"ingressou",
-		"aderiu",
-		"beigetreten",
-		"beitrat",
-		"beitreten",
-		"beitritt",
-		"deltager",
-		"deltagare",
-		"deltagit",
-		"deltatt",
-		"deltok",
-		"aangesloten",
-		"anslutit",
-		"ansluter",
-		"anslot",
+
+		// Dutch
+		"toegetreden",
+
+		// Swedish
+		"gick",
+
+		// Norwegian
+		"ble",
+
+		// Danish
+		"deltog",
+
+		// Finnish
 		"liittyi",
-		"liittynyt",
+
+		// Polish (dołączył → dolaczyl, dołączyła → dolaczyla)
+		"dolaczyl",
+		"dolaczyla",
+
+		// Czech (připojil → pripojil, připojila → pripojila)
 		"pripojil",
 		"pripojila",
-		"pripojili",
-		"pripojuje",
-		"pripojilo",
-		"prisijunge",
-		"prisijungia",
-		"csatlakozott",
-		"csatlakozik",
-		"katildi",
-		"katiliyor",
-		"joinedthelive"
-	]);
 
-	// Phrases that require multi-token matching after normalization.
-	const JOIN_LATIN_PHRASES = [
-		"se unio",
-		"se ha unido",
-		"ha unito",
-		"ha unido",
-		"ha entrado",
-		"ha ingresado",
-		"ha ingresado al",
-		"gick med",
-		"gar med",
-		"har gatt med",
-		"ble med",
-		"kom inn",
-		"kom in"
-	];
+		// Romanian (alăturat → alaturat)
+		"alaturat",
+
+		// Hungarian
+		"csatlakozott",
+
+		// Turkish (katıldı → katildi)
+		"katildi",
+
+		// Indonesian
+		"bergabung",
+
+		// Vietnamese
+		"thamgia"
+	]);
 
 	// Non-Latin scripts checked against the raw (lowercased) message.
 	const JOIN_NON_LATIN_SUBSTRINGS = [
@@ -858,6 +832,14 @@
 			return "";
 		}
 		let working = text.toLowerCase();
+		// Transliterate special characters that NFD doesn't decompose
+		working = working
+			.replace(/ł/g, "l")   // Polish l with stroke
+			.replace(/ı/g, "i")   // Turkish dotless i
+			.replace(/ß/g, "ss")  // German eszett
+			.replace(/ø/g, "o")   // Danish/Norwegian o with stroke
+			.replace(/æ/g, "ae")  // Ligature ae
+			.replace(/œ/g, "oe"); // Ligature oe
 		if (typeof working.normalize === "function") {
 			try {
 				working = working.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -883,12 +865,7 @@
 		}
 		const tokens = normalized.split(" ");
 		for (const token of tokens) {
-			if (JOIN_LATIN_WORDS.has(token)) {
-				return true;
-			}
-		}
-		for (const phrase of JOIN_LATIN_PHRASES) {
-			if (normalized.includes(phrase)) {
+			if (JOIN_WORDS.has(token)) {
 				return true;
 			}
 		}
@@ -1588,13 +1565,23 @@
 				target = target.parentNode;
 			}
 		} else {
-			target = document.querySelector('[data-item="list-message-list"], [class*="DivChatMessageList"], .absolute.w-full.top-0.left-0');
+			target = document.querySelector('[data-e2e="chat-room"], [class*="DivChatRoomContent"], .live-shared-ui-chat-list-scrolling-list');
+			if (target) {
+				subtree = true;
+			}
 			if (!target) {
-				target = document.querySelector('[data-e2e="chat-room"], [class*="DivChatRoomContent"], .live-shared-ui-chat-list-scrolling-list');
+				target = document.querySelector('.live-room-container div[data-index]:not([data-index="-1"])');
 				if (target) {
-					subtree = true;
+					target = target.parentNode;
+					subtree = false;
+				} else {
+					target = document.querySelector('.live-room-container div.flex-1.overflow-y-scroll.overflow-x-hidden.box-border div.relative.w-full div.absolute.w-full.top-0.left-0');
+					if(target){
+						subtree = false;
+					}
 				}
 			}
+			
 			if (!target) {
 				let potentialTargets = document.querySelectorAll('[data-index].w-full');
 				if (potentialTargets && potentialTargets.length > 3) {
@@ -1808,6 +1795,8 @@
 			"tabId": chrome.runtime.id
 		}, function(response) {
 			if (response) {
+				if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.lastError) { return; }
+				response = response || {};
 				if ("settings" in response) settings = response.settings;
 				if ("state" in response) isExtensionOn = response.state;
 			}

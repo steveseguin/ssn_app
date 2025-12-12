@@ -40,6 +40,7 @@ class EventFlowEditor {
             { id: 'fromUser', name: '👤 From User' },
             { id: 'userRole', name: '👑 User Role' },
             { id: 'hasDonation', name: '💰 Has Donation' },
+            { id: 'compareProperty', name: '⚖️ Compare Property' },
             { id: 'randomChance', name: '🎲 Random Chance' },
             { id: 'timeInterval', name: '⏰ Time Interval' },
             { id: 'timeOfDay', name: '🕐 Time of Day' },
@@ -49,41 +50,113 @@ class EventFlowEditor {
             { id: 'messageProperties', name: '⚙️ Message Properties Filter' }
         ];
 
-        this.actionTypes = [
-            { id: 'blockMessage', name: '🚫 Block Message' },
-            { id: 'returnMessage', name: '✅ Return Message' },
-            { id: 'modifyMessage', name: '✏️ Modify Message' },
-            { id: 'addPrefix', name: '⬅️ Add Prefix' },
-            { id: 'addSuffix', name: '➡️ Add Suffix' },
-            { id: 'findReplace', name: '🔄 Find & Replace' },
-            { id: 'removeText', name: '✂️ Remove Text' },
-            { id: 'setProperty', name: '🎨 Set Property' },
-            { id: 'sendMessage', name: '💬 Send Message' },
-            { id: 'relay', name: '📢 Relay Chat' },
-            { id: 'reflectionFilter', name: '🪞 Reflection Filter' },
-            { id: 'webhook', name: '🌐 Call Webhook' },
-            { id: 'addPoints', name: '⬆️ Add Points' },
-            { id: 'spendPoints', name: '⬇️ Spend Points' },
-            { id: 'playTenorGiphy', name: '🖼️ Display Media Overlay' },
-            { id: 'triggerOBSScene', name: '🎬 Trigger OBS Scene' },
-			{ id: 'playAudioClip', name: '🔊 Play Audio Clip' },
-			{ id: 'delay', name: '⏱️ Delay' },
-			{ id: 'obsChangeScene', name: '🎬 OBS: Change Scene' },
-			{ id: 'obsToggleSource', name: '👁️ OBS: Toggle Source' },
-			{ id: 'obsSetSourceFilter', name: '🎨 OBS: Toggle Filter' },
-			{ id: 'obsMuteSource', name: '🔇 OBS: Mute/Unmute Audio' },
-			{ id: 'obsStartRecording', name: '🔴 OBS: Start Recording' },
-			{ id: 'obsStopRecording', name: '⏹️ OBS: Stop Recording' },
-			{ id: 'obsStartStreaming', name: '📡 OBS: Start Streaming' },
-			{ id: 'obsStopStreaming', name: '⏹️ OBS: Stop Streaming' },
-			{ id: 'obsReplayBuffer', name: '💾 OBS: Save Replay Buffer' },
-			{ id: 'midiSendNote', name: '🎹 MIDI: Send Note' },
-			{ id: 'midiSendCC', name: '🎛️ MIDI: Send Control Change' },
-			{ id: 'setGateState', name: '🚦 Set Gate State' },
-			{ id: 'resetStateNode', name: '🔄 Reset State Node' },
-			{ id: 'setCounter', name: '🔢 Set Counter Value' },
-			{ id: 'incrementCounter', name: '➕ Increment Counter' }
-		];
+        // Grouped action types for collapsible sections
+        this.actionGroups = [
+            {
+                id: 'message',
+                name: '💬 Message Actions',
+                expanded: true,
+                actions: [
+                    { id: 'blockMessage', name: '🚫 Block Message' },
+                    { id: 'returnMessage', name: '✅ Return Message' },
+                    { id: 'continueAsync', name: '⚡ Continue Async' },
+                    { id: 'modifyMessage', name: '✏️ Modify Message' },
+                    { id: 'addPrefix', name: '⬅️ Add Prefix' },
+                    { id: 'addSuffix', name: '➡️ Add Suffix' },
+                    { id: 'findReplace', name: '🔄 Find & Replace' },
+                    { id: 'removeText', name: '✂️ Remove Text' },
+                    { id: 'setProperty', name: '🎨 Set Property' },
+                    { id: 'sendMessage', name: '💬 Send Message' },
+                    { id: 'relay', name: '📢 Relay Chat' },
+                    { id: 'reflectionFilter', name: '🪞 Reflection Filter' }
+                ]
+            },
+            {
+                id: 'integrations',
+                name: '🔌 Integrations',
+                expanded: true,
+                actions: [
+                    { id: 'webhook', name: '🌐 Call Webhook' },
+                    { id: 'addPoints', name: '⬆️ Add Points' },
+                    { id: 'spendPoints', name: '⬇️ Spend Points' }
+                ]
+            },
+            {
+                id: 'media',
+                name: '🎨 Media & Effects',
+                expanded: true,
+                actions: [
+                    { id: 'playTenorGiphy', name: '🖼️ Display Media Overlay' },
+                    { id: 'playAudioClip', name: '🔊 Play Audio Clip' },
+                    { id: 'delay', name: '⏱️ Delay' }
+                ]
+            },
+            {
+                id: 'obs',
+                name: '🎬 OBS Studio',
+                expanded: false,
+                actions: [
+                    { id: 'triggerOBSScene', name: '🎬 Trigger OBS Scene' },
+                    { id: 'obsChangeScene', name: '🎬 Change Scene' },
+                    { id: 'obsToggleSource', name: '👁️ Toggle Source' },
+                    { id: 'obsSetSourceFilter', name: '🎨 Toggle Filter' },
+                    { id: 'obsMuteSource', name: '🔇 Mute/Unmute Audio' },
+                    { id: 'obsStartRecording', name: '🔴 Start Recording' },
+                    { id: 'obsStopRecording', name: '⏹️ Stop Recording' },
+                    { id: 'obsStartStreaming', name: '📡 Start Streaming' },
+                    { id: 'obsStopStreaming', name: '⏹️ Stop Streaming' },
+                    { id: 'obsReplayBuffer', name: '💾 Save Replay Buffer' }
+                ]
+            },
+            {
+                id: 'spotify',
+                name: '🎵 Spotify',
+                expanded: false,
+                actions: [
+                    { id: 'spotifySkip', name: '⏭️ Skip Track' },
+                    { id: 'spotifyPrevious', name: '⏮️ Previous Track' },
+                    { id: 'spotifyPause', name: '⏸️ Pause' },
+                    { id: 'spotifyResume', name: '▶️ Resume' },
+                    { id: 'spotifyVolume', name: '🔊 Set Volume' },
+                    { id: 'spotifyQueue', name: '📋 Add to Queue' }
+                ]
+            },
+            {
+                id: 'tts',
+                name: '🔊 Text to Speech',
+                expanded: false,
+                actions: [
+                    { id: 'ttsSpeak', name: '🗣️ Speak Text' },
+                    { id: 'ttsToggle', name: '🔇 Toggle TTS' },
+                    { id: 'ttsSkip', name: '⏭️ Skip TTS' },
+                    { id: 'ttsClear', name: '🗑️ Clear TTS Queue' },
+                    { id: 'ttsVolume', name: '🔊 Set TTS Volume' }
+                ]
+            },
+            {
+                id: 'midi',
+                name: '🎹 MIDI',
+                expanded: false,
+                actions: [
+                    { id: 'midiSendNote', name: '🎹 Send Note' },
+                    { id: 'midiSendCC', name: '🎛️ Send Control Change' }
+                ]
+            },
+            {
+                id: 'state',
+                name: '🔧 State Control',
+                expanded: false,
+                actions: [
+                    { id: 'setGateState', name: '🚦 Set Gate State' },
+                    { id: 'resetStateNode', name: '🔄 Reset State Node' },
+                    { id: 'setCounter', name: '🔢 Set Counter Value' },
+                    { id: 'incrementCounter', name: '➕ Increment Counter' }
+                ]
+            }
+        ];
+
+        // Flatten for backward compatibility
+        this.actionTypes = this.actionGroups.flatMap(group => group.actions);
 
         // Check if we're in ssapp context for cross-origin communication
         const urlParams = new URLSearchParams(window.location.search);
@@ -137,9 +210,19 @@ class EventFlowEditor {
                         </div>
                         <h3>Actions</h3>
                         <div class="node-list" id="action-list">
-                            ${this.actionTypes.map(action => `
-                                <div class="node-item action" data-nodetype="action" data-subtype="${action.id}" draggable="true" ${action.id === 'customJs' ? 'style="display: none;"' : ''}>
-                                    ${action.name}
+                            ${this.actionGroups.map(group => `
+                                <div class="action-group" data-group="${group.id}">
+                                    <div class="action-group-header ${group.expanded ? 'expanded' : 'collapsed'}" data-group="${group.id}">
+                                        <span class="action-group-toggle">${group.expanded ? '▼' : '▶'}</span>
+                                        <span class="action-group-name">${group.name}</span>
+                                    </div>
+                                    <div class="action-group-items" style="${group.expanded ? '' : 'display: none;'}">
+                                        ${group.actions.map(action => `
+                                            <div class="node-item action" data-nodetype="action" data-subtype="${action.id}" draggable="true">
+                                                ${action.name}
+                                            </div>
+                                        `).join('')}
+                                    </div>
                                 </div>
                             `).join('')}
                         </div>
@@ -252,6 +335,32 @@ class EventFlowEditor {
         actionItems.forEach(item => {
             item.addEventListener('dragstart', (e) => this.handleNodeDragStart(e, 'action', item.dataset.subtype)); // Changed to subtype
         });
+
+        // Add click handlers for collapsible action groups
+        const actionGroupHeaders = document.querySelectorAll('.action-group-header');
+        actionGroupHeaders.forEach(header => {
+            header.addEventListener('click', (e) => {
+                const groupId = header.dataset.group;
+                const group = this.actionGroups.find(g => g.id === groupId);
+                if (group) {
+                    group.expanded = !group.expanded;
+                    const toggle = header.querySelector('.action-group-toggle');
+                    const items = header.nextElementSibling;
+                    if (group.expanded) {
+                        header.classList.remove('collapsed');
+                        header.classList.add('expanded');
+                        toggle.textContent = '▼';
+                        items.style.display = '';
+                    } else {
+                        header.classList.remove('expanded');
+                        header.classList.add('collapsed');
+                        toggle.textContent = '▶';
+                        items.style.display = 'none';
+                    }
+                }
+            });
+        });
+
 		const logicItems = document.querySelectorAll('#logic-list .node-item');
         logicItems.forEach(item => {
             item.addEventListener('dragstart', (e) => this.handleNodeDragStart(e, 'logic', item.dataset.subtype));
@@ -313,7 +422,11 @@ class EventFlowEditor {
             target = chrome.runtime.getURL(target);
         }
         try {
-            window.open(target, '_blank');
+			if (window.location.href.includes("/actions/")){
+				window.open(target.replace("actions/",""), '_blank');
+			} else {
+				window.open(target, '_blank');
+			}
         } catch (error) {
             console.error('Failed to open guide', error);
         }
@@ -1052,12 +1165,11 @@ class EventFlowEditor {
 			}
 		} else if (node.type === 'action') {
 			inputPointsHTML = '<div class="connection-point input" data-point-type="input"></div>';
-			// Actions that can't return the original message get async output
-			// Only blockMessage truly blocks, and returnMessage is special (async return)
-			const nonReturningActions = [
-				'returnMessage', 'blockMessage'
+			// Actions that continue asynchronously - downstream runs in background
+			const asyncActions = [
+				'returnMessage', 'blockMessage', 'continueAsync'
 			];
-			if (nonReturningActions.includes(node.actionType)) {
+			if (asyncActions.includes(node.actionType)) {
 				outputPointsHTML = '<div class="connection-point output async-output" data-point-type="output"></div>';
 			} else {
 				outputPointsHTML = '<div class="connection-point output" data-point-type="output"></div>'; // Actions can lead to other nodes
@@ -1213,6 +1325,13 @@ class EventFlowEditor {
                 case 'fromUser': return `User: ${node.config.username || 'Any'}`;
                 case 'userRole': return `Role: ${node.config.role || 'Any'}`;
                 case 'hasDonation': return 'Has donation';
+                case 'compareProperty': {
+                    const prop = node.config.property || 'donationAmount';
+                    const op = node.config.operator || 'gt';
+                    const val = node.config.value ?? 0;
+                    const opSymbols = { gt: '>', lt: '<', eq: '=', gte: '>=', lte: '<=', ne: '!=' };
+                    return `${prop} ${opSymbols[op] || op} ${val}`;
+                }
                 case 'randomChance': {
                     const prob = Math.round((node.config.probability || 0.1) * 100);
                     const cooldown = node.config.cooldownMs ? ` (${node.config.cooldownMs/1000}s cooldown)` : '';
@@ -1223,17 +1342,29 @@ class EventFlowEditor {
                     const req = node.config.requiredProperties?.length || 0;
                     const forb = node.config.forbiddenProperties?.length || 0;
                     const mode = node.config.requireAll ? 'ALL' : 'ANY';
-                    if (req && forb) return `${mode}: ${req} required, ${forb} forbidden`;
-                    if (req) return `${mode}: ${req} required`;
-                    if (forb) return `${forb} forbidden`;
-                    return 'No filters set';
+                    const parts = [];
+                    if (req && forb) parts.push(`${mode}: ${req} required, ${forb} forbidden`);
+                    else if (req) parts.push(`${mode}: ${req} required`);
+                    else if (forb) parts.push(`${forb} forbidden`);
+                    else parts.push('No property filters');
+
+                    if (node.config.lastActivityFilter?.enabled) {
+                        const lastCfg = node.config.lastActivityFilter;
+                        const amount = lastCfg.amount ?? 0;
+                        const unit = lastCfg.unit || 'minutes';
+                        const modeLabel = lastCfg.mode === 'older' ? 'older than' : 'within';
+                        parts.push(`Last activity ${modeLabel} ${amount} ${unit}`);
+                    }
+
+                    return parts.join('; ');
                 }
                 default: return `${this.getNodeTitle(node)}`;
             }
         } else if (node.type === 'action') {
              switch (node.actionType) {
-                case 'blockMessage': return 'Block this message';
-                case 'returnMessage': return 'Return message for display';
+                case 'blockMessage': return 'Block message (async continue)';
+                case 'returnMessage': return 'Return message (async continue)';
+                case 'continueAsync': return 'Fork to background';
                 case 'modifyMessage': return `New: "${(node.config.newMessage || '').substring(0,15)}${(node.config.newMessage || '').length > 15 ? '...' : ''}"`;
                 case 'addPrefix': return `Prefix: "${(node.config.prefix || '').substring(0,15)}${(node.config.prefix || '').length > 15 ? '...' : ''}"`;
                 case 'addSuffix': return `Suffix: "${(node.config.suffix || '').substring(0,15)}${(node.config.suffix || '').length > 15 ? '...' : ''}"`;
@@ -1275,6 +1406,35 @@ class EventFlowEditor {
                 case 'obsStartStreaming': return 'Start Streaming';
                 case 'obsStopStreaming': return 'Stop Streaming';
                 case 'obsReplayBuffer': return 'Save Replay Buffer';
+                // Spotify actions
+                case 'spotifySkip': return 'Skip to next track';
+                case 'spotifyPrevious': return 'Go to previous track';
+                case 'spotifyPause': return 'Pause playback';
+                case 'spotifyResume': return 'Resume playback';
+                case 'spotifyVolume': return `Volume: ${node.config.volume || 50}%`;
+                case 'spotifyQueue': {
+                    const query = node.config.query || '';
+                    const useMsg = node.config.useMessageText;
+                    if (useMsg) return 'Queue: (from chat message)';
+                    if (!query) return 'Queue: Not configured';
+                    return `Queue: ${query.substring(0,20)}${query.length > 20 ? '...' : ''}`;
+                }
+                // TTS actions
+                case 'ttsSpeak': {
+                    if (node.config.useMessageText) return 'Speak: (chat message)';
+                    const text = node.config.text || '';
+                    if (!text) return 'Speak: Not configured';
+                    return `Speak: "${text.substring(0,20)}${text.length > 20 ? '...' : ''}"`;
+                }
+                case 'ttsToggle': {
+                    const mode = node.config.enabled;
+                    if (mode === true || mode === 'true') return 'TTS: Enable';
+                    if (mode === false || mode === 'false') return 'TTS: Disable';
+                    return 'TTS: Toggle';
+                }
+                case 'ttsSkip': return 'Skip current TTS';
+                case 'ttsClear': return 'Clear TTS queue';
+                case 'ttsVolume': return `TTS Volume: ${node.config.volume ?? 100}%`;
                 default: return `${this.getNodeTitle(node)}`;
             }
         } else if (node.type === 'logic') { // NEW
@@ -1456,7 +1616,7 @@ class EventFlowEditor {
 						message: result ? 'Message was processed successfully' : 'Message was blocked', 
 						result: result 
 					};
-					this.displayTestResults(testResult);
+					this.displayTestResults(testResult, testMessage);
 				});
 		} else {
 			// Just test the flow using the real eventFlowSystem with temporarily modified flows
@@ -1479,7 +1639,7 @@ class EventFlowEditor {
 								 'Flow triggered but no actions affected the message',
 						result: result 
 					};
-					this.displayTestResults(testResult);
+					this.displayTestResults(testResult, testMessage);
 				})
 				.catch(error => {
 					// Restore the original flows even on error
@@ -1490,7 +1650,7 @@ class EventFlowEditor {
 						message: 'Error testing flow: ' + error.message,
 						error: error
 					};
-					this.displayTestResults(testResult);
+					this.displayTestResults(testResult, testMessage);
 				});
 		}
 		
@@ -1505,11 +1665,25 @@ class EventFlowEditor {
 		const runTestBtn = document.getElementById('run-test-btn');
 		const donationCheckbox = document.getElementById('test-donation');
 		const donationAmountField = document.getElementById('donation-amount');
+		const firstTimeCheckbox = document.getElementById('test-firsttime');
+		const lastActivityToggle = document.getElementById('test-lastactivity');
+		const lastActivityControls = document.getElementById('lastactivity-controls');
+		const lastActivityValue = document.getElementById('test-lastactivity-value');
+		const lastActivityUnit = document.getElementById('test-lastactivity-unit');
 
 		// Show/hide donation amount field based on checkbox
 		donationCheckbox.addEventListener('change', function() {
 			donationAmountField.style.display = this.checked ? 'block' : 'none';
 		});
+
+		// Toggle last-activity inputs
+		if (lastActivityToggle) {
+			lastActivityToggle.addEventListener('change', function() {
+				if (lastActivityControls) {
+					lastActivityControls.style.display = this.checked ? 'block' : 'none';
+				}
+			});
+		}
 
 		// Open test panel
 		openTestBtn.addEventListener('click', function() {
@@ -1548,6 +1722,22 @@ class EventFlowEditor {
 				// Add other required properties
 				timestamp: Date.now(),
 			};
+
+			// Apply first-time chatter flag
+			if (firstTimeCheckbox?.checked) {
+				testMessage.firsttime = true;
+			}
+
+			// Apply last-activity timestamp if requested
+			if (lastActivityToggle?.checked) {
+				const amount = Math.max(0, parseFloat(lastActivityValue?.value) || 0);
+				const unit = lastActivityUnit?.value || 'minutes';
+				const unitMap = { minutes: 60 * 1000, hours: 60 * 60 * 1000, days: 24 * 60 * 60 * 1000 };
+				const windowMs = unitMap[unit] || unitMap.minutes;
+				const ts = Math.max(0, Date.now() - (amount * windowMs));
+				testMessage.lastactivity = ts;
+				testMessage.lastActivity = ts; // support either casing
+			}
 			
 			// Add donation amount if donation checkbox is checked
 			if (testMessage.hasDonation) {
@@ -1559,7 +1749,7 @@ class EventFlowEditor {
 		});
 	}
 
-	displayTestResults(testResult) {
+	displayTestResults(testResult, originalMessage = {}) {
 		const resultsEl = document.getElementById('test-results');
 		if (!resultsEl) return;
 		
@@ -1583,9 +1773,9 @@ class EventFlowEditor {
 				`;
 				
 				// Show any properties that were modified
-				const originalKeys = Object.keys(testMessage);
-				const modifiedKeys = Object.keys(result.message).filter(key => 
-					!originalKeys.includes(key) || result.message[key] !== testMessage[key]
+				const originalKeys = Object.keys(originalMessage || {});
+				const modifiedKeys = Object.keys(result.message || {}).filter(key => 
+					!originalKeys.includes(key) || result.message[key] !== originalMessage[key]
 				);
 				
 				if (modifiedKeys.length > 0) {
@@ -1625,13 +1815,14 @@ class EventFlowEditor {
                 case 'fromUser': node.config = { username: 'user' }; break;
                 case 'userRole': node.config = { role: 'mod' }; break;
                 case 'hasDonation': node.config = {}; break;
+                case 'compareProperty': node.config = { property: 'donationAmount', operator: 'gt', value: 0 }; break;
                 case 'randomChance': node.config = { probability: 0.1, cooldownMs: 0, maxPerMinute: 0, requireMessage: true }; break;
                 case 'timeInterval': node.config = { interval: 60 }; break;
                 case 'timeOfDay': node.config = { times: ['12:00'] }; break;
                 case 'midiNoteOn': node.config = { deviceId: '', note: '', channel: 1 }; break;
                 case 'midiNoteOff': node.config = { deviceId: '', note: '', channel: 1 }; break;
                 case 'midiCC': node.config = { deviceId: '', controller: '', channel: 1 }; break;
-                case 'messageProperties': node.config = { requiredProperties: [], forbiddenProperties: [], requireAll: true }; break;
+                case 'messageProperties': node.config = { requiredProperties: [], forbiddenProperties: [], requireAll: true, lastActivityFilter: { enabled: false, mode: 'within', amount: 10, unit: 'minutes' } }; break;
             }
         } else if (type === 'action') {
             node.actionType = subtype;
@@ -1639,6 +1830,8 @@ class EventFlowEditor {
                 case 'blockMessage':
 					node.config = {}; break;
                 case 'returnMessage':
+					node.config = {}; break;
+                case 'continueAsync':
 					node.config = {}; break;
                 case 'modifyMessage':
 					node.config = { newMessage: 'modified text' }; break;
@@ -1669,7 +1862,7 @@ class EventFlowEditor {
 					node.config = { sceneName: 'Your Scene Name' };
 					break;
 				case 'playAudioClip':
-					node.config = { audioUrl: 'https://example.com/path/to/sound.mp3', volume: 1.0 };
+					node.config = { audioUrl: 'https://vdo.ninja/media/join.wav', volume: 1.0 };
 					break;
 				case 'delay':
 					node.config = { delayMs: 1000 };
@@ -2113,6 +2306,57 @@ class EventFlowEditor {
 			case 'hasDonation': // Trigger type
 				html += `<p class="property-help">Fires if the message includes donation information.</p>`;
 				break;
+			case 'compareProperty':
+				const commonProperties = [
+					{ value: 'donationAmount', label: 'Donation Amount' },
+					{ value: 'karma', label: 'Karma Score (0-1)' },
+					{ value: 'memberMonths', label: 'Member Months' },
+					{ value: 'bitsAmount', label: 'Bits Amount (Twitch)' },
+					{ value: 'superChatAmount', label: 'Super Chat Amount (YouTube)' },
+					{ value: 'viewerCount', label: 'Viewer Count' },
+					{ value: 'messageLength', label: 'Message Length' },
+					{ value: 'wordCount', label: 'Word Count' },
+					{ value: '_custom', label: '-- Custom Property --' }
+				];
+				const operators = [
+					{ value: 'gt', label: 'Greater than (>)' },
+					{ value: 'gte', label: 'Greater or equal (>=)' },
+					{ value: 'lt', label: 'Less than (<)' },
+					{ value: 'lte', label: 'Less or equal (<=)' },
+					{ value: 'eq', label: 'Equals (=)' },
+					{ value: 'ne', label: 'Not equals (!=)' }
+				];
+				const isCustomProp = !commonProperties.some(p => p.value === node.config.property && p.value !== '_custom');
+				html += `
+					<div class="property-group">
+						<label class="property-label">Property to Compare</label>
+						<select class="property-input" id="prop-property-select">
+							${commonProperties.map(p => `<option value="${p.value}" ${(node.config.property === p.value || (isCustomProp && p.value === '_custom')) ? 'selected' : ''}>${p.label}</option>`).join('')}
+						</select>
+					</div>
+					<div class="property-group" id="custom-property-group" style="${isCustomProp ? '' : 'display: none;'}">
+						<label class="property-label">Custom Property Name</label>
+						<input type="text" class="property-input" id="prop-property" value="${isCustomProp ? (node.config.property || '') : ''}" placeholder="e.g., customField">
+						<div class="property-help">Enter the exact property name from the message object</div>
+					</div>
+					<div class="property-group">
+						<label class="property-label">Operator</label>
+						<select class="property-input" id="prop-operator">
+							${operators.map(o => `<option value="${o.value}" ${node.config.operator === o.value ? 'selected' : ''}>${o.label}</option>`).join('')}
+						</select>
+					</div>
+					<div class="property-group">
+						<label class="property-label">Compare Value</label>
+						<input type="number" class="property-input" id="prop-value" value="${node.config.value ?? 0}" step="any">
+						<div class="property-help">The value to compare against</div>
+					</div>
+					<div class="property-group" style="background: #e3f2fd; padding: 10px; border-radius: 4px;">
+						<strong>💡 Examples:</strong><br>
+						• donationAmount > 50 (tips over $50)<br>
+						• karma < 0.3 (low karma users)<br>
+						• memberMonths >= 12 (1 year+ members)
+					</div>`;
+				break;
 			case 'randomChance': // Random trigger
 				const probability = (node.config.probability || 0.1) * 100; // Convert to percentage for display
 				html += `
@@ -2178,6 +2422,7 @@ class EventFlowEditor {
 					{ value: 'admin', label: 'Is Admin', group: 'Status' },
 					{ value: 'bot', label: 'Is Bot', group: 'Status' },
 					{ value: 'verified', label: 'Is Verified', group: 'Status' },
+					{ value: 'firsttime', label: 'First-time chatter', group: 'Status', tooltip: 'Requires First timers enabled in global settings' },
 					// Event Properties
 					{ value: 'hasDonation', label: 'Has Donation', group: 'Events' },
 					{ value: 'membership', label: 'Membership Event', group: 'Events' },
@@ -2187,8 +2432,8 @@ class EventFlowEditor {
 					// Interaction Properties
 					{ value: 'question', label: 'Is Question', group: 'Interaction' },
 					{ value: 'private', label: 'Is Private', group: 'Interaction' },
-					{ value: 'highKarma', label: 'High Karma (≥0.7)', group: 'Interaction' },
-					{ value: 'lowKarma', label: 'Low Karma (<0.3)', group: 'Interaction' },
+					{ value: 'highKarma', label: 'High Karma (≥0.7)', group: 'Interaction', tooltip: 'Requires Add karma enabled in global settings' },
+					{ value: 'lowKarma', label: 'Low Karma (<0.3)', group: 'Interaction', tooltip: 'Requires Add karma enabled in global settings' },
 					// Metadata
 					{ value: 'userid', label: 'User ID', group: 'Metadata' },
 					{ value: 'textonly', label: 'Text Only', group: 'Metadata' },
@@ -2198,6 +2443,20 @@ class EventFlowEditor {
 				const currentRequired = node.config.requiredProperties || [];
 				const currentForbidden = node.config.forbiddenProperties || [];
 				const requireAll = node.config.requireAll !== false;
+				const lastActivityConfig = node.config.lastActivityFilter || {};
+				let lastActivityEnabled = !!lastActivityConfig.enabled;
+				const lastActivityMode = lastActivityConfig.mode === 'older' ? 'older' : 'within';
+				const lastActivityAmount = lastActivityConfig.amount ?? 10;
+				const lastActivityUnit = lastActivityConfig.unit || 'minutes';
+				const firstTimeChecked = currentRequired.includes('firsttime');
+
+				// If first-time chatter is required, disable last-activity filter to keep mutual exclusivity
+				if (firstTimeChecked && lastActivityEnabled) {
+					lastActivityEnabled = false;
+					if (node.config && node.config.lastActivityFilter) {
+						node.config.lastActivityFilter.enabled = false;
+					}
+				}
 				
 				// Group properties by category
 				const groupedProps = {};
@@ -2222,9 +2481,11 @@ class EventFlowEditor {
 					html += `<div style="margin-bottom: 10px;"><strong style="color: #888;">${group}:</strong><br>`;
 					props.forEach(prop => {
 						const isChecked = currentRequired.includes(prop.value);
+						const tooltip = prop.tooltip ? ` title="${prop.tooltip}"` : '';
+						const infoIcon = prop.tooltip ? ` <span style="opacity:0.7; cursor: help;" title="${prop.tooltip}">ℹ️</span>` : '';
 						html += `<label style="display: block; margin: 2px 0;">
 							<input type="checkbox" class="prop-required" value="${prop.value}" ${isChecked ? 'checked' : ''}> 
-							${prop.label}
+							<span${tooltip}>${prop.label}</span>${infoIcon}
 						</label>`;
 					});
 					html += `</div>`;
@@ -2239,15 +2500,50 @@ class EventFlowEditor {
 					html += `<div style="margin-bottom: 10px;"><strong style="color: #888;">${group}:</strong><br>`;
 					props.forEach(prop => {
 						const isChecked = currentForbidden.includes(prop.value);
+						const tooltip = prop.tooltip ? ` title="${prop.tooltip}"` : '';
+						const infoIcon = prop.tooltip ? ` <span style="opacity:0.7; cursor: help;" title="${prop.tooltip}">ℹ️</span>` : '';
 						html += `<label style="display: block; margin: 2px 0;">
 							<input type="checkbox" class="prop-forbidden" value="${prop.value}" ${isChecked ? 'checked' : ''}> 
-							${prop.label}
+							<span${tooltip}>${prop.label}</span>${infoIcon}
 						</label>`;
 					});
 					html += `</div>`;
 				});
 				
 				html += `</div></div>
+					<div class="property-group">
+						<label class="property-label">Last Activity (optional)</label>
+						<label style="display: block; margin-bottom: 6px;">
+							<input type="checkbox" id="prop-lastActivity-enabled" ${lastActivityEnabled ? 'checked' : ''}> Require last activity window
+						</label>
+						<div id="last-activity-controls" style="display: flex; flex-direction: column; gap: 8px; ${lastActivityEnabled ? '' : 'opacity: 0.6; pointer-events: none;'}">
+							<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+								<label><input type="radio" name="prop-lastActivity-mode" value="within" ${lastActivityMode === 'within' ? 'checked' : ''}> Within</label>
+								<label><input type="radio" name="prop-lastActivity-mode" value="older" ${lastActivityMode === 'older' ? 'checked' : ''}> Older than</label>
+								<input type="number" class="property-input" id="prop-lastActivity-value" value="${lastActivityAmount}" min="0" step="1" style="width: 90px;">
+								<select class="property-input" id="prop-lastActivity-unit" style="width: 120px;">
+									<option value="minutes" ${lastActivityUnit === 'minutes' ? 'selected' : ''}>Minutes</option>
+									<option value="hours" ${lastActivityUnit === 'hours' ? 'selected' : ''}>Hours</option>
+									<option value="days" ${lastActivityUnit === 'days' ? 'selected' : ''}>Days</option>
+								</select>
+							</div>
+							<div style="display: flex; flex-wrap: wrap; gap: 6px;">
+								<button type="button" class="btn btn-ghost btn-small quick-last-activity" data-amount="10" data-unit="minutes">10 min</button>
+								<button type="button" class="btn btn-ghost btn-small quick-last-activity" data-amount="30" data-unit="minutes">30 min</button>
+								<button type="button" class="btn btn-ghost btn-small quick-last-activity" data-amount="3" data-unit="hours">3 hours</button>
+								<button type="button" class="btn btn-ghost btn-small quick-last-activity" data-amount="12" data-unit="hours">12 hours</button>
+								<button type="button" class="btn btn-ghost btn-small quick-last-activity" data-amount="1" data-unit="days">1 day</button>
+							</div>
+							<div class="property-help">Filter by how recently a user last chatted (uses stored lastActivity timestamps; requires “First timers” enabled in global settings). First-time chatters fail this requirement because they have no prior activity timestamp.</div>
+						</div>
+					</div>
+					<div class="property-group">
+						<label class="property-label">First-time chatter</label>
+						<label style="display: block; margin-bottom: 6px;">
+							<input type="checkbox" id="prop-firsttime-only" ${firstTimeChecked ? 'checked' : ''} ${lastActivityEnabled ? 'disabled' : ''}> Require first-time chatter
+						</label>
+						<div class="property-help">Mutually exclusive with “Require last activity window”. Enabling one disables the other.</div>
+					</div>
 					<div class="property-help">Filter messages based on presence/absence of properties. Required properties must exist and be truthy. Forbidden properties must not exist or be falsy.</div>`;
 				break;
 			case 'counter': // Counter trigger
@@ -2501,10 +2797,13 @@ class EventFlowEditor {
 
 			// --- Action Cases ---
 			case 'blockMessage':
-				html += `<p class="property-help">Blocks the current message from further processing or display. Actions after this will work with a cloned message that cannot be returned.</p>`;
+				html += `<p class="property-help">Blocks the message immediately and continues processing downstream actions asynchronously in the background. The message will not be displayed.</p>`;
 				break;
 			case 'returnMessage':
-				html += `<p class="property-help">Explicitly returns the message for display. Use this after processing to ensure the message is shown. Cannot be used after terminal actions like Block Message.</p>`;
+				html += `<p class="property-help">Returns the message immediately for display, then continues processing downstream actions asynchronously in the background. Use this when you want the message to appear right away while other actions (like delays, OBS toggles) continue running.</p>`;
+				break;
+			case 'continueAsync':
+				html += `<p class="property-help">Forks execution: the rest of this flow continues asynchronously in the background while other flows can proceed. Does not return or block the message - use this when you want parallel processing without affecting message display.</p>`;
 				break;
 			case 'modifyMessage':
 				html += `<div class="property-group"><label class="property-label">New Message Content</label><textarea class="property-input" id="prop-newMessage" rows="3">${node.config.newMessage || ''}</textarea><div class="property-help">Placeholders like {username}, {message}, etc. can be used.</div></div>`;
@@ -3229,6 +3528,178 @@ class EventFlowEditor {
 						<strong>💡 Tip:</strong> Perfect for saving highlight moments triggered by donations or special messages!
 					</div>`;
 				break;
+
+			// Spotify Actions
+			case 'spotifySkip':
+				html += `
+					<div class="property-group">
+						<div class="property-help">Skips to the next track in the current playlist or queue.</div>
+					</div>
+					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
+						<strong>🎵 Spotify Integration:</strong><br>
+						Requires Spotify to be connected in Social Stream settings with playback permissions.
+					</div>`;
+				break;
+
+			case 'spotifyPrevious':
+				html += `
+					<div class="property-group">
+						<div class="property-help">Goes back to the previous track.</div>
+					</div>
+					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
+						<strong>🎵 Spotify Integration:</strong><br>
+						Requires Spotify to be connected in Social Stream settings with playback permissions.
+					</div>`;
+				break;
+
+			case 'spotifyPause':
+				html += `
+					<div class="property-group">
+						<div class="property-help">Pauses the current playback.</div>
+					</div>
+					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
+						<strong>🎵 Spotify Integration:</strong><br>
+						Requires Spotify to be connected in Social Stream settings with playback permissions.
+					</div>`;
+				break;
+
+			case 'spotifyResume':
+				html += `
+					<div class="property-group">
+						<div class="property-help">Resumes playback if paused.</div>
+					</div>
+					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
+						<strong>🎵 Spotify Integration:</strong><br>
+						Requires Spotify to be connected in Social Stream settings with playback permissions.
+					</div>`;
+				break;
+
+			case 'spotifyVolume':
+				html += `
+					<div class="property-group">
+						<label class="property-label">Volume Level</label>
+						<input type="range" class="property-input" id="prop-volume"
+							value="${node.config.volume || 50}" min="0" max="100" step="5"
+							oninput="document.getElementById('volume-display').textContent = this.value + '%'">
+						<div style="text-align: center; margin-top: 5px;">
+							<span id="volume-display">${node.config.volume || 50}%</span>
+						</div>
+						<div class="property-help">Set the playback volume (0-100%)</div>
+					</div>
+					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
+						<strong>🎵 Spotify Integration:</strong><br>
+						Requires Spotify to be connected in Social Stream settings with playback permissions.
+					</div>`;
+				break;
+
+			case 'spotifyQueue':
+				html += `
+					<div class="property-group">
+						<label class="property-label">Song Search Query</label>
+						<input type="text" class="property-input" id="prop-query"
+							value="${node.config.query || ''}" placeholder="e.g., Never Gonna Give You Up">
+						<div class="property-help">Enter a song name, artist, or both. The top search result will be added to the queue.</div>
+					</div>
+					<div class="property-group">
+						<label class="property-label">
+							<input type="checkbox" class="property-input" id="prop-useMessageText"
+								${node.config.useMessageText ? 'checked' : ''}>
+							Use chat message as search query
+						</label>
+						<div class="property-help">If checked, the triggering chat message will be used as the song search query instead of the text above.</div>
+					</div>
+					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
+						<strong>🎵 Spotify Integration:</strong><br>
+						Requires Spotify to be connected in Social Stream settings with playback permissions.
+					</div>
+					<div class="property-group" style="background: #2196F3; padding: 10px; border-radius: 4px;">
+						<strong>💡 Tip:</strong> Combine with a "Message Starts With" trigger (e.g., "!sr") to let viewers request songs!
+					</div>`;
+				break;
+
+			// TTS Actions
+			case 'ttsSpeak':
+				html += `
+					<div class="property-group">
+						<label class="property-label">Text to Speak</label>
+						<textarea class="property-input" id="prop-text" rows="3" placeholder="Enter text to speak...">${node.config.text || ''}</textarea>
+						<div class="property-help">The text that will be spoken aloud</div>
+					</div>
+					<div class="property-group">
+						<label class="property-label">
+							<input type="checkbox" class="property-input" id="prop-useMessageText"
+								${node.config.useMessageText ? 'checked' : ''}>
+							Use chat message as text
+						</label>
+						<div class="property-help">If checked, the triggering chat message will be spoken instead of the text above.</div>
+					</div>
+					<div class="property-group">
+						<label class="property-label">
+							<input type="checkbox" class="property-input" id="prop-force"
+								${node.config.force ? 'checked' : ''}>
+							Force speak (even if TTS is disabled)
+						</label>
+						<div class="property-help">Will speak even when TTS is globally disabled.</div>
+					</div>
+					<div class="property-group" style="background: #9C27B0; padding: 10px; border-radius: 4px; color: white;">
+						<strong>🔊 TTS Integration:</strong><br>
+						Requires TTS to be enabled on the actions.html overlay page.
+					</div>`;
+				break;
+
+			case 'ttsToggle':
+				html += `
+					<div class="property-group">
+						<label class="property-label">TTS State</label>
+						<select class="property-input" id="prop-enabled">
+							<option value="toggle" ${node.config.enabled === 'toggle' || node.config.enabled === undefined ? 'selected' : ''}>Toggle</option>
+							<option value="true" ${node.config.enabled === true || node.config.enabled === 'true' ? 'selected' : ''}>Enable</option>
+							<option value="false" ${node.config.enabled === false || node.config.enabled === 'false' ? 'selected' : ''}>Disable</option>
+						</select>
+						<div class="property-help">Enable, disable, or toggle TTS on the actions overlay.</div>
+					</div>`;
+				break;
+
+			case 'ttsSkip':
+				html += `
+					<div class="property-group">
+						<div class="property-help">Skips the currently speaking TTS message and moves to the next in queue.</div>
+					</div>
+					<div class="property-group" style="background: #9C27B0; padding: 10px; border-radius: 4px; color: white;">
+						<strong>🔊 TTS Integration:</strong><br>
+						Requires TTS to be enabled on the actions.html overlay page.
+					</div>`;
+				break;
+
+			case 'ttsClear':
+				html += `
+					<div class="property-group">
+						<div class="property-help">Clears all queued TTS messages. The current message will finish playing.</div>
+					</div>
+					<div class="property-group" style="background: #9C27B0; padding: 10px; border-radius: 4px; color: white;">
+						<strong>🔊 TTS Integration:</strong><br>
+						Requires TTS to be enabled on the actions.html overlay page.
+					</div>`;
+				break;
+
+			case 'ttsVolume':
+				html += `
+					<div class="property-group">
+						<label class="property-label">Volume Level</label>
+						<input type="range" class="property-input" id="prop-volume"
+							value="${node.config.volume ?? 100}" min="0" max="100" step="5"
+							oninput="document.getElementById('tts-volume-display').textContent = this.value + '%'">
+						<div style="text-align: center; margin-top: 5px;">
+							<span id="tts-volume-display">${node.config.volume ?? 100}%</span>
+						</div>
+						<div class="property-help">Set the TTS volume (0-100%)</div>
+					</div>
+					<div class="property-group" style="background: #9C27B0; padding: 10px; border-radius: 4px; color: white;">
+						<strong>🔊 TTS Integration:</strong><br>
+						Requires TTS to be enabled on the actions.html overlay page.
+					</div>`;
+				break;
+
 			case 'midiSendNote':
 				html += `<div class="property-group">
 					<label class="property-label">MIDI Output Device</label>
@@ -3501,6 +3972,25 @@ class EventFlowEditor {
             });
         }
 
+        // Special handling for compareProperty - show/hide custom property input
+        const propertySelect = document.getElementById('prop-property-select');
+        const customPropertyGroup = document.getElementById('custom-property-group');
+        const customPropertyInput = document.getElementById('prop-property');
+        if (propertySelect && customPropertyGroup) {
+            propertySelect.addEventListener('change', (e) => {
+                if (e.target.value === '_custom') {
+                    customPropertyGroup.style.display = '';
+                    // Use the custom input value
+                    nodeData.config.property = customPropertyInput?.value || '';
+                } else {
+                    customPropertyGroup.style.display = 'none';
+                    nodeData.config.property = e.target.value;
+                }
+                this.markUnsavedChanges(true);
+                this.renderNodeOnCanvas(nodeData.id);
+            });
+        }
+
         // Special handling for randomChance probability slider
         if (nodeData.triggerType === 'randomChance' || nodeData.type === 'trigger' && this.selectedNode?.triggerType === 'randomChance') {
             const slider = document.getElementById('prop-probability-slider');
@@ -3561,6 +4051,21 @@ class EventFlowEditor {
                     } else {
                         nodeData.config.requiredProperties = nodeData.config.requiredProperties.filter(p => p !== e.target.value);
                     }
+
+                    // Keep first-time chatter toggle and last-activity mutual exclusion in sync
+                    if (e.target.value === 'firsttime') {
+                        if (e.target.checked) {
+                            if (firstTimeToggle) firstTimeToggle.checked = true;
+                            if (lastToggle) {
+                                lastToggle.checked = false;
+                                ensureLastActivityConfig();
+                                nodeData.config.lastActivityFilter.enabled = false;
+                            }
+                        } else {
+                            if (firstTimeToggle) firstTimeToggle.checked = false;
+                        }
+                        updateMutualExclusion();
+                    }
                     
                     this.markUnsavedChanges(true);
                     this.renderNodeOnCanvas(nodeData.id);
@@ -3584,6 +4089,148 @@ class EventFlowEditor {
                     this.renderNodeOnCanvas(nodeData.id);
                 });
             });
+
+            const ensureLastActivityConfig = () => {
+                if (!nodeData.config.lastActivityFilter) {
+                    nodeData.config.lastActivityFilter = { enabled: false, mode: 'within', amount: 10, unit: 'minutes' };
+                }
+            };
+
+            const lastToggle = document.getElementById('prop-lastActivity-enabled');
+            const lastControls = document.getElementById('last-activity-controls');
+            const lastValue = document.getElementById('prop-lastActivity-value');
+            const lastUnit = document.getElementById('prop-lastActivity-unit');
+            const lastModeRadios = document.querySelectorAll('input[name="prop-lastActivity-mode"]');
+            const quickButtons = document.querySelectorAll('.quick-last-activity');
+            const firstTimeToggle = document.getElementById('prop-firsttime-only');
+
+            const addRequiredProperty = (prop) => {
+                if (!nodeData.config.requiredProperties) nodeData.config.requiredProperties = [];
+                if (!nodeData.config.requiredProperties.includes(prop)) {
+                    nodeData.config.requiredProperties.push(prop);
+                }
+            };
+
+            const removeRequiredProperty = (prop) => {
+                if (!nodeData.config.requiredProperties) nodeData.config.requiredProperties = [];
+                nodeData.config.requiredProperties = nodeData.config.requiredProperties.filter(p => p !== prop);
+            };
+
+            const updateMutualExclusion = () => {
+                const firstTimeActive = firstTimeToggle && firstTimeToggle.checked;
+                const lastActiveEnabled = lastToggle && lastToggle.checked;
+
+                if (firstTimeToggle) {
+                    firstTimeToggle.disabled = Boolean(lastActiveEnabled);
+                }
+                if (lastToggle) {
+                    lastToggle.disabled = Boolean(firstTimeActive);
+                }
+                if (lastControls) {
+                    const disabled = firstTimeActive || !lastActiveEnabled;
+                    lastControls.style.opacity = disabled ? '0.6' : '';
+                    lastControls.style.pointerEvents = disabled ? 'none' : 'auto';
+                }
+            };
+
+            if (lastToggle) {
+                lastToggle.addEventListener('change', (e) => {
+                    ensureLastActivityConfig();
+                    nodeData.config.lastActivityFilter.enabled = e.target.checked;
+                    if (e.target.checked && firstTimeToggle) {
+                        firstTimeToggle.checked = false;
+                        removeRequiredProperty('firsttime');
+                    }
+                    if (lastControls) {
+                        lastControls.style.opacity = e.target.checked ? '' : '0.6';
+                        lastControls.style.pointerEvents = e.target.checked ? 'auto' : 'none';
+                    }
+                    this.markUnsavedChanges(true);
+                    this.renderNodeOnCanvas(nodeData.id);
+                    updateMutualExclusion();
+                });
+            }
+
+            if (lastValue) {
+                lastValue.addEventListener('input', (e) => {
+                    ensureLastActivityConfig();
+                    const amount = Math.max(0, parseFloat(e.target.value) || 0);
+                    nodeData.config.lastActivityFilter.amount = amount;
+                    this.markUnsavedChanges(true);
+                    this.renderNodeOnCanvas(nodeData.id);
+                });
+            }
+
+            if (lastUnit) {
+                lastUnit.addEventListener('change', (e) => {
+                    ensureLastActivityConfig();
+                    nodeData.config.lastActivityFilter.unit = e.target.value;
+                    this.markUnsavedChanges(true);
+                    this.renderNodeOnCanvas(nodeData.id);
+                    updateMutualExclusion();
+                });
+            }
+
+            if (lastModeRadios.length) {
+                lastModeRadios.forEach(radio => {
+                    radio.addEventListener('change', (e) => {
+                        if (!e.target.checked) return;
+                        ensureLastActivityConfig();
+                        nodeData.config.lastActivityFilter.mode = e.target.value;
+                        this.markUnsavedChanges(true);
+                        this.renderNodeOnCanvas(nodeData.id);
+                    });
+                });
+            }
+
+            if (quickButtons.length) {
+                quickButtons.forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        ensureLastActivityConfig();
+                        const amount = parseFloat(btn.dataset.amount) || 0;
+                        const unit = btn.dataset.unit || 'minutes';
+                        nodeData.config.lastActivityFilter.amount = amount;
+                        nodeData.config.lastActivityFilter.unit = unit;
+                        nodeData.config.lastActivityFilter.enabled = true;
+                        if (firstTimeToggle) {
+                            firstTimeToggle.checked = false;
+                            removeRequiredProperty('firsttime');
+                        }
+                        if (lastValue) lastValue.value = amount;
+                        if (lastUnit) lastUnit.value = unit;
+                        if (lastToggle) lastToggle.checked = true;
+                        if (lastControls) {
+                            lastControls.style.opacity = '';
+                            lastControls.style.pointerEvents = 'auto';
+                        }
+                        this.markUnsavedChanges(true);
+                        this.renderNodeOnCanvas(nodeData.id);
+                        updateMutualExclusion();
+                    });
+                });
+            }
+
+            if (firstTimeToggle) {
+                firstTimeToggle.addEventListener('change', (e) => {
+                    if (e.target.checked) {
+                        addRequiredProperty('firsttime');
+                        if (lastToggle) {
+                            lastToggle.checked = false;
+                            ensureLastActivityConfig();
+                            nodeData.config.lastActivityFilter.enabled = false;
+                        }
+                    } else {
+                        removeRequiredProperty('firsttime');
+                    }
+                    this.markUnsavedChanges(true);
+                    this.renderNodeOnCanvas(nodeData.id);
+                    updateMutualExclusion();
+                });
+            }
+
+            // Initialize mutual exclusion state on load
+            updateMutualExclusion();
         }
 
         // Special handling for counter trigger
