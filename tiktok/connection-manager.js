@@ -267,6 +267,39 @@ function isDevBuild() {
     }
 }
 
+function shouldLogTikTokDebug() {
+    if (process.env.SSAPP_TIKTOK_DEBUG === '1') {
+        return true;
+    }
+    return isDevBuild();
+}
+
+function summarizeSignerPayload(payload) {
+    if (!payload || typeof payload !== 'object') {
+        return null;
+    }
+    const allCookies = typeof payload.allCookies === 'string' ? payload.allCookies : '';
+    const fetchResult = payload.fetchResult && typeof payload.fetchResult === 'object' ? payload.fetchResult : null;
+    const fetchBodyBase64 = fetchResult && typeof fetchResult.bodyBase64 === 'string' ? fetchResult.bodyBase64 : '';
+    return {
+        hasMsToken: !!(payload.msToken || payload.ms_token),
+        hasSessionId: !!(payload.sessionid || payload.session_id),
+        hasTtTargetIdc: !!(payload.tt_target_idc || payload.ttTargetIdc),
+        hasUserAgent: !!(payload.userAgent || payload.user_agent),
+        hasPathWithQuery: typeof payload.pathWithQuery === 'string' && payload.pathWithQuery.length > 0,
+        allCookiesLength: allCookies ? allCookies.length : 0,
+        fetchResult: fetchResult
+            ? {
+                status: fetchResult.status ?? null,
+                statusText: typeof fetchResult.statusText === 'string' ? fetchResult.statusText : null,
+                bodyBase64Length: fetchBodyBase64 ? fetchBodyBase64.length : 0,
+                hasBodyBase64: !!fetchBodyBase64
+            }
+            : null,
+        hasFetchError: !!payload.fetchError
+    };
+}
+
 function getMainWindow() {
     try {
         const win = env.getMainWindow ? env.getMainWindow() : null;
@@ -2603,10 +2636,6 @@ class ConnectionManager {
         if (this.signingProvider === 'local') {
             return true;
         }
-        // Allow auto to pick local signer when no API key/service is provided
-        if (this.signingProvider === 'auto' && !this.signingConfig?.apiKey && !this.signingConfig?.serviceUrl) {
-            return true;
-        }
         return false;
     }
 
@@ -2656,7 +2685,9 @@ class ConnectionManager {
             throw new Error('Local signer returned an invalid payload.');
         }
 
-        console.log('[TikTok] signerPayload received:', JSON.stringify(signerPayload, null, 2));
+        if (shouldLogTikTokDebug()) {
+            console.log('[TikTok] signerPayload received', summarizeSignerPayload(signerPayload));
+        }
 
         // Update credentials immediately so we persist the session even if we return early
         this.updateSessionCredentialsFromSigner(signerPayload);
@@ -2664,14 +2695,18 @@ class ConnectionManager {
         // If we have a fetch result from the window, use it
         if (signerPayload.fetchResult && signerPayload.fetchResult.bodyBase64) {
             try {
-                console.log('[TikTok] Received fetch result from local signer. Status:', signerPayload.fetchResult.status);
+                if (shouldLogTikTokDebug()) {
+                    console.log('[TikTok] Received fetch result from local signer. Status:', signerPayload.fetchResult.status);
+                }
 
                 if (signerPayload.fetchResult.status !== 200) {
                     throw new Error(`Fetch failed with status ${signerPayload.fetchResult.status}: ${signerPayload.fetchResult.statusText}`);
                 }
 
                 const bytes = Buffer.from(signerPayload.fetchResult.bodyBase64, 'base64');
-                console.log('[TikTok] Body length:', bytes.length);
+                if (shouldLogTikTokDebug()) {
+                    console.log('[TikTok] Body length:', bytes.length);
+                }
 
                 if (typeof connectorDeserializeMessage === 'function') {
                     try {
@@ -5449,7 +5484,12 @@ class ConnectionManager {
     }
 
     async sendChatMessageViaWebcastApi(roomId, content) {
-        console.log('[TikTok] sendChatMessageViaWebcastApi called', { roomId, content });
+        if (shouldLogTikTokDebug()) {
+            console.log('[TikTok] sendChatMessageViaWebcastApi called', {
+                roomId,
+                contentLength: typeof content === 'string' ? content.length : null
+            });
+        }
         if (!this.connection || !this.connection.webClient || typeof this.connection.webClient.postJsonObjectToWebcastApi !== 'function') {
             console.warn('[TikTok] Direct chat route unavailable: webClient missing or invalid');
             const err = new Error('Direct TikTok chat route unavailable');
@@ -5527,7 +5567,9 @@ class ConnectionManager {
         };
 
         if (this.shouldUseLocalSigner()) {
-            console.log('[TikTok] Signing chat message via local signer');
+            if (shouldLogTikTokDebug()) {
+                console.log('[TikTok] Signing chat message via local signer');
+            }
             try {
                 const signOptions = {
                     roomId: resolvedRoomId,
@@ -5551,7 +5593,9 @@ class ConnectionManager {
                 const signerPayload = await this.localSigner.sign(urlObj.toString(), signOptions);
 
                 if (signerPayload) {
-                    console.log('[TikTok] Local signer returned payload', signerPayload);
+                    if (shouldLogTikTokDebug()) {
+                        console.log('[TikTok] Local signer returned payload', summarizeSignerPayload(signerPayload));
+                    }
                     if (signerPayload['X-Bogus']) requestParams['X-Bogus'] = signerPayload['X-Bogus'];
                     if (signerPayload['_signature']) requestParams['_signature'] = signerPayload['_signature'];
                     if (signerPayload['msToken']) requestParams['msToken'] = signerPayload['msToken'];
@@ -5560,7 +5604,9 @@ class ConnectionManager {
                     // If using local signer, we MUST send the request from the browser window to avoid
                     // "Premium Feature" errors or empty bodies caused by missing browser context.
                     if (this.shouldUseLocalSigner()) {
-                        console.log('[TikTok] Executing chat send via local signer window fetch...');
+                        if (shouldLogTikTokDebug()) {
+                            console.log('[TikTok] Executing chat send via local signer window fetch...');
+                        }
 
                         // Reconstruct the full URL with the signed parameters
                         const signedUrlObj = new URL(baseUrl);
@@ -5609,7 +5655,13 @@ class ConnectionManager {
                                 }
                             }
 
-                            console.log('[TikTok] Local signer fetch completed', { status, bodyError, decodedBody });
+                            if (shouldLogTikTokDebug()) {
+                                console.log('[TikTok] Local signer fetch completed', {
+                                    status,
+                                    bodyError,
+                                    decodedBodyLength: typeof decodedBody === 'string' ? decodedBody.length : null
+                                });
+                            }
 
                             if (status === 200 && parsedBody && typeof parsedBody === 'object') {
                                 // Surface the real TikTok payload so callers can detect failures (e.g., not logged in)
@@ -5637,7 +5689,9 @@ class ConnectionManager {
                 // Fallback to proceeding without fresh signature, though it will likely fail
             }
         } else {
-            console.log('[TikTok] Not using local signer for chat message');
+            if (shouldLogTikTokDebug()) {
+                console.log('[TikTok] Not using local signer for chat message');
+            }
         }
 
         // Extract verifyFp from cookies if available (matches browser request shape)
@@ -5675,7 +5729,9 @@ class ConnectionManager {
             }
 
             const axios = require('axios');
-            console.log('[TikTok] Sending direct axios request to room/chat/');
+            if (shouldLogTikTokDebug()) {
+                console.log('[TikTok] Sending direct axios request to room/chat/');
+            }
             const directResponse = await axios({
                 method: 'POST',
                 url: 'https://webcast.tiktok.com/webcast/room/chat/',
@@ -5688,10 +5744,11 @@ class ConnectionManager {
                 withCredentials: true
             });
 
-            console.log('[TikTok] Direct axios response status:', directResponse.status);
-            console.log('[TikTok] Direct axios response data:', JSON.stringify(directResponse.data));
-            console.log('[TikTok] Direct axios response type:', typeof directResponse.data);
-            console.log('[TikTok] Direct axios content-type:', directResponse.headers ? directResponse.headers['content-type'] : null);
+            if (shouldLogTikTokDebug()) {
+                console.log('[TikTok] Direct axios response status:', directResponse.status);
+                console.log('[TikTok] Direct axios response type:', typeof directResponse.data);
+                console.log('[TikTok] Direct axios content-type:', directResponse.headers ? directResponse.headers['content-type'] : null);
+            }
             if (directResponse.data === '' || directResponse.data === null || typeof directResponse.data === 'undefined') {
                 console.warn('[TikTok] Direct chat API returned empty body');
                 return {
@@ -5716,18 +5773,28 @@ class ConnectionManager {
         } catch (err) {
             console.error('[TikTok] Direct axios request failed:', err.message);
             if (err.response) {
-                console.error('[TikTok] Error response status:', err.response.status);
-                console.error('[TikTok] Error response data:', JSON.stringify(err.response.data));
+                if (shouldLogTikTokDebug()) {
+                    console.error('[TikTok] Error response status:', err.response.status);
+                    console.error('[TikTok] Error response type:', typeof err.response.data);
+                }
             }
             throw err;
         }
     }
 
     async sendChatMessageViaDirectRoute(content) {
-        console.log('[TikTok] sendChatMessageViaDirectRoute called');
+        if (shouldLogTikTokDebug()) {
+            console.log('[TikTok] sendChatMessageViaDirectRoute called');
+        }
         const allowEulerChat = this.shouldAllowEulerChatEndpoint();
         const preferLocalHttp = !allowEulerChat || this.shouldUseLocalSigner();
-        console.log('[TikTok] Route decision:', { allowEulerChat, preferLocalHttp, shouldUseLocalSigner: this.shouldUseLocalSigner() });
+        if (shouldLogTikTokDebug()) {
+            console.log('[TikTok] Route decision:', {
+                allowEulerChat,
+                preferLocalHttp,
+                shouldUseLocalSigner: this.shouldUseLocalSigner()
+            });
+        }
 
         const route = preferLocalHttp ? null : this.ensureDirectChatRoute();
         if (!preferLocalHttp && !route) {
@@ -5900,7 +5967,11 @@ class ConnectionManager {
     }
 
     async sendChatMessage(message) {
-        console.log('[TikTok] sendChatMessage called', { message });
+        if (shouldLogTikTokDebug()) {
+            console.log('[TikTok] sendChatMessage called', {
+                messageLength: typeof message === 'string' ? message.length : null
+            });
+        }
         if (typeof message !== 'string' || !message.trim()) {
             return {
                 success: false,
@@ -5936,7 +6007,9 @@ class ConnectionManager {
         const allowAnyFallback = allowEulerChat || allowConnectionFallback;
         let lastDirectResult = null;
         let lastDirectError = null;
-        console.log('[TikTok] Checking direct chat route', { shouldUseDirectChatRoute: this.shouldUseDirectChatRoute() });
+        if (shouldLogTikTokDebug()) {
+            console.log('[TikTok] Checking direct chat route', { shouldUseDirectChatRoute: this.shouldUseDirectChatRoute() });
+        }
         if (this.shouldUseDirectChatRoute()) {
             const directResult = await this.sendChatMessageViaDirectRoute(trimmedMessage);
             lastDirectResult = directResult;

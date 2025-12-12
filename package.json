@@ -47,6 +47,9 @@
       "thumbnail.js",
       "worker-tts.js",
       "tts-worker.js",
+      "transfer-backup.js",
+      "transfer-backup-runner.js",
+      "transfer-restore-runner.js",
       "websocket-monitor.js",
       "youtube.js",
       "youtube-grpc-client.js",
@@ -193,7 +196,6 @@
     "afterAllArtifactBuild": "./afterPack.js"
   },
   "devDependencies": {
-    "archiver": "^7.0.1",
     "electron": "^38.2.2",
     "electron-builder": "^25.1.8",
     "electron-notarize": "git://github.com/electron/notarize.git",
@@ -209,6 +211,7 @@
     "@grpc/grpc-js": "^1.14.0",
     "@grpc/proto-loader": "^0.7.15",
     "@huggingface/transformers": "git+https://github.com/steveseguin/transformers.js",
+    "archiver": "^7.0.1",
     "app-builder-lib": "^26.0.12",
     "bufferutil": "^4.0.9",
     "color": "^5.0.0",
@@ -228,6 +231,7 @@
     "sharp": "^0.33.5",
     "tiktok-live-connector": "^2.1.0",
     "undici": "^7.5.0",
+    "unzipper": "^0.12.3",
     "utf-8-validate": "^6.0.5",
     "ws": "^8.18.1",
     "yargs": "^17.7.2"

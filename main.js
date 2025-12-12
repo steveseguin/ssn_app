@@ -32,9 +32,10 @@ const {
     shell,
     globalShortcut,
     session,
+    safeStorage,
     dialog
 } = require('electron')
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const contextMenu = require("electron-context-menu");
 const Yargs = require("yargs");
 
@@ -70,6 +71,563 @@ const {
 
 const Store = require("electron-store");
 const store = new Store();
+
+const TRANSFER_BACKUP_STORE_KEY = 'transferBackup';
+const DEFAULT_TRANSFER_BACKUP_CONFIG = {
+    enabled: false,
+    folderPath: null,
+    fileName: 'ssapp-transfer-backup.ssappbk',
+    includeCaches: false,
+    idleGateMs: 5 * 60 * 1000,
+    minIntervalMs: 60 * 60 * 1000,
+    lastSuccessAt: 0,
+    lastAttemptAt: 0,
+    lastError: null,
+    password: {
+        method: null,
+        encrypted: null
+    }
+};
+
+const transferBackupRuntime = {
+    sourcesActive: false,
+    lastBecameInactiveAt: Date.now(),
+    idleGateTimer: null,
+    periodicTimer: null,
+    inProgress: false
+};
+
+function getTransferBackupConfig() {
+    const raw = store.get(TRANSFER_BACKUP_STORE_KEY, {});
+    const merged = {
+        ...DEFAULT_TRANSFER_BACKUP_CONFIG,
+        ...(raw && typeof raw === 'object' ? raw : {})
+    };
+    merged.password = {
+        ...DEFAULT_TRANSFER_BACKUP_CONFIG.password,
+        ...(merged.password && typeof merged.password === 'object' ? merged.password : {})
+    };
+    return merged;
+}
+
+function setTransferBackupConfig(patch) {
+    const current = getTransferBackupConfig();
+    const next = { ...current, ...(patch && typeof patch === 'object' ? patch : {}) };
+    if (patch && typeof patch.password === 'object') {
+        next.password = { ...current.password, ...patch.password };
+    }
+    store.set(TRANSFER_BACKUP_STORE_KEY, next);
+    return next;
+}
+
+function canStoreTransferBackupPassword() {
+    try {
+        return !!(safeStorage && typeof safeStorage.isEncryptionAvailable === 'function' && safeStorage.isEncryptionAvailable());
+    } catch (_) {
+        return false;
+    }
+}
+
+function encryptTransferBackupPassword(password) {
+    if (!canStoreTransferBackupPassword()) {
+        return null;
+    }
+    const encrypted = safeStorage.encryptString(String(password));
+    return encrypted.toString('base64');
+}
+
+function decryptTransferBackupPassword(config) {
+    const passwordConfig = config && typeof config === 'object' ? config.password : null;
+    if (!passwordConfig || passwordConfig.method !== 'safeStorage' || !passwordConfig.encrypted) {
+        return null;
+    }
+    if (!canStoreTransferBackupPassword()) {
+        return null;
+    }
+    try {
+        return safeStorage.decryptString(Buffer.from(passwordConfig.encrypted, 'base64'));
+    } catch (error) {
+        console.warn('[TransferBackup] Failed to decrypt stored password:', error && error.message ? error.message : error);
+        return null;
+    }
+}
+
+function buildTransferBackupFilePath(config) {
+    const folderPath = config && typeof config.folderPath === 'string' ? config.folderPath.trim() : '';
+    if (!folderPath) return null;
+    const fileName = (config && typeof config.fileName === 'string' && config.fileName.trim())
+        ? config.fileName.trim()
+        : DEFAULT_TRANSFER_BACKUP_CONFIG.fileName;
+    return path.join(folderPath, fileName);
+}
+
+async function flushAllSessionStorageData() {
+    const sessionsToFlush = new Set();
+    try {
+        sessionsToFlush.add(session.defaultSession);
+    } catch (_) { }
+
+    const knownPartitions = new Set([
+        'persist:abc',
+        'persist:youtube',
+        'persist:youtubemusic',
+        TIKTOK_AUTH_PARTITION
+    ]);
+
+    try {
+        for (const partition of createdPartitions) {
+            if (partition) knownPartitions.add(partition);
+        }
+    } catch (_) { }
+
+    for (const partition of knownPartitions) {
+        try {
+            sessionsToFlush.add(session.fromPartition(partition));
+        } catch (_) { }
+    }
+
+    try {
+        for (const win of BrowserWindow.getAllWindows()) {
+            if (win && win.webContents && win.webContents.session) {
+                sessionsToFlush.add(win.webContents.session);
+            }
+        }
+    } catch (_) { }
+
+    await Promise.allSettled(
+        Array.from(sessionsToFlush).map(async (ses) => {
+            try {
+                if (ses && typeof ses.flushStorageData === 'function') {
+                    await ses.flushStorageData();
+                }
+            } catch (_) { }
+        })
+    );
+}
+
+function runTransferBackupSubprocess(payload) {
+    return new Promise((resolve, reject) => {
+        const runnerPath = path.join(__dirname, 'transfer-backup-runner.js');
+        const child = spawn(process.execPath, [runnerPath], {
+            env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+            stdio: ['pipe', 'pipe', 'pipe']
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        child.stdout.setEncoding('utf8');
+        child.stderr.setEncoding('utf8');
+        child.stdout.on('data', (chunk) => { stdout += chunk; });
+        child.stderr.on('data', (chunk) => { stderr += chunk; });
+        child.on('error', reject);
+
+        child.on('close', (code) => {
+            const raw = stdout.trim().split('\n').filter(Boolean).pop() || '';
+            try {
+                const parsed = raw ? JSON.parse(raw) : null;
+                if (parsed && parsed.success) {
+                    resolve(parsed.result);
+                    return;
+                }
+                const message = parsed && parsed.error ? parsed.error : (stderr || `Backup runner exited with code ${code}`);
+                reject(new Error(message));
+            } catch (error) {
+                reject(new Error(stderr || `Backup runner failed (${code || 0})`));
+            }
+        });
+
+        try {
+            child.stdin.end(JSON.stringify(payload));
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+
+async function promptForPasswordPair({ title, label }) {
+    const first = await prompt({
+        title: title || 'Backup Password',
+        label: label || 'Password:',
+        value: '',
+        inputAttrs: { type: 'password' },
+        type: 'input'
+    });
+    if (!first) return null;
+    const second = await prompt({
+        title: title || 'Backup Password',
+        label: 'Confirm password:',
+        value: '',
+        inputAttrs: { type: 'password' },
+        type: 'input'
+    });
+    if (!second) return null;
+    if (first !== second) {
+        await dialog.showMessageBox({
+            type: 'error',
+            buttons: ['OK'],
+            title: 'Password mismatch',
+            message: 'Passwords did not match. Please try again.'
+        });
+        return null;
+    }
+    return first;
+}
+
+async function promptForPasswordOnce({ title, label }) {
+    const password = await prompt({
+        title: title || 'Backup Password',
+        label: label || 'Password:',
+        value: '',
+        inputAttrs: { type: 'password' },
+        type: 'input'
+    });
+    return password || null;
+}
+
+async function createTransferBackupWithDialog({ useAutoConfig = false } = {}) {
+    const config = getTransferBackupConfig();
+    const userDataDir = app.getPath('userData');
+
+    let outputFilePath = null;
+    let includeCaches = config.includeCaches;
+    let password = null;
+
+    if (useAutoConfig) {
+        outputFilePath = buildTransferBackupFilePath(config);
+        password = decryptTransferBackupPassword(config);
+        includeCaches = !!config.includeCaches;
+        if (!outputFilePath || !password) {
+            throw new Error('Auto transfer backup is not configured');
+        }
+    } else {
+        const defaultName = config.fileName || DEFAULT_TRANSFER_BACKUP_CONFIG.fileName;
+        const picked = await dialog.showSaveDialog({
+            title: 'Create Transfer Backup',
+            defaultPath: path.join(app.getPath('documents'), defaultName),
+            filters: [{ name: 'SSAPP Backup', extensions: ['ssappbk'] }]
+        });
+        if (picked.canceled || !picked.filePath) return null;
+        outputFilePath = picked.filePath;
+
+        const includeChoice = await dialog.showMessageBox({
+            type: 'question',
+            buttons: ['Exclude caches (recommended)', 'Include caches (bigger)'],
+            defaultId: 0,
+            title: 'Backup Size',
+            message: 'Include Chromium caches in the transfer backup?'
+        });
+        includeCaches = includeChoice.response === 1;
+
+        password = await promptForPasswordPair({ title: 'Create Transfer Backup', label: 'Encryption password:' });
+        if (!password) return null;
+    }
+
+    await flushAllSessionStorageData();
+
+    const compressionLevel = useAutoConfig ? 1 : 6;
+    const result = await runTransferBackupSubprocess({
+        userDataDir,
+        outputFilePath,
+        password,
+        includeCaches,
+        compressionLevel,
+        appName: app.name,
+        appVersion: app.getVersion()
+    });
+
+    return result;
+}
+
+function spawnTransferRestoreRunner({ backupFilePath, password }) {
+    const runnerPath = path.join(__dirname, 'transfer-restore-runner.js');
+    const logPath = path.join(path.dirname(backupFilePath), `transfer-restore-${Date.now()}.log`);
+
+    const child = spawn(process.execPath, [runnerPath], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        stdio: ['pipe', 'ignore', 'ignore'],
+        detached: true
+    });
+
+    child.stdin.end(JSON.stringify({
+        backupFilePath,
+        password,
+        userDataDir: app.getPath('userData'),
+        parentPid: process.pid,
+        execPath: process.execPath,
+        appArgs: process.argv.slice(1),
+        logPath
+    }));
+
+    child.unref();
+    return logPath;
+}
+
+async function restoreTransferBackupWithDialog() {
+    const picked = await dialog.showOpenDialog({
+        title: 'Restore Transfer Backup',
+        properties: ['openFile'],
+        filters: [{ name: 'SSAPP Backup', extensions: ['ssappbk'] }]
+    });
+    if (picked.canceled || !picked.filePaths || !picked.filePaths[0]) return null;
+
+    const backupFilePath = picked.filePaths[0];
+    const password = await promptForPasswordOnce({ title: 'Restore Transfer Backup', label: 'Encryption password:' });
+    if (!password) return null;
+
+    const confirmResult = await dialog.showMessageBox({
+        type: 'warning',
+        buttons: ['Restore and Restart', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'Restore Transfer Backup',
+        message: 'This will close the app, replace all local data, and restart.\n\nA copy of your current data will be kept beside your userData folder as "pre-restore-*".'
+    });
+
+    if (confirmResult.response !== 0) return null;
+
+    const logPath = spawnTransferRestoreRunner({ backupFilePath, password });
+
+    await dialog.showMessageBox({
+        type: 'info',
+        buttons: ['OK'],
+        title: 'Restoring…',
+        message: `The app will now close and restore your backup.\n\nIf something goes wrong, check:\n${logPath}`
+    });
+
+    app.quit();
+    return { started: true };
+}
+
+function formatBytes(bytes) {
+    if (!Number.isFinite(bytes)) return '';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = bytes;
+    let unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+        value /= 1024;
+        unitIndex++;
+    }
+    return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+async function handleCreateTransferBackupMenu() {
+    try {
+        const result = await createTransferBackupWithDialog({ useAutoConfig: false });
+        if (!result) return;
+        setTransferBackupConfig({ lastSuccessAt: Date.now(), lastError: null });
+        await dialog.showMessageBox({
+            type: 'info',
+            buttons: ['OK'],
+            title: 'Transfer Backup Created',
+            message: `Saved:\n${result.filePath}\n\nSize: ${formatBytes(result.bytes)}`
+        });
+    } catch (error) {
+        await dialog.showMessageBox({
+            type: 'error',
+            buttons: ['OK'],
+            title: 'Transfer Backup Failed',
+            message: error && error.message ? error.message : String(error)
+        });
+    }
+}
+
+async function handleAutoTransferBackupNowMenu() {
+    const config = getTransferBackupConfig();
+    if (!config.enabled) {
+        await dialog.showMessageBox({
+            type: 'warning',
+            buttons: ['OK'],
+            title: 'Auto Backup Disabled',
+            message: 'Enable auto transfer backup first.'
+        });
+        return;
+    }
+
+    if (transferBackupRuntime.sourcesActive) {
+        const confirmResult = await dialog.showMessageBox({
+            type: 'warning',
+            buttons: ['Backup Anyway', 'Cancel'],
+            defaultId: 1,
+            cancelId: 1,
+            title: 'Sources Active',
+            message: 'Sources appear to be active. Backing up now may impact performance.\n\nContinue?'
+        });
+        if (confirmResult.response !== 0) return;
+    }
+
+    try {
+        transferBackupRuntime.inProgress = true;
+        setTransferBackupConfig({ lastAttemptAt: Date.now(), lastError: null });
+        const result = await createTransferBackupWithDialog({ useAutoConfig: true });
+        setTransferBackupConfig({ lastSuccessAt: Date.now(), lastError: null });
+        await dialog.showMessageBox({
+            type: 'info',
+            buttons: ['OK'],
+            title: 'Auto Backup Complete',
+            message: `Saved:\n${result.filePath}\n\nSize: ${formatBytes(result.bytes)}`
+        });
+    } catch (error) {
+        const msg = error && error.message ? error.message : String(error);
+        setTransferBackupConfig({ lastError: msg });
+        await dialog.showMessageBox({
+            type: 'error',
+            buttons: ['OK'],
+            title: 'Auto Backup Failed',
+            message: msg
+        });
+    } finally {
+        transferBackupRuntime.inProgress = false;
+    }
+}
+
+async function configureAutoTransferBackup() {
+    if (!canStoreTransferBackupPassword()) {
+        await dialog.showMessageBox({
+            type: 'error',
+            buttons: ['OK'],
+            title: 'Auto Backup Unavailable',
+            message: 'Your system does not support secure credential storage. Auto transfer backups require OS encryption.'
+        });
+        return null;
+    }
+
+    const folderPick = await dialog.showOpenDialog({
+        title: 'Select Auto Backup Folder',
+        properties: ['openDirectory', 'createDirectory']
+    });
+    if (folderPick.canceled || !folderPick.filePaths || !folderPick.filePaths[0]) return null;
+
+    const folderPath = folderPick.filePaths[0];
+    const password = await promptForPasswordPair({ title: 'Enable Auto Transfer Backup', label: 'Encryption password:' });
+    if (!password) return null;
+
+    const includeChoice = await dialog.showMessageBox({
+        type: 'question',
+        buttons: ['Exclude caches (recommended)', 'Include caches (bigger)'],
+        defaultId: 0,
+        title: 'Backup Size',
+        message: 'Include Chromium caches in the auto backup?'
+    });
+    const includeCaches = includeChoice.response === 1;
+
+    const encrypted = encryptTransferBackupPassword(password);
+    const next = setTransferBackupConfig({
+        enabled: true,
+        folderPath,
+        includeCaches,
+        password: {
+            method: 'safeStorage',
+            encrypted
+        }
+    });
+
+    scheduleTransferBackupTimers();
+    createMenu();
+    return next;
+}
+
+function disableAutoTransferBackup() {
+    setTransferBackupConfig({
+        enabled: false,
+        password: { method: null, encrypted: null }
+    });
+    scheduleTransferBackupTimers();
+    createMenu();
+}
+
+function computeIsIdleForTransferBackup(config) {
+    if (transferBackupRuntime.sourcesActive) return false;
+    const idleGateMs = Number.isFinite(config.idleGateMs) ? config.idleGateMs : DEFAULT_TRANSFER_BACKUP_CONFIG.idleGateMs;
+    const inactiveFor = Date.now() - (transferBackupRuntime.lastBecameInactiveAt || 0);
+    return inactiveFor >= idleGateMs;
+}
+
+async function maybeRunAutoTransferBackup(trigger) {
+    const config = getTransferBackupConfig();
+    if (!config.enabled) return;
+
+    const outputFilePath = buildTransferBackupFilePath(config);
+    if (!outputFilePath) return;
+
+    if (transferBackupRuntime.inProgress) return;
+    if (!computeIsIdleForTransferBackup(config)) return;
+
+    const minIntervalMs = Number.isFinite(config.minIntervalMs) ? config.minIntervalMs : DEFAULT_TRANSFER_BACKUP_CONFIG.minIntervalMs;
+    if (Date.now() - (config.lastSuccessAt || 0) < minIntervalMs) return;
+
+    const password = decryptTransferBackupPassword(config);
+    if (!password) {
+        console.warn('[TransferBackup] Auto backup enabled but password unavailable; disabling.');
+        disableAutoTransferBackup();
+        return;
+    }
+
+    transferBackupRuntime.inProgress = true;
+    setTransferBackupConfig({ lastAttemptAt: Date.now(), lastError: null });
+
+    try {
+        await createTransferBackupWithDialog({ useAutoConfig: true });
+        setTransferBackupConfig({ lastSuccessAt: Date.now(), lastError: null });
+        console.log(`[TransferBackup] Auto backup complete (${trigger || 'auto'})`);
+    } catch (error) {
+        const msg = error && error.message ? error.message : String(error);
+        console.warn('[TransferBackup] Auto backup failed:', msg);
+        setTransferBackupConfig({ lastError: msg });
+    } finally {
+        transferBackupRuntime.inProgress = false;
+    }
+}
+
+function scheduleTransferBackupTimers() {
+    if (transferBackupRuntime.idleGateTimer) {
+        clearTimeout(transferBackupRuntime.idleGateTimer);
+        transferBackupRuntime.idleGateTimer = null;
+    }
+    if (transferBackupRuntime.periodicTimer) {
+        clearInterval(transferBackupRuntime.periodicTimer);
+        transferBackupRuntime.periodicTimer = null;
+    }
+
+    const config = getTransferBackupConfig();
+    if (!config.enabled) return;
+
+    if (!transferBackupRuntime.sourcesActive) {
+        transferBackupRuntime.lastBecameInactiveAt = Date.now();
+        const idleGateMs = Number.isFinite(config.idleGateMs) ? config.idleGateMs : DEFAULT_TRANSFER_BACKUP_CONFIG.idleGateMs;
+        transferBackupRuntime.idleGateTimer = setTimeout(() => {
+            maybeRunAutoTransferBackup('idle-gate').catch(() => { });
+        }, idleGateMs);
+        transferBackupRuntime.idleGateTimer.unref?.();
+    }
+
+    const intervalMs = Number.isFinite(config.minIntervalMs) ? config.minIntervalMs : DEFAULT_TRANSFER_BACKUP_CONFIG.minIntervalMs;
+    const periodic = setInterval(() => {
+        maybeRunAutoTransferBackup('periodic').catch(() => { });
+    }, intervalMs);
+    periodic.unref?.();
+    transferBackupRuntime.periodicTimer = periodic;
+}
+
+ipcMain.on('ssapp:sources-activity', (_event, payload = {}) => {
+    const active = !!payload.active;
+    const wasActive = transferBackupRuntime.sourcesActive;
+    transferBackupRuntime.sourcesActive = active;
+    if (active) {
+        if (transferBackupRuntime.idleGateTimer) {
+            clearTimeout(transferBackupRuntime.idleGateTimer);
+            transferBackupRuntime.idleGateTimer = null;
+        }
+    } else if (wasActive !== active) {
+        transferBackupRuntime.lastBecameInactiveAt = Date.now();
+        const config = getTransferBackupConfig();
+        const idleGateMs = Number.isFinite(config.idleGateMs) ? config.idleGateMs : DEFAULT_TRANSFER_BACKUP_CONFIG.idleGateMs;
+        transferBackupRuntime.idleGateTimer = setTimeout(() => {
+            maybeRunAutoTransferBackup('idle-gate').catch(() => { });
+        }, idleGateMs);
+        transferBackupRuntime.idleGateTimer.unref?.();
+    }
+});
 
 const spotifyOAuthMode = (() => {
     if (process.argv.includes('--spotify-oauth-intercept')) {
@@ -165,16 +723,26 @@ try {
     const tiktokConnector = require('tiktok-live-connector');
     installTikTokSignServerFallback(tiktokConnector);
 
-    const localSignerImplementation = {
-        sign: async (url, options) => {
-            if (!tikTokSignerHelper) {
-                throw new Error('TikTok signer helper not available');
-            }
-            console.log('[TikTok] localSigner.sign called. Options:', JSON.stringify(options));
-            const primaryUrl = normalizeTikTokLandingUrl(options?.landingUrl || options?.activeUrl || DEFAULT_TIKTOK_SIGNING_URL);
-            const fallbackUrl = (typeof options?.fallbackUrl === 'string' && options.fallbackUrl.trim())
-                ? normalizeTikTokLandingUrl(options.fallbackUrl.trim())
-                : null;
+	    const localSignerImplementation = {
+	        sign: async (url, options) => {
+	            if (!tikTokSignerHelper) {
+	                throw new Error('TikTok signer helper not available');
+	            }
+	            console.log('[TikTok] localSigner.sign called. Options:', {
+	                method: options?.method || null,
+	                performFetch: !!options?.performFetch,
+	                hasRoomId: !!options?.roomId,
+	                hasUniqueId: !!options?.uniqueId,
+	                hasSessionId: !!options?.sessionId,
+	                hasTtTargetIdc: !!options?.ttTargetIdc,
+	                hasActiveUrl: !!options?.activeUrl,
+	                hasLandingUrl: !!options?.landingUrl,
+	                hasFallbackUrl: !!options?.fallbackUrl
+	            });
+	            const primaryUrl = normalizeTikTokLandingUrl(options?.landingUrl || options?.activeUrl || DEFAULT_TIKTOK_SIGNING_URL);
+	            const fallbackUrl = (typeof options?.fallbackUrl === 'string' && options.fallbackUrl.trim())
+	                ? normalizeTikTokLandingUrl(options.fallbackUrl.trim())
+	                : null;
 
             let activeUrlUsed = primaryUrl;
             let win = await ensureTikTokSigningWindow(primaryUrl, { allowNavigation: false, mode: 'background' });
@@ -8969,6 +9537,13 @@ app.whenReady().then(async function () {
     }
 
     createWindow(Argv, false, true);
+
+    // Start/refresh transfer backup timers after app is ready.
+    try {
+        scheduleTransferBackupTimers();
+    } catch (error) {
+        console.warn('[TransferBackup] Failed to schedule timers:', error && error.message ? error.message : error);
+    }
 })
     .catch(console.error);
 
@@ -9722,6 +10297,11 @@ ipcMain.handle('startupPrefs:reset', async () => {
 });
 
 function createMenu() {
+    const transferBackupConfig = getTransferBackupConfig();
+    const hasTransferBackupFolder = !!(transferBackupConfig.folderPath && String(transferBackupConfig.folderPath).trim());
+    const transferBackupFilePath = buildTransferBackupFilePath(transferBackupConfig);
+    const autoBackupConfigured = !!(transferBackupConfig.enabled && transferBackupFilePath && transferBackupConfig.password && transferBackupConfig.password.method);
+
     const template = [
         // Mac specific top menu
         ...(isMac ? [{
@@ -9760,6 +10340,54 @@ function createMenu() {
                 {
                     label: 'Reset Everything (Full Reset)',
                     click: () => clearAllData()
+                },
+                {
+                    label: 'Transfer Backup',
+                    submenu: [
+                        {
+                            label: 'Create Transfer Backup…',
+                            click: async () => {
+                                await handleCreateTransferBackupMenu();
+                            }
+                        },
+                        {
+                            label: 'Restore Transfer Backup…',
+                            click: async () => {
+                                await restoreTransferBackupWithDialog();
+                            }
+                        },
+                        { type: 'separator' },
+                        {
+                            label: autoBackupConfigured ? 'Reconfigure Auto Transfer Backup…' : 'Configure Auto Transfer Backup…',
+                            click: async () => {
+                                await configureAutoTransferBackup();
+                            }
+                        },
+                        {
+                            label: 'Run Auto Backup Now',
+                            enabled: autoBackupConfigured && !transferBackupRuntime.inProgress,
+                            click: async () => {
+                                await handleAutoTransferBackupNowMenu();
+                            }
+                        },
+                        {
+                            label: 'Disable Auto Transfer Backup',
+                            enabled: transferBackupConfig.enabled === true,
+                            click: () => {
+                                disableAutoTransferBackup();
+                            }
+                        },
+                        { type: 'separator' },
+                        {
+                            label: 'Open Backup Folder',
+                            enabled: hasTransferBackupFolder,
+                            click: async () => {
+                                if (transferBackupConfig.folderPath) {
+                                    await shell.openPath(transferBackupConfig.folderPath);
+                                }
+                            }
+                        }
+                    ]
                 },
                 {
                     type: 'separator'
