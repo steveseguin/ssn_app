@@ -134,12 +134,7 @@ const ProfileManager = {
     
     // Force a refresh of links and UI elements
     refreshLinks();
-    
-    // Refresh the UI with the new settings
-    chrome.runtime.sendMessage({cmd: "getSettings"}, (response) => {
-      update(response, false);
-    });
-    
+
     alert(`Profile "${profile.name}" loaded successfully!`);
   },
 

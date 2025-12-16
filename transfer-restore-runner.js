@@ -5,6 +5,55 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const { spawn } = require('child_process');
+const Module = require('module');
+
+function bootstrapNodeModulePaths() {
+    try {
+        const candidates = [
+            path.join(__dirname, 'node_modules'),
+            path.join(process.cwd(), 'node_modules')
+        ];
+
+        if (process.resourcesPath) {
+            candidates.push(
+                path.join(process.resourcesPath, 'app.asar', 'node_modules'),
+                path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
+            );
+        }
+
+        if (process.execPath) {
+            const execDir = path.dirname(process.execPath);
+            candidates.push(
+                path.join(execDir, 'resources', 'app.asar', 'node_modules'),
+                path.join(execDir, 'resources', 'app.asar.unpacked', 'node_modules'),
+                path.join(execDir, '..', 'Resources', 'app.asar', 'node_modules'),
+                path.join(execDir, '..', 'Resources', 'app.asar.unpacked', 'node_modules')
+            );
+        }
+
+        const existing = (process.env.NODE_PATH || '').split(path.delimiter).filter(Boolean);
+        const next = new Set(existing);
+
+        for (const candidate of candidates) {
+            if (!candidate) continue;
+            try {
+                if (fs.existsSync(candidate)) {
+                    next.add(candidate);
+                }
+            } catch (_) { }
+        }
+
+        const joined = Array.from(next).join(path.delimiter);
+        if (joined !== (process.env.NODE_PATH || '')) {
+            process.env.NODE_PATH = joined;
+            if (typeof Module._initPaths === 'function') {
+                Module._initPaths();
+            }
+        }
+    } catch (_) { }
+}
+
+bootstrapNodeModulePaths();
 
 const { extractTransferBackup, readTransferBackupHeader } = require('./transfer-backup');
 
@@ -155,4 +204,3 @@ main().catch((error) => {
     } catch (_) { }
     process.exitCode = 1;
 });
-

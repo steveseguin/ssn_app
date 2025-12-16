@@ -94,8 +94,58 @@ const transferBackupRuntime = {
     lastBecameInactiveAt: Date.now(),
     idleGateTimer: null,
     periodicTimer: null,
-    inProgress: false
+    inProgress: false,
+    currentProgressId: null
 };
+
+const TRANSFER_BACKUP_NOTIFICATION_ICON = path.join(__dirname, "assets", "icons", "png", "256x256.png");
+
+function setTransferBackupProgressIndicator(progress) {
+    try {
+        if (mainWindow && !mainWindow.isDestroyed() && typeof mainWindow.setProgressBar === 'function') {
+            if (progress === true) {
+                mainWindow.setProgressBar(-1);
+                return;
+            }
+            if (progress === false || progress == null) {
+                mainWindow.setProgressBar(0);
+                return;
+            }
+            if (typeof progress === 'number' && Number.isFinite(progress)) {
+                const clamped = Math.max(0, Math.min(1, progress));
+                mainWindow.setProgressBar(clamped <= 0 ? 0.0001 : clamped);
+            }
+        }
+    } catch (_) { }
+}
+
+function setTransferBackupUiBusy(active) {
+    transferBackupRuntime.inProgress = !!active;
+    setTransferBackupProgressIndicator(active);
+    try {
+        createMenu();
+    } catch (_) { }
+}
+
+function showTransferBackupToast(level, title, message) {
+    try {
+        queueInjectorToast(level, title, message);
+    } catch (_) { }
+}
+
+function showTransferBackupNotification(title, body) {
+    try {
+        if (electron.Notification && typeof electron.Notification.isSupported === 'function' && !electron.Notification.isSupported()) {
+            return;
+        }
+        const notification = new electron.Notification({
+            title: String(title || 'Transfer Backup'),
+            body: String(body || ''),
+            icon: TRANSFER_BACKUP_NOTIFICATION_ICON
+        });
+        notification.show();
+    } catch (_) { }
+}
 
 function getTransferBackupConfig() {
     const raw = store.get(TRANSFER_BACKUP_STORE_KEY, {});
@@ -205,7 +255,7 @@ async function flushAllSessionStorageData() {
     );
 }
 
-function runTransferBackupSubprocess(payload) {
+function runTransferBackupSubprocess(payload, { onProgress = null } = {}) {
     return new Promise((resolve, reject) => {
         const runnerPath = path.join(__dirname, 'transfer-backup-runner.js');
         const child = spawn(process.execPath, [runnerPath], {
@@ -215,14 +265,44 @@ function runTransferBackupSubprocess(payload) {
 
         let stdout = '';
         let stderr = '';
+        let stdoutLineBuffer = '';
 
         child.stdout.setEncoding('utf8');
         child.stderr.setEncoding('utf8');
-        child.stdout.on('data', (chunk) => { stdout += chunk; });
+        child.stdout.on('data', (chunk) => {
+            stdout += chunk;
+            if (typeof onProgress !== 'function') return;
+
+            stdoutLineBuffer += chunk;
+            while (true) {
+                const newlineIndex = stdoutLineBuffer.indexOf('\n');
+                if (newlineIndex === -1) break;
+                const line = stdoutLineBuffer.slice(0, newlineIndex).trim();
+                stdoutLineBuffer = stdoutLineBuffer.slice(newlineIndex + 1);
+                if (!line) continue;
+                try {
+                    const parsed = JSON.parse(line);
+                    if (parsed && parsed.type === 'progress') {
+                        onProgress(parsed);
+                    }
+                } catch (_) { }
+            }
+        });
         child.stderr.on('data', (chunk) => { stderr += chunk; });
         child.on('error', reject);
 
         child.on('close', (code) => {
+            if (typeof onProgress === 'function') {
+                const tail = stdoutLineBuffer.trim();
+                if (tail) {
+                    try {
+                        const parsed = JSON.parse(tail);
+                        if (parsed && parsed.type === 'progress') {
+                            onProgress(parsed);
+                        }
+                    } catch (_) { }
+                }
+            }
             const raw = stdout.trim().split('\n').filter(Boolean).pop() || '';
             try {
                 const parsed = raw ? JSON.parse(raw) : null;
@@ -285,13 +365,14 @@ async function promptForPasswordOnce({ title, label }) {
     return password || null;
 }
 
-async function createTransferBackupWithDialog({ useAutoConfig = false } = {}) {
+async function createTransferBackupWithDialog({ useAutoConfig = false, onStart = null } = {}) {
     const config = getTransferBackupConfig();
     const userDataDir = app.getPath('userData');
 
     let outputFilePath = null;
     let includeCaches = config.includeCaches;
     let password = null;
+    const progressTitle = useAutoConfig ? 'Auto Transfer Backup' : 'Transfer Backup';
 
     if (useAutoConfig) {
         outputFilePath = buildTransferBackupFilePath(config);
@@ -323,20 +404,121 @@ async function createTransferBackupWithDialog({ useAutoConfig = false } = {}) {
         if (!password) return null;
     }
 
-    await flushAllSessionStorageData();
+    const progressId = crypto.randomBytes(8).toString('hex');
+    transferBackupRuntime.currentProgressId = progressId;
 
-    const compressionLevel = useAutoConfig ? 1 : 6;
-    const result = await runTransferBackupSubprocess({
-        userDataDir,
-        outputFilePath,
-        password,
-        includeCaches,
-        compressionLevel,
-        appName: app.name,
-        appVersion: app.getVersion()
+    const emitProgress = (patch = {}) => {
+        if (transferBackupRuntime.currentProgressId !== progressId) return;
+        try {
+            if (!mainWindow || mainWindow.isDestroyed()) return;
+            mainWindow.webContents.send('transfer-backup-progress', {
+                id: progressId,
+                title: progressTitle,
+                outputFilePath,
+                ...patch
+            });
+        } catch (_) { }
+    };
+
+    if (typeof onStart === 'function') {
+        try {
+            await onStart({
+                userDataDir,
+                outputFilePath,
+                includeCaches,
+                useAutoConfig
+            });
+        } catch (_) { }
+    }
+
+    emitProgress({
+        active: true,
+        indeterminate: true,
+        percent: null,
+        message: `Preparing… ${path.basename(outputFilePath)}`
     });
 
-    return result;
+    try {
+        await flushAllSessionStorageData();
+
+        emitProgress({
+            active: true,
+            indeterminate: true,
+            percent: null,
+            message: `Creating backup… ${path.basename(outputFilePath)}`
+        });
+
+        const compressionLevel = useAutoConfig ? 0 : 6;
+        const result = await runTransferBackupSubprocess({
+            userDataDir,
+            outputFilePath,
+            password,
+            includeCaches,
+            compressionLevel,
+            appName: app.name,
+            appVersion: app.getVersion()
+        }, {
+            onProgress: (progressEvent) => {
+                try {
+                    if (transferBackupRuntime.currentProgressId !== progressId) return;
+                    const bytesProcessed = Number(progressEvent?.bytesProcessed) || 0;
+                    const bytesTotal = Number(progressEvent?.bytesTotal) || 0;
+                    const entriesProcessed = Number(progressEvent?.entriesProcessed) || 0;
+                    const entriesTotal = Number(progressEvent?.entriesTotal) || 0;
+
+                    const percent = (bytesTotal > 0 && bytesProcessed >= 0)
+                        ? Math.max(0, Math.min(1, bytesProcessed / bytesTotal))
+                        : null;
+
+                    const indeterminate = !(typeof percent === 'number' && Number.isFinite(percent));
+
+                    const parts = [];
+                    if (!indeterminate) parts.push(`${Math.round(percent * 100)}%`);
+                    if (entriesTotal > 0) parts.push(`${entriesProcessed}/${entriesTotal} files`);
+                    if (bytesTotal > 0) parts.push(`${formatBytes(bytesProcessed)} / ${formatBytes(bytesTotal)}`);
+
+                    emitProgress({
+                        active: true,
+                        indeterminate,
+                        percent,
+                        entriesProcessed,
+                        entriesTotal,
+                        bytesProcessed,
+                        bytesTotal,
+                        message: parts.join(' • ') || `Creating backup… ${path.basename(outputFilePath)}`
+                    });
+
+                    setTransferBackupProgressIndicator(indeterminate ? true : percent);
+                } catch (_) { }
+            }
+        });
+
+        emitProgress({
+            active: false,
+            success: true,
+            indeterminate: false,
+            percent: 1,
+            message: `Complete: ${path.basename(result.filePath)} (${formatBytes(result.bytes)})`
+        });
+
+        return result;
+    } catch (error) {
+        const msg = error && error.message ? error.message : String(error);
+        emitProgress({
+            active: false,
+            success: false,
+            indeterminate: false,
+            percent: null,
+            error: msg,
+            message: msg
+        });
+        throw error;
+    } finally {
+        if (transferBackupRuntime.currentProgressId === progressId) {
+            transferBackupRuntime.currentProgressId = null;
+        }
+        setTransferBackupProgressIndicator(false);
+    }
 }
 
 function spawnTransferRestoreRunner({ backupFilePath, password }) {
@@ -412,10 +594,38 @@ function formatBytes(bytes) {
 }
 
 async function handleCreateTransferBackupMenu() {
+    if (transferBackupRuntime.inProgress) {
+        await dialog.showMessageBox({
+            type: 'info',
+            buttons: ['OK'],
+            title: 'Transfer Backup',
+            message: 'A transfer backup is already running.'
+        });
+        return;
+    }
+
+    let didStart = false;
+
     try {
-        const result = await createTransferBackupWithDialog({ useAutoConfig: false });
+        const result = await createTransferBackupWithDialog({
+            useAutoConfig: false,
+            onStart: ({ outputFilePath }) => {
+                didStart = true;
+                setTransferBackupUiBusy(true);
+                showTransferBackupToast('info', 'Transfer Backup', `Creating backup…\n${outputFilePath}`);
+            }
+        });
         if (!result) return;
         setTransferBackupConfig({ lastSuccessAt: Date.now(), lastError: null });
+
+        showTransferBackupToast('success', 'Transfer Backup Created', `${path.basename(result.filePath)} (${formatBytes(result.bytes)})`);
+        showTransferBackupNotification('Transfer Backup Created', `Saved:\n${result.filePath}\nSize: ${formatBytes(result.bytes)}`);
+
+        if (didStart) {
+            setTransferBackupUiBusy(false);
+            didStart = false;
+        }
+
         await dialog.showMessageBox({
             type: 'info',
             buttons: ['OK'],
@@ -423,16 +633,40 @@ async function handleCreateTransferBackupMenu() {
             message: `Saved:\n${result.filePath}\n\nSize: ${formatBytes(result.bytes)}`
         });
     } catch (error) {
+        const msg = error && error.message ? error.message : String(error);
+
+        showTransferBackupToast('error', 'Transfer Backup Failed', msg);
+        showTransferBackupNotification('Transfer Backup Failed', msg);
+
+        if (didStart) {
+            setTransferBackupUiBusy(false);
+            didStart = false;
+        }
+
         await dialog.showMessageBox({
             type: 'error',
             buttons: ['OK'],
             title: 'Transfer Backup Failed',
-            message: error && error.message ? error.message : String(error)
+            message: msg
         });
+    } finally {
+        if (didStart) {
+            setTransferBackupUiBusy(false);
+        }
     }
 }
 
 async function handleAutoTransferBackupNowMenu() {
+    if (transferBackupRuntime.inProgress) {
+        await dialog.showMessageBox({
+            type: 'info',
+            buttons: ['OK'],
+            title: 'Auto Backup',
+            message: 'A transfer backup is already running.'
+        });
+        return;
+    }
+
     const config = getTransferBackupConfig();
     if (!config.enabled) {
         await dialog.showMessageBox({
@@ -443,6 +677,8 @@ async function handleAutoTransferBackupNowMenu() {
         });
         return;
     }
+
+    let didStart = false;
 
     if (transferBackupRuntime.sourcesActive) {
         const confirmResult = await dialog.showMessageBox({
@@ -457,10 +693,25 @@ async function handleAutoTransferBackupNowMenu() {
     }
 
     try {
-        transferBackupRuntime.inProgress = true;
         setTransferBackupConfig({ lastAttemptAt: Date.now(), lastError: null });
-        const result = await createTransferBackupWithDialog({ useAutoConfig: true });
+        const result = await createTransferBackupWithDialog({
+            useAutoConfig: true,
+            onStart: ({ outputFilePath }) => {
+                didStart = true;
+                setTransferBackupUiBusy(true);
+                showTransferBackupToast('info', 'Auto Transfer Backup', `Creating backup…\n${outputFilePath}`);
+            }
+        });
         setTransferBackupConfig({ lastSuccessAt: Date.now(), lastError: null });
+
+        showTransferBackupToast('success', 'Auto Backup Complete', `${path.basename(result.filePath)} (${formatBytes(result.bytes)})`);
+        showTransferBackupNotification('Auto Backup Complete', `Saved:\n${result.filePath}\nSize: ${formatBytes(result.bytes)}`);
+
+        if (didStart) {
+            setTransferBackupUiBusy(false);
+            didStart = false;
+        }
+
         await dialog.showMessageBox({
             type: 'info',
             buttons: ['OK'],
@@ -470,6 +721,15 @@ async function handleAutoTransferBackupNowMenu() {
     } catch (error) {
         const msg = error && error.message ? error.message : String(error);
         setTransferBackupConfig({ lastError: msg });
+
+        showTransferBackupToast('error', 'Auto Backup Failed', msg);
+        showTransferBackupNotification('Auto Backup Failed', msg);
+
+        if (didStart) {
+            setTransferBackupUiBusy(false);
+            didStart = false;
+        }
+
         await dialog.showMessageBox({
             type: 'error',
             buttons: ['OK'],
@@ -477,7 +737,9 @@ async function handleAutoTransferBackupNowMenu() {
             message: msg
         });
     } finally {
-        transferBackupRuntime.inProgress = false;
+        if (didStart) {
+            setTransferBackupUiBusy(false);
+        }
     }
 }
 
@@ -563,19 +825,30 @@ async function maybeRunAutoTransferBackup(trigger) {
         return;
     }
 
-    transferBackupRuntime.inProgress = true;
+    setTransferBackupUiBusy(true);
     setTransferBackupConfig({ lastAttemptAt: Date.now(), lastError: null });
 
     try {
-        await createTransferBackupWithDialog({ useAutoConfig: true });
+        const result = await createTransferBackupWithDialog({
+            useAutoConfig: true,
+            onStart: ({ outputFilePath: startedPath }) => {
+                showTransferBackupToast('info', 'Auto Transfer Backup', `Creating backup… (${trigger || 'auto'})\n${startedPath}`);
+                showTransferBackupNotification('Auto Transfer Backup Started', `Saving:\n${startedPath}`);
+            }
+        });
         setTransferBackupConfig({ lastSuccessAt: Date.now(), lastError: null });
+
         console.log(`[TransferBackup] Auto backup complete (${trigger || 'auto'})`);
+        showTransferBackupToast('success', 'Auto Transfer Backup', `Complete (${trigger || 'auto'}): ${path.basename(result.filePath)} (${formatBytes(result.bytes)})`);
+        showTransferBackupNotification('Auto Transfer Backup Complete', `Saved:\n${result.filePath}\nSize: ${formatBytes(result.bytes)}`);
     } catch (error) {
         const msg = error && error.message ? error.message : String(error);
         console.warn('[TransferBackup] Auto backup failed:', msg);
         setTransferBackupConfig({ lastError: msg });
+        showTransferBackupToast('error', 'Auto Transfer Backup Failed', msg);
+        showTransferBackupNotification('Auto Transfer Backup Failed', msg);
     } finally {
-        transferBackupRuntime.inProgress = false;
+        setTransferBackupUiBusy(false);
     }
 }
 

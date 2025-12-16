@@ -2533,3 +2533,97 @@ parcialmente modificado main.css .entry > img[data-sourceicon] {
     border-radius: 14px;
   }
 }
+
+#transfer-backup-progress {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  z-index: 9999;
+  display: none;
+  background: rgba(20, 20, 20, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color: #fff;
+  backdrop-filter: blur(6px);
+}
+
+#transfer-backup-progress.ssapp-visible {
+  display: block;
+}
+
+#transfer-backup-progress .ssapp-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+#transfer-backup-progress .ssapp-progress-title {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+#transfer-backup-progress .ssapp-progress-message {
+  flex: 1;
+  font-size: 12px;
+  opacity: 0.9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#transfer-backup-progress .ssapp-progress-close {
+  background: transparent;
+  border: none;
+  color: inherit;
+  opacity: 0.8;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+#transfer-backup-progress .ssapp-progress-close:hover {
+  opacity: 1;
+}
+
+#transfer-backup-progress .ssapp-progress-bar {
+  position: relative;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+#transfer-backup-progress .ssapp-progress-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0%;
+  background: linear-gradient(90deg, #4caf50, #8bc34a);
+  transition: width 0.15s linear;
+}
+
+#transfer-backup-progress.ssapp-indeterminate .ssapp-progress-fill {
+  width: 35%;
+  background: linear-gradient(90deg,
+    rgba(76, 175, 80, 0.25),
+    rgba(76, 175, 80, 0.95),
+    rgba(76, 175, 80, 0.25));
+  animation: ssapp-transfer-backup-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes ssapp-transfer-backup-indeterminate {
+  0% {
+    transform: translateX(-140%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}

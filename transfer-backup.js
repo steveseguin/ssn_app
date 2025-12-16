@@ -63,7 +63,9 @@ function getDefaultIgnoreGlobs({ includeCaches = false } = {}) {
         '**/SingletonLock',
         '**/SingletonSocket',
         '**/SingletonCookie',
-        '**/DevTools Active Port'
+        '**/DevTools Active Port',
+        '**/LOCK',
+        '**/Cookies*'
     ];
 
     if (!includeCaches) {
@@ -111,31 +113,56 @@ function deriveKeyScrypt(password, salt, options) {
     return crypto.scryptSync(String(password), salt, keyLen, scryptOpts);
 }
 
+function isRetryableFsError(error) {
+    const code = error && typeof error === 'object' ? error.code : null;
+    return code === 'EBUSY' || code === 'EPERM' || code === 'EACCES' || code === 'ENOTEMPTY';
+}
+
+function waitMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRetries(fn, { retries = 10, baseDelayMs = 25 } = {}) {
+    let attempt = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+        try {
+            return await fn();
+        } catch (error) {
+            attempt += 1;
+            if (attempt > retries || !isRetryableFsError(error)) {
+                throw error;
+            }
+            const backoff = Math.min(1000, baseDelayMs * Math.pow(2, attempt - 1));
+            await waitMs(backoff);
+        }
+    }
+}
+
 async function writeFileAtomic(targetPath, writeFn) {
     const dir = path.dirname(targetPath);
     await fsp.mkdir(dir, { recursive: true });
 
-    const tmpPath = `${targetPath}.tmp`;
+    const tmpName = `${path.basename(targetPath)}.${process.pid}.${Date.now()}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+    const tmpPath = path.join(dir, tmpName);
     const bakPath = `${targetPath}.bak`;
-
-    await fsp.rm(tmpPath, { force: true });
 
     try {
         await writeFn(tmpPath);
 
         try {
-            await fsp.rm(bakPath, { force: true });
+            await withRetries(() => fsp.rm(bakPath, { force: true }));
         } catch (_) { }
 
         try {
-            await fsp.rename(targetPath, bakPath);
+            await withRetries(() => fsp.rename(targetPath, bakPath));
         } catch (_) { }
 
-        await fsp.rename(tmpPath, targetPath);
+        await withRetries(() => fsp.rename(tmpPath, targetPath));
         return { tmpPath, bakPath };
     } catch (error) {
         try {
-            await fsp.rm(tmpPath, { force: true });
+            await withRetries(() => fsp.rm(tmpPath, { force: true }));
         } catch (_) { }
         throw error;
     }
@@ -149,7 +176,8 @@ async function createTransferBackup({
     compressionLevel = 1,
     appName = null,
     appVersion = null,
-    scrypt = null
+    scrypt = null,
+    onProgress = null
 }) {
     const resolvedUserData = normalizeDirectoryPath(userDataDir);
     const resolvedOutput = path.resolve(outputFilePath);
@@ -215,6 +243,13 @@ async function createTransferBackup({
     const Archiver = requireArchiver();
 
     const startedAt = Date.now();
+    const reportProgress = typeof onProgress === 'function'
+        ? (payload) => {
+            try {
+                onProgress(payload);
+            } catch (_) { }
+        }
+        : null;
 
     await writeFileAtomic(resolvedOutput, async (tmpPath) => {
         const out = fs.createWriteStream(tmpPath, { flags: 'wx' });
@@ -230,8 +265,17 @@ async function createTransferBackup({
                 console.warn('[TransferBackup] archiver warning:', err);
             }
         });
+        if (reportProgress) {
+            archive.on('progress', (progress) => {
+                reportProgress({
+                    phase: 'archiving',
+                    progress
+                });
+            });
+        }
 
         const pipelinePromise = pipeline(archive, cipher, encrypted);
+        pipelinePromise.catch(() => { });
 
         archive.glob('**/*', {
             cwd: resolvedUserData,

@@ -308,10 +308,10 @@
         </div>
 
         <div class="entry-actions-live">
-            <button onclick="refreshWindow(this)" title="Reload this source" data-reloadhtml
-                class="hidden icon-button">🔄</button>
-            <button onclick="toggleSourceVisibility(this)" title="Toggle the visibility of this source" data-togglehtml
-                class="hidden icon-button">👁️</button>
+            <button onclick="refreshWindow(this)" title="Reload the capture page. Try this if having connection issues or just went live." data-reloadhtml
+                class="hidden icon-button">🔄 Reload</button>
+            <button onclick="toggleSourceVisibility(this)" title="Reveal the hidden capture page for this source" data-togglehtml
+                class="hidden icon-button">👁️ Reveal capture page</button>
             <button onclick="toggleSourceMute(this)" title="Pause/mute the video in this source" data-togglemute
                 class="hidden icon-button">🔇</button>
             <button onclick="stopThis(this)" title="Stop and close this source" data-stophtml
@@ -381,13 +381,14 @@
             <button class="hidden" data-signin data-group-signin
                 title="Open a sign-in window for this group's browser session." onclick="signin(this)">🔑
                 Sign-in</button>
+            <button onclick="showTipsModal('youtube')" title="Tips for using YouTube Groups" class="help-btn">❓ Help</button>
         </div>
         <div class="group-actions">
-            <button class="group-control" title="Toggle All Streams Visibility"
-                onclick="toggleGroupVisibility(this)">👁️</button>
-            <button class="group-control" title="Toggle All Streams Mute" onclick="toggleGroupMute(this)">🔊</button>
-            <button class="group-control" title="Stop All Streams" onclick="stopAllStreamsInGroup(this)">⏹️</button>
-            <button class="group-control" title="Reload All Streams" onclick="reloadAllStreamsInGroup(this)">🔄</button>
+            <button class="group-control" data-group-visibility title="Show/hide all capture pages in this group. New sources will inherit this setting."
+                onclick="toggleGroupVisibility(this)">👁️ Show all</button>
+            <button class="group-control" data-group-mute title="Mute/unmute all capture pages in this group. New sources will inherit this setting." onclick="toggleGroupMute(this)">🔊 Unmuted</button>
+            <button class="group-control" title="Stop all captures in this group" onclick="stopAllStreamsInGroup(this)">⏹️ Stop all</button>
+            <button class="group-control" title="Reload all capture pages. Try this if streams aren't connecting." onclick="reloadAllStreamsInGroup(this)">🔄 Reload all</button>
             <button title="Additional settings for this group" class="settings-btn button">⚙️</button>
             <div class="settings-menu">
                 <div class="settings-menu-section">
@@ -1352,9 +1353,11 @@
                 const hide = (!isTikTokLocalSigner && isTikTokApiMode) || (!isTikTokApiMode && !showDuringConnect && !showWhenActive);
                 visibilityControl.classList.toggle('hidden', hide);
                 if (isTikTokLocalSigner && isTikTokApiMode) {
-                    visibilityControl.textContent = '👁️';
+                    visibilityControl.textContent = '👁️ Reveal capture page';
+                    visibilityControl.title = 'Show the TikTok signing window';
                 } else {
-                    visibilityControl.textContent = source.isVisible ? '👁️' : '🙈';
+                    visibilityControl.textContent = source.isVisible ? '🙈 Hide capture page' : '👁️ Reveal capture page';
+                    visibilityControl.title = source.isVisible ? 'Hide the capture page for this source' : 'Reveal the hidden capture page for this source';
                 }
                 if (isTikTokLocalSigner && isTikTokApiMode) {
                     visibilityControl.onclick = () => tiktokSigningWindowControl(source.id, 'toggle-visibility');
@@ -1562,13 +1565,19 @@
                 }
             }
 
-            const visibilityButton = element.querySelector('.group-actions button[title="Toggle All Streams Visibility"]');
+            const visibilityButton = element.querySelector('.group-actions button[data-group-visibility]');
             if (visibilityButton) {
-                visibilityButton.textContent = group.groupVisible ? '👁️' : '🙈';
+                visibilityButton.textContent = group.groupVisible ? '🙈 Hide all' : '👁️ Show all';
+                visibilityButton.title = group.groupVisible
+                    ? 'Hide all capture pages in this group. New sources will inherit this setting.'
+                    : 'Show all capture pages in this group. New sources will inherit this setting.';
             }
-            const muteButton = element.querySelector('.group-actions button[title="Toggle All Streams Mute"]');
+            const muteButton = element.querySelector('.group-actions button[data-group-mute]');
             if (muteButton) {
-                muteButton.textContent = group.groupMuted ? '🔇' : '🔊';
+                muteButton.textContent = group.groupMuted ? '🔇 Muted' : '🔊 Unmuted';
+                muteButton.title = group.groupMuted
+                    ? 'Unmute all capture pages in this group. New sources will inherit this setting.'
+                    : 'Mute all capture pages in this group. New sources will inherit this setting.';
             }
 
             // Update the connection mode in the settings menu
@@ -6631,8 +6640,8 @@
 
                 if (visibilityControl && !visibilityControl.classList.contains('hidden')) {
                     const visible = !!state?.visible;
-                    visibilityControl.textContent = visible ? '👁️' : '🙈';
-                    visibilityControl.title = visible ? 'Hide signing window' : 'Show signing window';
+                    visibilityControl.textContent = visible ? '🙈 Hide capture page' : '👁️ Reveal capture page';
+                    visibilityControl.title = visible ? 'Hide the TikTok signing window' : 'Reveal the TikTok signing window';
                 }
                 if (muteControl && !muteControl.classList.contains('hidden')) {
                     const muted = !!state?.muted;
@@ -8253,6 +8262,137 @@
                         console.warn('Failed to apply socialstream-injector-status toast:', err);
                     }
                 });
+
+                (function setupTransferBackupProgressUi() {
+                    let currentId = null;
+                    let hideTimer = null;
+                    let root = null;
+                    let titleEl = null;
+                    let messageEl = null;
+                    let fillEl = null;
+
+                    function clearHideTimer() {
+                        if (!hideTimer) return;
+                        clearTimeout(hideTimer);
+                        hideTimer = null;
+                    }
+
+                    function ensureUi() {
+                        if (root && document.body.contains(root)) return;
+                        root = document.getElementById('transfer-backup-progress');
+                        if (!root) {
+                            root = document.createElement('div');
+                            root.id = 'transfer-backup-progress';
+
+                            const header = document.createElement('div');
+                            header.className = 'ssapp-progress-header';
+
+                            titleEl = document.createElement('div');
+                            titleEl.className = 'ssapp-progress-title';
+                            titleEl.textContent = 'Transfer Backup';
+
+                            messageEl = document.createElement('div');
+                            messageEl.className = 'ssapp-progress-message';
+
+                            const closeBtn = document.createElement('button');
+                            closeBtn.className = 'ssapp-progress-close';
+                            closeBtn.type = 'button';
+                            closeBtn.setAttribute('aria-label', 'Dismiss');
+                            closeBtn.textContent = '×';
+                            closeBtn.addEventListener('click', () => {
+                                clearHideTimer();
+                                currentId = null;
+                                try {
+                                    root.classList.remove('ssapp-visible');
+                                    root.classList.remove('ssapp-indeterminate');
+                                    if (fillEl) fillEl.style.width = '0%';
+                                } catch (_) { }
+                            });
+
+                            header.appendChild(titleEl);
+                            header.appendChild(messageEl);
+                            header.appendChild(closeBtn);
+
+                            const bar = document.createElement('div');
+                            bar.className = 'ssapp-progress-bar';
+
+                            fillEl = document.createElement('div');
+                            fillEl.className = 'ssapp-progress-fill';
+                            bar.appendChild(fillEl);
+
+                            root.appendChild(header);
+                            root.appendChild(bar);
+                            document.body.appendChild(root);
+                        } else {
+                            titleEl = root.querySelector('.ssapp-progress-title');
+                            messageEl = root.querySelector('.ssapp-progress-message');
+                            fillEl = root.querySelector('.ssapp-progress-fill');
+                        }
+                    }
+
+                    function show(payload) {
+                        ensureUi();
+                        clearHideTimer();
+
+                        try {
+                            root.classList.add('ssapp-visible');
+                            const title = (payload && payload.title) ? String(payload.title) : 'Transfer Backup';
+                            const message = payload && payload.message ? String(payload.message) : '';
+
+                            if (titleEl) titleEl.textContent = title;
+                            if (messageEl) messageEl.textContent = message.replace(/\s+/g, ' ').trim();
+
+                            const percent = typeof payload?.percent === 'number' && Number.isFinite(payload.percent) ? payload.percent : null;
+                            const indeterminate = (typeof payload?.indeterminate === 'boolean')
+                                ? payload.indeterminate
+                                : (percent == null);
+                            root.classList.toggle('ssapp-indeterminate', indeterminate);
+
+                            if (fillEl && percent != null) {
+                                fillEl.style.width = `${Math.max(0, Math.min(100, percent * 100))}%`;
+                            } else if (fillEl) {
+                                fillEl.style.width = '0%';
+                            }
+                        } catch (_) { }
+                    }
+
+                    function hideSoon() {
+                        ensureUi();
+                        clearHideTimer();
+                        hideTimer = setTimeout(() => {
+                            try {
+                                root.classList.remove('ssapp-visible');
+                                root.classList.remove('ssapp-indeterminate');
+                            } catch (_) { }
+                            currentId = null;
+                            hideTimer = null;
+                        }, 3500);
+                    }
+
+                    ipcRenderer.on('transfer-backup-progress', (_event, payload = {}) => {
+                        try {
+                            const id = payload && payload.id ? String(payload.id) : '';
+                            if (!id) return;
+
+                            const active = payload && typeof payload.active === 'boolean' ? payload.active : true;
+
+                            if (currentId && currentId !== id) {
+                                if (!active) return;
+                                currentId = id;
+                            } else if (!currentId) {
+                                currentId = id;
+                            }
+
+                            show(payload);
+
+                            if (!active) {
+                                hideSoon();
+                            }
+                        } catch (err) {
+                            console.warn('Failed to apply transfer-backup-progress update:', err);
+                        }
+                    });
+                })();
 
                 ipcRenderer.on('fromMainToIndex', async (event, ...args) => {
                     log("FROM MAIN TO INDEX", args[0]);

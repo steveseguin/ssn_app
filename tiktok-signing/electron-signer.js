@@ -278,6 +278,62 @@ function deriveSigningPath(win, roomId, urlToSign, explicitPath) {
   return ensureRoomId(explicit || override || fallback, roomId);
 }
 
+async function scrapeRoomIdFromWindow(win, timeoutMs = 8000) {
+  const rawTimeout = Number(timeoutMs);
+  const safeTimeoutMs =
+    Number.isFinite(rawTimeout) && rawTimeout > 0 ? Math.min(rawTimeout, 30000) : 0;
+  if (!safeTimeoutMs) {
+    return null;
+  }
+  try {
+    return await exec(
+      win,
+      `
+        (() => {
+          const extract = () => {
+            try {
+              const state = window.SIGI_STATE || window.__SIGI_STATE__ || null;
+              if (state) {
+                try {
+                  const liveRoom = state.liveRoom && state.liveRoom.liveRoomUserInfo && state.liveRoom.liveRoomUserInfo.liveRoom;
+                  if (liveRoom && liveRoom.roomId) return liveRoom.roomId;
+                } catch (_) {}
+                try {
+                  const room = state.appContext && state.appContext.state && state.appContext.state.room;
+                  if (room && room.roomId) return room.roomId;
+                } catch (_) {}
+                try {
+                  if (state.room && state.room.roomId) return state.room.roomId;
+                } catch (_) {}
+              }
+              return null;
+            } catch (_) {
+              return null;
+            }
+          };
+
+          const immediate = extract();
+          if (immediate) return immediate;
+
+          const timeoutMs = ${safeTimeoutMs};
+          return new Promise((resolve) => {
+            const start = Date.now();
+            const tick = () => {
+              const value = extract();
+              if (value) return resolve(value);
+              if (Date.now() - start >= timeoutMs) return resolve(null);
+              setTimeout(tick, 250);
+            };
+            tick();
+          });
+        })();
+      `
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
 async function readMsTokenFromSession(win) {
   try {
     const electronSession = win && win.webContents ? win.webContents.session : null;
@@ -412,12 +468,30 @@ async function generateSigningParameters(win, options = {}) {
     fetchOptions = {}
   } = options;
 
-  const pathWithQuery = deriveSigningPath(win, roomId, urlToSign, explicitPath);
   const msTokenFromSession = typeof msTokenOverride === "string" && msTokenOverride.trim()
     ? msTokenOverride.trim()
     : await readMsTokenFromSession(win);
+
+  let resolvedRoomId = roomId;
+  if (!resolvedRoomId) {
+    resolvedRoomId = await scrapeRoomIdFromWindow(win, 8000);
+  }
+
+  const effectiveRoomId = (() => {
+    if (typeof resolvedRoomId === "string") {
+      const trimmed = resolvedRoomId.trim();
+      return trimmed ? trimmed : null;
+    }
+    if (resolvedRoomId === undefined || resolvedRoomId === null) {
+      return null;
+    }
+    const asString = String(resolvedRoomId).trim();
+    return asString ? asString : null;
+  })();
+
+  const pathWithQuery = deriveSigningPath(win, effectiveRoomId, urlToSign, explicitPath);
   const fetchParams = buildWebcastFetchParams({
-    roomId,
+    roomId: effectiveRoomId,
     deviceId,
     userAgent,
     browserName,
@@ -440,7 +514,7 @@ async function generateSigningParameters(win, options = {}) {
       })();
 
   async function tryFetchFromWebcast() {
-    if (!roomId) {
+    if (!effectiveRoomId) {
       return null;
     }
     const fetchScript = `
@@ -527,7 +601,7 @@ async function generateSigningParameters(win, options = {}) {
       })();
     `;
     const fetchResult = await exec(win, fetchScript);
-    if (!fetchResult || !fetchResult.ok || !fetchResult.url) {
+    if (!fetchResult || !fetchResult.url) {
       return null;
     }
     let parsedUrl = null;
@@ -572,23 +646,32 @@ async function generateSigningParameters(win, options = {}) {
       browserVersion,
       userAgent,
       pathWithQuery: normalizedPath,
-      room_id: searchParams.get("room_id") || roomId,
+      room_id: searchParams.get("room_id") || effectiveRoomId,
       cursor: searchParams.get("cursor") || "",
       notice: searchParams.get("notice") || fetchParams.notice
     };
     const fetchResultPayload =
-      fetchResult && fetchResult.bodyBase64
+      fetchResult &&
+        (fetchResult.status !== null ||
+          fetchResult.statusText ||
+          fetchResult.headers ||
+          fetchResult.bodyBase64 ||
+          fetchResult.bodyError ||
+          fetchResult.error)
         ? {
+          ok: fetchResult.ok === true,
           status: fetchResult.status || null,
           statusText: fetchResult.statusText || null,
           headers: fetchResult.headers || null,
-          bodyBase64: fetchResult.bodyBase64
+          bodyBase64: fetchResult.bodyBase64 || null,
+          bodyError: fetchResult.bodyError || null,
+          error: fetchResult.error || null
         }
         : null;
     if (fetchResultPayload) {
       payload.fetchResult = fetchResultPayload;
-    } else if (fetchResult && fetchResult.bodyError) {
-      payload.fetchError = fetchResult.bodyError;
+    } else if (fetchResult && (fetchResult.bodyError || fetchResult.error)) {
+      payload.fetchError = fetchResult.bodyError || fetchResult.error;
     }
     return {
       payload,
@@ -604,6 +687,11 @@ async function generateSigningParameters(win, options = {}) {
   // If we have a specific path to sign that isn't the fetch endpoint, we must proceed to the signing script
   // so that we sign the CORRECT path.
   const isFetchRequest = pathWithQuery && pathWithQuery.includes('/webcast/im/fetch/');
+  // For websocket bootstrap (im/fetch), we only need the fetched protobuf response and headers/cookies.
+  // Avoid expensive crawler signing work on the hot path.
+  if (fallbackPayload && performFetch && isFetchRequest) {
+    return fallbackPayload;
+  }
   if (fallbackPayload && !performFetch && (!pathWithQuery || isFetchRequest)) {
     return fallbackPayload;
   }
@@ -629,7 +717,7 @@ async function generateSigningParameters(win, options = {}) {
           throw new Error("Neither byted_acrawler.sign nor byted_acrawler.frontierSign is available.");
         }
         const deviceId = ${JSON.stringify(deviceId)};
-        const roomId = ${JSON.stringify(roomId)};
+        const roomId = ${JSON.stringify(effectiveRoomId)};
         const userAgent = ${JSON.stringify(userAgent)};
         const browserName = ${JSON.stringify(browserName)};
         const browserVersion = ${JSON.stringify(browserVersion)};

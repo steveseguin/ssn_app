@@ -300,6 +300,145 @@ function summarizeSignerPayload(payload) {
     };
 }
 
+function sleep(ms) {
+    if (!Number.isFinite(ms) || ms <= 0) {
+        return Promise.resolve();
+    }
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sleepWithStop(manager, ms) {
+    const total = Number(ms);
+    if (!Number.isFinite(total) || total <= 0) {
+        return;
+    }
+    const sliceMs = 1000;
+    let remaining = total;
+    while (remaining > 0) {
+        if (manager && manager.isStopped) {
+            const stoppedError = new Error('Connection stopped');
+            stoppedError.code = 'SSAPP_TIKTOK_STOPPED';
+            throw stoppedError;
+        }
+        const step = Math.min(remaining, sliceMs);
+        await sleep(step);
+        remaining -= step;
+    }
+}
+
+const localSignerSessionGate = {
+    tail: Promise.resolve(),
+    nextAllowedAt: 0,
+    cooldownUntil: 0,
+    cooldownReason: null,
+    perUniqueIdNextAllowedAt: new Map()
+};
+
+function getLocalSignerMinAttemptIntervalMs() {
+    const raw = Number(CONFIG?.CONNECTION?.LOCAL_SIGNER_MIN_ATTEMPT_INTERVAL_MS);
+    return Number.isFinite(raw) && raw > 0 ? raw : 10000;
+}
+
+function setLocalSignerCooldown(untilEpochMs, reason) {
+    const until = Number(untilEpochMs);
+    if (!Number.isFinite(until) || until <= 0) {
+        return;
+    }
+    if (until > localSignerSessionGate.cooldownUntil) {
+        localSignerSessionGate.cooldownUntil = until;
+        localSignerSessionGate.cooldownReason = typeof reason === 'string' && reason.trim() ? reason.trim() : null;
+    }
+}
+
+async function runWithLocalSignerSessionGate(manager, uniqueId, taskName, fn) {
+    const previous = localSignerSessionGate.tail;
+    let release = null;
+    localSignerSessionGate.tail = new Promise((resolve) => { release = resolve; });
+    await previous;
+
+    const key = typeof uniqueId === 'string' && uniqueId.trim() ? uniqueId.trim().toLowerCase() : null;
+    const minIntervalMs = getLocalSignerMinAttemptIntervalMs();
+
+    try {
+        if (manager && manager.isStopped) {
+            const stoppedError = new Error('Connection stopped');
+            stoppedError.code = 'SSAPP_TIKTOK_STOPPED';
+            throw stoppedError;
+        }
+
+        const now = Date.now();
+        const globalAllowedAt = localSignerSessionGate.nextAllowedAt || 0;
+        const perAllowedAt = key ? (localSignerSessionGate.perUniqueIdNextAllowedAt.get(key) || 0) : 0;
+        const cooldownUntil = localSignerSessionGate.cooldownUntil || 0;
+        const allowedAt = Math.max(globalAllowedAt, perAllowedAt, cooldownUntil);
+        const waitMs = allowedAt - now;
+
+        if (waitMs > 0) {
+            manager?.logDebug?.('sign.local.throttle_wait', {
+                task: taskName || null,
+                waitMs,
+                cooldownReason: localSignerSessionGate.cooldownReason || null
+            });
+            await sleepWithStop(manager, waitMs);
+        }
+
+        return await fn();
+    } finally {
+        const nextAt = Date.now() + minIntervalMs;
+        localSignerSessionGate.nextAllowedAt = Math.max(localSignerSessionGate.nextAllowedAt || 0, nextAt);
+        if (key) {
+            const existing = localSignerSessionGate.perUniqueIdNextAllowedAt.get(key) || 0;
+            localSignerSessionGate.perUniqueIdNextAllowedAt.set(key, Math.max(existing, nextAt));
+        }
+        try { release && release(); } catch (_) { /* noop */ }
+    }
+}
+
+function readHeaderCaseInsensitive(headers, targetName) {
+    if (!headers || typeof headers !== 'object') {
+        return null;
+    }
+    const name = typeof targetName === 'string' ? targetName.toLowerCase() : '';
+    if (!name) {
+        return null;
+    }
+    if (headers[name] !== undefined) {
+        return headers[name];
+    }
+    for (const [key, value] of Object.entries(headers)) {
+        if (typeof key === 'string' && key.toLowerCase() === name) {
+            return value;
+        }
+    }
+    return null;
+}
+
+function parseRetryAfterSeconds(value) {
+    if (value === undefined || value === null) {
+        return null;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return Math.max(0, Math.floor(value));
+    }
+    const raw = typeof value === 'string' ? value.trim() : String(value).trim();
+    if (!raw) {
+        return null;
+    }
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric)) {
+        return Math.max(0, Math.floor(numeric));
+    }
+    const epoch = Date.parse(raw);
+    if (Number.isFinite(epoch)) {
+        const deltaMs = epoch - Date.now();
+        if (deltaMs <= 0) {
+            return 0;
+        }
+        return Math.ceil(deltaMs / 1000);
+    }
+    return null;
+}
+
 function getMainWindow() {
     try {
         const win = env.getMainWindow ? env.getMainWindow() : null;
@@ -1472,14 +1611,20 @@ const CONFIG = {
         OFFLINE_RETRY_SEQUENCE_MS: [15000, 60000, 900000], // 15s, 1m, 15m
         // Cap exponential backoff for transient errors (5 minutes max)
         MAX_RECONNECT_DELAY_MS: 300000, // 5 minutes
-        // Backoff jitter factor (e.g., 0.1 => ±10%)
-        BACKOFF_JITTER: 0.1,
-        // Rate limit retry delay
-        RATE_LIMIT_RETRY_MS: 300000, // 5 minutes
-        // Maximum time to wait for the Euler sign server before failing fast
-        SIGN_REQUEST_TIMEOUT_MS: 25000,
-        // Increase timeout if the first attempt times out (added incrementally to avoid long hangs)
-        SIGN_REQUEST_TIMEOUT_STEP_MS: 10000,
+	        // Backoff jitter factor (e.g., 0.1 => ±10%)
+	        BACKOFF_JITTER: 0.1,
+	        // Rate limit retry delay
+	        RATE_LIMIT_RETRY_MS: 300000, // 5 minutes
+	        // Maximum delay used when backing off after TikTok 429s
+	        RATE_LIMIT_RETRY_MAX_MS: 1800000, // 30 minutes
+	        // After this many consecutive 429s, fall back to polling/legacy for the session
+	        RATE_LIMIT_FALLBACK_THRESHOLD: 2,
+	        // Local signer connect throttle (reduces 429s caused by session-start storms)
+	        LOCAL_SIGNER_MIN_ATTEMPT_INTERVAL_MS: 10000, // 10 seconds
+	        // Maximum time to wait for the Euler sign server before failing fast
+	        SIGN_REQUEST_TIMEOUT_MS: 25000,
+	        // Increase timeout if the first attempt times out (added incrementally to avoid long hangs)
+	        SIGN_REQUEST_TIMEOUT_STEP_MS: 10000,
         // Do not exceed this timeout when boosting sign server calls
         SIGN_REQUEST_TIMEOUT_MAX_MS: 45000,
         // Small pause before immediately retrying after a boosted timeout
@@ -2419,12 +2564,14 @@ class ConnectionManager {
         this.tiktokLogWriter = createTikTokLogWriter(this.username, this.wssID);
         this.tiktokLogFilePath = this.tiktokLogWriter ? this.tiktokLogWriter.filePath : null;
         this.warnedMissingTtTargetIdc = false;
-        this.signingConfig = normalizeSigningConfig(signing);
-        this.signingProvider = options.signingProvider || 'auto';
-        this.localSigner = env.localSigner || null;
-        this.signServerFailureCount = 0;
-        this.signRequestTimeoutMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_MS || 25000;
-        this.signRequestTimeoutBaseMs = this.signRequestTimeoutMs;
+	        this.signingConfig = normalizeSigningConfig(signing);
+	        this.signingProvider = options.signingProvider || 'auto';
+	        this.localSigner = env.localSigner || null;
+	        this.signServerFailureCount = 0;
+	        this.tiktokRateLimitCount = 0;
+	        this.tiktokRateLimitLastAt = 0;
+	        this.signRequestTimeoutMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_MS || 25000;
+	        this.signRequestTimeoutBaseMs = this.signRequestTimeoutMs;
         this.signRequestTimeoutStepMs = CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_STEP_MS || 10000;
         if (!Number.isFinite(this.signRequestTimeoutStepMs) || this.signRequestTimeoutStepMs <= 0) {
             this.signRequestTimeoutStepMs = 10000;
@@ -2579,45 +2726,52 @@ class ConnectionManager {
         this.tiktokLogFilePath = null;
     }
 
-    buildConnectionOptions(useLegacyConnector = false) {
-        const forceLegacy = useLegacyConnector || usingLegacyTikTokConnector || this.preferredStrategy === 'legacy';
-        if (forceLegacy) {
-            const legacyOptions = {
-                processInitialData: false,
-                enableExtendedGiftInfo: true,
-                enableWebsocketUpgrade: true,
-                fetchRoomInfoOnConnect: true,
-                requestPollingIntervalMs: 1000,
-                clientParams: {
-                    app_language: "en-US",
-                    device_platform: "web"
-                }
-            };
-            if (this.signingConfig?.apiKey) {
-                legacyOptions.signApiKey = this.signingConfig.apiKey;
-            }
-            return legacyOptions;
-        }
+	    buildConnectionOptions(useLegacyConnector = false) {
+	        const forceLegacy = useLegacyConnector || usingLegacyTikTokConnector || this.preferredStrategy === 'legacy';
+	        if (forceLegacy) {
+	            const legacyOptions = {
+	                processInitialData: false,
+	                enableExtendedGiftInfo: true,
+	                enableWebsocketUpgrade: true,
+	                fetchRoomInfoOnConnect: true,
+	                requestPollingIntervalMs: 1000,
+	                clientParams: {
+	                    app_language: "en-US",
+	                    device_platform: "web"
+	                }
+	            };
+	            if (this.signingConfig?.apiKey) {
+	                legacyOptions.signApiKey = this.signingConfig.apiKey;
+	            }
+	            return legacyOptions;
+	        }
 
-        const clientParams = {
-            app_language: "en-US",
-            device_platform: "web"
-        };
-        const options = {
-            processInitialData: false,
-            enableExtendedGiftInfo: true,
-            enableRequestPolling: true,
-            requestPollingIntervalMs: 1000,
-            fetchRoomInfoOnConnect: true,
-            enableWebsocketUpgrade: !forceLegacy,
-            webClientParams: { ...clientParams },
-            wsClientParams: { ...clientParams },
-            clientParams: { ...clientParams }
-        };
-        const usingLocalSigner = this.shouldUseLocalSigner();
-        if (this.signingConfig?.apiKey && !usingLocalSigner && this.signingProvider !== 'local') {
-            options.signApiKey = this.signingConfig.apiKey;
-        }
+	        const clientParams = {
+	            app_language: "en-US",
+	            device_platform: "web"
+	        };
+	        const options = {
+	            processInitialData: false,
+	            enableExtendedGiftInfo: true,
+	            enableRequestPolling: true,
+	            requestPollingIntervalMs: 1000,
+	            fetchRoomInfoOnConnect: true,
+	            enableWebsocketUpgrade: !forceLegacy,
+	            webClientParams: { ...clientParams },
+	            wsClientParams: { ...clientParams },
+	            clientParams: { ...clientParams }
+	        };
+	        const usingLocalSigner = this.shouldUseLocalSigner();
+	        if (usingLocalSigner) {
+	            // Local signer connections should be as gentle as possible: avoid extra preflight
+	            // calls (room info, gift catalog) and rely on the signing window to resolve room_id.
+	            options.fetchRoomInfoOnConnect = false;
+	            options.enableExtendedGiftInfo = false;
+	            options.connectWithUniqueId = true;
+	        }
+	        if (this.signingConfig?.apiKey && !usingLocalSigner && this.signingProvider !== 'local') {
+	            options.signApiKey = this.signingConfig.apiKey;
+	        }
 
         const localProvider = usingLocalSigner
             ? this.createLocalSignedWebSocketProvider()
@@ -2672,14 +2826,21 @@ class ConnectionManager {
                     'Content-Type': 'application/json; charset=utf-8'
                 }
             }
-        };
-        let signerPayload;
-        try {
-            signerPayload = await this.localSigner.sign('https://webcast.tiktok.com/webcast/im/fetch/', signOptions);
-        } catch (error) {
-            console.error('[TikTok] Local signer invocation failed:', error);
-            throw error;
-        }
+	        };
+	        let signerPayload;
+	        try {
+	            signerPayload = await runWithLocalSignerSessionGate(
+	                this,
+	                uniqueId || this.username,
+	                'local_signer_im_fetch',
+	                async () => this.localSigner.sign('https://webcast.tiktok.com/webcast/im/fetch/', signOptions)
+	            );
+	        } catch (error) {
+	            if (error?.code !== 'SSAPP_TIKTOK_STOPPED') {
+	                console.error('[TikTok] Local signer invocation failed:', error);
+	            }
+	            throw error;
+	        }
 
         if (!signerPayload || typeof signerPayload !== 'object') {
             throw new Error('Local signer returned an invalid payload.');
@@ -2689,24 +2850,66 @@ class ConnectionManager {
             console.log('[TikTok] signerPayload received', summarizeSignerPayload(signerPayload));
         }
 
-        // Update credentials immediately so we persist the session even if we return early
-        this.updateSessionCredentialsFromSigner(signerPayload);
+	        // Update credentials immediately so we persist the session even if we return early
+	        this.updateSessionCredentialsFromSigner(signerPayload);
 
-        // If we have a fetch result from the window, use it
-        if (signerPayload.fetchResult && signerPayload.fetchResult.bodyBase64) {
-            try {
-                if (shouldLogTikTokDebug()) {
-                    console.log('[TikTok] Received fetch result from local signer. Status:', signerPayload.fetchResult.status);
-                }
+	        const fetchResult = signerPayload.fetchResult && typeof signerPayload.fetchResult === 'object'
+	            ? signerPayload.fetchResult
+	            : null;
+	        const fetchStatus = fetchResult && Number.isFinite(Number(fetchResult.status)) ? Number(fetchResult.status) : null;
 
-                if (signerPayload.fetchResult.status !== 200) {
-                    throw new Error(`Fetch failed with status ${signerPayload.fetchResult.status}: ${signerPayload.fetchResult.statusText}`);
-                }
+	        // If TikTok responded with a non-200 in the signing window, do not double-hit via node fallback.
+	        if (fetchResult && Number.isFinite(fetchStatus) && fetchStatus !== 200) {
+	            const retryAfterSeconds = parseRetryAfterSeconds(readHeaderCaseInsensitive(fetchResult.headers, 'retry-after'));
+	            const statusText = typeof fetchResult.statusText === 'string' ? fetchResult.statusText : '';
+	            if (fetchStatus === 429) {
+	                const err = new Error(`TikTok rate limited (429)${retryAfterSeconds ? `; retry after ${retryAfterSeconds}s` : ''}`);
+	                err.name = 'TikTokRateLimitError';
+	                err.status = 429;
+	                err.retryAfterSeconds = retryAfterSeconds;
+	                err.source = 'local_signer_fetch';
+	                throw err;
+	            }
+	            const err = new Error(`TikTok fetch failed (${fetchStatus})${statusText ? `: ${statusText}` : ''}`);
+	            err.name = 'TikTokFetchError';
+	            err.status = fetchStatus;
+	            err.source = 'local_signer_fetch';
+	            throw err;
+	        }
 
-                const bytes = Buffer.from(signerPayload.fetchResult.bodyBase64, 'base64');
+	        // If we have a fetch result body from the window, use it.
+	        if (fetchResult && typeof fetchResult.bodyBase64 === 'string' && fetchResult.bodyBase64) {
+	            try {
+	                if (shouldLogTikTokDebug()) {
+	                    console.log('[TikTok] Received fetch result from local signer. Status:', fetchResult.status);
+	                }
+
+	                const bytes = Buffer.from(fetchResult.bodyBase64, 'base64');
                 if (shouldLogTikTokDebug()) {
                     console.log('[TikTok] Body length:', bytes.length);
                 }
+
+                const ensureValidProtoMessageFetchResult = (proto, source = 'unknown') => {
+                    const wsUrl = proto && typeof proto.wsUrl === 'string' ? proto.wsUrl.trim() : '';
+                    if (!wsUrl) {
+                        const err = new Error('TikTok did not return a WebSocket URL (wsUrl) during bootstrap.');
+                        err.name = 'TikTokWsUrlError';
+                        err.code = 'SSAPP_TIKTOK_WSURL_MISSING';
+                        err.source = source;
+                        throw err;
+                    }
+                    try {
+                        // ws library requires an absolute URL; allow http(s) since ws will coerce it.
+                        new URL(wsUrl);
+                    } catch (_) {
+                        const err = new Error(`TikTok returned an invalid WebSocket URL (wsUrl): ${wsUrl.slice(0, 120)}`);
+                        err.name = 'TikTokWsUrlError';
+                        err.code = 'SSAPP_TIKTOK_WSURL_INVALID';
+                        err.source = source;
+                        throw err;
+                    }
+                    return proto;
+                };
 
                 if (typeof connectorDeserializeMessage === 'function') {
                     try {
@@ -2725,7 +2928,7 @@ class ConnectionManager {
                             wsParamKeys: proto?.wsParams ? Object.keys(proto.wsParams) : null,
                             messageCount: Array.isArray(proto?.messages) ? proto.messages.length : null
                         });
-                        return proto;
+                        return ensureValidProtoMessageFetchResult(proto, 'connector_deserialize');
                     } catch (decodeError) {
                         console.warn('[TikTok] Failed to decode fetch result via connector utilities:', decodeError?.message || decodeError);
                     }
@@ -2765,9 +2968,11 @@ class ConnectionManager {
 
                 if (protobufHandler && typeof protobufHandler.deserializeMessage === 'function') {
                     try {
-                        return protobufHandler.deserializeMessage('WebcastResponse', bytes);
+                        const proto = protobufHandler.deserializeMessage('WebcastResponse', bytes);
+                        return ensureValidProtoMessageFetchResult(proto, 'protobuf_handler_webcastresponse');
                     } catch (e) {
-                        return protobufHandler.deserializeMessage('ProtoMessageFetchResult', bytes);
+                        const proto = protobufHandler.deserializeMessage('ProtoMessageFetchResult', bytes);
+                        return ensureValidProtoMessageFetchResult(proto, 'protobuf_handler_protomessagefetchresult');
                     }
                 }
 
@@ -2778,7 +2983,8 @@ class ConnectionManager {
                     // Or maybe it's a method on webClient?
                     // If found on webClient prototype, call it on webClient
                     if (typeof this.connection.webClient.deserializeMessage === 'function') {
-                        return this.connection.webClient.deserializeMessage('ProtoMessageFetchResult', bytes);
+                        const proto = this.connection.webClient.deserializeMessage('ProtoMessageFetchResult', bytes);
+                        return ensureValidProtoMessageFetchResult(proto, 'webclient_deserialize');
                     }
                 }
 
@@ -2788,7 +2994,8 @@ class ConnectionManager {
                     if (TikTokHttpClient && TikTokHttpClient.prototype.deserializeMessage) {
                         console.log('[TikTok] Found deserializeMessage on TikTokHttpClient prototype');
                         // Call it using our webClient instance
-                        return TikTokHttpClient.prototype.deserializeMessage.call(this.connection.webClient, 'ProtoMessageFetchResult', bytes);
+                        const proto = TikTokHttpClient.prototype.deserializeMessage.call(this.connection.webClient, 'ProtoMessageFetchResult', bytes);
+                        return ensureValidProtoMessageFetchResult(proto, 'http_client_deserialize');
                     }
                 } catch (e) {
                     console.error('[TikTok] Failed to require TikTokHttpClient:', e);
@@ -2803,15 +3010,18 @@ class ConnectionManager {
                 // However, if the error is just "deserialization failed", maybe the manual fetch 
                 // (which uses the library's internal method) might work if it does something special?
                 // But we know manual fetch fails with 403.
-                // So we should probably throw here.
-                throw err;
-            }
-        } else {
-            console.warn('[TikTok] No fetchResult in signer payload. performFetch was requested.');
-            if (signerPayload.fetchError) {
-                console.error('[TikTok] Signer reported fetch error:', signerPayload.fetchError);
-            }
-        }
+	                // So we should probably throw here.
+	                throw err;
+	            }
+	        } else {
+	            if (!fetchResult) {
+	                console.warn('[TikTok] No fetchResult in signer payload. performFetch was requested.');
+	            } else if (signerPayload.fetchError) {
+	                console.error('[TikTok] Signer reported fetch error:', signerPayload.fetchError);
+	            } else if (shouldLogTikTokDebug()) {
+	                console.warn('[TikTok] Local signer returned fetch metadata without a body.');
+	            }
+	        }
 
         if (!signerPayload.pathWithQuery || typeof signerPayload.pathWithQuery !== 'string') {
             throw new Error('Local signer payload missing path/query information. Make sure the signing window is on a live room.');
@@ -2822,23 +3032,125 @@ class ConnectionManager {
 
         try {
             // Fallback to manual fetch if performFetch failed or wasn't supported (though it should be now)
-            return await this.connection.webClient.getDeserializedObjectFromWebcastApi(
+            const proto = await this.connection.webClient.getDeserializedObjectFromWebcastApi(
                 'im/fetch/',
                 params,
                 'ProtoMessageFetchResult',
                 false,
                 { headers }
             );
-        } catch (error) {
-            console.error('[TikTok] Failed to fetch signed WebSocket payload via local signer:', error);
-            throw error;
-        }
-    }
+            const wsUrl = proto && typeof proto.wsUrl === 'string' ? proto.wsUrl.trim() : '';
+            if (!wsUrl) {
+                const err = new Error('TikTok did not return a WebSocket URL (wsUrl) during bootstrap.');
+                err.name = 'TikTokWsUrlError';
+                err.code = 'SSAPP_TIKTOK_WSURL_MISSING';
+                err.source = 'local_signer_manual_fetch';
+                throw err;
+            }
+            try {
+                new URL(wsUrl);
+            } catch (_) {
+                const err = new Error(`TikTok returned an invalid WebSocket URL (wsUrl): ${wsUrl.slice(0, 120)}`);
+                err.name = 'TikTokWsUrlError';
+                err.code = 'SSAPP_TIKTOK_WSURL_INVALID';
+                err.source = 'local_signer_manual_fetch';
+                throw err;
+            }
+            return proto;
+	        } catch (error) {
+	            console.error('[TikTok] Failed to fetch signed WebSocket payload via local signer:', error);
+	            throw error;
+	        }
+	    }
 
-    updateSessionCredentialsFromSigner(payload) {
-        if (payload && typeof payload === 'object') {
-            this.lastSignerPayload = payload;
-        }
+	    applyRoomIdToConnection(roomId, source = 'unknown') {
+	        const normalized = (() => {
+	            if (typeof roomId === 'string') {
+	                const trimmed = roomId.trim();
+	                return trimmed ? trimmed : null;
+	            }
+	            if (roomId === undefined || roomId === null) {
+	                return null;
+	            }
+	            const asString = String(roomId).trim();
+	            return asString ? asString : null;
+	        })();
+	        if (!normalized) {
+	            return null;
+	        }
+
+	        const connection = this.connection;
+	        if (!connection) {
+	            return normalized;
+	        }
+
+	        let applied = false;
+	        const needsUpdate = (current) => {
+	            if (!current) {
+	                return true;
+	            }
+	            const currentText = typeof current === 'string' ? current.trim() : String(current).trim();
+	            return !currentText || currentText !== normalized;
+	        };
+
+	        try {
+	            if (connection.clientParams && typeof connection.clientParams === 'object') {
+	                if (needsUpdate(connection.clientParams.room_id)) {
+	                    connection.clientParams.room_id = normalized;
+	                    applied = true;
+	                }
+	            }
+	        } catch (_) { /* noop */ }
+
+	        try {
+	            if (connection.webClient) {
+	                if (needsUpdate(connection.webClient.roomId)) {
+	                    connection.webClient.roomId = normalized;
+	                    applied = true;
+	                }
+	                if (connection.webClient.clientParams && typeof connection.webClient.clientParams === 'object') {
+	                    if (needsUpdate(connection.webClient.clientParams.room_id)) {
+	                        connection.webClient.clientParams.room_id = normalized;
+	                        applied = true;
+	                    }
+	                }
+	            }
+	        } catch (_) { /* noop */ }
+
+	        try {
+	            if (connection.options && typeof connection.options === 'object') {
+	                const targets = [
+	                    connection.options.clientParams,
+	                    connection.options.webClientParams,
+	                    connection.options.wsClientParams
+	                ];
+	                for (const target of targets) {
+	                    if (target && typeof target === 'object' && needsUpdate(target.room_id)) {
+	                        target.room_id = normalized;
+	                        applied = true;
+	                    }
+	                }
+	            }
+	        } catch (_) { /* noop */ }
+
+	        try {
+	            if (needsUpdate(connection.roomId)) {
+	                connection.roomId = normalized;
+	                applied = true;
+	            }
+	        } catch (_) { /* noop */ }
+
+	        if (applied) {
+	            this.logDebug('lifecycle.roomId.applied', { roomId: normalized, source });
+	        }
+
+	        return normalized;
+	    }
+
+	    updateSessionCredentialsFromSigner(payload) {
+	        if (payload && typeof payload === 'object') {
+	            this.lastSignerPayload = payload;
+	        }
         const nextSessionId = payload?.sessionid || payload?.session_id || null;
         const nextTtTargetIdc = payload?.tt_target_idc || payload?.ttTargetIdc || null;
         if (nextSessionId && !this.sessionId) {
@@ -2887,10 +3199,15 @@ class ConnectionManager {
                         this.connection.webClient.cookieJar[name] = value;
                     } catch (_) {
                         // ignore cookie jar assignment issues
-                    }
-                }
-            }
-        }
+	                }
+	            }
+	        }
+
+	        const roomId = payload?.room_id || payload?.roomId || payload?.roomIdStr || payload?.room_id_str || null;
+	        if (roomId) {
+	            this.applyRoomIdToConnection(roomId, 'signer_payload');
+	        }
+	    }
     }
 
     parseSignedFetchParams(pathWithQuery, fallbackRoomId) {
@@ -4545,9 +4862,11 @@ class ConnectionManager {
                 this.logDebug('lifecycle.connect.success', {
                     effectiveMode,
                     connectionMethod
-                });
-                this.signServerFailureCount = 0;
-                this.websocketFailureCount = 0; // Reset strikes on success
+	                });
+	                this.signServerFailureCount = 0;
+	                this.websocketFailureCount = 0; // Reset strikes on success
+	                this.tiktokRateLimitCount = 0;
+	                this.tiktokRateLimitLastAt = 0;
 
                 if (this.reconnectTimer) {
                     clearTimeout(this.reconnectTimer);
@@ -4602,11 +4921,15 @@ class ConnectionManager {
                     offline: isOffline
                 });
 
-                const isLikelyFatal = errorMessage && (
-                    errorMessage.includes("User doesn't exist") ||
-                    errorMessage.includes('Failed to retrieve room_id')
-                );
-                const isRateLimited = errorMessage && (errorMessage.includes('429') || errorMessage.toLowerCase().includes('too many requests'));
+	                const isLikelyFatal = errorMessage && (
+	                    errorMessage.includes("User doesn't exist") ||
+	                    errorMessage.includes('Failed to retrieve room_id')
+	                );
+	                const isRateLimited = this.isRateLimitError(primaryError, errorMessage);
+	                if (!isRateLimited && (this.tiktokRateLimitCount || 0) > 0) {
+	                    this.tiktokRateLimitCount = 0;
+	                    this.tiktokRateLimitLastAt = 0;
+	                }
 
                 if (isLikelyFatal) {
                     console.error('Fatal error - user might not exist or might be a display name:', this.username);
@@ -4673,15 +4996,32 @@ class ConnectionManager {
                         });
                     } catch (_) { /* noop */ }
 
-                    if (isRateLimited) {
-                        this.offlineRetry = false;
-                        this.offlineRetryCount = 0;
-                        this.offlineReason = 'Rate limited by TikTok';
-                        this.attemptReconnect(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS, { fixed: true, offline: false });
-                    } else if (isOffline) {
-                        if (!this.offlineRetry) {
-                            this.offlineRetryCount = 0;
-                        }
+	                    if (isRateLimited) {
+	                        const rateLimit = this.registerTikTokRateLimit(primaryError, 'connect');
+	                        const retryDelayMs = Number.isFinite(rateLimit?.delayMs) && rateLimit.delayMs > 0
+	                            ? rateLimit.delayMs
+	                            : (Number(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS) || 300000);
+
+	                        if (this.shouldFallbackAfterRateLimit()) {
+	                            const fallbackError = new Error('SSAPP_TIKTOK_FALLBACK: TikTok rate limited. Switching to legacy connector.');
+	                            fallbackError.code = 'SSAPP_TIKTOK_RATE_LIMIT_FALLBACK';
+	                            fallbackError.ssappFallback = true;
+	                            fallbackError.ssappFallbackMode = 'polling';
+	                            fallbackError.ssappFallbackMessage = 'TikTok rate limited. Switching to legacy connector.';
+	                            const fallbackHandled = await this.tryFallbackToPolling(fallbackError, 'rate_limit');
+	                            if (fallbackHandled) {
+	                                return this.connect();
+	                            }
+	                        }
+
+	                        this.offlineRetry = false;
+	                        this.offlineRetryCount = 0;
+	                        this.offlineReason = 'Rate limited by TikTok';
+	                        this.attemptReconnect(retryDelayMs, { fixed: true, offline: false, immediate: true, reason: this.offlineReason });
+	                    } else if (isOffline) {
+	                        if (!this.offlineRetry) {
+	                            this.offlineRetryCount = 0;
+	                        }
                         this.offlineRetry = true;
                         this.offlineReason = this.buildOfflineReason(userFacingMessage || 'User is not live');
                         this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
@@ -4949,16 +5289,20 @@ class ConnectionManager {
 
         this.logConsoleFailure(userFacingMessage, primaryError instanceof Error ? primaryError : null);
 
-        // Check if error is fatal
-        const isLikelyFatal = msg && (
-            msg.includes("User doesn't exist") ||
-            msg.includes('Failed to retrieve room_id')
-        );
-        const isRateLimited = msg && (msg.includes('429') || msg.toLowerCase().includes('too many requests'));
-        if (isLikelyFatal) {
-            this.handleFatalError(primaryError || err);
-            return;
-        }
+	        // Check if error is fatal
+	        const isLikelyFatal = msg && (
+	            msg.includes("User doesn't exist") ||
+	            msg.includes('Failed to retrieve room_id')
+	        );
+	        const isRateLimited = this.isRateLimitError(primaryError, combinedMessage);
+	        if (!isRateLimited && (this.tiktokRateLimitCount || 0) > 0) {
+	            this.tiktokRateLimitCount = 0;
+	            this.tiktokRateLimitLastAt = 0;
+	        }
+	        if (isLikelyFatal) {
+	            this.handleFatalError(primaryError || err);
+	            return;
+	        }
 
         connectionStates.set(this.wssID, {
             isConnected: false,
@@ -4977,16 +5321,38 @@ class ConnectionManager {
             console.warn('Failed to send TikTok error status to renderer:', sendErr);
         }
 
-        if (!this.isStopped) {
-            if (isRateLimited) {
-                this.offlineRetry = false;
-                this.offlineRetryCount = 0;
-                this.offlineReason = 'Rate limited by TikTok';
-                this.attemptReconnect(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS, { fixed: true, offline: false });
-            } else if (isOffline) {
-                if (!this.offlineRetry) {
-                    this.offlineRetryCount = 0;
-                }
+	        if (!this.isStopped) {
+	            if (isRateLimited) {
+	                const rateLimit = this.registerTikTokRateLimit(primaryError, 'error');
+	                const retryDelayMs = Number.isFinite(rateLimit?.delayMs) && rateLimit.delayMs > 0
+	                    ? rateLimit.delayMs
+	                    : (Number(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS) || 300000);
+
+	                if (!this.activeConnectPromise && this.shouldFallbackAfterRateLimit()) {
+	                    const fallbackError = new Error('SSAPP_TIKTOK_FALLBACK: TikTok rate limited. Switching to legacy connector.');
+	                    fallbackError.code = 'SSAPP_TIKTOK_RATE_LIMIT_FALLBACK';
+	                    fallbackError.ssappFallback = true;
+	                    fallbackError.ssappFallbackMode = 'polling';
+	                    fallbackError.ssappFallbackMessage = 'TikTok rate limited. Switching to legacy connector.';
+	                    this.tryFallbackToPolling(fallbackError, 'rate_limit')
+	                        .then((handled) => {
+	                            if (handled) {
+	                                return this.connect();
+	                            }
+	                            return null;
+	                        })
+	                        .catch(() => null);
+	                    return;
+	                }
+
+	                this.offlineRetry = false;
+	                this.offlineRetryCount = 0;
+	                this.offlineReason = 'Rate limited by TikTok';
+	                this.attemptReconnect(retryDelayMs, { fixed: true, offline: false, immediate: true, reason: this.offlineReason });
+	            } else if (isOffline) {
+	                if (!this.offlineRetry) {
+	                    this.offlineRetryCount = 0;
+	                }
                 this.offlineRetry = true;
                 this.offlineReason = this.buildOfflineReason(userFacingMessage || 'User is not live');
                 this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
@@ -5075,11 +5441,11 @@ class ConnectionManager {
         return [Number.isFinite(fallback) && fallback > 0 ? fallback : 60000];
     }
 
-    resolveOfflineReconnectPlan() {
-        const sequence = this.getOfflineRetrySequence();
-        const attemptIndex = Math.max(0, this.offlineRetryCount || 0);
-        const autoActivateEnabled = !!this.autoActivate;
-        const maxAttempts = autoActivateEnabled ? null : sequence.length;
+	    resolveOfflineReconnectPlan() {
+	        const sequence = this.getOfflineRetrySequence();
+	        const attemptIndex = Math.max(0, this.offlineRetryCount || 0);
+	        const autoActivateEnabled = !!this.autoActivate;
+	        const maxAttempts = autoActivateEnabled ? null : sequence.length;
 
         if (!autoActivateEnabled && attemptIndex >= sequence.length) {
             return {
@@ -5091,18 +5457,134 @@ class ConnectionManager {
         }
 
         const delay = sequence[Math.min(attemptIndex, sequence.length - 1)];
-        return {
-            shouldRetry: true,
-            delay,
-            attempt: attemptIndex + 1,
-            maxAttempts
-        };
-    }
+	        return {
+	            shouldRetry: true,
+	            delay,
+	            attempt: attemptIndex + 1,
+	            maxAttempts
+	        };
+	    }
 
-    isOfflineError(primaryError, rawMessage = '') {
-        if (primaryError && primaryError.name === 'UserOfflineError') {
-            return true;
-        }
+	    isRateLimitError(primaryError, rawMessage = '') {
+	        if (primaryError && primaryError.name === 'TikTokRateLimitError') {
+	            return true;
+	        }
+
+	        const status = primaryError?.status ?? primaryError?.response?.status ?? null;
+	        if (Number(status) === 429) {
+	            return true;
+	        }
+
+	        const combined = `${rawMessage || ''} ${primaryError?.message || ''}`.toLowerCase();
+	        if (!combined.trim()) {
+	            return false;
+	        }
+
+	        return combined.includes('429') ||
+	            combined.includes('too many requests') ||
+	            combined.includes('rate limit') ||
+	            combined.includes('rate limited');
+	    }
+
+	    getRetryAfterSeconds(primaryError) {
+	        const direct = parseRetryAfterSeconds(primaryError?.retryAfterSeconds ?? primaryError?.retryAfter ?? null);
+	        if (direct !== null) {
+	            return direct;
+	        }
+
+	        const headers = primaryError?.headers || primaryError?.response?.headers || primaryError?.fetchResult?.headers || null;
+	        return parseRetryAfterSeconds(readHeaderCaseInsensitive(headers, 'retry-after'));
+	    }
+
+	    registerTikTokRateLimit(primaryError, context = 'unknown') {
+	        const now = Date.now();
+	        if (primaryError && typeof primaryError === 'object') {
+	            if (primaryError.__ssappTikTokRateLimitHandled) {
+	                const existingDelay = Number(primaryError.__ssappTikTokRateLimitDelayMs);
+	                return {
+	                    count: this.tiktokRateLimitCount || 0,
+	                    delayMs: Number.isFinite(existingDelay) ? existingDelay : null,
+	                    retryAfterSeconds: this.getRetryAfterSeconds(primaryError)
+	                };
+	            }
+	            primaryError.__ssappTikTokRateLimitHandled = true;
+	        }
+
+	        const lastAt = Number(this.tiktokRateLimitLastAt);
+	        if (Number.isFinite(lastAt) && lastAt > 0) {
+	            const staleWindowMs = 30 * 60 * 1000;
+	            if (now - lastAt > staleWindowMs) {
+	                this.tiktokRateLimitCount = 0;
+	            }
+	        }
+
+	        this.tiktokRateLimitCount = Math.max(0, Number(this.tiktokRateLimitCount) || 0) + 1;
+	        this.tiktokRateLimitLastAt = now;
+
+	        const retryAfterSeconds = this.getRetryAfterSeconds(primaryError);
+	        const defaultBase = 300000;
+	        let baseDelayMs = Number(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MS);
+	        if (!Number.isFinite(baseDelayMs) || baseDelayMs <= 0) {
+	            baseDelayMs = defaultBase;
+	        }
+	        if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+	            baseDelayMs = Math.max(1000, Math.floor((retryAfterSeconds + 2) * 1000));
+	        }
+
+	        const minDelayMs = 30000;
+	        const exponent = Math.max(0, this.tiktokRateLimitCount - 1);
+	        let delayMs = Math.max(minDelayMs, baseDelayMs) * Math.pow(2, exponent);
+
+	        const maxDelayMs = Number(CONFIG.CONNECTION.RATE_LIMIT_RETRY_MAX_MS);
+	        if (Number.isFinite(maxDelayMs) && maxDelayMs > 0) {
+	            delayMs = Math.min(delayMs, maxDelayMs);
+	        }
+
+	        if (primaryError && typeof primaryError === 'object') {
+	            primaryError.__ssappTikTokRateLimitDelayMs = delayMs;
+	        }
+
+	        this.logDebug('lifecycle.rate_limit.detected', {
+	            context,
+	            provider: this.signingProvider || null,
+	            count: this.tiktokRateLimitCount,
+	            retryAfterSeconds: retryAfterSeconds ?? null,
+	            delayMs
+	        });
+
+	        if (this.shouldUseLocalSigner()) {
+	            setLocalSignerCooldown(now + delayMs, 'tiktok_rate_limit');
+	        }
+
+	        return {
+	            count: this.tiktokRateLimitCount,
+	            delayMs,
+	            retryAfterSeconds
+	        };
+	    }
+
+	    shouldFallbackAfterRateLimit() {
+	        const thresholdRaw = Number(CONFIG.CONNECTION.RATE_LIMIT_FALLBACK_THRESHOLD);
+	        const threshold = Number.isFinite(thresholdRaw) && thresholdRaw > 0 ? thresholdRaw : 0;
+	        if (!threshold) {
+	            return false;
+	        }
+	        if (!this.shouldUseLocalSigner()) {
+	            return false;
+	        }
+	        if ((this.tiktokRateLimitCount || 0) < threshold) {
+	            return false;
+	        }
+	        if (!this.pollingFallbackSupported || this.pollingFallbackActivated || this.preferredStrategy === 'legacy') {
+	            return false;
+	        }
+	        return true;
+	    }
+
+	    isOfflineError(primaryError, rawMessage = '') {
+	        if (primaryError && primaryError.name === 'UserOfflineError') {
+	            return true;
+	        }
         const message = typeof rawMessage === 'string' ? rawMessage : '';
         if (!message) return false;
         const normalized = message.toLowerCase();

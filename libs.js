@@ -208,6 +208,11 @@ function checkSupported(str) {
 const tipsContent = {
 	tiktok: `
 	<div class="tips-section">
+	  <h3>Important: You Must Be Live</h3>
+	  <p>TikTok chat only works when you are actively streaming. If you're not live, there's no chat to capture.</p>
+	  <p>When you go live, you may need to click the <strong>🔄 Reload</strong> button to reconnect.</p>
+	</div>
+	<div class="tips-section">
 	  <h3>Connection Issues</h3>
 	  <p>If the standard activation doesn't work, try these solutions:</p>
 	  <ul>
@@ -229,6 +234,221 @@ const tipsContent = {
 		<li>Clear cache and try again after a few minutes</li>
 		<li>Try using the WebSocket connection mode</li>
 	  </ul>
+	</div>
+	<div class="tips-section">
+	  <h3>Understanding the Capture Page</h3>
+	  <p>Social Stream uses a hidden browser page to capture chat. Use <strong>👁️ Reveal capture page</strong> to see it if troubleshooting.</p>
+	  <p>The <strong>🔄 Reload</strong> button refreshes this capture page - useful if connection is lost or you just went live.</p>
+	</div>
+  `,
+	youtube: `
+	<div class="tips-section">
+	  <h3>Important: You Must Be Live</h3>
+	  <p>YouTube chat only works when you are actively streaming. If you're not live yet, there's no chat to capture.</p>
+	  <p>When you go live, click the <strong>🔄 Reload</strong> button to start capturing chat.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>Finding Your Stream</h3>
+	  <ul>
+		<li><span class="tips-highlight">By Username/Channel:</span> Your stream must be <strong>Public</strong>. Unlisted or Private streams cannot be found this way.</li>
+		<li><span class="tips-highlight">By Video ID:</span> If your stream is Unlisted, add it using the YouTube Video ID instead (the part after "v=" in the URL).</li>
+	  </ul>
+	</div>
+	<div class="tips-section">
+	  <h3>YouTube Groups</h3>
+	  <p>When using YouTube Groups to capture multiple streams:</p>
+	  <ul>
+		<li>The group visibility and mute settings apply to all sources in the group</li>
+		<li>New sources added to the group inherit these default settings</li>
+		<li>Use group controls to manage all streams at once</li>
+	  </ul>
+	</div>
+	<div class="tips-section">
+	  <h3>Understanding the Capture Page</h3>
+	  <p>Social Stream uses a hidden browser page to capture chat. Use <strong>👁️ Reveal capture page</strong> to see it if troubleshooting.</p>
+	  <p>The <strong>🔄 Reload</strong> button refreshes this capture page - useful if you just went live or lost connection.</p>
+	</div>
+  `,
+	twitch: `
+	<div class="tips-section">
+	  <h3>Twitch is Always Ready</h3>
+	  <p>Unlike some platforms, Twitch chat is available even when you're not live. You can start capturing chat immediately.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>Connection Modes</h3>
+	  <ul>
+		<li><span class="tips-highlight">Standard Mode:</span> Uses a hidden browser page to capture chat. Good for most cases.</li>
+		<li><span class="tips-highlight">WebSocket Mode:</span> Direct connection to Twitch chat servers. More reliable but read-only.</li>
+	  </ul>
+	</div>
+	<div class="tips-section">
+	  <h3>Understanding the Capture Page</h3>
+	  <p>Social Stream uses a hidden browser page to capture chat. Use <strong>👁️ Reveal capture page</strong> to see it if troubleshooting.</p>
+	  <p>The <strong>🔄 Reload</strong> button refreshes this capture page if you experience connection issues.</p>
+	</div>
+  `,
+	kick: `
+	<div class="tips-section">
+	  <h3>Kick is Always Ready</h3>
+	  <p>Like Twitch, Kick chat is available even when you're not live. You can start capturing chat immediately.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>Understanding the Capture Page</h3>
+	  <p>Social Stream uses a hidden browser page to capture chat. Use <strong>👁️ Reveal capture page</strong> to see it if troubleshooting.</p>
+	  <p>The <strong>🔄 Reload</strong> button refreshes this capture page if you experience connection issues.</p>
+	</div>
+  `,
+	rumble: `
+	<div class="tips-section">
+	  <h3>Finding Your Chat</h3>
+	  <p>Rumble chat can be added by username, but sometimes the chat ID cannot be automatically detected.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>If Username Doesn't Work</h3>
+	  <p>Try adding the chat popup URL directly:</p>
+	  <ol>
+		<li>Open your Rumble stream in a browser</li>
+		<li>Find the chat popup URL (right-click on chat, look for popup option)</li>
+		<li>Add a new source using <strong>"Other"</strong> and paste the chat URL directly</li>
+	  </ol>
+	</div>
+	<div class="tips-section">
+	  <h3>Understanding the Capture Page</h3>
+	  <p>Social Stream uses a hidden browser page to capture chat. Use <strong>👁️ Reveal capture page</strong> to see it if troubleshooting.</p>
+	  <p>The <strong>🔄 Reload</strong> button refreshes this capture page if you experience connection issues.</p>
+	</div>
+  `,
+	facebook: `
+	<div class="tips-section">
+	  <h3>Facebook Requires Sign-in</h3>
+	  <p>Facebook chat capture requires you to be signed in. Use the <strong>🔑 Sign-in</strong> button first.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>If Chat Isn't Working</h3>
+	  <ol>
+		<li>Click <strong>👁️ Reveal capture page</strong> to see the hidden browser</li>
+		<li>Make sure the chat is visible on the page</li>
+		<li>Check that you're signed in properly</li>
+	  </ol>
+	  <p><span class="tips-highlight">Alternative:</span> Consider using the <strong>Chrome Extension</strong> instead. It often works better for Facebook since you can sign in and navigate more easily in your regular browser.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>Understanding the Capture Page</h3>
+	  <p>Social Stream uses a hidden browser page to capture chat. The <strong>🔄 Reload</strong> button refreshes this page if needed.</p>
+	</div>
+  `,
+	linkedin: `
+	<div class="tips-section">
+	  <h3>LinkedIn Requires Sign-in</h3>
+	  <p>LinkedIn chat capture requires you to be signed in. Use the <strong>🔑 Sign-in</strong> button first.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>If Chat Isn't Working</h3>
+	  <ol>
+		<li>Click <strong>👁️ Reveal capture page</strong> to see the hidden browser</li>
+		<li>Make sure the chat/comments are visible on the page</li>
+		<li>Check that you're signed in properly</li>
+	  </ol>
+	  <p><span class="tips-highlight">Alternative:</span> Consider using the <strong>Chrome Extension</strong> instead. It often works better for LinkedIn since you can sign in and navigate more easily in your regular browser.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>Understanding the Capture Page</h3>
+	  <p>Social Stream uses a hidden browser page to capture chat. The <strong>🔄 Reload</strong> button refreshes this page if needed.</p>
+	</div>
+  `,
+	instagram: `
+	<div class="tips-section">
+	  <h3>Instagram Requires Sign-in</h3>
+	  <p>Instagram chat capture requires you to be signed in. Use the <strong>🔑 Sign-in</strong> button first.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>If Chat Isn't Working</h3>
+	  <ol>
+		<li>Click <strong>👁️ Reveal capture page</strong> to see the hidden browser</li>
+		<li>Make sure the chat/comments are visible on the page</li>
+		<li>Check that you're signed in properly</li>
+	  </ol>
+	  <p><span class="tips-highlight">Alternative:</span> Consider using the <strong>Chrome Extension</strong> instead. It often works better for Instagram since you can sign in and navigate more easily in your regular browser.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>Understanding the Capture Page</h3>
+	  <p>Social Stream uses a hidden browser page to capture chat. The <strong>🔄 Reload</strong> button refreshes this page if needed.</p>
+	</div>
+  `,
+	instagramlive: `
+	<div class="tips-section">
+	  <h3>Instagram Live Requires Sign-in</h3>
+	  <p>Instagram Live chat capture requires you to be signed in. Use the <strong>🔑 Sign-in</strong> button first.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>If Chat Isn't Working</h3>
+	  <ol>
+		<li>Click <strong>👁️ Reveal capture page</strong> to see the hidden browser</li>
+		<li>Make sure the live chat is visible on the page</li>
+		<li>Check that you're signed in properly</li>
+	  </ol>
+	  <p><span class="tips-highlight">Alternative:</span> Consider using the <strong>Chrome Extension</strong> instead. It often works better for Instagram since you can sign in and navigate more easily in your regular browser.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>Understanding the Capture Page</h3>
+	  <p>Social Stream uses a hidden browser page to capture chat. The <strong>🔄 Reload</strong> button refreshes this page if needed.</p>
+	</div>
+  `,
+	zoom: `
+	<div class="tips-section">
+	  <h3>Zoom Requires Sign-in</h3>
+	  <p>Zoom chat capture requires you to be signed in and in an active meeting.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>If Chat Isn't Working</h3>
+	  <ol>
+		<li>Click <strong>👁️ Reveal capture page</strong> to see the hidden browser</li>
+		<li>Make sure the chat panel is open and visible</li>
+		<li>Check that you're signed in and in an active meeting</li>
+	  </ol>
+	  <p><span class="tips-highlight">Alternative:</span> Consider using the <strong>Chrome Extension</strong> instead. It often works better for Zoom since you can sign in and navigate more easily in your regular browser.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>Understanding the Capture Page</h3>
+	  <p>Social Stream uses a hidden browser page to capture chat. The <strong>🔄 Reload</strong> button refreshes this page if needed.</p>
+	</div>
+  `,
+	slack: `
+	<div class="tips-section">
+	  <h3>Slack Requires Sign-in</h3>
+	  <p>Slack chat capture requires you to be signed in to your workspace.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>If Chat Isn't Working</h3>
+	  <ol>
+		<li>Click <strong>👁️ Reveal capture page</strong> to see the hidden browser</li>
+		<li>Make sure you're signed in and the channel is visible</li>
+		<li>Check that messages are loading properly</li>
+	  </ol>
+	  <p><span class="tips-highlight">Alternative:</span> Consider using the <strong>Chrome Extension</strong> instead. It often works better for Slack since you can sign in and navigate more easily in your regular browser.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>Understanding the Capture Page</h3>
+	  <p>Social Stream uses a hidden browser page to capture chat. The <strong>🔄 Reload</strong> button refreshes this page if needed.</p>
+	</div>
+  `,
+	discord: `
+	<div class="tips-section">
+	  <h3>Discord Requires Sign-in</h3>
+	  <p>Discord chat capture requires you to be signed in to your server.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>If Chat Isn't Working</h3>
+	  <ol>
+		<li>Click <strong>👁️ Reveal capture page</strong> to see the hidden browser</li>
+		<li>Make sure you're signed in and the channel is visible</li>
+		<li>Check that messages are loading properly</li>
+	  </ol>
+	  <p><span class="tips-highlight">Alternative:</span> Consider using the <strong>Chrome Extension</strong> instead. It often works better for Discord since you can sign in and navigate more easily in your regular browser.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>Understanding the Capture Page</h3>
+	  <p>Social Stream uses a hidden browser page to capture chat. The <strong>🔄 Reload</strong> button refreshes this page if needed.</p>
 	</div>
   `
 };
