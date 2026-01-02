@@ -19,11 +19,19 @@ class SpotifyIntegration {
 		this._electronIpc = null;
 		this.identityAuthInFlight = false;
 		this.pendingElectronOAuth = null;
+
+		// Managed queue for song requests - enables !revoke functionality
+		this.managedQueue = {
+			entries: [],           // Array of QueueEntry objects
+			currentlyPlaying: null // Currently playing track from our queue
+		};
+		this.managedQueueEnabled = false;
 	}
 
     async initialize(settings, callbacks = {}) {
         this.settings = settings;
         this.callbacks = { ...this.callbacks, ...callbacks };
+        this.managedQueueEnabled = !!(this.settings?.spotifyManagedQueue?.setting ?? this.settings?.spotifyManagedQueue);
         
         if (!this.settings.spotifyEnabled) {
             return;
@@ -443,6 +451,7 @@ class SpotifyIntegration {
     }
 
     async getCurrentTrack() {
+        this.managedQueueEnabled = !!(this.settings?.spotifyManagedQueue?.setting ?? this.settings?.spotifyManagedQueue);
         if (!this.accessToken) {
             return null;
         }
@@ -526,7 +535,12 @@ class SpotifyIntegration {
                 // Check if this is a new track
                 if (!this.currentTrack || this.currentTrack.id !== newTrack.id) {
                     this.currentTrack = newTrack;
-                    
+
+                    // Update managed queue state
+                    if (this.managedQueueEnabled) {
+                        this.onTrackChanged(newTrack);
+                    }
+
                     // Trigger callback for new track
                     if (this.callbacks.onNewTrack && this.settings.spotifyAnnounceNewTrack) {
                         this.callbacks.onNewTrack(newTrack);
@@ -568,7 +582,7 @@ class SpotifyIntegration {
                 await this.refreshAccessToken();
                 return this.skip();
             } else if (response.status === 404) {
-                return { success: false, message: "No active Spotify device found" };
+                return { success: false, message: "No active Spotify device found. Open Spotify and start playing something first." };
             } else {
                 return { success: false, message: "Failed to skip track" };
             }
@@ -597,7 +611,7 @@ class SpotifyIntegration {
                 await this.refreshAccessToken();
                 return this.previous();
             } else if (response.status === 404) {
-                return { success: false, message: "No active Spotify device found" };
+                return { success: false, message: "No active Spotify device found. Open Spotify and start playing something first." };
             } else {
                 return { success: false, message: "Failed to go to previous track" };
             }
@@ -626,7 +640,7 @@ class SpotifyIntegration {
                 await this.refreshAccessToken();
                 return this.pause();
             } else if (response.status === 404) {
-                return { success: false, message: "No active Spotify device found" };
+                return { success: false, message: "No active Spotify device found. Open Spotify and start playing something first." };
             } else {
                 return { success: false, message: "Failed to pause playback" };
             }
@@ -655,7 +669,7 @@ class SpotifyIntegration {
                 await this.refreshAccessToken();
                 return this.resume();
             } else if (response.status === 404) {
-                return { success: false, message: "No active Spotify device found" };
+                return { success: false, message: "No active Spotify device found. Open Spotify and start playing something first." };
             } else {
                 return { success: false, message: "Failed to resume playback" };
             }
@@ -686,13 +700,159 @@ class SpotifyIntegration {
                 await this.refreshAccessToken();
                 return this.setVolume(percent);
             } else if (response.status === 404) {
-                return { success: false, message: "No active Spotify device found" };
+                return { success: false, message: "No active Spotify device found. Open Spotify and start playing something first." };
             } else {
                 return { success: false, message: "Failed to set volume" };
             }
         } catch (error) {
             console.warn('Spotify volume error:', error);
             return { success: false, message: "Error setting volume" };
+        }
+    }
+
+    async toggle() {
+        if (!this.accessToken) {
+            return { success: false, message: "Not connected to Spotify" };
+        }
+
+        try {
+            // Get current playback state
+            const stateResponse = await fetch('https://api.spotify.com/v1/me/player', {
+                headers: {
+                    'Authorization': `Bearer ${this.accessToken}`
+                }
+            });
+
+            if (stateResponse.status === 401) {
+                await this.refreshAccessToken();
+                return this.toggle();
+            }
+
+            if (stateResponse.status === 204 || stateResponse.status === 404) {
+                return { success: false, message: "No active Spotify device found. Open Spotify and start playing something first." };
+            }
+
+            const state = await stateResponse.json();
+            const isPlaying = state.is_playing;
+
+            // Toggle based on current state
+            if (isPlaying) {
+                return this.pause();
+            } else {
+                return this.resume();
+            }
+        } catch (error) {
+            console.warn('Spotify toggle error:', error);
+            return { success: false, message: "Error toggling playback" };
+        }
+    }
+
+    async shuffle(state = null) {
+        if (!this.accessToken) {
+            return { success: false, message: "Not connected to Spotify" };
+        }
+
+        try {
+            // If state not specified, toggle current state
+            if (state === null) {
+                const stateResponse = await fetch('https://api.spotify.com/v1/me/player', {
+                    headers: {
+                        'Authorization': `Bearer ${this.accessToken}`
+                    }
+                });
+
+                if (stateResponse.status === 401) {
+                    await this.refreshAccessToken();
+                    return this.shuffle(state);
+                }
+
+                if (stateResponse.status === 204 || stateResponse.status === 404) {
+                    return { success: false, message: "No active Spotify device found. Open Spotify and start playing something first." };
+                }
+
+                const playerState = await stateResponse.json();
+                state = !playerState.shuffle_state;
+            }
+
+            const response = await fetch(`https://api.spotify.com/v1/me/player/shuffle?state=${state}`, {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `Bearer ${this.accessToken}`
+                }
+            });
+
+            if (response.status === 204 || response.ok) {
+                return { success: true, message: state ? "🔀 Shuffle enabled" : "➡️ Shuffle disabled" };
+            } else if (response.status === 401) {
+                await this.refreshAccessToken();
+                return this.shuffle(state);
+            } else if (response.status === 404) {
+                return { success: false, message: "No active Spotify device found. Open Spotify and start playing something first." };
+            } else {
+                return { success: false, message: "Failed to set shuffle" };
+            }
+        } catch (error) {
+            console.warn('Spotify shuffle error:', error);
+            return { success: false, message: "Error setting shuffle" };
+        }
+    }
+
+    async setRepeat(mode = 'off') {
+        if (!this.accessToken) {
+            return { success: false, message: "Not connected to Spotify" };
+        }
+
+        // Valid modes: 'off', 'track', 'context'
+        const validModes = ['off', 'track', 'context'];
+        if (!validModes.includes(mode)) {
+            mode = 'off';
+        }
+
+        try {
+            const response = await fetch(`https://api.spotify.com/v1/me/player/repeat?state=${mode}`, {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `Bearer ${this.accessToken}`
+                }
+            });
+
+            if (response.status === 204 || response.ok) {
+                const modeEmoji = mode === 'track' ? '🔂' : mode === 'context' ? '🔁' : '➡️';
+                const modeText = mode === 'track' ? 'Repeat track' : mode === 'context' ? 'Repeat playlist' : 'Repeat off';
+                return { success: true, message: `${modeEmoji} ${modeText}` };
+            } else if (response.status === 401) {
+                await this.refreshAccessToken();
+                return this.setRepeat(mode);
+            } else if (response.status === 404) {
+                return { success: false, message: "No active Spotify device found. Open Spotify and start playing something first." };
+            } else {
+                return { success: false, message: "Failed to set repeat mode" };
+            }
+        } catch (error) {
+            console.warn('Spotify repeat error:', error);
+            return { success: false, message: "Error setting repeat mode" };
+        }
+    }
+
+    async getNowPlaying() {
+        if (!this.accessToken) {
+            return { success: false, message: "Not connected to Spotify", track: null };
+        }
+
+        try {
+            const track = await this.getCurrentTrack();
+            if (track) {
+                return {
+                    success: true,
+                    message: `🎵 Now playing: ${track.name} by ${track.artist}`,
+                    track: track
+                };
+            } else {
+                return { success: false, message: "No song currently playing", track: null };
+            }
+        } catch (error) {
+            console.warn('Spotify now playing error:', error);
+            return { success: false, message: "Error getting current track", track: null };
         }
     }
 
@@ -746,7 +906,7 @@ class SpotifyIntegration {
             if (queueResponse.status === 204 || queueResponse.ok) {
                 return { success: true, message: `📋 Added to queue: ${trackName} by ${trackArtist}` };
             } else if (queueResponse.status === 404) {
-                return { success: false, message: "No active Spotify device found" };
+                return { success: false, message: "No active Spotify device found. Open Spotify and start playing something first." };
             } else {
                 return { success: false, message: "Failed to add track to queue" };
             }
@@ -754,6 +914,222 @@ class SpotifyIntegration {
             console.warn('Spotify queue error:', error);
             return { success: false, message: "Error adding to queue" };
         }
+    }
+
+    // ============================================
+    // Managed Queue Methods (for !revoke support)
+    // ============================================
+
+    /**
+     * Add a song to the managed queue with requester tracking
+     * @param {string} query - Song search query
+     * @param {object} requesterData - { requesterName, requesterKey }
+     */
+    async addToManagedQueue(query, requesterData = {}) {
+        if (!this.accessToken) {
+            return { success: false, message: "Not connected to Spotify" };
+        }
+
+        if (!query || !query.trim()) {
+            return { success: false, message: "Please specify a song to add to the queue" };
+        }
+
+        try {
+            // Search for the track
+            const searchResponse = await fetch(
+                `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track&limit=1`,
+                {
+                    headers: {
+                        'Authorization': `Bearer ${this.accessToken}`
+                    }
+                }
+            );
+
+            if (searchResponse.status === 401) {
+                await this.refreshAccessToken();
+                return this.addToManagedQueue(query, requesterData);
+            }
+
+            const searchData = await searchResponse.json();
+
+            if (!searchData.tracks || !searchData.tracks.items || searchData.tracks.items.length === 0) {
+                return { success: false, message: `No track found for "${query}"` };
+            }
+
+            const track = searchData.tracks.items[0];
+
+            // Create queue entry
+            const entry = {
+                id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                trackUri: track.uri,
+                trackName: track.name,
+                artist: track.artists.map(a => a.name).join(', '),
+                requesterName: requesterData.requesterName || 'Unknown',
+                requesterKey: requesterData.requesterKey || 'unknown:unknown',
+                timestamp: Date.now(),
+                status: 'pending'
+            };
+
+            // Add to managed queue
+            this.managedQueue.entries.push(entry);
+
+            // Calculate queue position (only pending/queued entries ahead)
+            const position = this.managedQueue.entries.filter(e =>
+                e.status === 'pending' || e.status === 'queued'
+            ).length;
+
+            // Try to push to Spotify if buffer is empty
+            const pushResult = await this.pushNextToSpotify();
+
+            // If this was the first song and it failed to push, remove it and return the error
+            if (pushResult && !pushResult.success && !pushResult.buffered) {
+                const idx = this.managedQueue.entries.indexOf(entry);
+                if (idx !== -1) this.managedQueue.entries.splice(idx, 1);
+                return { success: false, message: pushResult.message };
+            }
+
+            return {
+                success: true,
+                message: `📋 Added to queue: ${entry.trackName} by ${entry.artist} (position #${position}). Use !revoke to remove if wrong.`,
+                entry: entry
+            };
+        } catch (error) {
+            console.warn('Spotify managed queue error:', error);
+            return { success: false, message: "Error adding to queue" };
+        }
+    }
+
+    /**
+     * Revoke (remove) the last song added by a specific user
+     * @param {string} requesterKey - Composite key: platform:username
+     */
+    async revokeFromQueue(requesterKey) {
+        // Find all entries from this user
+        const userEntries = this.managedQueue.entries.filter(e => e.requesterKey === requesterKey);
+
+        if (userEntries.length === 0) {
+            return { success: false, message: "You don't have any songs in the queue to revoke." };
+        }
+
+        // Find the last PENDING entry from this user (can be revoked)
+        const pendingEntries = userEntries.filter(e => e.status === 'pending');
+
+        if (pendingEntries.length === 0) {
+            // User has entries but none are pending
+            const hasQueued = userEntries.some(e => e.status === 'queued');
+            const hasPlaying = userEntries.some(e => e.status === 'playing');
+
+            if (hasPlaying) {
+                return { success: false, message: "Your song is currently playing! Use !skip to skip it." };
+            } else if (hasQueued) {
+                return { success: false, message: "Your song is already in Spotify's queue and cannot be removed. Ask a mod to !skip when it plays." };
+            }
+            return { success: false, message: "You don't have any songs in the queue to revoke." };
+        }
+
+        // Remove the LAST pending entry from this user
+        const entryToRemove = pendingEntries[pendingEntries.length - 1];
+        const index = this.managedQueue.entries.findIndex(e => e.id === entryToRemove.id);
+
+        if (index !== -1) {
+            this.managedQueue.entries.splice(index, 1);
+            return {
+                success: true,
+                message: `↩️ Removed from queue: ${entryToRemove.trackName} by ${entryToRemove.artist}`
+            };
+        }
+
+        return { success: false, message: "Error removing song from queue." };
+    }
+
+    /**
+     * Push the next pending song to Spotify's actual queue
+     * Maintains a buffer of 1 song in Spotify's queue
+     */
+    async pushNextToSpotify() {
+        if (!this.accessToken) return { success: false, message: "Not connected to Spotify" };
+
+        // Count how many songs are currently queued in Spotify
+        const queuedCount = this.managedQueue.entries.filter(e => e.status === 'queued').length;
+
+        // Only push if buffer is empty (no songs waiting in Spotify's queue)
+        if (queuedCount >= 1) return { success: true, buffered: true };
+
+        // Find the first pending entry
+        const nextEntry = this.managedQueue.entries.find(e => e.status === 'pending');
+        if (!nextEntry) return { success: true, noPending: true };
+
+        try {
+            // Add to Spotify's queue
+            const queueResponse = await fetch(
+                `https://api.spotify.com/v1/me/player/queue?uri=${encodeURIComponent(nextEntry.trackUri)}`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${this.accessToken}`
+                    }
+                }
+            );
+
+            if (queueResponse.status === 204 || queueResponse.ok) {
+                nextEntry.status = 'queued';
+                nextEntry.queuedAt = Date.now();
+                console.log(`[Spotify] Pushed to queue: ${nextEntry.trackName}`);
+                return { success: true };
+            } else if (queueResponse.status === 401) {
+                await this.refreshAccessToken();
+                return this.pushNextToSpotify();
+            } else if (queueResponse.status === 404) {
+                console.warn(`[Spotify] No active device found`);
+                return { success: false, message: "No active Spotify device found. Open Spotify and start playing something first." };
+            } else {
+                console.warn(`[Spotify] Failed to push to queue: ${queueResponse.status}`);
+                return { success: false, message: "Failed to add to Spotify queue" };
+            }
+        } catch (error) {
+            console.warn('[Spotify] Error pushing to queue:', error);
+            return { success: false, message: "Error adding to Spotify queue" };
+        }
+    }
+
+    /**
+     * Called when the currently playing track changes
+     * Updates queue status and pushes next song
+     * @param {object} newTrack - The new track object from getCurrentTrack
+     */
+    onTrackChanged(newTrack) {
+        if (!newTrack || !newTrack.uri) return;
+
+        // Find if this track is in our managed queue
+        const matchingEntry = this.managedQueue.entries.find(e =>
+            e.trackUri === newTrack.uri && e.status === 'queued'
+        );
+
+        if (matchingEntry) {
+            // Mark previous playing as played
+            const previousPlaying = this.managedQueue.entries.find(e => e.status === 'playing');
+            if (previousPlaying) {
+                previousPlaying.status = 'played';
+            }
+
+            // Update this entry to playing
+            matchingEntry.status = 'playing';
+            this.managedQueue.currentlyPlaying = matchingEntry;
+            console.log(`[Spotify] Now playing from queue: ${matchingEntry.trackName}`);
+        }
+
+        // Clean up old 'played' entries (keep last 5 for reference)
+        const playedEntries = this.managedQueue.entries.filter(e => e.status === 'played');
+        if (playedEntries.length > 5) {
+            const toRemove = playedEntries.slice(0, playedEntries.length - 5);
+            toRemove.forEach(entry => {
+                const idx = this.managedQueue.entries.indexOf(entry);
+                if (idx !== -1) this.managedQueue.entries.splice(idx, 1);
+            });
+        }
+
+        // Push next song to Spotify queue
+        this.pushNextToSpotify();
     }
 
     formatTrackMessage(track, template) {
@@ -805,7 +1181,8 @@ class SpotifyIntegration {
             '!vol': ['mod'],
             '!queue': ['anyone'],
             '!request': ['anyone'],
-            '!sr': ['anyone']
+            '!sr': ['anyone'],
+            '!revoke': ['anyone']
         };
 
         // Allow settings to override defaults (stored as { json: string, object: parsed })
@@ -826,22 +1203,78 @@ class SpotifyIntegration {
         return false;
     }
 
+    // Get custom triggers mapping from settings
+    // Returns: { '!song': ['!song', '!cancion'], '!skip': ['!skip'], ... }
+    getCustomTriggers() {
+        const customTriggers = this.settings?.spotifyCommandTriggers?.object || this.settings?.spotifyCommandTriggers || {};
+        const triggerMap = {};
+
+        // Default commands
+        const defaultCommands = ['!song', '!np', '!skip', '!previous', '!pause', '!play', '!volume', '!queue', '!sr', '!revoke'];
+
+        defaultCommands.forEach(cmd => {
+            // Start with the default command as a trigger
+            triggerMap[cmd] = [cmd];
+
+            // If there's a custom trigger, parse it (supports comma-separated aliases)
+            if (customTriggers[cmd]) {
+                const customList = customTriggers[cmd]
+                    .split(',')
+                    .map(t => t.trim().toLowerCase())
+                    .filter(t => t.length > 0);
+                if (customList.length > 0) {
+                    triggerMap[cmd] = customList;
+                }
+            }
+        });
+
+        return triggerMap;
+    }
+
+    // Check if incoming command matches any trigger for a given command name
+    // cmd: the incoming command (e.g., "!cancion")
+    // commandName: the canonical command (e.g., "!song")
+    matchesTrigger(cmd, commandName) {
+        const triggers = this.getCustomTriggers();
+        const commandTriggers = triggers[commandName] || [commandName];
+        return commandTriggers.includes(cmd.toLowerCase());
+    }
+
+    // Resolve an incoming command to its canonical command name
+    // Returns: { canonical: '!song', matched: '!cancion' } or null if no match
+    resolveCommand(cmd) {
+        const triggers = this.getCustomTriggers();
+        const lowerCmd = cmd.toLowerCase();
+
+        for (const [canonical, triggerList] of Object.entries(triggers)) {
+            if (triggerList.includes(lowerCmd)) {
+                return { canonical, matched: lowerCmd };
+            }
+        }
+        return null;
+    }
+
     async handleCommand(command, data = {}) {
         const lowerCommand = command.toLowerCase().trim();
         const parts = lowerCommand.split(' ');
-        const cmd = parts[0];
+        const inputCmd = parts[0];
         const args = parts.slice(1).join(' ');
 
-        // Check if command is disabled
+        // Resolve the command to its canonical form (handles custom triggers)
+        const resolved = this.resolveCommand(inputCmd);
+        const cmd = resolved ? resolved.canonical : inputCmd;
+
+        // Check if command is disabled (use canonical command name)
         if (this.isCommandDisabled(cmd)) {
             return null; // Silent fail for disabled command
         }
 
         const permissions = this.getCommandPermissions();
 
-        // !song, !nowplaying, !np - Show current track (anyone by default)
-        if (cmd === "!song" || cmd === "!nowplaying" || cmd === "!np") {
-            if (!this.hasPermission(data, permissions[cmd])) {
+        // !song, !np - Show current track (anyone by default)
+        // Also handles !nowplaying as legacy alias
+        if (cmd === "!song" || cmd === "!np" || inputCmd === "!nowplaying") {
+            if (!this.hasPermission(data, permissions[cmd] || permissions['!song'])) {
                 return null; // Silent fail for no permission
             }
 
@@ -852,9 +1285,10 @@ class SpotifyIntegration {
             }
         }
 
-        // !skip, !next - Skip to next track (mods only by default)
-        if (cmd === "!skip" || cmd === "!next") {
-            if (!this.hasPermission(data, permissions[cmd])) {
+        // !skip - Skip to next track (mods only by default)
+        // Also handles !next as legacy alias
+        if (cmd === "!skip" || inputCmd === "!next") {
+            if (!this.hasPermission(data, permissions['!skip'])) {
                 return null;
             }
 
@@ -862,9 +1296,10 @@ class SpotifyIntegration {
             return result.message;
         }
 
-        // !previous, !prev - Go to previous track (mods only by default)
-        if (cmd === "!previous" || cmd === "!prev") {
-            if (!this.hasPermission(data, permissions[cmd])) {
+        // !previous - Go to previous track (mods only by default)
+        // Also handles !prev as legacy alias
+        if (cmd === "!previous" || inputCmd === "!prev") {
+            if (!this.hasPermission(data, permissions['!previous'])) {
                 return null;
             }
 
@@ -872,9 +1307,10 @@ class SpotifyIntegration {
             return result.message;
         }
 
-        // !pause, !stop - Pause playback (mods only by default)
-        if (cmd === "!pause" || cmd === "!stop") {
-            if (!this.hasPermission(data, permissions[cmd])) {
+        // !pause - Pause playback (mods only by default)
+        // Also handles !stop as legacy alias
+        if (cmd === "!pause" || inputCmd === "!stop") {
+            if (!this.hasPermission(data, permissions['!pause'])) {
                 return null;
             }
 
@@ -882,9 +1318,10 @@ class SpotifyIntegration {
             return result.message;
         }
 
-        // !play, !resume - Resume playback (mods only by default)
-        if (cmd === "!play" || cmd === "!resume") {
-            if (!this.hasPermission(data, permissions[cmd])) {
+        // !play - Resume playback (mods only by default)
+        // Also handles !resume as legacy alias
+        if (cmd === "!play" || inputCmd === "!resume") {
+            if (!this.hasPermission(data, permissions['!play'])) {
                 return null;
             }
 
@@ -892,9 +1329,10 @@ class SpotifyIntegration {
             return result.message;
         }
 
-        // !volume, !vol - Set volume (mods only by default)
-        if (cmd === "!volume" || cmd === "!vol") {
-            if (!this.hasPermission(data, permissions[cmd])) {
+        // !volume - Set volume (mods only by default)
+        // Also handles !vol as legacy alias
+        if (cmd === "!volume" || inputCmd === "!vol") {
+            if (!this.hasPermission(data, permissions['!volume'])) {
                 return null;
             }
 
@@ -906,9 +1344,10 @@ class SpotifyIntegration {
             return result.message;
         }
 
-        // !queue, !request, !sr - Add song to queue (anyone by default)
-        if (cmd === "!queue" || cmd === "!request" || cmd === "!sr") {
-            if (!this.hasPermission(data, permissions[cmd])) {
+        // !queue, !sr - Add song to queue (anyone by default)
+        // Also handles !request as legacy alias
+        if (cmd === "!queue" || cmd === "!sr" || inputCmd === "!request") {
+            if (!this.hasPermission(data, permissions[cmd] || permissions['!queue'])) {
                 return null;
             }
 
@@ -916,7 +1355,32 @@ class SpotifyIntegration {
                 return "Usage: !queue <song name or artist>";
             }
 
-            const result = await this.addToQueue(args);
+            this.managedQueueEnabled = !!(this.settings?.spotifyManagedQueue?.setting ?? this.settings?.spotifyManagedQueue);
+            let result;
+            if (this.managedQueueEnabled) {
+                // Use managed queue for requester tracking and !revoke support
+                result = await this.addToManagedQueue(args, {
+                    requesterName: data.userid || data.chatname,
+                    requesterKey: `${data.type}:${data.userid || data.chatname}`
+                });
+            } else {
+                result = await this.addToQueue(args);
+            }
+            return result.message;
+        }
+
+        // !revoke - Remove user's last song from queue
+        if (cmd === "!revoke") {
+            this.managedQueueEnabled = !!(this.settings?.spotifyManagedQueue?.setting ?? this.settings?.spotifyManagedQueue);
+            if (!this.managedQueueEnabled) {
+                return "Queue revoke is disabled. Enable managed queue in Spotify settings to use !revoke.";
+            }
+            if (!this.hasPermission(data, permissions['!revoke'])) {
+                return null;
+            }
+
+            const requesterKey = `${data.type}:${data.userid || data.chatname}`;
+            const result = await this.revokeFromQueue(requesterKey);
             return result.message;
         }
 

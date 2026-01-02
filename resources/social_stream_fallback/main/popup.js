@@ -3088,7 +3088,140 @@ function processManifestData(data, manifestData) {
     }
 }
 
+// Important Changes Notification System
+const importantChanges = [
+    {
+        id: "events-always-on-v3.40",
+        minVersion: "3.40.0",  // Only show to users with this version or newer
+        title: "Heads up! Stream events now show by default",
+        message: "Follows, likes, and subs now appear in your overlay. Want to turn them off?",
+        actionText: "Disable stream events",
+        targetSection: "wrapper-global-mechanics-options",
+        targetSetting: "hideevents"
+    }
+];
 
+function checkImportantChanges() {
+    const container = document.getElementById("importantChanges");
+    if (!container) return;
+
+    // Get current extension version
+    let currentVersion = "0.0.0";
+    try {
+        const manifestData = chrome.runtime.getManifest();
+        if (manifestData && manifestData.version) {
+            currentVersion = manifestData.version;
+        }
+    } catch (e) {
+        console.error("Error getting extension version:", e);
+        return; // Can't determine version, don't show notifications
+    }
+
+    // Get dismissed changes from localStorage
+    let dismissedChanges = [];
+    try {
+        const stored = localStorage.getItem('dismissedImportantChanges');
+        if (stored) {
+            dismissedChanges = JSON.parse(stored);
+        }
+    } catch (e) {
+        console.error("Error loading dismissed changes:", e);
+    }
+
+    // Filter changes: not dismissed AND user's version >= minVersion
+    const activeChanges = importantChanges.filter(change => {
+        if (dismissedChanges.includes(change.id)) return false;
+        if (change.minVersion && compareVersions(currentVersion, change.minVersion) < 0) return false;
+        return true;
+    });
+
+    if (activeChanges.length === 0) {
+        container.classList.remove('show');
+        container.innerHTML = '';
+        return;
+    }
+
+    // Build notification HTML (dismiss button now at bottom right)
+    let html = '';
+    activeChanges.forEach(change => {
+        html += `
+            <div class="important-change" data-change-id="${change.id}">
+                <strong>${change.title}</strong><br>
+                <small>${change.message}</small><br>
+                <a href="#" class="change-action-link" data-target-section="${change.targetSection}" data-target-setting="${change.targetSetting}">${change.actionText}</a>
+                <button class="dismiss-btn" data-change-id="${change.id}" title="Dismiss">&times;</button>
+            </div>
+        `;
+    });
+
+    container.innerHTML = html;
+    container.classList.add('show');
+
+    // Add event listeners for dismiss buttons
+    container.querySelectorAll('.dismiss-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            const changeId = this.dataset.changeId;
+            dismissImportantChange(changeId);
+        });
+    });
+
+    // Add event listeners for action links
+    container.querySelectorAll('.change-action-link').forEach(link => {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            const targetSection = this.dataset.targetSection;
+            const targetSetting = this.dataset.targetSetting;
+            scrollToSetting(targetSection, targetSetting);
+        });
+    });
+}
+
+function dismissImportantChange(changeId) {
+    let dismissedChanges = [];
+    try {
+        const stored = localStorage.getItem('dismissedImportantChanges');
+        if (stored) {
+            dismissedChanges = JSON.parse(stored);
+        }
+    } catch (e) {
+        console.error("Error loading dismissed changes:", e);
+    }
+
+    if (!dismissedChanges.includes(changeId)) {
+        dismissedChanges.push(changeId);
+        localStorage.setItem('dismissedImportantChanges', JSON.stringify(dismissedChanges));
+    }
+
+    // Re-check to update the display
+    checkImportantChanges();
+}
+
+function scrollToSetting(targetSection, targetSetting) {
+    // Find the collapsible section
+    const sectionCheckbox = document.getElementById(targetSection);
+    if (sectionCheckbox) {
+        // Expand the collapsible if collapsed
+        sectionCheckbox.checked = true;
+    }
+
+    // Find the setting element
+    const settingElement = document.querySelector(`[data-setting="${targetSetting}"]`);
+    if (settingElement) {
+        // Scroll to the setting
+        settingElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        // Add a brief highlight effect
+        const parentDiv = settingElement.closest('div');
+        if (parentDiv) {
+            parentDiv.style.transition = 'background-color 0.3s';
+            parentDiv.style.backgroundColor = 'rgba(255, 193, 7, 0.3)';
+            setTimeout(() => {
+                parentDiv.style.backgroundColor = '';
+            }, 2000);
+        }
+    }
+}
 
 // Language parameter handling removed - use the translation dropdown instead
 
@@ -3289,11 +3422,33 @@ function handleElementParam(ele, targetId, paramType, sync, value = null) {
             }
         }
 
+        // Handle related number settings (e.g., rotate checkbox with rotatecount/rotatetime)
+        const relatedSettingsAttr = `relatedSettings${paramNum}`;
+        const relatedSettings = ele.dataset[relatedSettingsAttr];
+        if (relatedSettings) {
+            const numSuffix = paramNum === '1' ? '' : paramNum;
+            relatedSettings.split(',').forEach(settingName => {
+                const relatedInput = document.querySelector(`[data-numbersetting${numSuffix}='${settingName}']`);
+                if (relatedInput && relatedInput.value) {
+                    targetElement.raw = updateURL(`${settingName}=${encodeURIComponent(relatedInput.value)}`, targetElement.raw);
+                }
+            });
+        }
+
         // Handle special case exclusions
         handleExclusiveCases(ele, paramType, paramValue, sync);
     } else { // ele.checked is false
         // If checkbox is unchecked, remove the parameter from URL based on the key part
         targetElement.raw = removeQueryParamWithValue(targetElement.raw, effectiveKey);
+
+        // Remove related settings when checkbox is unchecked
+        const relatedSettingsAttr = `relatedSettings${paramNum}`;
+        const relatedSettings = ele.dataset[relatedSettingsAttr];
+        if (relatedSettings) {
+            relatedSettings.split(',').forEach(settingName => {
+                targetElement.raw = removeQueryParamWithValue(targetElement.raw, settingName);
+            });
+        }
         
         // Special handling for language parameters - also remove associated voice parameter
         if (keyOnly === 'googlelang') {
@@ -3942,9 +4097,16 @@ function handleNumberSetting(ele, sync) {
         if (!targetId) continue;
         
         const paramAttr = `data-param${i}`;
-        
+
         // Update URL parameter if corresponding checkbox is checked
-        const checkbox = document.querySelector(`input[${paramAttr}='${settingValue}']`);
+        let checkbox = document.querySelector(`input[${paramAttr}='${settingValue}']`);
+
+        // If no direct checkbox, check for a parent checkbox that has this as a related setting
+        if (!checkbox) {
+            const relatedAttr = `data-related-settings${i}`;
+            checkbox = document.querySelector(`input[${relatedAttr}*='${settingValue}']`);
+        }
+
         if (checkbox && checkbox.checked) {
             const targetElement = document.getElementById(targetId);
             const effectiveKey = normalizeParamKey(settingValue);
@@ -5608,8 +5770,50 @@ const PollManager = {
     }
 };
 
+// Hotkey system for quick actions
+const DEFAULT_HOTKEYS = {
+    'Ctrl+Shift+E': 'closepoll',
+    'Ctrl+Shift+W': 'selectwinner',
+    'Ctrl+Shift+S': 'stopentries',
+    'Ctrl+Shift+R': 'resetpoll',
+    'Ctrl+Shift+X': 'resetwaitlist',
+    'Ctrl+Shift+C': 'cleardock'
+};
+
+function buildKeyCombo(e) {
+    const parts = [];
+    if (e.ctrlKey) parts.push('Ctrl');
+    if (e.shiftKey) parts.push('Shift');
+    if (e.altKey) parts.push('Alt');
+    if (e.key.length === 1) parts.push(e.key.toUpperCase());
+    else parts.push(e.key);
+    return parts.join('+');
+}
+
+function initHotkeys() {
+    chrome.storage.sync.get(['hotkeys'], (result) => {
+        const hotkeys = result.hotkeys || DEFAULT_HOTKEYS;
+
+        document.addEventListener('keydown', (e) => {
+            // Don't trigger if typing in input/textarea/select
+            if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+            if (e.target.isContentEditable) return;
+
+            const combo = buildKeyCombo(e);
+            const action = hotkeys[combo];
+            if (action) {
+                e.preventDefault();
+                chrome.runtime.sendMessage({ cmd: action });
+            }
+        });
+    });
+}
+
 document.addEventListener("DOMContentLoaded", async function(event) {
     await ensureSourcesListLoaded();
+
+    // Initialize hotkey system
+    initHotkeys();
 	// Add event listener for Event Flow Editor link
 	const eventFlowLink = document.getElementById('open-event-flow-editor-link');
 	if (eventFlowLink) {
@@ -5633,7 +5837,34 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 			ProfileManager.saveCurrentProfile();
 		});
 	}
-	
+
+	// Add event listeners for credits roll buttons and trigger mode
+	const creditsStartBtn = document.getElementById('creditsStartBtn');
+	const creditsPreviewBtn = document.getElementById('creditsPreviewBtn');
+	const creditsTriggerMode = document.querySelector('select[data-optionparam13="triggermode"]');
+	const creditsActionsDiv = document.querySelector('.credits-actions');
+
+	if (creditsStartBtn) {
+		creditsStartBtn.addEventListener('click', function() {
+			chrome.runtime.sendMessage({ cmd: "creditsStart" });
+		});
+	}
+
+	if (creditsPreviewBtn) {
+		creditsPreviewBtn.addEventListener('click', function() {
+			chrome.runtime.sendMessage({ cmd: "creditsPreview" });
+		});
+	}
+
+	// Show/hide credits buttons based on trigger mode
+	if (creditsTriggerMode && creditsActionsDiv) {
+		const updateCreditsButtonsVisibility = () => {
+			creditsActionsDiv.style.display = creditsTriggerMode.value === 'manual' ? 'flex' : 'none';
+		};
+		creditsTriggerMode.addEventListener('change', updateCreditsButtonsVisibility);
+		updateCreditsButtonsVisibility(); // Set initial state
+	}
+
 	// Add event listeners for OpenAI custom voice/model dropdowns
 	const setupOpenAICustomInputs = (voiceSelectId, modelSelectId, customVoiceId, customModelId) => {
 		const voiceSelect = document.getElementById(voiceSelectId);
@@ -6294,6 +6525,101 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 		});
 	}
 
+	// Export Points Data
+	const exportPointsBtn = document.getElementById('exportPointsData');
+	if (exportPointsBtn) {
+		exportPointsBtn.addEventListener('click', async function() {
+			exportPointsBtn.disabled = true;
+			exportPointsBtn.textContent = 'Exporting...';
+
+			chrome.runtime.sendMessage({
+				cmd: "exportPointsData"
+			}, function(response) {
+				exportPointsBtn.disabled = false;
+				exportPointsBtn.textContent = 'Export Points';
+
+				if (response && response.success && response.data) {
+					// Create and trigger download
+					const blob = new Blob([response.data], { type: 'application/json' });
+					const url = URL.createObjectURL(blob);
+					const a = document.createElement('a');
+					a.href = url;
+					a.download = `points-backup-${new Date().toISOString().split('T')[0]}.json`;
+					document.body.appendChild(a);
+					a.click();
+					document.body.removeChild(a);
+					URL.revokeObjectURL(url);
+
+					const data = JSON.parse(response.data);
+					alert(`Exported ${data.userCount} users successfully!`);
+				} else {
+					alert('Failed to export points data: ' + (response?.error || 'Unknown error'));
+				}
+			});
+		});
+	}
+
+	// Import Points Data
+	const importPointsBtn = document.getElementById('importPointsData');
+	const importPointsFile = document.getElementById('importPointsFile');
+
+	if (importPointsBtn && importPointsFile) {
+		importPointsBtn.addEventListener('click', function() {
+			importPointsFile.click();
+		});
+
+		importPointsFile.addEventListener('change', async function(e) {
+			const file = e.target.files[0];
+			if (!file) return;
+
+			// Ask for import mode
+			const mode = confirm(
+				'Import Mode:\n\n' +
+				'OK = Merge (keep higher point values)\n' +
+				'Cancel = Replace (overwrite all data)\n\n' +
+				'Choose your import mode:'
+			) ? 'merge' : 'replace';
+
+			if (mode === 'replace') {
+				if (!confirm('WARNING: Replace mode will overwrite all existing points data. Are you sure?')) {
+					importPointsFile.value = '';
+					return;
+				}
+			}
+
+			importPointsBtn.disabled = true;
+			importPointsBtn.textContent = 'Importing...';
+
+			const reader = new FileReader();
+			reader.onload = function(event) {
+				chrome.runtime.sendMessage({
+					cmd: "importPointsData",
+					data: event.target.result,
+					mode: mode
+				}, function(response) {
+					importPointsBtn.disabled = false;
+					importPointsBtn.textContent = 'Import Points';
+					importPointsFile.value = '';
+
+					if (response && response.success) {
+						alert(`Import complete!\n\nImported: ${response.imported}\nSkipped: ${response.skipped}\nErrors: ${response.errors || 0}`);
+					} else {
+						alert('Failed to import points data: ' + (response?.error || response?.message || 'Unknown error'));
+					}
+				});
+			};
+
+			reader.onerror = function() {
+				importPointsBtn.disabled = false;
+				importPointsBtn.textContent = 'Import Points';
+				importPointsFile.value = '';
+				alert('Failed to read file');
+			};
+
+			reader.readAsText(file);
+		});
+	}
+
 	// Initialize Spotify section inputs and handle manual saving
 	const spotifyClientIdInput = document.getElementById('spotifyClientId');
 	const spotifyClientSecretInput = document.getElementById('spotifyClientSecret');
@@ -6374,11 +6700,13 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 			// Settings stored as { json: string, object: parsed } - access .object
 			const permissions = result.settings?.spotifyCommandPermissions?.object || {};
 			const disabledCommands = result.settings?.spotifyDisabledCommands?.object || [];
+			const customTriggers = result.settings?.spotifyCommandTriggers?.object || {};
 
 			commandRows.forEach(row => {
 				const command = row.dataset.command;
 				const enabledCheckbox = row.querySelector('.spotify-cmd-enabled');
 				const roleCheckboxes = row.querySelectorAll('.spotify-cmd-roles input[type="checkbox"]');
+				const triggerInput = row.querySelector('.spotify-cmd-trigger');
 
 				// Apply saved enabled state
 				if (enabledCheckbox && disabledCommands.includes(command)) {
@@ -6392,6 +6720,11 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 						cb.checked = savedRoles.includes(cb.value);
 					});
 				}
+
+				// Apply saved custom triggers
+				if (triggerInput && customTriggers[command]) {
+					triggerInput.value = customTriggers[command];
+				}
 			});
 		});
 
@@ -6399,6 +6732,7 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 		commandRows.forEach(row => {
 			const enabledCheckbox = row.querySelector('.spotify-cmd-enabled');
 			const roleCheckboxes = row.querySelectorAll('.spotify-cmd-roles input[type="checkbox"]');
+			const triggerInput = row.querySelector('.spotify-cmd-trigger');
 
 			if (enabledCheckbox) {
 				enabledCheckbox.addEventListener('change', () => saveSpotifyCommandSettings());
@@ -6406,6 +6740,27 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 			roleCheckboxes.forEach(cb => {
 				cb.addEventListener('change', () => saveSpotifyCommandSettings());
 			});
+
+			// Handle trigger input changes
+			if (triggerInput) {
+				const defaultTrigger = row.dataset.command;
+
+				// On blur: revert to default if empty, then save
+				triggerInput.addEventListener('blur', () => {
+					const value = triggerInput.value.trim();
+					if (!value) {
+						triggerInput.value = defaultTrigger;
+					}
+					saveSpotifyCommandSettings();
+				});
+
+				// On Enter key: blur to trigger save
+				triggerInput.addEventListener('keydown', (e) => {
+					if (e.key === 'Enter') {
+						triggerInput.blur();
+					}
+				});
+			}
 		});
 	}
 
@@ -6413,11 +6768,13 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 		const commandRows = document.querySelectorAll('.spotify-command-row');
 		const permissions = {};
 		const disabledCommands = [];
+		const customTriggers = {};
 
 		commandRows.forEach(row => {
 			const command = row.dataset.command;
 			const enabledCheckbox = row.querySelector('.spotify-cmd-enabled');
 			const roleCheckboxes = row.querySelectorAll('.spotify-cmd-roles input[type="checkbox"]:checked');
+			const triggerInput = row.querySelector('.spotify-cmd-trigger');
 
 			if (enabledCheckbox && !enabledCheckbox.checked) {
 				disabledCommands.push(command);
@@ -6436,6 +6793,15 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 			}
 
 			permissions[command] = roles;
+
+			// Collect custom triggers (normalize: trim, lowercase, handle comma-separated)
+			if (triggerInput) {
+				const triggerValue = triggerInput.value.trim();
+				// Only store if different from default
+				if (triggerValue && triggerValue !== command) {
+					customTriggers[command] = triggerValue;
+				}
+			}
 		});
 
 		// Save to storage
@@ -6453,7 +6819,14 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 			value: JSON.stringify(disabledCommands)
 		});
 
-		console.log('Spotify command settings saved:', { permissions, disabledCommands });
+		chrome.runtime.sendMessage({
+			cmd: "saveSetting",
+			type: "json",
+			setting: "spotifyCommandTriggers",
+			value: JSON.stringify(customTriggers)
+		});
+
+		console.log('Spotify command settings saved:', { permissions, disabledCommands, customTriggers });
 	}
 
 	// Initialize on page load
@@ -7063,8 +7436,9 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 		});
 	};
 
-	checkVersion(); 
-	
+	checkVersion();
+	checkImportantChanges();
+
 	let hideLinks = false;
 	document.querySelectorAll("input[data-setting='hideyourlinks']").forEach(x=>{
 		if (x.checked){

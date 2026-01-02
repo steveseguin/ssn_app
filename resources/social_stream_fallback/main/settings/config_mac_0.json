@@ -172,7 +172,11 @@
         "width": 1280,
         "height": 720
       }
-    }
+    },
+	"size": {
+        "width": 1300,
+        "height": 1300
+      }
   },
   "youtube": {
     "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
@@ -262,7 +266,7 @@
     "userAgent": "Chrome",
     "signin": {
       "url": "https://kick.com",
-      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
       "size": {
         "width": 1920,
         "height": 1080

@@ -346,13 +346,17 @@ function getPersistedSession() {
 	let storedState = null;
 	try {
 		storedId = localStorage.getItem("ssninja_stream_id") || localStorage.getItem("streamID");
-	} catch (e) {}
+	} catch (e) {
+		console.error('[Storage] Failed to read stream ID:', e.message);
+	}
 	try {
 		const rawState = localStorage.getItem("ssninja_state");
 		if (rawState !== null) {
 			storedState = rawState === "true";
 		}
-	} catch (e) {}
+	} catch (e) {
+		console.error('[Storage] Failed to read state:', e.message);
+	}
 	return { storedId, storedState };
 }
 
@@ -362,12 +366,16 @@ function persistSession({ streamId = null, state = null } = {}) {
 			localStorage.setItem("ssninja_stream_id", streamId);
 			localStorage.setItem("streamID", streamId);
 		}
-	} catch (e) {}
+	} catch (e) {
+		console.error('[Storage] Failed to save stream ID:', e.message);
+	}
 	try {
 		if (typeof state === "boolean") {
 			localStorage.setItem("ssninja_state", state ? "true" : "false");
 		}
-	} catch (e) {}
+	} catch (e) {
+		console.error('[Storage] Failed to save state:', e.message);
+	}
 	if (chrome && chrome.storage && chrome.storage.sync && chrome.storage.sync.set) {
 		const payload = {};
 		if (streamId) {
@@ -754,7 +762,7 @@ function isProfanity(word) {
 
 function filterProfanity(sentence) {
     let filteredSentence = sentence;
-    
+
     // Handle multi-word phrases first
     if (profanityHashTable) {
         Object.values(profanityHashTable)
@@ -767,11 +775,11 @@ function filterProfanity(sentence) {
                 filteredSentence = filteredSentence.replace(phraseRegex, match => '*'.repeat(match.length));
             });
     }
-    
+
     // Handle single words
     const words = filteredSentence.split(/[\s\.\-_!?,]+/);
     const uniqueWords = [...new Set(words)];
-    
+
     for (let word of uniqueWords) {
         if (word && isProfanity(word)) {
             const escapedWord = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -780,8 +788,35 @@ function filterProfanity(sentence) {
             filteredSentence = filteredSentence.replace(wordRegex, match => '*'.repeat(match.length));
         }
     }
-    
+
     return filteredSentence;
+}
+
+function containsProfanity(sentence) {
+    if (!sentence || !profanityHashTable) {
+        return false;
+    }
+
+    // Check multi-word phrases first
+    const phrases = Object.values(profanityHashTable)
+        .flatMap(obj => Object.keys(obj))
+        .filter(word => word.includes(' '));
+
+    for (const phrase of phrases) {
+        if (sentence.toLowerCase().includes(phrase.toLowerCase())) {
+            return true;
+        }
+    }
+
+    // Check single words
+    const words = sentence.split(/[\s\.\-_!?,]+/);
+    for (const word of words) {
+        if (word && isProfanity(word)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 var profanityHashTable = false;
@@ -1652,7 +1687,10 @@ async function loadmidi() {
 	try {
 		midiConfigFile = await midiConfigFile[0].getFile();
 		midiConfigFile = await midiConfigFile.text();
-	} catch (e) {}
+	} catch (e) {
+		console.error('[MIDI] Failed to read config file:', e.message);
+		return;
+	}
 
 	try {
 		settings.midiConfig = JSON.parse(midiConfigFile);
@@ -2203,13 +2241,27 @@ async function importSettings(item = false) {
 	}
 	log(importFile);
 	try {
-		importFile = await importFile[0].getFile();
-		importFile = await importFile.text(); // fail if IPC
-	} catch (e) {}
+		if (isSSAPP) {
+			// In Electron, showOpenDialog already returns the file content as a string
+			if (typeof importFile === 'number' || !importFile) {
+				console.error('[Settings] Failed to read import file: dialog canceled or error');
+				return;
+			}
+			// importFile is already the file content string
+		} else {
+			// Browser File System Access API returns FileSystemFileHandle array
+			importFile = await importFile[0].getFile();
+			importFile = await importFile.text();
+		}
+	} catch (e) {
+		console.error('[Settings] Failed to read import file:', e.message);
+		return;
+	}
 
 	try {
 		loadSettings(JSON.parse(importFile), true);
 	} catch (e) {
+		console.error('[Settings] Invalid JSON in import file:', e.message);
 		messagePopup({alert: "File does not contain a valid JSON structure"});
 	}
 }
@@ -3817,6 +3869,23 @@ chrome.runtime.onMessage.addListener(async function (request, sender, sendRespon
 				settings[pattern] = findExistingEvents(pattern,{ settings });
 			})
 
+			// For language changes, wait for storage AND translation file load to complete
+			// This prevents race conditions where popup reloads before translation is ready
+			if (request.setting === "translationlanguage") {
+				chrome.storage.local.set({ settings: settings }, async () => {
+					chrome.runtime.lastError;
+					// Wait for changeLg to complete - it fetches the translation file
+					// and saves settings.translation to storage
+					if (settings.translationlanguage && settings.translationlanguage.optionsetting) {
+						await changeLg(settings.translationlanguage.optionsetting);
+					} else {
+						await changeLg(request.value);
+					}
+					sendResponse({ state: isExtensionOn, saved: true });
+				});
+				return true; // Keep message channel open for async response
+			}
+
 			chrome.storage.local.set({
 				settings: settings
 			});
@@ -4045,6 +4114,9 @@ chrome.runtime.onMessage.addListener(async function (request, sender, sendRespon
 			if (request.setting == "customkickstate") {
 				pushSettingChange();
 			}
+			if (request.setting == "hidecertainbadges") {
+				pushSettingChange();
+			}
 			if (request.setting == "customriversidestate") {
 				pushSettingChange();
 			}
@@ -4146,14 +4218,7 @@ chrome.runtime.onMessage.addListener(async function (request, sender, sendRespon
 				sendWaitlistConfig(null, true); // stop hype and clear old hype
 			}
 
-			if (request.setting == "translationlanguage") {
-				// After saving, the value is stored in settings[translationlanguage].optionsetting
-				if (settings.translationlanguage && settings.translationlanguage.optionsetting) {
-					changeLg(settings.translationlanguage.optionsetting);
-				} else {
-					changeLg(request.value);
-				}
-			}
+			// Note: translationlanguage is handled earlier with storage callback to prevent race condition
 
 			if (request.setting.startsWith("timemessage")) {
 				if (request.setting.startsWith("timemessageevent")) {
@@ -4312,7 +4377,9 @@ chrome.runtime.onMessage.addListener(async function (request, sender, sendRespon
 		} else if ("pokeMe" in request) {
 			// forwards messages from Youtube/Twitch/Facebook to the remote dock via the VDO.Ninja API
 			sendResponse({ state: isExtensionOn }); // respond to Youtube/Twitch/Facebook with the current state of the plugin; just as possible confirmation.
-			pokeSite(sender.tab.url, sender.tab.id);
+			if (!settings.disabletiktokpoke) {
+				pokeSite(sender.tab.url, sender.tab.id);
+			}
 		} else if ("keepAlive" in request) {
 			// forwards messages from Youtube/Twitch/Facebook to the remote dock via the VDO.Ninja API
 			var action = {};
@@ -4437,6 +4504,41 @@ chrome.runtime.onMessage.addListener(async function (request, sender, sendRespon
 				sendResponse({ success: false, error: error?.message || 'Failed to reset points' });
 			}
 			return response;
+		} else if (request.cmd === 'exportPointsData') {
+			try {
+				if (typeof window.pointsSystemReady === 'function') {
+					await window.pointsSystemReady();
+				}
+				const system = window.pointsSystem;
+				if (!system) {
+					throw new Error('Points system unavailable');
+				}
+				const jsonData = await system.exportAllPoints();
+				sendResponse({ success: true, data: jsonData });
+			} catch (error) {
+				console.error('exportPointsData failed:', error);
+				sendResponse({ success: false, error: error?.message || 'Failed to export points' });
+			}
+			return response;
+		} else if (request.cmd === 'importPointsData') {
+			try {
+				if (typeof window.pointsSystemReady === 'function') {
+					await window.pointsSystemReady();
+				}
+				const system = window.pointsSystem;
+				if (!system) {
+					throw new Error('Points system unavailable');
+				}
+				const result = await system.importPoints(request.data, request.mode || 'merge');
+				if (typeof window.requestPointsLeaderboardBroadcast === 'function') {
+					window.requestPointsLeaderboardBroadcast('import', { immediate: true });
+				}
+				sendResponse(result);
+			} catch (error) {
+				console.error('importPointsData failed:', error);
+				sendResponse({ success: false, error: error?.message || 'Failed to import points' });
+			}
+			return response;
 		} else if (request.cmd && request.cmd === "export") {
 			sendResponse({ state: isExtensionOn });
 			await exportSettings();
@@ -4518,9 +4620,15 @@ chrome.runtime.onMessage.addListener(async function (request, sender, sendRespon
 			} catch(e){}
 		} else if (request.cmd && request.cmd === "fakemsg") {
 			sendResponse({ state: isExtensionOn });
-			
+
 			triggerFakeRandomMessage();
-			
+
+		} else if (request.cmd && request.cmd === "creditsStart") {
+			sendResponse({ state: isExtensionOn });
+			sendTargetP2P({ creditsCommand: "start" }, "credits");
+		} else if (request.cmd && request.cmd === "creditsPreview") {
+			sendResponse({ state: isExtensionOn });
+			sendTargetP2P({ creditsCommand: "preview" }, "credits");
 		} else if (request.action === "startReplay") {
 			// Handle replay messages from timestamp
 			console.log('Received startReplay request:', request);
@@ -4830,44 +4938,18 @@ chrome.runtime.onMessage.addListener(async function (request, sender, sendRespon
 			// Respond immediately - tokens are already cleared in memory
 			sendResponse({success: true});
 		} else if (request.spotifyAction) {
-			// Handle Spotify actions from Event Flow
-			if (spotify && settings.spotifyEnabled) {
-				(async () => {
-					try {
-						let result;
-						switch (request.spotifyAction) {
-							case 'skip':
-								result = await spotify.skip();
-								break;
-							case 'previous':
-								result = await spotify.previous();
-								break;
-							case 'pause':
-								result = await spotify.pause();
-								break;
-							case 'resume':
-								result = await spotify.resume();
-								break;
-							case 'volume':
-								result = await spotify.setVolume(request.volume);
-								break;
-							case 'queue':
-								result = await spotify.addToQueue(request.query);
-								break;
-							default:
-								result = { success: false, message: 'Unknown Spotify action' };
-						}
-						console.log('[Spotify Action]', request.spotifyAction, result);
-						sendResponse({ success: result?.success, message: result?.message });
-					} catch (error) {
-						console.error('[Spotify Action Error]', error);
-						sendResponse({ success: false, error: error.message });
-					}
-				})();
-				return true; // Keep message channel open for async response
-			} else {
-				sendResponse({ success: false, error: 'Spotify not enabled or not connected' });
-			}
+			// Handle Spotify actions from Event Flow (uses shared handleSpotifyAction helper)
+			(async () => {
+				try {
+					const result = await handleSpotifyAction(request);
+					console.log('[Spotify Action]', request.spotifyAction, result);
+					sendResponse({ success: result?.success, message: result?.message });
+				} catch (error) {
+					console.error('[Spotify Action Error]', error);
+					sendResponse({ success: false, error: error.message });
+				}
+			})();
+			return true; // Keep message channel open for async response
 		} else if (request.cmd && request.target){
 			sendResponse({ state: isExtensionOn });
 			sendTargetP2P(request, request.target);
@@ -4987,7 +5069,9 @@ function ajax(object2send, url, ajaxType = "PUT", type = "application/json; char
 			xhttp.setRequestHeader("Content-Type", type);
 			xhttp.send(JSON.stringify(object2send));
 		}
-	} catch (e) {}
+	} catch (e) {
+		console.error('[Ajax] Request failed:', e.message);
+	}
 }
 
 const metaDataStore = new Map(); // Using Map instead of {} for better cleanup
@@ -5964,7 +6048,7 @@ function sendToS10(data, fakechat=false, relayed=false) {
 
 // Social Stream Chat integration - send messages to chat.socialstream.ninja
 function sendToSSC(data, fakechat=false, relayed=false) {
-	if (settings.ssc && settings.sscapikey && settings.sscapikey.textsetting && settings.sscroomid && settings.sscroomid.textsetting) {
+	if (settings.ssc && settings.sscapikey && settings.sscapikey.textsetting) {
 		try {
 			// Skip messages from our own chat to avoid loops
 			if (data.type && data.type === "socialstreamchat") {
@@ -6113,16 +6197,16 @@ function sendToSSC(data, fakechat=false, relayed=false) {
 			if (data.meta) {
 				payload.meta = data.meta;
 			}
-
-			const roomId = settings.sscroomid.textsetting.trim();
+			
 			const apiKey = settings.sscapikey.textsetting.trim();
 			const apiBase = (settings.sscapibase && settings.sscapibase.textsetting)
-				? settings.sscapibase.textsetting.trim()
-				: "https://chat.socialstream.ninja";
+			  ? settings.sscapibase.textsetting.trim()
+			  : "https://api.ninjachatter.com";
 
 			try {
 				let xhr = new XMLHttpRequest();
-				xhr.open("POST", apiBase + "/rooms/" + roomId + "/ingress");
+				xhr.open("POST", apiBase + "/ssn");
+
 				xhr.setRequestHeader("Content-Type", "application/json");
 				xhr.setRequestHeader("Authorization", "Bearer " + apiKey);
 				xhr.onload = function () {
@@ -7127,10 +7211,15 @@ function setupSocketDock() {
 	} else if (!isExtensionOn) {
 		return;
 	}
-	
+
 	if (reconnectionTimeoutDock) {
 		clearTimeout(reconnectionTimeoutDock);
 		reconnectionTimeoutDock = null;
+	}
+
+	// Skip if socket is already connecting or open
+	if (socketserverDock && (socketserverDock.readyState === WebSocket.CONNECTING || socketserverDock.readyState === WebSocket.OPEN)) {
+		return;
 	}
 
 	if (socketserverDock) {
@@ -7161,7 +7250,6 @@ function setupSocketDock() {
             conConDock = nextAttempt;
             reconnectionTimeoutDock = setTimeout(function () {
                 if ((settings.server2 || settings.server3) && isExtensionOn) {
-                    socketserverDock = new WebSocket(serverURLDock);
                     setupSocketDock();
                 } else {
                     socketserverDock = false;
@@ -7216,10 +7304,15 @@ function setupSocket() {
 	} else if (!isExtensionOn) {
 		return;
 	}
-	
+
 	if (reconnectionTimeout) {
 		clearTimeout(reconnectionTimeout);
 		reconnectionTimeout = null;
+	}
+
+	// Skip if socket is already connecting or open
+	if (socketserver && (socketserver.readyState === WebSocket.CONNECTING || socketserver.readyState === WebSocket.OPEN)) {
+		return;
 	}
 
 	if (socketserver) {
@@ -7471,8 +7564,36 @@ socketserver.addEventListener("message", async function (event) {
 					message.chatmessage = "";
 					
 					var foundCustomField = false;
+					var messageFieldValue = null;
+					var messageFieldPriority = -1;
+					var messageFieldHasValue = -1;
+					var messageFieldSortKey = "";
+
+					function considerStripeMessageField(field, priority, sortKey) {
+						if (!field || !field.text || typeof field.text.value !== "string") {
+							return;
+						}
+
+						var value = field.text.value;
+						var hasValue = value.trim() ? 1 : 0;
+						var normalizedSortKey = typeof sortKey === "string" ? sortKey.toLowerCase() : "";
+
+						if (
+							priority > messageFieldPriority ||
+							(priority === messageFieldPriority && hasValue > messageFieldHasValue) ||
+							(priority === messageFieldPriority && hasValue === messageFieldHasValue && normalizedSortKey && (!messageFieldSortKey || normalizedSortKey < messageFieldSortKey))
+						) {
+							messageFieldValue = value;
+							messageFieldPriority = priority;
+							messageFieldHasValue = hasValue;
+							messageFieldSortKey = normalizedSortKey;
+						}
+					}
 
 					data.stripe.data.object.custom_fields.forEach(xx => {
+						var keyLower = typeof xx.key === "string" ? xx.key.toLowerCase() : "";
+						var labelLower = typeof xx.label === "string" ? xx.label.toLowerCase() : "";
+
 						if (xx.key == "displayname") {
 							message.chatname = xx.text.value;
 							foundCustomField = true;
@@ -7488,12 +7609,6 @@ socketserver.addEventListener("message", async function (event) {
 						} else if (xx.key == "username") {
 							message.chatname = xx.text.value;
 							foundCustomField = true;
-							
-						} else if (xx.key == "message") {
-							message.chatmessage = xx.text.value;
-							
-						} else if (xx.key == "messagetchat") {
-							message.chatmessage = xx.text.value;
 							
 						} else if (!message.chatname && xx.label && typeof xx.label === 'string' && xx.label.toLowerCase() == "display name") {
 							message.chatname = xx.text.value;
@@ -7516,7 +7631,25 @@ socketserver.addEventListener("message", async function (event) {
 								message.chatname = xx.text.value;
 							}
 						}
+
+						if (keyLower === "message") {
+							considerStripeMessageField(xx, 4, "key:message");
+						} else if (keyLower === "messagetchat") {
+							considerStripeMessageField(xx, 4, "key:messagetchat");
+						} else if (keyLower === "leaveamessage") {
+							considerStripeMessageField(xx, 3, "key:leaveamessage");
+						} else if (labelLower === "message") {
+							considerStripeMessageField(xx, 2, "label:message");
+						} else if (keyLower && keyLower.includes("message")) {
+							considerStripeMessageField(xx, 1, "key:" + keyLower);
+						} else if (labelLower && labelLower.includes("message")) {
+							considerStripeMessageField(xx, 0, "label:" + labelLower);
+						}
 					});
+
+					if (messageFieldValue !== null) {
+						message.chatmessage = messageFieldValue;
+					}
 					
 					if (!foundCustomField){
 						console.warn("No custom name / custom display-name field found. We will skip this incoming stripe api webhook");
@@ -8448,6 +8581,75 @@ function sendTargetP2P(data, target) {
     
     }
 }
+
+// Shared helper for Spotify actions - used by both message listener and EventFlowSystem
+async function handleSpotifyAction(msg) {
+	if (!msg || typeof msg !== 'object' || !msg.spotifyAction) {
+		return { success: false, message: 'Invalid Spotify action request' };
+	}
+
+	// Guard: ensure Spotify is initialized and enabled
+	if (!spotify || !settings.spotifyEnabled) {
+		return { success: false, message: 'Spotify not enabled or not connected' };
+	}
+
+	let result;
+	switch (msg.spotifyAction) {
+		case 'skip':
+			result = await spotify.skip();
+			break;
+		case 'previous':
+			result = await spotify.previous();
+			break;
+		case 'pause':
+			result = await spotify.pause();
+			break;
+		case 'resume':
+			result = await spotify.resume();
+			break;
+		case 'volume':
+			result = await spotify.setVolume(msg.volume);
+			break;
+		case 'queue':
+			result = await spotify.addToQueue(msg.query);
+			break;
+		case 'toggle':
+			result = await spotify.toggle();
+			break;
+		case 'shuffle':
+			result = await spotify.shuffle(msg.state);
+			break;
+		case 'repeat':
+			result = await spotify.setRepeat(msg.mode);
+			break;
+		case 'nowPlaying':
+			result = await spotify.getNowPlaying();
+			// Format the message if track info available
+			if (result.success && result.track) {
+				const format = msg.format || '🎵 Now playing: {song} by {artist}';
+				const formattedMsg = format
+					.replace(/{song}/gi, result.track.name || '')
+					.replace(/{artist}/gi, result.track.artist || '')
+					.replace(/{album}/gi, result.track.album || '');
+				result.message = formattedMsg;
+
+				// Send to dock if configured
+				if (msg.sendToDock !== false) {
+					sendTargetP2P({
+						chatname: 'Spotify',
+						chatmessage: formattedMsg,
+						type: 'spotify',
+						chatimg: result.track.albumArt || ''
+					}, 'dock');
+				}
+			}
+			break;
+		default:
+			result = { success: false, message: 'Unknown Spotify action' };
+	}
+	return result;
+}
+
 function sendTickerP2P(data, uid = null) {
     // function to send data to the DOCk via the VDO.Ninja API
 
@@ -9888,6 +10090,12 @@ async function sendMessageToTabs(data, reverse = false, metadata = null, relayMo
 		// console.log('[RELAY DEBUG - sendMessageToTabs] Early return - No response in data');
 		return false;
 	}
+
+	// Block events if global hideevents setting is enabled
+	if (settings.hideevents && data.response && data.response.event) {
+		return false;
+	}
+
     if (antispam && settings["dynamictiming"] && lastAntiSpam + 10 > messageCounter) {
         return false;
     }
@@ -11550,7 +11758,12 @@ async function applyBotActions(data, tab = false) {
 		if (settings.normalizeText && data.chatmessage){
 			data.chatmessage = normalizeText(data.chatmessage, data.textonly || false)
 		}
-		
+
+		// Check for bad words in the message (for Event Flow filtering)
+		if (data.chatmessage) {
+			data.containsBadWords = containsProfanity(data.chatmessage);
+		}
+
 		if (settings.firsttimers && data.chatname && data.chatmessage && data.type){
 			try {
 				const checkResult = await messageStoreDB.checkUserTypeExists((data.userid || data.chatname), data.type);
@@ -11825,7 +12038,7 @@ async function applyBotActions(data, tab = false) {
 		}
 
 		// Social Stream Chat relay - send all messages to chat.socialstream.ninja
-		if (settings.sscrelay && !data.bot && data.chatmessage && data.chatname && !data.event){
+		if (settings.ssc && settings.sscapikey && settings.sscapikey.textsetting && !data.bot && data.chatmessage && data.chatname && !data.event){
 			sendToSSC(data, false, true);
 		}
 		//console.logdata);
@@ -12102,7 +12315,7 @@ async function applyBotActions(data, tab = false) {
 				if (settings.randomgif) {
 					order = parseInt(Math.random() * 15) + 1;
 				}
-				var gurl = await fetch("https://tenor.googleapis.com/v2/search?media_filter=tinygif,tinywebp_transparent&q=" + encodeURIComponent(searchGif) + "&key=" + settings.tenorKey.textsetting + "&limit=" + order)
+				var gurl = await fetch("https://tenor.googleapis.com/v2/search?contentfilter=high&media_filter=tinygif,tinywebp_transparent&q=" + encodeURIComponent(searchGif) + "&key=" + settings.tenorKey.textsetting + "&limit=" + order)
 					.then(response => response.json())
 					.then(response => {
 						try {
@@ -12168,7 +12381,7 @@ async function applyBotActions(data, tab = false) {
 					if (order > 40) {
 						order = 40;
 					}
-					var gurl = await fetch("https://tenor.googleapis.com/v2/search?&searchfilter=sticker&media_filter=tinygif,tinywebp_transparent&q=" + encodeURIComponent(search_word) + "&key=" + settings.tenorKey.textsetting + "&limit=" + order)
+					var gurl = await fetch("https://tenor.googleapis.com/v2/search?contentfilter=high&searchfilter=sticker&media_filter=tinygif,tinywebp_transparent&q=" + encodeURIComponent(search_word) + "&key=" + settings.tenorKey.textsetting + "&limit=" + order)
 						.then(response => response.json())
 						.then(response => {
 							try {
@@ -12236,7 +12449,7 @@ async function applyBotActions(data, tab = false) {
 					if (order > 40) {
 						order = 40;
 					}
-					var gurl = await fetch("https://tenor.googleapis.com/v2/search?media_filter=tinygif,tinywebp_transparent&q=" + encodeURIComponent(search_word) + "&key=" + settings.tenorKey.textsetting + "&limit=" + order)
+					var gurl = await fetch("https://tenor.googleapis.com/v2/search?contentfilter=high&media_filter=tinygif,tinywebp_transparent&q=" + encodeURIComponent(search_word) + "&key=" + settings.tenorKey.textsetting + "&limit=" + order)
 						.then(response => response.json())
 						.then(response => {
 							try {
@@ -13363,6 +13576,8 @@ window.checkExactDuplicateAlreadyRelayed = checkExactDuplicateAlreadyRelayed;
 window.handleMessageStore = handleMessageStore;
 // Expose P2P targeting helper so EventFlowSystem can reach specific overlay pages (e.g., actions)
 window.sendTargetP2P = sendTargetP2P;
+// Expose Spotify action handler for EventFlowSystem fallback paths
+window.handleSpotifyAction = handleSpotifyAction;
 
 
 let tmp = new EventFlowSystem({
@@ -13374,7 +13589,19 @@ let tmp = new EventFlowSystem({
 	checkExactDuplicateAlreadyRelayed: window.checkExactDuplicateAlreadyRelayed || null,
 	messageStore: messageStore || {},  // Share the message store for duplicate detection
 	handleMessageStore: handleMessageStore || null,  // Share the message store handler
-	sendTargetP2P: window.sendTargetP2P || null  // Add sendTargetP2P for OBS and other actions
+	sendTargetP2P: window.sendTargetP2P || null,  // Add sendTargetP2P for OBS and other actions
+	// Handle Spotify actions locally since we're already in background.js
+	sendMessageToBackground: async (msg) => {
+		if (!msg || typeof msg !== 'object') return;
+		if (msg.spotifyAction) {
+			try {
+				const result = await handleSpotifyAction(msg);
+				console.log('[EventFlow Spotify Action]', msg.spotifyAction, result);
+			} catch (error) {
+				console.error('[EventFlow Spotify Action Error]', error);
+			}
+		}
+	}
 });
 
 

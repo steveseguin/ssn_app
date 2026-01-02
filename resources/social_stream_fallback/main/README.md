@@ -182,6 +182,7 @@ Much more than just an overlay - Social Stream Ninja is a complete chat ecosyste
 - cozy.tv (no pop out; just open the view page)
 - steamcommunity.com (https://steamcommunity.com/broadcast/chatonly/XXXXXXXX)
 - whatnot.com (no pop out, so just open the view page)
+- ebay.com live (no pop out; just the watch page)
 - sessions.us - the meeting video chat; not popped out.(You can specify your own name, rather than "You", via the host/bot section in the extension menu)
 - jaco.live (https://jaco.live/golive)
 - X Live video chat (aka, was Twitter) (open the chat pop out; ie: https://x.com/XXXXXXXXXX/chat and make sure chat permissions are enabled 
@@ -235,6 +236,7 @@ Much more than just an overlay - Social Stream Ninja is a complete chat ecosyste
 - versus.cam (test chat page at https://versus.cam/?testchat)
 - patreon
 - velora.tv (no popup; just channel watch page)
+- blaze.stream (no popup; just channel watch page)
 
 There are additional sites supported, but not listed; refer to the sources folder for a more complete listing.
   
