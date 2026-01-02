@@ -34,3 +34,4 @@ build-config.env
 .env
 electron-builder.env
 social_stream_fallback/
+resources/social_stream_fallback/
