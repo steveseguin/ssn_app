@@ -1655,14 +1655,22 @@ function enableBackgroundKeepAlive() {
 		});
 		return tokenRefreshPromise;
 	}
-	function authUrl() {
-		const state = nonce(15);
+	function buildAuthRequest(redirectOverride, stateOverride) {
+		const state = stateOverride || nonce(15);
 		sessionStorage.youtubeOAuthState = state;
-		return 'https://ytauth.socialstream.ninja/auth' +
-			'?client_id=' + clientId +
-			'&redirect_uri=' + encodeURIComponent(redirectURI) +
-			'&scope=' + encodeURIComponent(YT_SCOPES.join(' ')) +
-			'&state=' + state;
+		const redirectTarget = redirectOverride || redirectURI;
+		return {
+			state,
+			redirectUri: redirectTarget,
+			url: 'https://ytauth.socialstream.ninja/auth' +
+				'?client_id=' + clientId +
+				'&redirect_uri=' + encodeURIComponent(redirectTarget) +
+				'&scope=' + encodeURIComponent(YT_SCOPES.join(' ')) +
+				'&state=' + state
+		};
+	}
+	function authUrl() {
+		return buildAuthRequest().url;
 	}
 	async function refreshAccessToken(refreshTokenValue) {
 		if (!refreshTokenValue) {
@@ -1689,32 +1697,68 @@ function enableBackgroundKeepAlive() {
 			return false;
 		}
 	}
+	async function exchangeCodeForTokens(code, state, redirectOverride) {
+		if (state !== sessionStorage.youtubeOAuthState) {
+			console.error('State mismatch - possible CSRF attack');
+			showAuthButton();
+			return;
+		}
+		if (!code) {
+			console.error('No authorization code supplied.');
+			showAuthButton();
+			return;
+		}
+		const redirectTarget = redirectOverride || redirectURI;
+		try {
+			const response = await fetch('https://ytauth.socialstream.ninja/token', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ code: code, redirect_uri: redirectTarget })
+			});
+			if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+			const data = await response.json();
+			setStoredToken(data.access_token, data.expires_in, data.refresh_token);
+			window.history.replaceState({}, document.title, redirectURI);
+			verifyAndUseToken(data.access_token);
+		} catch (error) {
+			console.error('Error exchanging code for tokens:', error);
+			showAuthButton();
+		}
+	}
 	async function handleAuthCallback() {
 		const urlParams = new URLSearchParams(window.location.search);
 		const code = urlParams.get('code');
 		const state = urlParams.get('state');
-		if (state !== sessionStorage.youtubeOAuthState) {
-			console.error('State mismatch - possible CSRF attack');
-			showAuthButton(); return;
+		await exchangeCodeForTokens(code, state, redirectURI);
+	}
+	async function startExternalAuthFlow() {
+		if (!window.ninjafy || typeof window.ninjafy.startYouTubeOAuth !== 'function') {
+			window.location.href = authUrl();
+			return;
 		}
-		if (code) {
-			try {
-				const response = await fetch('https://ytauth.socialstream.ninja/token', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ code: code, redirect_uri: redirectURI })
-				});
-				if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-				const data = await response.json();
-				setStoredToken(data.access_token, data.expires_in, data.refresh_token);
-				window.history.replaceState({}, document.title, redirectURI);
-				verifyAndUseToken(data.access_token);
-			} catch (error) {
-				console.error('Error exchanging code for tokens:', error);
+		const state = nonce(15);
+		sessionStorage.youtubeOAuthState = state;
+		try {
+			const result = await window.ninjafy.startYouTubeOAuth({
+				clientId,
+				scopes: YT_SCOPES,
+				state,
+				authBase: 'https://ytauth.socialstream.ninja'
+			});
+			if (!result || !result.code) {
+				console.error('YouTube OAuth did not return a code.');
 				showAuthButton();
+				return;
 			}
+			await exchangeCodeForTokens(result.code, result.state || state, result.redirectUri);
+		} catch (error) {
+			console.error('External YouTube OAuth failed:', error);
+			showAuthButton();
 		}
 	}
+	try {
+		window.__SSAPP_START_YT_AUTH__ = startExternalAuthFlow;
+	} catch (_) {}
     function nonce(length) {
         var text = "";
         var possible = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -3187,7 +3231,11 @@ function enableBackgroundKeepAlive() {
 		if (authLink) {
 			const authHandler = function(e) {
 				e.preventDefault();
-				window.location.href = authUrl();
+				if (isElectronEnvironment() && window.ninjafy && typeof window.ninjafy.startYouTubeOAuth === 'function') {
+					startExternalAuthFlow();
+				} else {
+					window.location.href = authUrl();
+				}
 			};
 			authLink.addEventListener('click', authHandler);
 			registerCleanup(() => authLink.removeEventListener('click', authHandler));

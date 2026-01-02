@@ -1597,7 +1597,16 @@ function getBridgeBaseUrl() {
     }
 }
 
+function isElectronEnvironment() {
+    return !!(window.ninjafy && typeof window.ninjafy.startKickOAuth === 'function');
+}
+
 async function startAuthFlow() {
+    // Use external browser auth if in Electron
+    if (isElectronEnvironment()) {
+        return startExternalAuthFlow();
+    }
+
     if (!state.clientId) {
         log('Missing Kick client ID. Please refresh this page and try again.', 'error');
         return;
@@ -1626,6 +1635,55 @@ async function startAuthFlow() {
     const authorizeUrl = `https://id.kick.com/oauth/authorize?${params.toString()}`;
     window.location.href = authorizeUrl;
 }
+
+async function startExternalAuthFlow() {
+    if (!state.clientId) {
+        log('Missing Kick client ID. Please refresh this page and try again.', 'error');
+        return;
+    }
+
+    try {
+        const result = await window.ninjafy.startKickOAuth({
+            clientId: state.clientId,
+            scopes: ['user:read', 'channel:read', 'chat:write', 'events:subscribe']
+        });
+
+        if (!result || !result.success || !result.code) {
+            log('Kick OAuth did not return an authorization code.', 'error');
+            return;
+        }
+
+        // The handler returns the code and codeVerifier - exchange for tokens
+        const code = result.code;
+        const verifier = result.codeVerifier;
+        const redirectUri = result.redirectUri;
+
+        // Store the redirect URI for token exchange
+        if (redirectUri) {
+            state.redirectUri = redirectUri;
+            persistConfig();
+        }
+
+        try {
+            await exchangeCodeForToken(code, verifier);
+            updateAuthStatus();
+            await loadAuthenticatedProfile();
+            await listSubscriptions();
+            await maybeAutoStart(true);
+        } catch (err) {
+            console.error(err);
+            log(`Token exchange failed: ${err.message}`, 'error');
+        }
+    } catch (error) {
+        console.error('External Kick OAuth failed:', error);
+        log(`Kick sign-in failed: ${error.message}`, 'error');
+    }
+}
+
+// Expose external auth for Electron trigger
+try {
+    window.__SSAPP_START_KICK_AUTH__ = startExternalAuthFlow;
+} catch (_) {}
 
 async function handleAuthCallback() {
     const url = new URL(window.location.href);

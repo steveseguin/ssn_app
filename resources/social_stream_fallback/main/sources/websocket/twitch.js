@@ -434,8 +434,11 @@ try{
 		if (authLink) {
 			authLink.addEventListener('click', function(e) {
 				e.preventDefault();
-				const authURL = authUrl();
-				window.location.href = authURL;
+				if (isElectronEnvironment()) {
+					startExternalTwitchAuthFlow();
+				} else {
+					window.location.href = authUrl();
+				}
 			});
 		}
 
@@ -1354,6 +1357,43 @@ async function ensureChatClientInstance() {
 		}
 		return text;
 	}
+
+	function isElectronEnvironment() {
+		return !!(window.ninjafy && typeof window.ninjafy.startTwitchOAuth === 'function');
+	}
+
+	async function startExternalTwitchAuthFlow() {
+		if (!isElectronEnvironment()) {
+			window.location.href = authUrl();
+			return;
+		}
+		const state = nonce(15) + "@" + (username || "");
+		sessionStorage.twitchOAuthState = state.split("@")[0];
+		try {
+			const result = await window.ninjafy.startTwitchOAuth({
+				clientId,
+				scopes: scope.split('+'),
+				state
+			});
+			if (!result || !result.access_token) {
+				console.error('Twitch OAuth did not return an access_token.');
+				showAuthButton();
+				return;
+			}
+			// Process the token as if it came from the hash fragment
+			localStorage.setItem('twitchOAuthToken', result.access_token);
+			sessionStorage.setItem('twitchOAuthToken', result.access_token);
+			verifyAndUseToken(result.access_token);
+		} catch (error) {
+			console.error('External Twitch OAuth failed:', error);
+			showAuthButton();
+		}
+	}
+
+	// Expose for remote control trigger
+	try {
+		window.__SSAPP_START_TWITCH_AUTH__ = startExternalTwitchAuthFlow;
+	} catch (_) {}
 
 	async function sendMessage(message) {
 		await modulesReady;
