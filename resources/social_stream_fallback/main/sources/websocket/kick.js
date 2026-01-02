@@ -18,7 +18,10 @@ async function importWithFallback(extensionPath, relativePath) {
     ) {
         try {
             const specifier = chrome.runtime.getURL(extensionPath);
-            return await import(specifier);
+            // Only try import if the URL has a valid scheme (http, https, file, chrome-extension)
+            if (specifier && /^(https?|file|chrome-extension):/.test(specifier)) {
+                return await import(specifier);
+            }
         } catch (error) {
             console.warn(`Failed to import ${extensionPath} via chrome.runtime.getURL`, error);
         }
@@ -102,20 +105,25 @@ const EVENT_TYPES_CACHE_KEY = 'kickEventTypesCache';
 const EVENT_TYPES_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const EVENT_TYPES_UNAVAILABLE_COOLDOWN_MS = 60 * 60 * 1000;
 
-let viewerCountInterval = null;
 let cachedEventTypes = null;
 let cachedEventTypesFetchedAt = 0;
 let eventTypesUnavailableUntil = 0;
 
-const TAB_ID = typeof window !== 'undefined' && typeof window.__SSAPP_TAB_ID__ !== 'undefined'
-    ? window.__SSAPP_TAB_ID__
-    : null;
+function getTabId() {
+    return typeof window !== 'undefined' && typeof window.__SSAPP_TAB_ID__ !== 'undefined'
+        ? window.__SSAPP_TAB_ID__
+        : null;
+}
 
 const extension = {
-    available: typeof chrome !== 'undefined' && !!(chrome && chrome.runtime && chrome.runtime.id),
+    get available() {
+        return typeof chrome !== 'undefined' && !!(chrome && chrome.runtime && chrome.runtime.id);
+    },
     enabled: true,
     settings: {},
-    tabId: TAB_ID
+    get tabId() {
+        return getTabId();
+    }
 };
 
 const WSS_PLATFORM = 'kick';
@@ -338,75 +346,6 @@ function resetThirdPartyEmoteCache() {
     FFZ = false;
     EMOTELIST = false;
     lastEmoteRequestKey = null;
-}
-
-function shouldPollViewerCount() {
-    if (!extension.enabled) {
-        return false;
-    }
-    return isSettingEnabled('showviewercount') || isSettingEnabled('hypemode');
-}
-
-function updateViewerCountDisplay(count) {
-    if (!els.viewerCount) return;
-    const label = count == null ? '—' : String(count);
-    const text = `Viewers: ${label}`;
-    if (els.viewerCount.textContent !== text) {
-        els.viewerCount.textContent = text;
-    }
-}
-
-function resetViewerCountDisplay() {
-    updateViewerCountDisplay(null);
-}
-
-async function fetchKickViewerCount(slug) {
-    const response = await fetch(`https://kick.com/api/v2/channels/${slug}`);
-    if (!response.ok) {
-        throw new Error(`Kick viewer count request failed: ${response.status}`);
-    }
-    const data = await response.json();
-    if (data && data.livestream) {
-        return data.livestream.viewer_count || 0;
-    }
-    return 0;
-}
-
-async function pollViewerCount() {
-    const slug = state.channelSlug && state.channelSlug.trim();
-    if (!slug || !shouldPollViewerCount()) {
-        updateViewerCountDisplay(null);
-        return;
-    }
-
-    try {
-        const normalizedSlug = normalizeChannel(slug) || slug;
-        const viewers = await fetchKickViewerCount(normalizedSlug);
-        updateViewerCountDisplay(viewers);
-        if (shouldPollViewerCount()) {
-            pushMessage({
-                type: 'kick',
-                event: 'viewer_update',
-                meta: viewers
-            });
-        }
-    } catch (err) {
-        console.error('Error fetching Kick viewer count:', err);
-        updateViewerCountDisplay(0);
-        if (shouldPollViewerCount()) {
-            pushMessage({
-                type: 'kick',
-                event: 'viewer_update',
-                meta: 0
-            });
-        }
-    }
-}
-
-function startViewerCountPolling() {
-    if (viewerCountInterval) return;
-    setTimeout(pollViewerCount, 2500);
-    viewerCountInterval = setInterval(pollViewerCount, 30000);
 }
 
 function escapeAttribute(value) {
@@ -1221,27 +1160,22 @@ function applyExtensionSettings(newSettings) {
 }
 
 function notifyApp(payload) {
-    try {
-        if (extension.available) {
-            chrome.runtime.sendMessage(chrome.runtime.id, payload, function () {});
+    // Try chrome.runtime.sendMessage first, with fallback to ninjafy
+    if (typeof chrome !== 'undefined' && chrome?.runtime?.sendMessage) {
+        try {
+            chrome.runtime.sendMessage(chrome.runtime.id, payload, function() {});
             return;
+        } catch (e) {
+            // Fall through to ninjafy
         }
-        if (window.ninjafy && window.ninjafy.sendMessage) {
-            window.ninjafy.sendMessage(null, payload, null, extension.tabId);
-            return;
+    }
+    // Fallback to ninjafy.sendMessage for Electron
+    if (window.ninjafy && window.ninjafy.sendMessage) {
+        try {
+            window.ninjafy.sendMessage(null, payload, null, window.__SSAPP_TAB_ID__);
+        } catch (e) {
+            console.error('Error notifying app:', e);
         }
-        if (typeof window !== 'undefined' && window.parent) {
-            let data = payload;
-            if (payload && typeof payload === 'object') {
-                data = { ...payload };
-                if (extension.tabId != null) {
-                    data.__tabID__ = extension.tabId;
-                }
-            }
-            window.parent.postMessage(data, '*');
-        }
-    } catch (err) {
-        console.error('Failed to notify app', err);
     }
 }
 
@@ -1327,7 +1261,6 @@ function initElements() {
         authState: q('auth-state'),
         startAuth: q('start-auth'),
         channelLabel: q('channel-label'),
-        viewerCount: q('viewer-count'),
         eventLog: q('event-log'),
         chatFeed: q('chat-feed'),
         chatFeedEmpty: q('chat-feed-empty'),
@@ -1372,7 +1305,6 @@ function setChannelSlug(value, options = {}) {
         state.autoStart.lastSlug = '';
         resetThirdPartyEmoteCache();
         resetChatFeed();
-        resetViewerCountDisplay();
     } else {
         state.channelSlug = slug; // Preserve original casing.
     }
@@ -1560,9 +1492,6 @@ function updateInputsFromState() {
             }
         }
     }
-    if (!state.channelSlug) {
-        resetViewerCountDisplay();
-    }
     if (els.chatType) {
         els.chatType.value = state.chat?.type || 'user';
     }
@@ -1672,7 +1601,16 @@ function getBridgeBaseUrl() {
     }
 }
 
+function isElectronEnvironment() {
+    return !!(window.ninjafy && typeof window.ninjafy.startKickOAuth === 'function');
+}
+
 async function startAuthFlow() {
+    // Use external browser auth if in Electron
+    if (isElectronEnvironment()) {
+        return startExternalAuthFlow();
+    }
+
     if (!state.clientId) {
         log('Missing Kick client ID. Please refresh this page and try again.', 'error');
         return;
@@ -1701,6 +1639,55 @@ async function startAuthFlow() {
     const authorizeUrl = `https://id.kick.com/oauth/authorize?${params.toString()}`;
     window.location.href = authorizeUrl;
 }
+
+async function startExternalAuthFlow() {
+    if (!state.clientId) {
+        log('Missing Kick client ID. Please refresh this page and try again.', 'error');
+        return;
+    }
+
+    try {
+        const result = await window.ninjafy.startKickOAuth({
+            clientId: state.clientId,
+            scopes: ['user:read', 'channel:read', 'chat:write', 'events:subscribe']
+        });
+
+        if (!result || !result.success || !result.code) {
+            log('Kick OAuth did not return an authorization code.', 'error');
+            return;
+        }
+
+        // The handler returns the code and codeVerifier - exchange for tokens
+        const code = result.code;
+        const verifier = result.codeVerifier;
+        const redirectUri = result.redirectUri;
+
+        // Store the redirect URI for token exchange
+        if (redirectUri) {
+            state.redirectUri = redirectUri;
+            persistConfig();
+        }
+
+        try {
+            await exchangeCodeForToken(code, verifier);
+            updateAuthStatus();
+            await loadAuthenticatedProfile();
+            await listSubscriptions();
+            await maybeAutoStart(true);
+        } catch (err) {
+            console.error(err);
+            log(`Token exchange failed: ${err.message}`, 'error');
+        }
+    } catch (error) {
+        console.error('External Kick OAuth failed:', error);
+        log(`Kick sign-in failed: ${error.message}`, 'error');
+    }
+}
+
+// Expose external auth for Electron trigger
+try {
+    window.__SSAPP_START_KICK_AUTH__ = startExternalAuthFlow;
+} catch (_) {}
 
 async function handleAuthCallback() {
     const url = new URL(window.location.href);
@@ -1998,9 +1985,9 @@ function applyAuthenticatedProfile(profile, idsHint = null) {
         ],
         ''
     );
-    if (slug) {
-        setChannelSlug(slug, { source: 'profile' });
-    }
+    if (slug && !state.channelSlug) {
+		setChannelSlug(slug, { source: 'profile' });
+	}
     return profile;
 }
 
@@ -2265,20 +2252,24 @@ async function resolveChannelId(force = false) {
     if (!slugInput) throw new Error('Channel slug required.');
     const slugLower = normalizeChannel(slugInput);
     if (!force && state.channelId && state.lastResolvedSlug === slugLower) {
+        log(`Using cached channel ID: ${state.channelId} for slug: ${slugLower}`);
         return state.channelId;
     }
     const previousId = state.channelId;
     const previousSlug = state.lastResolvedSlug;
     const params = new URLSearchParams({ slug: slugLower });
+    log(`Resolving channel ID for slug: ${slugLower}`);
     const data = await apiFetch(`/public/v1/channels?${params.toString()}`);
     const entries = Array.isArray(data?.data) ? data.data : [];
     const channel = entries.find(item => normalizeChannel(item.slug) === slugLower) || entries[0];
     if (!channel?.broadcaster_user_id) {
+        log(`Channel API response: ${JSON.stringify(data)}`, 'warning');
         throw new Error('Unable to resolve channel user id.');
     }
     state.channelId = channel.broadcaster_user_id;
     state.channelName = channel.slug || channel.channel_description || slugInput;
     state.lastResolvedSlug = slugLower;
+    log(`Resolved channel: ${state.channelName} (ID: ${state.channelId})`);
     updateInputsFromState();
     if (force || state.channelId !== previousId || previousSlug !== slugLower) {
         requestThirdPartyEmotes({ force: true });
@@ -2745,6 +2736,7 @@ function handleBridgeEvent(packet) {
     const body = packet.body || {};
     const type = packet.type || body?.event || 'unknown';
     const bridgeMeta = createBridgeMeta(packet);
+    log(`Bridge event received: ${type} (channelId: ${state.channelId}, slug: ${state.channelSlug})`);
     const challenge = packet.challenge || body?.challenge;
     if (challenge) {
         const level = bridgeMeta?.verified === false ? 'warning' : 'info';
@@ -2761,7 +2753,7 @@ function handleBridgeEvent(packet) {
     if (!bridgeEventMatchesCurrentChannel(packet)) {
         if (!ignoredEventTypesLogged.has(type)) {
             ignoredEventTypesLogged.add(type);
-            log(`Ignoring ${type} for a different Kick channel.`, 'info');
+            log(`Ignoring ${type} for a different Kick channel (expected: ${state.channelId}/${state.channelSlug}).`, 'info');
         }
         return;
     }
@@ -3560,24 +3552,22 @@ async function sendChatMessage() {
 }
 
 function pushMessage(data) {
-    try {
-        if (extension.available) {
-            chrome.runtime.sendMessage(chrome.runtime.id, { message: data }, function () {});
+    // Try chrome.runtime.sendMessage first, with fallback to ninjafy
+    if (typeof chrome !== 'undefined' && chrome?.runtime?.sendMessage) {
+        try {
+            chrome.runtime.sendMessage(chrome.runtime.id, { message: data }, function() {});
             return;
+        } catch (e) {
+            // Fall through to ninjafy
         }
-        if (window.ninjafy && window.ninjafy.sendMessage) {
-            window.ninjafy.sendMessage(null, { message: data }, null, extension.tabId);
-            return;
+    }
+    // Fallback to ninjafy.sendMessage for Electron
+    if (window.ninjafy && window.ninjafy.sendMessage) {
+        try {
+            window.ninjafy.sendMessage(null, { message: data }, null, window.__SSAPP_TAB_ID__);
+        } catch (e) {
+            console.error('Error sending message:', e);
         }
-        if (typeof window !== 'undefined' && window.parent) {
-            const envelope = { source: 'socialstream', payload: data };
-            if (extension.tabId != null) {
-                envelope.__tabID__ = extension.tabId;
-            }
-            window.parent.postMessage(envelope, '*');
-        }
-    } catch (err) {
-        console.error('Failed to push message', err);
     }
 }
 
@@ -3913,7 +3903,6 @@ async function bootstrap() {
     updateInputsFromState();
     updateAuthStatus();
     bindEvents();
-    startViewerCountPolling();
     if (state.tokens?.access_token) {
         scheduleTokenRefresh();
         await loadAuthenticatedProfile();

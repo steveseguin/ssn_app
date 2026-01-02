@@ -14,7 +14,7 @@
     "test": "electron .",
     "build": "run-os",
     "prebuild": "npm run update:fallback",
-    "prebuild:win32": "npm run clean && npm run update:fallback && timeout /t 5 /nobreak",
+    "prebuild:win32": "npm run clean && npm run update:fallback && node -e \"setTimeout(() => {}, 5000)\"",
     "build:win32": "npm run prebuild:win32 && electron-builder --win",
     "prebuild:darwin": "npm run clean && npm run prebuild",
     "build:darwin": "electron-builder --mac --x64 && electron-builder --mac --arm64",

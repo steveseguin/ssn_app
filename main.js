@@ -1229,6 +1229,68 @@ function setupRemoteControlServer() {
 
                     await win.loadURL(wssUrl);
 
+                    // Inject chrome mock and kick.js after page loads (matching the normal startRunning flow)
+                    const jsSource = path.join(__dirname, 'resources/social_stream_fallback/main/sources/websocket/kick.js');
+                    try {
+                        const text = fs.readFileSync(jsSource, 'utf8');
+                        if (text) {
+                            // Inject chrome mock setup first, then the script
+                            const code = `
+                                window.__SSAPP_TAB_ID__ = ${tabID};
+                                if (!window.chrome) window.chrome = {};
+                                chrome.runtime = {};
+                                chrome.runtime.id = 1;
+                                chrome.runtime.getURL = function(path) {
+                                    return 'electron-inject:' + path;
+                                };
+                                chrome.runtime.onMessage = {};
+                                chrome.runtime.onMessage.addListener = function(callback) {
+                                    function tryRegister() {
+                                        if (window.ninjafy && window.ninjafy.exposeDoSomethingInWebApp) {
+                                            window.ninjafy.exposeDoSomethingInWebApp(function(message, sender, sendResponse) {
+                                                callback(message, sender, sendResponse);
+                                            });
+                                            return true;
+                                        }
+                                        return false;
+                                    }
+                                    if (!tryRegister()) {
+                                        let retries = 0;
+                                        const maxRetries = 10;
+                                        const retryInterval = setInterval(() => {
+                                            retries++;
+                                            if (tryRegister() || retries >= maxRetries) {
+                                                clearInterval(retryInterval);
+                                            }
+                                        }, 100);
+                                    }
+                                };
+                                chrome.runtime.sendMessage = function(a=null,b=null,c=null){
+                                    const messageData = b || a;
+                                    if (window.ninjafy && window.ninjafy.sendMessage) {
+                                        window.ninjafy.sendMessage(null, messageData, c, window.__SSAPP_TAB_ID__);
+                                    } else {
+                                        const outgoingMessage = { ...messageData };
+                                        outgoingMessage.__tabID__ = window.__SSAPP_TAB_ID__;
+                                        window.postMessage(outgoingMessage, '*');
+                                        if (c) setTimeout(() => c(null), 0);
+                                    }
+                                };
+                                console.log('[Kick] Chrome mock injected, tabID:', window.__SSAPP_TAB_ID__);
+
+                                try {
+                                    ${text}
+                                } catch(err) {
+                                    console.error('[Kick] Script error:', err);
+                                }
+                            `;
+                            await win.webContents.executeJavaScript(code);
+                            console.log('[Kick] Successfully injected kick.js');
+                        }
+                    } catch (e) {
+                        console.error('Failed to inject kick.js:', e);
+                    }
+
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ ok: true, tabId: tabID, url: wssUrl }));
                 } catch (err) {

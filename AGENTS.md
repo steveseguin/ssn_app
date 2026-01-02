@@ -125,3 +125,19 @@
 - `Referer`: `https://www.tiktok.com/@username/live`
 - `Origin`: `https://www.tiktok.com`
 - `User-Agent`: Must match the one used for signing.
+
+## Kick Websocket Mode Plan (Electron + Worker)
+
+References:
+- https://dev.kick.com/ (Kick Dev Docs, also mirrored at https://github.com/KickEngineering/KickDevDocs)
+- https://api.kick.com/swagger/v1/doc.json (Public API schema; includes /events/subscriptions and /chat)
+- https://api.kick.com/public/v1/public-key (Webhook signature verification)
+- Unofficial realtime chat uses Pusher at wss://ws-us2.pusher.com/app/eb1d5f283081a78b932c?protocol=7&client=js&version=7.6.0&flash=false with channels chatrooms.<chatroom_id>.v2 and channel.<channel_id> (observed in open-source clients).
+
+Planned tasks:
+- [ ] Add a Node WS client (Electron main process) that connects to Pusher, subscribes to chatrooms.<id>.v2 and channel.<id>, and maps App\\Events\\ChatMessageEvent and related events into the existing Kick message shape.
+- [ ] Resolve chatroom_id + channel_id via https://kick.com/api/v2/channels/<slug> with caching and a manual override if the API is blocked.
+- [ ] Pipe Node WS messages into the websocket UI via IPC/ninjafy, reusing the same normalizer as the current bridge path; keep the DOM mode unchanged as the fallback.
+- [ ] Keep the Cloudflare worker for webhook events (subs/follows/tips + optional chat), driven by OAuth loopback in Electron and /events/subscriptions; continue signature verification using the Kick public key.
+- [ ] Restore window.parent.postMessage fallback in resources/social_stream_fallback/main/sources/websocket/kick.js for non-extension hosts.
+- [ ] Add capability gating (Electron-only for websocket mode), 3-strike auto-fallback to DOM mode, and a UI warning when fallback occurs.

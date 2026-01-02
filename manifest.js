@@ -568,6 +568,16 @@ var manifest = {
       "matches": [ "https://kick.com/*/chatroom", "https://kick.com/popout/*/chat"]
     },
     {
+      "js": [ "./sources/websocket/kick.js" ],
+      "matches": [
+        "https://socialstream.ninja/sources/websocket/kick*",
+        "https://beta.socialstream.ninja/sources/websocket/kick*",
+        "https://socialstream.ninja/beta/sources/websocket/kick*",
+        "file:///C:/Users/steve/Code/social_stream/sources/websocket/kick.html*",
+        "http://localhost:8080/kick.html*"
+      ]
+    },
+    {
       "js": [ "./sources/cloudhub.js" ],
       "matches": [ "https://app.clouthub.com/*" ]
     },
