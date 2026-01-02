@@ -9,6 +9,7 @@
     "start2": "electron . --running-from-source",
     "start3": "electron . --running-from-source --filesource C:/Users/steve/Code/social_stream/",
     "start4": "electron . --running-from-source --filesource /Users/steveseguin/Code/social_stream/",
+    "start-linux": "electron . --running-from-source --filesource /home/ubuntu/code/ssn_app/resources/social_stream_fallback/main/",
     "update:fallback": "node scripts/updateSocialStreamFallback.js",
     "test": "electron .",
     "build": "run-os",

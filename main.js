@@ -36,6 +36,8 @@ const {
     dialog
 } = require('electron')
 const { exec, spawn } = require('child_process');
+const http = require('http');
+const url = require('url');
 const contextMenu = require("electron-context-menu");
 const Yargs = require("yargs");
 
@@ -57,6 +59,9 @@ const {
     setupSpotifyOAuthWithLocalServer,
     setupSpotifyOAuthWithIntercept
 } = require('./resources/electron-spotify-handler');
+const { setupYouTubeOAuthHandler } = require('./resources/electron-youtube-handler');
+const { setupTwitchOAuthHandler } = require('./resources/electron-twitch-handler');
+const { setupKickOAuthHandler } = require('./resources/electron-kick-handler');
 
 const {
     fetch: undiciFetch
@@ -943,11 +948,357 @@ function configureSpotifyOAuthHandlers() {
 }
 
 configureSpotifyOAuthHandlers();
+setupYouTubeOAuthHandler();
+setupTwitchOAuthHandler();
+setupKickOAuthHandler();
 
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
 
 let connectionStates = new Map();
 let browserViews = {};
+const remoteControlEnabled = (
+    process.argv.includes('--remote-control') ||
+    (process.env.SSAPP_REMOTE_CONTROL || '').trim() === '1'
+);
+const remoteControlPort = (() => {
+    const raw = (process.env.SSAPP_REMOTE_CONTROL_PORT || '').trim();
+    const parsed = parseInt(raw, 10);
+    return Number.isFinite(parsed) ? parsed : 17777;
+})();
+const remoteControlToken = (process.env.SSAPP_REMOTE_CONTROL_TOKEN || '').trim();
+
+function findYouTubeOAuthView() {
+    try {
+        for (const view of Object.values(browserViews)) {
+            if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
+                continue;
+            }
+            const wc = view.webContents;
+            if (!wc || (typeof wc.isDestroyed === 'function' && wc.isDestroyed())) {
+                continue;
+            }
+            const url = wc.getURL && wc.getURL();
+            if (url && url.includes('websocket/youtube.html')) {
+                return view;
+            }
+        }
+    } catch (error) {
+        console.warn('[Remote Control] Failed to scan BrowserViews:', error);
+    }
+    return null;
+}
+
+async function triggerYouTubeExternalAuth() {
+    const view = findYouTubeOAuthView();
+    if (!view || !view.webContents) {
+        return { ok: false, reason: 'youtube_view_not_found' };
+    }
+    try {
+        await view.webContents.executeJavaScript(
+            'window.__SSAPP_START_YT_AUTH__ && window.__SSAPP_START_YT_AUTH__()',
+            true
+        );
+        return { ok: true };
+    } catch (error) {
+        return {
+            ok: false,
+            reason: 'execute_failed',
+            error: error && error.message ? error.message : String(error)
+        };
+    }
+}
+
+function findTwitchOAuthView() {
+    try {
+        for (const view of Object.values(browserViews)) {
+            if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
+                continue;
+            }
+            const wc = view.webContents;
+            if (!wc || (typeof wc.isDestroyed === 'function' && wc.isDestroyed())) {
+                continue;
+            }
+            const url = wc.getURL && wc.getURL();
+            if (url && url.includes('websocket/twitch')) {
+                return view;
+            }
+        }
+    } catch (error) {
+        console.warn('[Remote Control] Failed to scan BrowserViews for Twitch:', error);
+    }
+    return null;
+}
+
+async function triggerTwitchExternalAuth() {
+    const view = findTwitchOAuthView();
+    if (!view || !view.webContents) {
+        return { ok: false, reason: 'twitch_view_not_found' };
+    }
+    try {
+        await view.webContents.executeJavaScript(
+            'window.__SSAPP_START_TWITCH_AUTH__ && window.__SSAPP_START_TWITCH_AUTH__()',
+            true
+        );
+        return { ok: true };
+    } catch (error) {
+        return {
+            ok: false,
+            reason: 'execute_failed',
+            error: error && error.message ? error.message : String(error)
+        };
+    }
+}
+
+function findKickOAuthView() {
+    try {
+        for (const view of Object.values(browserViews)) {
+            if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
+                continue;
+            }
+            const wc = view.webContents;
+            if (!wc || (typeof wc.isDestroyed === 'function' && wc.isDestroyed())) {
+                continue;
+            }
+            const url = wc.getURL && wc.getURL();
+            if (url && url.includes('websocket/kick')) {
+                return view;
+            }
+        }
+    } catch (error) {
+        console.warn('[Remote Control] Failed to scan BrowserViews for Kick:', error);
+    }
+    return null;
+}
+
+async function triggerKickExternalAuth() {
+    const view = findKickOAuthView();
+    if (!view || !view.webContents) {
+        return { ok: false, reason: 'kick_view_not_found' };
+    }
+    try {
+        await view.webContents.executeJavaScript(
+            'window.__SSAPP_START_KICK_AUTH__ && window.__SSAPP_START_KICK_AUTH__()',
+            true
+        );
+        return { ok: true };
+    } catch (error) {
+        return {
+            ok: false,
+            reason: 'execute_failed',
+            error: error && error.message ? error.message : String(error)
+        };
+    }
+}
+
+function setupRemoteControlServer() {
+    if (!remoteControlEnabled) {
+        return;
+    }
+
+    const server = http.createServer(async (req, res) => {
+        const parsed = url.parse(req.url, true);
+        const token = (parsed.query && parsed.query.token) || req.headers['x-ssapp-token'];
+        if (remoteControlToken && token !== remoteControlToken) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+            return;
+        }
+
+        if (parsed.pathname === '/ping') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                ok: true,
+                version: app.getVersion(),
+                windows: BrowserWindow.getAllWindows().length
+            }));
+            return;
+        }
+
+        if (parsed.pathname === '/youtube-auth') {
+            const result = await triggerYouTubeExternalAuth();
+            res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+            return;
+        }
+
+        // Create a YouTube source for testing (POST /create-youtube-source with videoId in body)
+        if (parsed.pathname === '/create-youtube-source' && req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => { body += chunk; });
+            req.on('end', async () => {
+                try {
+                    const { videoId } = JSON.parse(body);
+                    if (!videoId) {
+                        res.writeHead(400, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ ok: false, error: 'videoId required' }));
+                        return;
+                    }
+
+                    // Get runningLocally from command line args
+                    const filesourceArg = process.argv.find(a => a.startsWith('--filesource'));
+                    const localPath = filesourceArg ? filesourceArg.split('=')[1] || process.argv[process.argv.indexOf('--filesource') + 1] : '';
+                    const basePath = localPath || path.join(__dirname, 'resources/social_stream_fallback/main/');
+
+                    // Create the YouTube source window directly
+                    const wssUrl = `file://${basePath}sources/websocket/youtube.html?videoId=${encodeURIComponent(videoId)}&devmode=`;
+
+                    const win = new BrowserWindow({
+                        width: 400,
+                        height: 600,
+                        show: true,
+                        webPreferences: {
+                            nodeIntegration: false,
+                            contextIsolation: true,
+                            preload: path.join(__dirname, 'preload.js'),
+                            sandbox: false
+                        }
+                    });
+
+                    const tabID = generateUniqueWindowId();
+                    win.tabID = tabID;
+                    browserViews[tabID] = win;
+
+                    await win.loadURL(wssUrl);
+
+                    // Inject the youtube.js script
+                    const jsSource = path.join(__dirname, 'resources/social_stream_fallback/main/sources/websocket/youtube.js');
+                    try {
+                        const text = fs.readFileSync(jsSource, 'utf8');
+                        if (text) {
+                            await win.webContents.executeJavaScript(text);
+                        }
+                    } catch (e) {
+                        console.error('Failed to inject youtube.js:', e);
+                    }
+
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: true, tabId: tabID, url: wssUrl }));
+                } catch (err) {
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: err.message }));
+                }
+            });
+            return;
+        }
+
+        if (parsed.pathname === '/twitch-auth') {
+            const result = await triggerTwitchExternalAuth();
+            res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+            return;
+        }
+
+        if (parsed.pathname === '/kick-auth') {
+            const result = await triggerKickExternalAuth();
+            res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+            return;
+        }
+
+        // Create a Kick source for testing (POST /create-kick-source with username in body)
+        if (parsed.pathname === '/create-kick-source' && req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => { body += chunk; });
+            req.on('end', async () => {
+                try {
+                    const { username } = JSON.parse(body);
+
+                    // Get basePath
+                    const filesourceArg = process.argv.find(a => a.startsWith('--filesource'));
+                    const localPath = filesourceArg ? filesourceArg.split('=')[1] || process.argv[process.argv.indexOf('--filesource') + 1] : '';
+                    const basePath = localPath || path.join(__dirname, 'resources/social_stream_fallback/main/');
+
+                    // Create the Kick source window
+                    const wssUrl = `file://${basePath}sources/websocket/kick.html${username ? '?username=' + encodeURIComponent(username) : ''}`;
+
+                    const win = new BrowserWindow({
+                        width: 500,
+                        height: 700,
+                        show: true,
+                        webPreferences: {
+                            nodeIntegration: false,
+                            contextIsolation: true,
+                            preload: path.join(__dirname, 'preload.js'),
+                            sandbox: false
+                        }
+                    });
+
+                    const tabID = generateUniqueWindowId();
+                    win.tabID = tabID;
+                    browserViews[tabID] = win;
+
+                    await win.loadURL(wssUrl);
+
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: true, tabId: tabID, url: wssUrl }));
+                } catch (err) {
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: err.message }));
+                }
+            });
+            return;
+        }
+
+        if (parsed.pathname === '/views') {
+            const views = [];
+            for (const [key, view] of Object.entries(browserViews)) {
+                if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) continue;
+                const wc = view.webContents;
+                if (!wc || (typeof wc.isDestroyed === 'function' && wc.isDestroyed())) continue;
+                views.push({ key, url: wc.getURL ? wc.getURL() : 'unknown' });
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, views }));
+            return;
+        }
+
+        if (parsed.pathname === '/windows') {
+            const windows = BrowserWindow.getAllWindows().map((win, i) => ({
+                id: win.id,
+                title: win.getTitle(),
+                url: win.webContents ? win.webContents.getURL() : 'unknown'
+            }));
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, windows }));
+            return;
+        }
+
+        if (parsed.pathname === '/exec' && req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => { body += chunk; });
+            req.on('end', async () => {
+                try {
+                    const { windowId, code } = JSON.parse(body);
+                    const wins = BrowserWindow.getAllWindows();
+                    const win = windowId ? wins.find(w => w.id === windowId) : wins[0];
+                    if (!win || !win.webContents) {
+                        res.writeHead(404, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ ok: false, error: 'window_not_found' }));
+                        return;
+                    }
+                    const result = await win.webContents.executeJavaScript(code, true);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: true, result }));
+                } catch (err) {
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: err.message }));
+                }
+            });
+            return;
+        }
+
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'not_found' }));
+    });
+
+    server.on('error', (error) => {
+        console.error('[Remote Control] Server error:', error);
+    });
+
+    server.listen(remoteControlPort, '127.0.0.1', () => {
+        console.log(`[Remote Control] Listening on http://127.0.0.1:${remoteControlPort}`);
+    });
+}
 
 // Define isDevMode
 const isDevMode = (
@@ -7574,13 +7925,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                     // Convert file:// URL to regular file path if needed
                     if (jsSource.startsWith('file://')) {
-                        jsSource = jsSource.replace('file:///', '').replace(/\//g, path.sep);
-                        // Handle Windows drive letters
-                        if (process.platform === 'win32' && jsSource.match(/^[a-zA-Z]:/)) {
-                            // Path is already correct for Windows
-                        } else if (process.platform === 'win32') {
-                            // Add drive letter if missing on Windows
-                            jsSource = jsSource.replace(/^([a-zA-Z]):/, '$1:');
+                        if (process.platform === 'win32') {
+                            // Windows: file:///C:/path -> C:/path
+                            jsSource = jsSource.replace('file:///', '').replace(/\//g, path.sep);
+                        } else {
+                            // Unix: file:///home/... -> /home/... (keep leading /)
+                            jsSource = jsSource.replace('file://', '').replace(/\//g, path.sep);
                         }
                     }
 
@@ -9828,6 +10178,7 @@ app.whenReady().then(async function () {
     }
 
     createWindow(Argv, false, true);
+    setupRemoteControlServer();
 
     // Start/refresh transfer backup timers after app is ready.
     try {

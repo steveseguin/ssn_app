@@ -33,3 +33,4 @@ pkg/
 build-config.env
 .env
 electron-builder.env
+social_stream_fallback/

@@ -328,6 +328,18 @@ function configureContextBridge(){
 			  
 			  closeStream: (streamId) => {},
 			  
+			  startYouTubeOAuth: async (payload) => {
+				return await ipcRenderer.invoke('youtube-oauth', payload);
+			  },
+
+			  startTwitchOAuth: async (payload) => {
+				return await ipcRenderer.invoke('twitch-oauth', payload);
+			  },
+
+			  startKickOAuth: async (payload) => {
+				return await ipcRenderer.invoke('kick-oauth', payload);
+			  },
+
 			  startYouTubeLiveChatGrpcStream: async (options) => {
 				return await ipcRenderer.invoke('youtube-livechat-grpc:start', options);
 			  },
@@ -434,6 +446,18 @@ try {
 			
 			updateVersion: function (version) {
 				console.log("Version: "+version);
+			},
+
+			startYouTubeOAuth: async (payload) => {
+				return await ipcRenderer.invoke('youtube-oauth', payload);
+			},
+
+			startTwitchOAuth: async (payload) => {
+				return await ipcRenderer.invoke('twitch-oauth', payload);
+			},
+
+			startKickOAuth: async (payload) => {
+				return await ipcRenderer.invoke('kick-oauth', payload);
 			}
 		};
 		window.ssappLocale = {
