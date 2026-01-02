@@ -1007,15 +1007,12 @@ async function ensureChatClientInstance() {
 			});
 			return;
 		}
-		if (!settings.captureevents) {
-			return;
-		}
 		const notice = convertMembershipPayloadToUserNotice(payload);
 		await processUserNotice(notice);
 	}
 
 	async function handleNormalizedRaid(payload) {
-		if (!payload || !settings.captureevents) {
+		if (!payload) {
 			return;
 		}
 		const tags = {
@@ -2135,6 +2132,9 @@ async function ensureChatClientInstance() {
 
 	// Function to fetch current viewer count
 	async function getViewerCount(channelName) {
+		if (!isExtensionOn || !(settings.showviewercount || settings.hypemode)) {
+			return;
+		}
 		const token = getStoredToken();
 		if (!token) return;
 		
@@ -2153,22 +2153,26 @@ async function ensureChatClientInstance() {
 			
 			const data = await response.json();
 			console.log(data);
-			if (data.data && data.data[0]) {
-				const currentViewers = data.data[0].viewer_count;
-				lastKnownViewers = currentViewers;
-				console.log({
-					type: 'twitch',
-					event: 'viewer_update',
-					meta: lastKnownViewers
-				});
-				pushMessage({
-					type: 'twitch',
-					event: 'viewer_update',
-					meta: lastKnownViewers
-				});
-			}
+			const currentViewers = data.data && data.data[0] ? data.data[0].viewer_count : 0;
+			lastKnownViewers = currentViewers;
+			console.log({
+				type: 'twitch',
+				event: 'viewer_update',
+				meta: lastKnownViewers
+			});
+			pushMessage({
+				type: 'twitch',
+				event: 'viewer_update',
+				meta: lastKnownViewers
+			});
 		} catch (error) {
 			console.error('Error fetching viewer count:', error);
+			lastKnownViewers = 0;
+			pushMessage({
+				type: 'twitch',
+				event: 'viewer_update',
+				meta: lastKnownViewers
+			});
 		}
 	}
 
@@ -2589,11 +2593,6 @@ async function cleanupCurrentConnection() {
 	function handleEventSubNotification(payload) {
 		const event = payload.event;
 		const subscription = payload.subscription;
-		
-		// Skip if captureevents is disabled
-		if (!settings.captureevents) {
-			return;
-		}
 
 		switch (subscription.type) {
 		case 'channel.follow':

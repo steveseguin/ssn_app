@@ -3869,6 +3869,23 @@ chrome.runtime.onMessage.addListener(async function (request, sender, sendRespon
 				settings[pattern] = findExistingEvents(pattern,{ settings });
 			})
 
+			// For language changes, wait for storage AND translation file load to complete
+			// This prevents race conditions where popup reloads before translation is ready
+			if (request.setting === "translationlanguage") {
+				chrome.storage.local.set({ settings: settings }, async () => {
+					chrome.runtime.lastError;
+					// Wait for changeLg to complete - it fetches the translation file
+					// and saves settings.translation to storage
+					if (settings.translationlanguage && settings.translationlanguage.optionsetting) {
+						await changeLg(settings.translationlanguage.optionsetting);
+					} else {
+						await changeLg(request.value);
+					}
+					sendResponse({ state: isExtensionOn, saved: true });
+				});
+				return true; // Keep message channel open for async response
+			}
+
 			chrome.storage.local.set({
 				settings: settings
 			});
@@ -4097,6 +4114,9 @@ chrome.runtime.onMessage.addListener(async function (request, sender, sendRespon
 			if (request.setting == "customkickstate") {
 				pushSettingChange();
 			}
+			if (request.setting == "hidecertainbadges") {
+				pushSettingChange();
+			}
 			if (request.setting == "customriversidestate") {
 				pushSettingChange();
 			}
@@ -4198,14 +4218,7 @@ chrome.runtime.onMessage.addListener(async function (request, sender, sendRespon
 				sendWaitlistConfig(null, true); // stop hype and clear old hype
 			}
 
-			if (request.setting == "translationlanguage") {
-				// After saving, the value is stored in settings[translationlanguage].optionsetting
-				if (settings.translationlanguage && settings.translationlanguage.optionsetting) {
-					changeLg(settings.translationlanguage.optionsetting);
-				} else {
-					changeLg(request.value);
-				}
-			}
+			// Note: translationlanguage is handled earlier with storage callback to prevent race condition
 
 			if (request.setting.startsWith("timemessage")) {
 				if (request.setting.startsWith("timemessageevent")) {
@@ -4364,7 +4377,9 @@ chrome.runtime.onMessage.addListener(async function (request, sender, sendRespon
 		} else if ("pokeMe" in request) {
 			// forwards messages from Youtube/Twitch/Facebook to the remote dock via the VDO.Ninja API
 			sendResponse({ state: isExtensionOn }); // respond to Youtube/Twitch/Facebook with the current state of the plugin; just as possible confirmation.
-			pokeSite(sender.tab.url, sender.tab.id);
+			if (!settings.disabletiktokpoke) {
+				pokeSite(sender.tab.url, sender.tab.id);
+			}
 		} else if ("keepAlive" in request) {
 			// forwards messages from Youtube/Twitch/Facebook to the remote dock via the VDO.Ninja API
 			var action = {};
@@ -4923,75 +4938,18 @@ chrome.runtime.onMessage.addListener(async function (request, sender, sendRespon
 			// Respond immediately - tokens are already cleared in memory
 			sendResponse({success: true});
 		} else if (request.spotifyAction) {
-			// Handle Spotify actions from Event Flow
-			if (spotify && settings.spotifyEnabled) {
-				(async () => {
-					try {
-						let result;
-						switch (request.spotifyAction) {
-							case 'skip':
-								result = await spotify.skip();
-								break;
-							case 'previous':
-								result = await spotify.previous();
-								break;
-							case 'pause':
-								result = await spotify.pause();
-								break;
-							case 'resume':
-								result = await spotify.resume();
-								break;
-							case 'volume':
-								result = await spotify.setVolume(request.volume);
-								break;
-							case 'queue':
-								result = await spotify.addToQueue(request.query);
-								break;
-							case 'toggle':
-								result = await spotify.toggle();
-								break;
-							case 'shuffle':
-								result = await spotify.shuffle(request.state);
-								break;
-							case 'repeat':
-								result = await spotify.setRepeat(request.mode);
-								break;
-							case 'nowPlaying':
-								result = await spotify.getNowPlaying();
-								// Format the message if track info available
-								if (result.success && result.track) {
-									const format = request.format || '🎵 Now playing: {song} by {artist}';
-									const formattedMsg = format
-										.replace(/{song}/gi, result.track.name || '')
-										.replace(/{artist}/gi, result.track.artist || '')
-										.replace(/{album}/gi, result.track.album || '');
-									result.message = formattedMsg;
-
-									// Send to dock if configured
-									if (request.sendToDock !== false) {
-										sendTargetP2P({
-											chatname: 'Spotify',
-											chatmessage: formattedMsg,
-											type: 'spotify',
-											chatimg: result.track.albumArt || ''
-										}, 'dock');
-									}
-								}
-								break;
-							default:
-								result = { success: false, message: 'Unknown Spotify action' };
-						}
-						console.log('[Spotify Action]', request.spotifyAction, result);
-						sendResponse({ success: result?.success, message: result?.message });
-					} catch (error) {
-						console.error('[Spotify Action Error]', error);
-						sendResponse({ success: false, error: error.message });
-					}
-				})();
-				return true; // Keep message channel open for async response
-			} else {
-				sendResponse({ success: false, error: 'Spotify not enabled or not connected' });
-			}
+			// Handle Spotify actions from Event Flow (uses shared handleSpotifyAction helper)
+			(async () => {
+				try {
+					const result = await handleSpotifyAction(request);
+					console.log('[Spotify Action]', request.spotifyAction, result);
+					sendResponse({ success: result?.success, message: result?.message });
+				} catch (error) {
+					console.error('[Spotify Action Error]', error);
+					sendResponse({ success: false, error: error.message });
+				}
+			})();
+			return true; // Keep message channel open for async response
 		} else if (request.cmd && request.target){
 			sendResponse({ state: isExtensionOn });
 			sendTargetP2P(request, request.target);
@@ -6090,7 +6048,7 @@ function sendToS10(data, fakechat=false, relayed=false) {
 
 // Social Stream Chat integration - send messages to chat.socialstream.ninja
 function sendToSSC(data, fakechat=false, relayed=false) {
-	if (settings.ssc && settings.sscapikey && settings.sscapikey.textsetting && settings.sscroomid && settings.sscroomid.textsetting) {
+	if (settings.ssc && settings.sscapikey && settings.sscapikey.textsetting) {
 		try {
 			// Skip messages from our own chat to avoid loops
 			if (data.type && data.type === "socialstreamchat") {
@@ -6239,16 +6197,16 @@ function sendToSSC(data, fakechat=false, relayed=false) {
 			if (data.meta) {
 				payload.meta = data.meta;
 			}
-
-			const roomId = settings.sscroomid.textsetting.trim();
+			
 			const apiKey = settings.sscapikey.textsetting.trim();
 			const apiBase = (settings.sscapibase && settings.sscapibase.textsetting)
-				? settings.sscapibase.textsetting.trim()
-				: "https://chat.socialstream.ninja";
+			  ? settings.sscapibase.textsetting.trim()
+			  : "https://api.ninjachatter.com";
 
 			try {
 				let xhr = new XMLHttpRequest();
-				xhr.open("POST", apiBase + "/rooms/" + roomId + "/ingress");
+				xhr.open("POST", apiBase + "/ssn");
+
 				xhr.setRequestHeader("Content-Type", "application/json");
 				xhr.setRequestHeader("Authorization", "Bearer " + apiKey);
 				xhr.onload = function () {
@@ -7253,10 +7211,15 @@ function setupSocketDock() {
 	} else if (!isExtensionOn) {
 		return;
 	}
-	
+
 	if (reconnectionTimeoutDock) {
 		clearTimeout(reconnectionTimeoutDock);
 		reconnectionTimeoutDock = null;
+	}
+
+	// Skip if socket is already connecting or open
+	if (socketserverDock && (socketserverDock.readyState === WebSocket.CONNECTING || socketserverDock.readyState === WebSocket.OPEN)) {
+		return;
 	}
 
 	if (socketserverDock) {
@@ -7287,7 +7250,6 @@ function setupSocketDock() {
             conConDock = nextAttempt;
             reconnectionTimeoutDock = setTimeout(function () {
                 if ((settings.server2 || settings.server3) && isExtensionOn) {
-                    socketserverDock = new WebSocket(serverURLDock);
                     setupSocketDock();
                 } else {
                     socketserverDock = false;
@@ -7342,10 +7304,15 @@ function setupSocket() {
 	} else if (!isExtensionOn) {
 		return;
 	}
-	
+
 	if (reconnectionTimeout) {
 		clearTimeout(reconnectionTimeout);
 		reconnectionTimeout = null;
+	}
+
+	// Skip if socket is already connecting or open
+	if (socketserver && (socketserver.readyState === WebSocket.CONNECTING || socketserver.readyState === WebSocket.OPEN)) {
+		return;
 	}
 
 	if (socketserver) {
@@ -7597,8 +7564,36 @@ socketserver.addEventListener("message", async function (event) {
 					message.chatmessage = "";
 					
 					var foundCustomField = false;
+					var messageFieldValue = null;
+					var messageFieldPriority = -1;
+					var messageFieldHasValue = -1;
+					var messageFieldSortKey = "";
+
+					function considerStripeMessageField(field, priority, sortKey) {
+						if (!field || !field.text || typeof field.text.value !== "string") {
+							return;
+						}
+
+						var value = field.text.value;
+						var hasValue = value.trim() ? 1 : 0;
+						var normalizedSortKey = typeof sortKey === "string" ? sortKey.toLowerCase() : "";
+
+						if (
+							priority > messageFieldPriority ||
+							(priority === messageFieldPriority && hasValue > messageFieldHasValue) ||
+							(priority === messageFieldPriority && hasValue === messageFieldHasValue && normalizedSortKey && (!messageFieldSortKey || normalizedSortKey < messageFieldSortKey))
+						) {
+							messageFieldValue = value;
+							messageFieldPriority = priority;
+							messageFieldHasValue = hasValue;
+							messageFieldSortKey = normalizedSortKey;
+						}
+					}
 
 					data.stripe.data.object.custom_fields.forEach(xx => {
+						var keyLower = typeof xx.key === "string" ? xx.key.toLowerCase() : "";
+						var labelLower = typeof xx.label === "string" ? xx.label.toLowerCase() : "";
+
 						if (xx.key == "displayname") {
 							message.chatname = xx.text.value;
 							foundCustomField = true;
@@ -7614,12 +7609,6 @@ socketserver.addEventListener("message", async function (event) {
 						} else if (xx.key == "username") {
 							message.chatname = xx.text.value;
 							foundCustomField = true;
-							
-						} else if (xx.key == "message") {
-							message.chatmessage = xx.text.value;
-							
-						} else if (xx.key == "messagetchat") {
-							message.chatmessage = xx.text.value;
 							
 						} else if (!message.chatname && xx.label && typeof xx.label === 'string' && xx.label.toLowerCase() == "display name") {
 							message.chatname = xx.text.value;
@@ -7642,7 +7631,25 @@ socketserver.addEventListener("message", async function (event) {
 								message.chatname = xx.text.value;
 							}
 						}
+
+						if (keyLower === "message") {
+							considerStripeMessageField(xx, 4, "key:message");
+						} else if (keyLower === "messagetchat") {
+							considerStripeMessageField(xx, 4, "key:messagetchat");
+						} else if (keyLower === "leaveamessage") {
+							considerStripeMessageField(xx, 3, "key:leaveamessage");
+						} else if (labelLower === "message") {
+							considerStripeMessageField(xx, 2, "label:message");
+						} else if (keyLower && keyLower.includes("message")) {
+							considerStripeMessageField(xx, 1, "key:" + keyLower);
+						} else if (labelLower && labelLower.includes("message")) {
+							considerStripeMessageField(xx, 0, "label:" + labelLower);
+						}
 					});
+
+					if (messageFieldValue !== null) {
+						message.chatmessage = messageFieldValue;
+					}
 					
 					if (!foundCustomField){
 						console.warn("No custom name / custom display-name field found. We will skip this incoming stripe api webhook");
@@ -8574,6 +8581,75 @@ function sendTargetP2P(data, target) {
     
     }
 }
+
+// Shared helper for Spotify actions - used by both message listener and EventFlowSystem
+async function handleSpotifyAction(msg) {
+	if (!msg || typeof msg !== 'object' || !msg.spotifyAction) {
+		return { success: false, message: 'Invalid Spotify action request' };
+	}
+
+	// Guard: ensure Spotify is initialized and enabled
+	if (!spotify || !settings.spotifyEnabled) {
+		return { success: false, message: 'Spotify not enabled or not connected' };
+	}
+
+	let result;
+	switch (msg.spotifyAction) {
+		case 'skip':
+			result = await spotify.skip();
+			break;
+		case 'previous':
+			result = await spotify.previous();
+			break;
+		case 'pause':
+			result = await spotify.pause();
+			break;
+		case 'resume':
+			result = await spotify.resume();
+			break;
+		case 'volume':
+			result = await spotify.setVolume(msg.volume);
+			break;
+		case 'queue':
+			result = await spotify.addToQueue(msg.query);
+			break;
+		case 'toggle':
+			result = await spotify.toggle();
+			break;
+		case 'shuffle':
+			result = await spotify.shuffle(msg.state);
+			break;
+		case 'repeat':
+			result = await spotify.setRepeat(msg.mode);
+			break;
+		case 'nowPlaying':
+			result = await spotify.getNowPlaying();
+			// Format the message if track info available
+			if (result.success && result.track) {
+				const format = msg.format || '🎵 Now playing: {song} by {artist}';
+				const formattedMsg = format
+					.replace(/{song}/gi, result.track.name || '')
+					.replace(/{artist}/gi, result.track.artist || '')
+					.replace(/{album}/gi, result.track.album || '');
+				result.message = formattedMsg;
+
+				// Send to dock if configured
+				if (msg.sendToDock !== false) {
+					sendTargetP2P({
+						chatname: 'Spotify',
+						chatmessage: formattedMsg,
+						type: 'spotify',
+						chatimg: result.track.albumArt || ''
+					}, 'dock');
+				}
+			}
+			break;
+		default:
+			result = { success: false, message: 'Unknown Spotify action' };
+	}
+	return result;
+}
+
 function sendTickerP2P(data, uid = null) {
     // function to send data to the DOCk via the VDO.Ninja API
 
@@ -10014,6 +10090,12 @@ async function sendMessageToTabs(data, reverse = false, metadata = null, relayMo
 		// console.log('[RELAY DEBUG - sendMessageToTabs] Early return - No response in data');
 		return false;
 	}
+
+	// Block events if global hideevents setting is enabled
+	if (settings.hideevents && data.response && data.response.event) {
+		return false;
+	}
+
     if (antispam && settings["dynamictiming"] && lastAntiSpam + 10 > messageCounter) {
         return false;
     }
@@ -11956,7 +12038,7 @@ async function applyBotActions(data, tab = false) {
 		}
 
 		// Social Stream Chat relay - send all messages to chat.socialstream.ninja
-		if (settings.sscrelay && !data.bot && data.chatmessage && data.chatname && !data.event){
+		if (settings.ssc && settings.sscapikey && settings.sscapikey.textsetting && !data.bot && data.chatmessage && data.chatname && !data.event){
 			sendToSSC(data, false, true);
 		}
 		//console.logdata);
@@ -12233,7 +12315,7 @@ async function applyBotActions(data, tab = false) {
 				if (settings.randomgif) {
 					order = parseInt(Math.random() * 15) + 1;
 				}
-				var gurl = await fetch("https://tenor.googleapis.com/v2/search?media_filter=tinygif,tinywebp_transparent&q=" + encodeURIComponent(searchGif) + "&key=" + settings.tenorKey.textsetting + "&limit=" + order)
+				var gurl = await fetch("https://tenor.googleapis.com/v2/search?contentfilter=high&media_filter=tinygif,tinywebp_transparent&q=" + encodeURIComponent(searchGif) + "&key=" + settings.tenorKey.textsetting + "&limit=" + order)
 					.then(response => response.json())
 					.then(response => {
 						try {
@@ -12299,7 +12381,7 @@ async function applyBotActions(data, tab = false) {
 					if (order > 40) {
 						order = 40;
 					}
-					var gurl = await fetch("https://tenor.googleapis.com/v2/search?&searchfilter=sticker&media_filter=tinygif,tinywebp_transparent&q=" + encodeURIComponent(search_word) + "&key=" + settings.tenorKey.textsetting + "&limit=" + order)
+					var gurl = await fetch("https://tenor.googleapis.com/v2/search?contentfilter=high&searchfilter=sticker&media_filter=tinygif,tinywebp_transparent&q=" + encodeURIComponent(search_word) + "&key=" + settings.tenorKey.textsetting + "&limit=" + order)
 						.then(response => response.json())
 						.then(response => {
 							try {
@@ -12367,7 +12449,7 @@ async function applyBotActions(data, tab = false) {
 					if (order > 40) {
 						order = 40;
 					}
-					var gurl = await fetch("https://tenor.googleapis.com/v2/search?media_filter=tinygif,tinywebp_transparent&q=" + encodeURIComponent(search_word) + "&key=" + settings.tenorKey.textsetting + "&limit=" + order)
+					var gurl = await fetch("https://tenor.googleapis.com/v2/search?contentfilter=high&media_filter=tinygif,tinywebp_transparent&q=" + encodeURIComponent(search_word) + "&key=" + settings.tenorKey.textsetting + "&limit=" + order)
 						.then(response => response.json())
 						.then(response => {
 							try {
@@ -13494,6 +13576,8 @@ window.checkExactDuplicateAlreadyRelayed = checkExactDuplicateAlreadyRelayed;
 window.handleMessageStore = handleMessageStore;
 // Expose P2P targeting helper so EventFlowSystem can reach specific overlay pages (e.g., actions)
 window.sendTargetP2P = sendTargetP2P;
+// Expose Spotify action handler for EventFlowSystem fallback paths
+window.handleSpotifyAction = handleSpotifyAction;
 
 
 let tmp = new EventFlowSystem({
@@ -13505,7 +13589,19 @@ let tmp = new EventFlowSystem({
 	checkExactDuplicateAlreadyRelayed: window.checkExactDuplicateAlreadyRelayed || null,
 	messageStore: messageStore || {},  // Share the message store for duplicate detection
 	handleMessageStore: handleMessageStore || null,  // Share the message store handler
-	sendTargetP2P: window.sendTargetP2P || null  // Add sendTargetP2P for OBS and other actions
+	sendTargetP2P: window.sendTargetP2P || null,  // Add sendTargetP2P for OBS and other actions
+	// Handle Spotify actions locally since we're already in background.js
+	sendMessageToBackground: async (msg) => {
+		if (!msg || typeof msg !== 'object') return;
+		if (msg.spotifyAction) {
+			try {
+				const result = await handleSpotifyAction(msg);
+				console.log('[EventFlow Spotify Action]', msg.spotifyAction, result);
+			} catch (error) {
+				console.error('[EventFlow Spotify Action Error]', error);
+			}
+		}
+	}
 });
 
 

@@ -294,9 +294,15 @@ async function scrapeRoomIdFromWindow(win, timeoutMs = 8000) {
             try {
               const state = window.SIGI_STATE || window.__SIGI_STATE__ || null;
               if (state) {
+                // Check multiple possible paths where TikTok stores room ID
                 try {
                   const liveRoom = state.liveRoom && state.liveRoom.liveRoomUserInfo && state.liveRoom.liveRoomUserInfo.liveRoom;
                   if (liveRoom && liveRoom.roomId) return liveRoom.roomId;
+                } catch (_) {}
+                try {
+                  // Alternative casing - LiveRoom vs liveRoom
+                  const liveRoom2 = state.LiveRoom && state.LiveRoom.liveRoomUserInfo && state.LiveRoom.liveRoomUserInfo.liveRoom;
+                  if (liveRoom2 && liveRoom2.roomId) return liveRoom2.roomId;
                 } catch (_) {}
                 try {
                   const room = state.appContext && state.appContext.state && state.appContext.state.room;
@@ -305,7 +311,48 @@ async function scrapeRoomIdFromWindow(win, timeoutMs = 8000) {
                 try {
                   if (state.room && state.room.roomId) return state.room.roomId;
                 } catch (_) {}
+                try {
+                  // LiveRoomInfo path
+                  if (state.LiveRoomInfo && state.LiveRoomInfo.room && state.LiveRoomInfo.room.roomId) {
+                    return state.LiveRoomInfo.room.roomId;
+                  }
+                } catch (_) {}
+                try {
+                  // Try to find roomId anywhere in state
+                  const findRoomId = (obj, depth = 0) => {
+                    if (!obj || depth > 4) return null;
+                    if (obj.roomId && typeof obj.roomId === 'string') return obj.roomId;
+                    if (obj.room_id && typeof obj.room_id === 'string') return obj.room_id;
+                    if (typeof obj !== 'object') return null;
+                    for (const key of Object.keys(obj)) {
+                      if (key === 'roomId' || key === 'room_id') {
+                        const v = obj[key];
+                        if (v && (typeof v === 'string' || typeof v === 'number')) return String(v);
+                      }
+                      if (typeof obj[key] === 'object' && obj[key] !== null) {
+                        const found = findRoomId(obj[key], depth + 1);
+                        if (found) return found;
+                      }
+                    }
+                    return null;
+                  };
+                  const deepSearch = findRoomId(state);
+                  if (deepSearch) return deepSearch;
+                } catch (_) {}
               }
+              // Try URL-based extraction
+              try {
+                const urlMatch = window.location.href.match(/room_id[=:]([0-9]+)/i);
+                if (urlMatch && urlMatch[1]) return urlMatch[1];
+              } catch (_) {}
+              // Try data attributes
+              try {
+                const roomEl = document.querySelector('[data-room-id]');
+                if (roomEl) {
+                  const rid = roomEl.getAttribute('data-room-id');
+                  if (rid) return rid;
+                }
+              } catch (_) {}
               return null;
             } catch (_) {
               return null;
@@ -514,9 +561,7 @@ async function generateSigningParameters(win, options = {}) {
       })();
 
   async function tryFetchFromWebcast() {
-    if (!effectiveRoomId) {
-      return null;
-    }
+    // Allow fetch to proceed even without effectiveRoomId - the in-page script will scrape it
     const fetchScript = `
       (() => {
         const requestConfig = ${JSON.stringify({
@@ -526,11 +571,44 @@ async function generateSigningParameters(win, options = {}) {
       includeBody: Boolean(performFetch),
       method: fetchOptions.method || "GET",
       body: fetchOptions.body || null,
-      headers: fetchOptions.headers || {}
+      headers: fetchOptions.headers || {},
+      providedRoomId: effectiveRoomId || ""
     })};
         try {
+          // Try to scrape room_id from SIGI_STATE if not provided
+          let roomId = requestConfig.providedRoomId || "";
+          if (!roomId) {
+            try {
+              const state = window.SIGI_STATE || window.__SIGI_STATE__;
+              if (state) {
+                roomId = state.liveRoom?.liveRoomUserInfo?.liveRoom?.roomId ||
+                         state.LiveRoom?.liveRoomUserInfo?.liveRoom?.roomId ||
+                         state.appContext?.state?.room?.roomId ||
+                         state.room?.roomId ||
+                         state.LiveRoomInfo?.room?.roomId ||
+                         "";
+              }
+              // Also try scraping from URL or page data attributes
+              if (!roomId) {
+                const urlMatch = window.location.href.match(/room_id[=:]([0-9]+)/i);
+                if (urlMatch) roomId = urlMatch[1];
+              }
+              if (!roomId) {
+                const roomEl = document.querySelector('[data-room-id]');
+                if (roomEl) roomId = roomEl.getAttribute('data-room-id');
+              }
+            } catch (_) {}
+          }
+
+          // If still no room_id, return early - can't make the API call without it
+          if (!roomId) {
+            return { ok: false, error: "No room_id available - user may not be live", url: "" };
+          }
+
           const requestUrl = new URL(requestConfig.url);
           const extraParams = new URLSearchParams(requestConfig.params || {});
+          // Override room_id with the scraped value
+          extraParams.set("room_id", roomId);
           extraParams.forEach((value, key) => {
             requestUrl.searchParams.set(key, value);
           });
@@ -602,6 +680,10 @@ async function generateSigningParameters(win, options = {}) {
     `;
     const fetchResult = await exec(win, fetchScript);
     if (!fetchResult || !fetchResult.url) {
+      // Log why fetch failed for debugging
+      if (fetchResult && fetchResult.error) {
+        console.warn("[tiktok-signing] In-page fetch failed:", fetchResult.error);
+      }
       return null;
     }
     let parsedUrl = null;

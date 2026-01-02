@@ -9,6 +9,9 @@ There is an easy to use sandbox to play with some of the common API commands and
 **Table of Contents**
 
   - [WebSocket API](#websocket-api)
+    - [Choose Your Use Case](#choose-your-use-case)
+    - [Quick Start: Remote Control (StreamDeck / Bitfocus Companion)](#quick-start-remote-control-streamdeck--bitfocus-companion)
+    - [Quick Start: Receiving Chat Messages (Python / Node.js)](#quick-start-receiving-chat-messages-python--nodejs)
     - [Connecting to the API Server](#connecting-to-the-api-server)
     - [Channel System Explained](#channel-system-explained)
     - [Available Commands](#available-commands)
@@ -23,6 +26,15 @@ There is an easy to use sandbox to play with some of the common API commands and
     - [How it works](#how-it-works)
     - [Use Cases](#use-cases)
   - [Best Practices](#best-practices)
+  - [Inbound Donation Webhooks](#inbound-donation-webhooks)
+    - [Prerequisites](#prerequisites)
+    - [Supported Platforms](#supported-platforms)
+    - [Stripe Setup](#stripe-setup)
+    - [Ko-Fi Setup](#ko-fi-setup)
+    - [Buy Me A Coffee Setup](#buy-me-a-coffee-setup)
+    - [Fourthwall Setup](#fourthwall-setup)
+    - [Security Note](#security-note)
+    - [Donation Message Format](#donation-message-format)
 - [Featured Page (featured.html)](#featured-page-featuredhtml)
     - [Connection Options](#connection-options)
     - [Content Filtering Options](#content-filtering-options)
@@ -87,6 +99,126 @@ There is an easy to use sandbox to play with some of the common API commands and
 The WebSocket API allows real-time, bidirectional communication between your application and the Social Stream Ninja server.
 
 If you prefer to keep traffic peer-to-peer without enabling the WebSocket relay, you can instead integrate the Social Stream Ninja WebRTC SDK. It offers a Node- and browser-friendly interface that plugs into the same transport layer used by the extension. A Social Stream Ninja listener example is available at [ninjasdk/demos/socialstreamninja-listener.js](https://github.com/steveseguin/ninjasdk/blob/main/demos/socialstreamninja-listener.js).
+
+### Choose Your Use Case
+
+There are two main reasons to use the WebSocket API:
+
+| Use Case | What You Want | Required Toggle(s) | Channel |
+|----------|---------------|-------------------|---------|
+| **Remote Control** | Send commands to SSN (clear, feature, next in queue, send chat) from StreamDeck, Bitfocus Companion, or custom apps | ✅ Enable remote API control | Channel 1 (default) |
+| **Chat Listener** | Receive chat messages from Twitch/YouTube/etc. in your Python/Node app | ✅ Enable remote API control + ✅ Send chat messages to API server (3rd toggle) | Channel 4 |
+
+**Toggle Reference (Global settings > Mechanics):**
+
+| Toggle | Purpose |
+|--------|---------|
+| 1. Enable remote API control of extension | Required for ALL API usage. Allows sending commands to the extension. |
+| 2. Enable Dock to use and publish via API server | Needed to send commands directly to the Dock page (clear, nextInQueue, etc.) |
+| 3. **Send chat messages to API server** | **Required to RECEIVE chat messages!** Routes Twitch/YouTube/etc. chat through the server on channel 4. |
+| 4. Dock sends its commands to Extension via server | Optional. Allows Dock to send commands back to extension via server instead of P2P. |
+
+---
+
+### Quick Start: Remote Control (StreamDeck / Bitfocus Companion)
+
+For controlling SSN from StreamDeck, Bitfocus Companion, or similar tools, you only need the **first toggle** enabled.
+
+**Simple HTTP GET request:**
+```
+https://io.socialstream.ninja/SESSION_ID/nextInQueue
+https://io.socialstream.ninja/SESSION_ID/clearOverlay
+https://io.socialstream.ninja/SESSION_ID/sendEncodedChat/null/Hello%20World
+```
+
+**WebSocket commands:**
+```javascript
+ws = new WebSocket("wss://io.socialstream.ninja/join/SESSION_ID");
+ws.onopen = () => {
+    // Send a command
+    ws.send(JSON.stringify({ action: "nextInQueue" }));
+    ws.send(JSON.stringify({ action: "clearOverlay" }));
+    ws.send(JSON.stringify({ action: "sendChat", value: "Hello from API!" }));
+};
+```
+
+See the [StreamDeck Integration Guide](#streamdeck-integration-guide-for-social-stream-ninja) and [Bitfocus Companion](#using-bitfocus-companion-with-social-stream-ninja) sections below for detailed setup.
+
+---
+
+### Quick Start: Receiving Chat Messages (Python / Node.js)
+
+To receive chat messages from Twitch, YouTube, and other platforms in your own application:
+
+**Required toggles (Global settings > Mechanics):**
+1. ✅ **Enable remote API control of extension**
+2. ✅ **Send chat messages to API server** (the 3rd toggle) - This is the key one!
+
+**Connect to Channel 4** - This is where chat messages are broadcast:
+
+**Python Example:**
+
+```python
+import asyncio
+import websockets
+import json
+
+SESSION_ID = "YOUR_SESSION_ID_HERE"  # From your dock.html URL
+
+async def listen_to_chat():
+    uri = f"wss://io.socialstream.ninja/join/{SESSION_ID}/4"  # Channel 4 receives chat
+
+    async with websockets.connect(uri) as ws:
+        print(f"Connected! Listening for chat messages...")
+
+        while True:
+            message = await ws.recv()
+            data = json.loads(message)
+
+            # Chat messages have 'chatname' and 'chatmessage' fields
+            if "chatname" in data:
+                print(f"[{data.get('type', 'unknown')}] {data['chatname']}: {data.get('chatmessage', '')}")
+
+                # Check for donations
+                if data.get('hasDonation'):
+                    print(f"  💰 Donation: {data['hasDonation']}")
+
+asyncio.run(listen_to_chat())
+```
+
+**Node.js Example:**
+
+```javascript
+const WebSocket = require('ws');
+
+const SESSION_ID = 'YOUR_SESSION_ID_HERE';  // From your dock.html URL
+
+const ws = new WebSocket(`wss://io.socialstream.ninja/join/${SESSION_ID}/4`);
+
+ws.on('open', () => {
+    console.log('Connected! Listening for chat messages...');
+});
+
+ws.on('message', (message) => {
+    const data = JSON.parse(message);
+
+    // Chat messages have 'chatname' and 'chatmessage' fields
+    if (data.chatname) {
+        console.log(`[${data.type || 'unknown'}] ${data.chatname}: ${data.chatmessage || ''}`);
+
+        // Check for donations
+        if (data.hasDonation) {
+            console.log(`  💰 Donation: ${data.hasDonation}`);
+        }
+    }
+});
+
+ws.on('error', console.error);
+```
+
+**Channel Reference for Listeners:**
+- Channel 4 (`/join/SESSION/4`) - Receives chat messages from the extension (when "Send chat messages to API server" is enabled)
+- Channel 2 (`/join/SESSION/2`) - Receives messages from the Dock (when "Enable Dock to use and publish via API server" is enabled)
 
 ### Connecting to the API Server
 
@@ -337,6 +469,82 @@ This targeting system allows for more flexible and powerful setups, especially i
 2. Use appropriate channels for different types of messages to keep your communication organized.
 3. Leverage the targeting system when working with multiple instances to ensure messages reach the intended recipients.
 4. Regularly check for updates to the API as new features may be added over time.
+
+## Inbound Donation Webhooks
+
+Social Stream Ninja can receive donation events from external platforms via webhooks. These donations appear in your dock and overlays alongside regular chat messages.
+
+### Prerequisites
+
+1. **Note Your Session ID**: Find it in the extension popup or in your URL after `?session=`
+2. **Choose ONE of these options** (not both):
+   - **Option A**: Add `&server` to your dock.html URL (e.g., `dock.html?session=XXXX&server`)
+   - **Option B**: Enable **"Enable remote API control of extension"** in the extension popup under `Global settings and tools` → `Mechanics`
+
+> ⚠️ **Warning**: Do not enable both options. If you add `&server` to the dock AND enable remote API control in the extension, webhooks will be received by both, causing duplicate donation alerts.
+
+### Supported Platforms
+
+| Platform | Webhook URL | Event Type |
+|----------|-------------|------------|
+| **Stripe** | `https://io.socialstream.ninja/{sessionID}/stripe` | `checkout.session.completed` |
+| **Ko-Fi** | `https://io.socialstream.ninja/{sessionID}/kofi` | Donations (public only) |
+| **Buy Me A Coffee** | `https://io.socialstream.ninja/{sessionID}/bmac` | `donation.created`, `membership.started` |
+| **Fourthwall** | `https://io.socialstream.ninja/{sessionID}/fourthwall` | `ORDER_PLACED` |
+
+### Stripe Setup
+
+1. Create a [Stripe Payment Link](https://dashboard.stripe.com/payment-links)
+2. **Important**: Add custom fields to your payment link:
+   - **Display Name** or **Username** (required) - donations without this field are rejected
+   - **Message** (optional) - allows donors to leave a message
+3. Go to [Stripe Webhooks](https://dashboard.stripe.com/webhooks) and create a new endpoint
+4. Set the URL to: `https://io.socialstream.ninja/YOUR_SESSION_ID/stripe`
+5. Select event: `checkout.session.completed`
+6. No signature verification is needed (keep your session ID private instead)
+
+**Testing**: Use Stripe's Test Mode with card number `4242 4242 4242 4242`, any future expiry date, and any CVC.
+
+### Ko-Fi Setup
+
+1. Sign in to [Ko-Fi Webhook Settings](https://ko-fi.com/manage/webhooks)
+2. Add webhook URL: `https://io.socialstream.ninja/YOUR_SESSION_ID/kofi`
+3. Only public donations appear (private donations are filtered out)
+
+### Buy Me A Coffee Setup
+
+1. Sign in to Buy Me A Coffee and navigate to Settings → Webhooks
+2. Add webhook URL: `https://io.socialstream.ninja/YOUR_SESSION_ID/bmac`
+3. Both one-time donations (`donation.created`) and new memberships (`membership.started`) are supported
+
+### Fourthwall Setup
+
+1. Go to your Fourthwall admin: Settings → For Developers → Webhooks
+2. Create a webhook with URL: `https://io.socialstream.ninja/YOUR_SESSION_ID/fourthwall`
+3. Subscribe to `ORDER_PLACED` events
+
+### Security Note
+
+Keep your session ID private. Anyone with your session ID can send fake donation events to your overlay. The webhook URLs do not use signature verification, so security relies on the secrecy of your session ID.
+
+### Donation Message Format
+
+When a donation webhook is received, it is normalized into a standard SSN message format:
+
+```json
+{
+  "chatname": "Donor Name",
+  "chatmessage": "Optional message from donor",
+  "hasDonation": "$50.00 USD",
+  "type": "stripe",
+  "id": "unique_id",
+  "chatbadges": "",
+  "chatimg": "",
+  "membership": ""
+}
+```
+
+The `hasDonation` field contains the formatted amount and currency. This allows donations to be filtered, featured, and displayed using the same mechanisms as platform-native donations (Super Chats, Bits, etc.).
 
 # Featured Page (featured.html)
 

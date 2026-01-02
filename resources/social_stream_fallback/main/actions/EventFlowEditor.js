@@ -1,12 +1,13 @@
 // Predefined flow templates for quick setup
+// Node positions are arranged top-to-bottom to match visual flow direction
 const FLOW_TEMPLATES = {
     // === SIMPLE TEMPLATES ===
     'chat-relay': {
         name: 'Chat Relay to Discord',
         description: 'Forward chat messages to a Discord webhook',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'anyMessage', x: 100, y: 150, config: {} },
-            { id: 'action_1', type: 'action', actionType: 'webhook', x: 400, y: 150, config: { url: 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN', method: 'POST', body: '{"content": "{username}: {message}"}', includeMessage: false, syncMode: false, blockOnFailure: false } }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'anyMessage', x: 100, y: 50, config: {} },
+            { id: 'action_1', type: 'action', actionType: 'webhook', x: 100, y: 230, config: { url: 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN', method: 'POST', body: '{"content": "{username}: {message}"}', includeMessage: false, syncMode: false, blockOnFailure: false } }
         ],
         connections: [{ from: 'trigger_1', to: 'action_1' }]
     },
@@ -14,8 +15,8 @@ const FLOW_TEMPLATES = {
         name: 'Song Request (!sr)',
         description: 'Queue Spotify tracks from chat with !sr command',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'messageStartsWith', x: 100, y: 150, config: { text: '!sr ' } },
-            { id: 'action_1', type: 'action', actionType: 'spotifyQueue', x: 400, y: 150, config: { extractFromMessage: true, announceResult: true } }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'messageStartsWith', x: 100, y: 50, config: { text: '!sr ' } },
+            { id: 'action_1', type: 'action', actionType: 'spotifyQueue', x: 100, y: 230, config: { extractFromMessage: true, announceResult: true } }
         ],
         connections: [{ from: 'trigger_1', to: 'action_1' }]
     },
@@ -23,8 +24,8 @@ const FLOW_TEMPLATES = {
         name: 'Channel Points Sound',
         description: 'Play a sound when channel points are redeemed',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'channelPointRedemption', x: 100, y: 150, config: { rewardName: '' } },
-            { id: 'action_1', type: 'action', actionType: 'playAudioClip', x: 400, y: 150, config: { audioUrl: 'https://vdo.ninja/media/join.wav', volume: 1.0 } }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'channelPointRedemption', x: 100, y: 50, config: { rewardName: '' } },
+            { id: 'action_1', type: 'action', actionType: 'playAudioClip', x: 100, y: 230, config: { audioUrl: 'https://vdo.ninja/media/join.wav', volume: 1.0 } }
         ],
         connections: [{ from: 'trigger_1', to: 'action_1' }]
     },
@@ -32,8 +33,8 @@ const FLOW_TEMPLATES = {
         name: 'TTS for Chat',
         description: 'Read chat messages aloud with text-to-speech',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'anyMessage', x: 100, y: 150, config: {} },
-            { id: 'action_1', type: 'action', actionType: 'ttsSpeak', x: 400, y: 150, config: { text: '{username} says {message}', voice: '', rate: 1, pitch: 1, volume: 1 } }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'anyMessage', x: 100, y: 50, config: {} },
+            { id: 'action_1', type: 'action', actionType: 'ttsSpeak', x: 100, y: 230, config: { text: '{username} says {message}', voice: '', rate: 1, pitch: 1, volume: 1 } }
         ],
         connections: [{ from: 'trigger_1', to: 'action_1' }]
     },
@@ -41,9 +42,9 @@ const FLOW_TEMPLATES = {
         name: 'Donation Alert',
         description: 'Play sound and show text when someone donates',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'hasDonation', x: 100, y: 150, config: {} },
-            { id: 'action_1', type: 'action', actionType: 'playAudioClip', x: 350, y: 100, config: { audioUrl: 'https://vdo.ninja/media/join.wav', volume: 1.0 } },
-            { id: 'action_2', type: 'action', actionType: 'showText', x: 350, y: 200, config: { text: '💰 {username} donated!', x: 50, y: 50, width: 50, fontSize: 48, fontFamily: 'Arial', fontWeight: 'bold', textAlign: 'center', color: '#FFD700', backgroundColor: 'rgba(0,0,0,0.8)', padding: 20, borderRadius: 10, animation: 'bounceIn', animationDuration: 500, duration: 5000 } }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'hasDonation', x: 185, y: 50, config: {} },
+            { id: 'action_1', type: 'action', actionType: 'playAudioClip', x: 50, y: 230, config: { audioUrl: 'https://vdo.ninja/media/join.wav', volume: 1.0 } },
+            { id: 'action_2', type: 'action', actionType: 'showText', x: 320, y: 230, config: { text: '💰 {username} donated!', x: 50, y: 50, width: 50, fontSize: 48, fontFamily: 'Arial', fontWeight: 'bold', textAlign: 'center', color: '#FFD700', backgroundColor: 'rgba(0,0,0,0.8)', padding: 20, borderRadius: 10, animation: 'bounceIn', animationDuration: 500, duration: 5000 } }
         ],
         connections: [
             { from: 'trigger_1', to: 'action_1' },
@@ -54,10 +55,10 @@ const FLOW_TEMPLATES = {
         name: 'Skip Song Command',
         description: 'Let mods skip the current Spotify track with !skip',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'messageEquals', x: 100, y: 100, config: { text: '!skip' } },
-            { id: 'trigger_2', type: 'trigger', triggerType: 'userRole', x: 100, y: 200, config: { role: 'mod' } },
-            { id: 'logic_1', type: 'logic', logicType: 'AND', x: 300, y: 150, config: {} },
-            { id: 'action_1', type: 'action', actionType: 'spotifySkip', x: 500, y: 150, config: {} }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'messageEquals', x: 50, y: 50, config: { text: '!skip' } },
+            { id: 'trigger_2', type: 'trigger', triggerType: 'userRole', x: 320, y: 50, config: { role: 'mod' } },
+            { id: 'logic_1', type: 'logic', logicType: 'AND', x: 185, y: 230, config: {} },
+            { id: 'action_1', type: 'action', actionType: 'spotifySkip', x: 185, y: 410, config: {} }
         ],
         connections: [
             { from: 'trigger_1', to: 'logic_1' },
@@ -71,9 +72,9 @@ const FLOW_TEMPLATES = {
         name: 'Bad Words Filter',
         description: 'Block messages containing profanity',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'anyMessage', x: 100, y: 150, config: {} },
-            { id: 'logic_1', type: 'logic', logicType: 'CHECK_BAD_WORDS', x: 300, y: 150, config: {} },
-            { id: 'action_1', type: 'action', actionType: 'blockMessage', x: 500, y: 150, config: {} }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'anyMessage', x: 100, y: 50, config: {} },
+            { id: 'logic_1', type: 'logic', logicType: 'CHECK_BAD_WORDS', x: 100, y: 230, config: {} },
+            { id: 'action_1', type: 'action', actionType: 'blockMessage', x: 100, y: 410, config: {} }
         ],
         connections: [
             { from: 'trigger_1', to: 'logic_1' },
@@ -84,12 +85,12 @@ const FLOW_TEMPLATES = {
         name: 'Chat Alert Overlay',
         description: 'Show avatar and text overlay for new messages',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'anyMessage', x: 50, y: 150, config: {} },
-            { id: 'action_1', type: 'action', actionType: 'continueAsync', x: 200, y: 150, config: {} },
-            { id: 'action_2', type: 'action', actionType: 'showAvatar', x: 350, y: 100, config: { avatarUrl: '', width: 15, height: 15, x: 5, y: 5, randomX: false, randomY: false, borderRadius: 50, borderWidth: 3, borderColor: '#ffffff', shadow: true, duration: 5000, clearFirst: true } },
-            { id: 'action_3', type: 'action', actionType: 'showText', x: 500, y: 100, config: { text: '{username}: {message}', x: 25, y: 5, width: 70, fontSize: 32, fontFamily: 'Arial', fontWeight: 'bold', textAlign: 'left', color: '#ffffff', backgroundColor: 'rgba(0,0,0,0.7)', padding: 15, borderRadius: 10, outlineWidth: 0, outlineColor: '#000000', animation: 'fadeIn', animationDuration: 300, duration: 5000, clearFirst: false } },
-            { id: 'action_4', type: 'action', actionType: 'delay', x: 650, y: 150, config: { delayMs: 5000 } },
-            { id: 'action_5', type: 'action', actionType: 'clearLayer', x: 800, y: 150, config: { layer: 'all' } }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'anyMessage', x: 100, y: 50, config: {} },
+            { id: 'action_1', type: 'action', actionType: 'continueAsync', x: 100, y: 200, config: {} },
+            { id: 'action_2', type: 'action', actionType: 'showAvatar', x: 100, y: 350, config: { avatarUrl: '', width: 15, height: 15, x: 5, y: 5, randomX: false, randomY: false, borderRadius: 50, borderWidth: 3, borderColor: '#ffffff', shadow: true, duration: 5000, clearFirst: true } },
+            { id: 'action_3', type: 'action', actionType: 'showText', x: 100, y: 500, config: { text: '{username}: {message}', x: 25, y: 5, width: 70, fontSize: 32, fontFamily: 'Arial', fontWeight: 'bold', textAlign: 'left', color: '#ffffff', backgroundColor: 'rgba(0,0,0,0.7)', padding: 15, borderRadius: 10, outlineWidth: 0, outlineColor: '#000000', animation: 'fadeIn', animationDuration: 300, duration: 5000, clearFirst: false } },
+            { id: 'action_4', type: 'action', actionType: 'delay', x: 100, y: 650, config: { delayMs: 5000 } },
+            { id: 'action_5', type: 'action', actionType: 'clearLayer', x: 100, y: 800, config: { layer: 'all' } }
         ],
         connections: [
             { from: 'trigger_1', to: 'action_1' },
@@ -103,8 +104,8 @@ const FLOW_TEMPLATES = {
         name: 'VIP Message Highlight',
         description: 'Show special overlay for VIP/sub messages',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'userRole', x: 100, y: 150, config: { role: 'vip' } },
-            { id: 'action_1', type: 'action', actionType: 'showText', x: 400, y: 150, config: { text: '⭐ {username}: {message}', x: 10, y: 80, width: 80, fontSize: 36, fontFamily: 'Arial', fontWeight: 'bold', textAlign: 'left', color: '#FFD700', backgroundColor: 'rgba(0,0,0,0.8)', padding: 15, borderRadius: 10, animation: 'slideInLeft', animationDuration: 300, duration: 6000 } }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'userRole', x: 100, y: 50, config: { role: 'vip' } },
+            { id: 'action_1', type: 'action', actionType: 'showText', x: 100, y: 230, config: { text: '⭐ {username}: {message}', x: 10, y: 80, width: 80, fontSize: 36, fontFamily: 'Arial', fontWeight: 'bold', textAlign: 'left', color: '#FFD700', backgroundColor: 'rgba(0,0,0,0.8)', padding: 15, borderRadius: 10, animation: 'slideInLeft', animationDuration: 300, duration: 6000 } }
         ],
         connections: [{ from: 'trigger_1', to: 'action_1' }]
     },
@@ -112,11 +113,11 @@ const FLOW_TEMPLATES = {
         name: 'Block Links (Non-Mods)',
         description: 'Block messages with links unless from mods',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'containsLink', x: 100, y: 100, config: {} },
-            { id: 'trigger_2', type: 'trigger', triggerType: 'userRole', x: 100, y: 200, config: { role: 'mod' } },
-            { id: 'logic_1', type: 'logic', logicType: 'NOT', x: 300, y: 200, config: {} },
-            { id: 'logic_2', type: 'logic', logicType: 'AND', x: 450, y: 150, config: {} },
-            { id: 'action_1', type: 'action', actionType: 'blockMessage', x: 650, y: 150, config: {} }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'containsLink', x: 50, y: 50, config: {} },
+            { id: 'trigger_2', type: 'trigger', triggerType: 'userRole', x: 320, y: 50, config: { role: 'mod' } },
+            { id: 'logic_1', type: 'logic', logicType: 'NOT', x: 320, y: 230, config: {} },
+            { id: 'logic_2', type: 'logic', logicType: 'AND', x: 185, y: 410, config: {} },
+            { id: 'action_1', type: 'action', actionType: 'blockMessage', x: 185, y: 590, config: {} }
         ],
         connections: [
             { from: 'trigger_1', to: 'logic_2' },
@@ -129,10 +130,10 @@ const FLOW_TEMPLATES = {
         name: 'Now Playing Command',
         description: 'Show current Spotify track with !np or !song',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'messageEquals', x: 100, y: 100, config: { text: '!np' } },
-            { id: 'trigger_2', type: 'trigger', triggerType: 'messageEquals', x: 100, y: 200, config: { text: '!song' } },
-            { id: 'logic_1', type: 'logic', logicType: 'OR', x: 300, y: 150, config: {} },
-            { id: 'action_1', type: 'action', actionType: 'spotifyNowPlaying', x: 500, y: 150, config: { format: '🎵 Now playing: {song} by {artist}' } }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'messageEquals', x: 50, y: 50, config: { text: '!np' } },
+            { id: 'trigger_2', type: 'trigger', triggerType: 'messageEquals', x: 320, y: 50, config: { text: '!song' } },
+            { id: 'logic_1', type: 'logic', logicType: 'OR', x: 185, y: 230, config: {} },
+            { id: 'action_1', type: 'action', actionType: 'spotifyNowPlaying', x: 185, y: 410, config: { format: '🎵 Now playing: {song} by {artist}' } }
         ],
         connections: [
             { from: 'trigger_1', to: 'logic_1' },
@@ -146,11 +147,11 @@ const FLOW_TEMPLATES = {
         name: 'Safe Song Requests',
         description: 'Song requests with bad words filter',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'messageStartsWith', x: 50, y: 150, config: { text: '!sr ' } },
-            { id: 'logic_1', type: 'logic', logicType: 'CHECK_BAD_WORDS', x: 250, y: 150, config: {} },
-            { id: 'logic_2', type: 'logic', logicType: 'NOT', x: 400, y: 200, config: {} },
-            { id: 'action_1', type: 'action', actionType: 'blockMessage', x: 550, y: 100, config: {} },
-            { id: 'action_2', type: 'action', actionType: 'spotifyQueue', x: 550, y: 200, config: { extractFromMessage: true, announceResult: true } }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'messageStartsWith', x: 185, y: 50, config: { text: '!sr ' } },
+            { id: 'logic_1', type: 'logic', logicType: 'CHECK_BAD_WORDS', x: 185, y: 230, config: {} },
+            { id: 'action_1', type: 'action', actionType: 'blockMessage', x: 50, y: 410, config: {} },
+            { id: 'logic_2', type: 'logic', logicType: 'NOT', x: 320, y: 410, config: {} },
+            { id: 'action_2', type: 'action', actionType: 'spotifyQueue', x: 320, y: 590, config: { extractFromMessage: true, announceResult: true } }
         ],
         connections: [
             { from: 'trigger_1', to: 'logic_1' },
@@ -163,10 +164,10 @@ const FLOW_TEMPLATES = {
         name: 'Raid Welcome',
         description: 'Welcome raiders with sound and overlay',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'eventType', x: 100, y: 150, config: { eventType: 'raid' } },
-            { id: 'action_1', type: 'action', actionType: 'playAudioClip', x: 350, y: 80, config: { audioUrl: 'https://vdo.ninja/media/join.wav', volume: 1.0 } },
-            { id: 'action_2', type: 'action', actionType: 'showText', x: 350, y: 180, config: { text: '🎉 RAID! Welcome {username} and their community!', x: 10, y: 40, width: 80, fontSize: 42, fontFamily: 'Arial', fontWeight: 'bold', textAlign: 'center', color: '#FF6B6B', backgroundColor: 'rgba(0,0,0,0.9)', padding: 25, borderRadius: 15, animation: 'bounceIn', animationDuration: 500, duration: 10000 } },
-            { id: 'action_3', type: 'action', actionType: 'ttsSpeak', x: 350, y: 280, config: { text: 'Welcome raiders from {username}!', voice: '', rate: 1, pitch: 1, volume: 1 } }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'eventType', x: 185, y: 50, config: { eventType: 'raid' } },
+            { id: 'action_1', type: 'action', actionType: 'playAudioClip', x: 50, y: 230, config: { audioUrl: 'https://vdo.ninja/media/join.wav', volume: 1.0 } },
+            { id: 'action_2', type: 'action', actionType: 'showText', x: 320, y: 230, config: { text: '🎉 RAID! Welcome {username} and their community!', x: 10, y: 40, width: 80, fontSize: 42, fontFamily: 'Arial', fontWeight: 'bold', textAlign: 'center', color: '#FF6B6B', backgroundColor: 'rgba(0,0,0,0.9)', padding: 25, borderRadius: 15, animation: 'bounceIn', animationDuration: 500, duration: 10000 } },
+            { id: 'action_3', type: 'action', actionType: 'ttsSpeak', x: 185, y: 410, config: { text: 'Welcome raiders from {username}!', voice: '', rate: 1, pitch: 1, volume: 1 } }
         ],
         connections: [
             { from: 'trigger_1', to: 'action_1' },
@@ -178,10 +179,10 @@ const FLOW_TEMPLATES = {
         name: 'Random Message Highlight',
         description: 'Randomly highlight 10% of chat messages',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'anyMessage', x: 100, y: 150, config: {} },
-            { id: 'logic_1', type: 'logic', logicType: 'RANDOM', x: 300, y: 150, config: { probability: 10 } },
-            { id: 'action_1', type: 'action', actionType: 'playAudioClip', x: 500, y: 100, config: { audioUrl: 'https://vdo.ninja/media/join.wav', volume: 0.5 } },
-            { id: 'action_2', type: 'action', actionType: 'showText', x: 500, y: 200, config: { text: '✨ {username}: {message}', x: 10, y: 10, width: 80, fontSize: 36, fontFamily: 'Arial', fontWeight: 'bold', textAlign: 'left', color: '#00FF00', backgroundColor: 'rgba(0,0,0,0.8)', padding: 15, borderRadius: 10, animation: 'pulse', animationDuration: 300, duration: 5000 } }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'anyMessage', x: 185, y: 50, config: {} },
+            { id: 'logic_1', type: 'logic', logicType: 'RANDOM', x: 185, y: 230, config: { probability: 10 } },
+            { id: 'action_1', type: 'action', actionType: 'playAudioClip', x: 50, y: 410, config: { audioUrl: 'https://vdo.ninja/media/join.wav', volume: 0.5 } },
+            { id: 'action_2', type: 'action', actionType: 'showText', x: 320, y: 410, config: { text: '✨ {username}: {message}', x: 10, y: 10, width: 80, fontSize: 36, fontFamily: 'Arial', fontWeight: 'bold', textAlign: 'left', color: '#00FF00', backgroundColor: 'rgba(0,0,0,0.8)', padding: 15, borderRadius: 10, animation: 'pulse', animationDuration: 300, duration: 5000 } }
         ],
         connections: [
             { from: 'trigger_1', to: 'logic_1' },
@@ -193,12 +194,12 @@ const FLOW_TEMPLATES = {
         name: 'Big Donation Alert',
         description: 'Special alert for donations over $10',
         nodes: [
-            { id: 'trigger_1', type: 'trigger', triggerType: 'hasDonation', x: 100, y: 100, config: {} },
-            { id: 'trigger_2', type: 'trigger', triggerType: 'compareProperty', x: 100, y: 200, config: { property: 'donationAmount', operator: 'gte', value: 10 } },
-            { id: 'logic_1', type: 'logic', logicType: 'AND', x: 300, y: 150, config: {} },
-            { id: 'action_1', type: 'action', actionType: 'playAudioClip', x: 500, y: 100, config: { audioUrl: 'https://vdo.ninja/media/join.wav', volume: 1.0 } },
-            { id: 'action_2', type: 'action', actionType: 'showText', x: 500, y: 200, config: { text: '🎉 BIG DONATION! {username} donated ${donationAmount}!', x: 20, y: 30, width: 60, fontSize: 48, fontFamily: 'Arial', fontWeight: 'bold', textAlign: 'center', color: '#FFD700', backgroundColor: 'rgba(139,0,0,0.9)', padding: 30, borderRadius: 15, animation: 'bounceIn', animationDuration: 500, duration: 10000 } },
-            { id: 'action_3', type: 'action', actionType: 'ttsSpeak', x: 700, y: 150, config: { text: 'Wow! {username} just donated ${donationAmount}! Thank you so much!', voice: '', rate: 1, pitch: 1, volume: 1 } }
+            { id: 'trigger_1', type: 'trigger', triggerType: 'hasDonation', x: 50, y: 50, config: {} },
+            { id: 'trigger_2', type: 'trigger', triggerType: 'compareProperty', x: 320, y: 50, config: { property: 'donationAmount', operator: 'gte', value: 10 } },
+            { id: 'logic_1', type: 'logic', logicType: 'AND', x: 185, y: 230, config: {} },
+            { id: 'action_1', type: 'action', actionType: 'playAudioClip', x: 50, y: 410, config: { audioUrl: 'https://vdo.ninja/media/join.wav', volume: 1.0 } },
+            { id: 'action_2', type: 'action', actionType: 'showText', x: 320, y: 410, config: { text: '🎉 BIG DONATION! {username} donated ${donationAmount}!', x: 20, y: 30, width: 60, fontSize: 48, fontFamily: 'Arial', fontWeight: 'bold', textAlign: 'center', color: '#FFD700', backgroundColor: 'rgba(139,0,0,0.9)', padding: 30, borderRadius: 15, animation: 'bounceIn', animationDuration: 500, duration: 10000 } },
+            { id: 'action_3', type: 'action', actionType: 'ttsSpeak', x: 320, y: 590, config: { text: 'Wow! {username} just donated ${donationAmount}! Thank you so much!', voice: '', rate: 1, pitch: 1, volume: 1 } }
         ],
         connections: [
             { from: 'trigger_1', to: 'logic_1' },
@@ -236,33 +237,95 @@ class EventFlowEditor {
         }
 		
         // Initialize all node type definitions here
-        this.triggerTypes = [
-            { id: 'anyMessage', name: '💬 Any Message' },
-            { id: 'messageContains', name: '🔍 Message Contains' },
-            { id: 'messageStartsWith', name: '▶️ Message Starts With' },
-            { id: 'messageEndsWith', name: '⏹️ Message Ends With' },
-            { id: 'messageEquals', name: '🟰 Message Equals' },
-            { id: 'messageRegex', name: '🔤 Message Regex' },
-            { id: 'messageLength', name: '📏 Message Length' },
-            { id: 'wordCount', name: '🔢 Word Count' },
-            { id: 'containsEmoji', name: '😀 Contains Emoji' },
-            { id: 'containsLink', name: '🔗 Contains Link' },
-            { id: 'fromSource', name: '📡 From Source' },
-            { id: 'fromChannelName', name: '📺 From Channel Name' },
-            { id: 'fromUser', name: '👤 From User' },
-            { id: 'userRole', name: '👑 User Role' },
-            { id: 'hasDonation', name: '💰 Has Donation' },
-            { id: 'channelPointRedemption', name: '🎁 Channel Point Redemption' },
-            { id: 'eventType', name: '📣 Event Type' },
-            { id: 'compareProperty', name: '⚖️ Compare Property' },
-            { id: 'randomChance', name: '🎲 Random Chance' },
-            { id: 'timeInterval', name: '⏰ Time Interval' },
-            { id: 'timeOfDay', name: '🕐 Time of Day' },
-            { id: 'midiNoteOn', name: '🎹 MIDI Note On' },
-            { id: 'midiNoteOff', name: '🎹 MIDI Note Off' },
-            { id: 'midiCC', name: '🎛️ MIDI Control Change' },
-            { id: 'messageProperties', name: '⚙️ Message Properties Filter' }
+        // Grouped trigger types for collapsible sections (like actions)
+        this.triggerGroups = [
+            {
+                id: 'stream-events',
+                name: '📣 Stream Events',
+                expanded: true,
+                triggers: [
+                    { id: 'eventNewFollower', name: '👋 New Follower' },
+                    { id: 'eventNewSubscriber', name: '⭐ New Subscriber' },
+                    { id: 'eventResub', name: '🔄 Resub/Renewal' },
+                    { id: 'eventGiftSub', name: '🎁 Gift Sub' },
+                    { id: 'eventDonation', name: '💰 Donation/Super Chat' },
+                    { id: 'eventRaid', name: '🚀 Raid' },
+                    { id: 'eventCheer', name: '💎 Cheer/Bits' },
+                    { id: 'eventOther', name: '📋 Other Event...' },
+                    { id: 'eventCustom', name: '✏️ Custom Event' }
+                ]
+            },
+            {
+                id: 'chat-messages',
+                name: '💬 Chat Messages',
+                expanded: true,
+                triggers: [
+                    { id: 'anyMessage', name: '💬 Any Message' },
+                    { id: 'messageContains', name: '🔍 Message Contains' },
+                    { id: 'messageStartsWith', name: '▶️ Message Starts With' },
+                    { id: 'messageEndsWith', name: '⏹️ Message Ends With' },
+                    { id: 'messageEquals', name: '🟰 Message Equals' },
+                    { id: 'messageRegex', name: '🔤 Message Regex' }
+                ]
+            },
+            {
+                id: 'message-properties',
+                name: '📊 Message Properties',
+                expanded: false,
+                triggers: [
+                    { id: 'messageLength', name: '📏 Message Length' },
+                    { id: 'wordCount', name: '🔢 Word Count' },
+                    { id: 'containsEmoji', name: '😀 Contains Emoji' },
+                    { id: 'containsLink', name: '🔗 Contains Link' },
+                    { id: 'hasDonation', name: '💰 Has Donation' },
+                    { id: 'compareProperty', name: '⚖️ Compare Property' },
+                    { id: 'messageProperties', name: '⚙️ Message Properties Filter' }
+                ]
+            },
+            {
+                id: 'user-source',
+                name: '👤 User & Source',
+                expanded: false,
+                triggers: [
+                    { id: 'fromSource', name: '📡 From Source' },
+                    { id: 'fromChannelName', name: '📺 From Channel Name' },
+                    { id: 'fromUser', name: '👤 From User' },
+                    { id: 'userRole', name: '👑 User Role' },
+                    { id: 'channelPointRedemption', name: '🎁 Channel Point Redemption' }
+                ]
+            },
+            {
+                id: 'timing-random',
+                name: '⏰ Timing & Random',
+                expanded: false,
+                triggers: [
+                    { id: 'randomChance', name: '🎲 Random Chance' },
+                    { id: 'timeInterval', name: '⏰ Time Interval' },
+                    { id: 'timeOfDay', name: '🕐 Time of Day' }
+                ]
+            },
+            {
+                id: 'midi',
+                name: '🎹 MIDI',
+                expanded: false,
+                triggers: [
+                    { id: 'midiNoteOn', name: '🎹 MIDI Note On' },
+                    { id: 'midiNoteOff', name: '🎹 MIDI Note Off' },
+                    { id: 'midiCC', name: '🎛️ MIDI Control Change' }
+                ]
+            },
+            {
+                id: 'legacy',
+                name: '📦 Legacy/Other',
+                expanded: false,
+                triggers: [
+                    { id: 'eventType', name: '📣 Event Type (Legacy)' }
+                ]
+            }
         ];
+
+        // Flat list for backwards compatibility and lookups
+        this.triggerTypes = this.triggerGroups.flatMap(g => g.triggers);
 
         // Grouped action types for collapsible sections
         this.actionGroups = [
@@ -313,7 +376,6 @@ class EventFlowEditor {
                 name: '🎬 OBS Studio',
                 expanded: false,
                 actions: [
-                    { id: 'triggerOBSScene', name: '🎬 Trigger OBS Scene' },
                     { id: 'obsChangeScene', name: '🎬 Change Scene' },
                     { id: 'obsToggleSource', name: '👁️ Toggle Source' },
                     { id: 'obsSetSourceFilter', name: '🎨 Toggle Filter' },
@@ -413,6 +475,36 @@ class EventFlowEditor {
             .replace(/'/g, '&#039;');
     }
 
+    // Helper to render source filter for event triggers
+    renderEventSourceFilter(node, eventTypes) {
+        const sources = [
+            { value: 'youtube', label: 'YouTube' },
+            { value: 'twitch', label: 'Twitch' },
+            { value: 'kick', label: 'Kick' },
+            { value: 'facebook', label: 'Facebook' },
+            { value: 'tiktok', label: 'TikTok' },
+            { value: 'instagram', label: 'Instagram' },
+            { value: 'rumble', label: 'Rumble' }
+        ];
+        const selectedSources = node.config.sources || [];
+
+        return `
+            <div class="property-group">
+                <label class="property-label">Filter by Source (optional)</label>
+                <div class="source-checkboxes" style="display: flex; flex-wrap: wrap; gap: 8px;">
+                    ${sources.map(s => `
+                        <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                            <input type="checkbox" class="source-checkbox" value="${s.value}"
+                                ${selectedSources.includes(s.value) ? 'checked' : ''}>
+                            ${s.label}
+                        </label>
+                    `).join('')}
+                </div>
+                <div class="property-help">Leave all unchecked to match any source. Events matched: <code>${eventTypes}</code></div>
+            </div>
+        `;
+    }
+
     init() {
         this.createEditorLayout(); // Now this.logicNodeTypes will be defined
         this.initEventListeners();
@@ -459,9 +551,19 @@ class EventFlowEditor {
                     <div class="node-palette">
                         <h3>Triggers</h3>
                         <div class="node-list" id="trigger-list">
-                            ${this.triggerTypes.map(trigger => `
-                                <div class="node-item trigger" data-nodetype="trigger" data-subtype="${trigger.id}" draggable="true" ${trigger.id === 'customJs' ? 'style="display: none;"' : ''}>
-                                    ${trigger.name}
+                            ${this.triggerGroups.map(group => `
+                                <div class="trigger-group" data-group="${group.id}">
+                                    <div class="trigger-group-header ${group.expanded ? 'expanded' : 'collapsed'}" data-group="${group.id}">
+                                        <span class="trigger-group-toggle">${group.expanded ? '▼' : '▶'}</span>
+                                        <span class="trigger-group-name">${group.name}</span>
+                                    </div>
+                                    <div class="trigger-group-items" style="${group.expanded ? '' : 'display: none;'}">
+                                        ${group.triggers.map(trigger => `
+                                            <div class="node-item trigger" data-nodetype="trigger" data-subtype="${trigger.id}" draggable="true">
+                                                ${trigger.name}
+                                            </div>
+                                        `).join('')}
+                                    </div>
                                 </div>
                             `).join('')}
                         </div>
@@ -594,6 +696,32 @@ class EventFlowEditor {
         triggerItems.forEach(item => {
             item.addEventListener('dragstart', (e) => this.handleNodeDragStart(e, 'trigger', item.dataset.subtype)); // Changed to subtype
         });
+
+        // Add click handlers for collapsible trigger groups
+        const triggerGroupHeaders = document.querySelectorAll('.trigger-group-header');
+        triggerGroupHeaders.forEach(header => {
+            header.addEventListener('click', (e) => {
+                const groupId = header.dataset.group;
+                const group = this.triggerGroups.find(g => g.id === groupId);
+                if (group) {
+                    group.expanded = !group.expanded;
+                    const toggle = header.querySelector('.trigger-group-toggle');
+                    const items = header.nextElementSibling;
+                    if (group.expanded) {
+                        header.classList.remove('collapsed');
+                        header.classList.add('expanded');
+                        toggle.textContent = '▼';
+                        items.style.display = '';
+                    } else {
+                        header.classList.remove('expanded');
+                        header.classList.add('collapsed');
+                        toggle.textContent = '▶';
+                        items.style.display = 'none';
+                    }
+                }
+            });
+        });
+
         const actionItems = document.querySelectorAll('#action-list .node-item');
         actionItems.forEach(item => {
             item.addEventListener('dragstart', (e) => this.handleNodeDragStart(e, 'action', item.dataset.subtype)); // Changed to subtype
@@ -1321,7 +1449,7 @@ class EventFlowEditor {
         }
     }
 
-    async importSingleFlow(flowData) {
+    async importSingleFlow(flowData, returnFlow = false) {
         try {
             // Remove metadata fields
             const cleanFlow = { ...flowData };
@@ -1329,14 +1457,14 @@ class EventFlowEditor {
             delete cleanFlow.version;
             delete cleanFlow.exportedBy;
             delete cleanFlow.totalFlows;
-            
+
             // Clear ID to force new one
             delete cleanFlow.id;
-            
+
             // Check for duplicate names
             const flows = await this.eventFlowSystem.getAllFlows();
             const existingNames = flows.map(f => f.name);
-            
+
             if (existingNames.includes(cleanFlow.name)) {
                 // Add suffix to make unique
                 let suffix = 1;
@@ -1349,10 +1477,15 @@ class EventFlowEditor {
 
             // Import the flow
             const savedFlow = await this.eventFlowSystem.saveFlow(cleanFlow);
+
+            // Return the saved flow if requested, otherwise return success boolean
+            if (returnFlow) {
+                return savedFlow;
+            }
             return savedFlow !== null;
         } catch (error) {
             console.error('Error importing single flow:', error);
-            return false;
+            return returnFlow ? null : false;
         }
     }
 
@@ -1378,10 +1511,12 @@ class EventFlowEditor {
                 to: idMap[conn.to] || conn.to
             }));
 
-            // Import using existing method
-            const success = await this.importSingleFlow(flowData);
-            if (success) {
-                await this.loadFlows();
+            // Import using existing method - get the saved flow back
+            const savedFlow = await this.importSingleFlow(flowData, true);
+            if (savedFlow && savedFlow.id) {
+                await this.loadFlowList();
+                // Select the newly imported flow so it's visible in the editor
+                await this.loadFlow(savedFlow.id);
                 this.showNotification(`Template "${template.name}" loaded!`, 'success');
             } else {
                 this.showNotification('Failed to load template', 'warning');
@@ -1666,6 +1801,46 @@ class EventFlowEditor {
                     }
 
                     return parts.join('; ');
+                }
+                // New dedicated event triggers
+                case 'eventNewFollower': {
+                    const sources = node.config.sources?.length ? node.config.sources.join(', ') : 'All sources';
+                    return `New follower (${sources})`;
+                }
+                case 'eventNewSubscriber': {
+                    const sources = node.config.sources?.length ? node.config.sources.join(', ') : 'All sources';
+                    return `New subscriber (${sources})`;
+                }
+                case 'eventResub': {
+                    const sources = node.config.sources?.length ? node.config.sources.join(', ') : 'All sources';
+                    return `Resub (${sources})`;
+                }
+                case 'eventGiftSub': {
+                    const sources = node.config.sources?.length ? node.config.sources.join(', ') : 'All sources';
+                    return `Gift sub (${sources})`;
+                }
+                case 'eventDonation': {
+                    const sources = node.config.sources?.length ? node.config.sources.join(', ') : 'All';
+                    const minAmt = node.config.minAmount > 0 ? ` ≥$${node.config.minAmount}` : '';
+                    return `Donation${minAmt} (${sources})`;
+                }
+                case 'eventRaid': {
+                    const sources = node.config.sources?.length ? node.config.sources.join(', ') : 'All';
+                    const minViewers = node.config.minViewers > 0 ? ` ≥${node.config.minViewers} viewers` : '';
+                    return `Raid${minViewers} (${sources})`;
+                }
+                case 'eventCheer': {
+                    const sources = node.config.sources?.length ? node.config.sources.join(', ') : 'All';
+                    const minBits = node.config.minBits > 0 ? ` ≥${node.config.minBits} bits` : '';
+                    return `Cheer${minBits} (${sources})`;
+                }
+                case 'eventOther': {
+                    const eventType = node.config.eventType || 'Not set';
+                    return `Event: ${eventType}`;
+                }
+                case 'eventCustom': {
+                    const eventType = node.config.eventType || 'Custom';
+                    return `Custom: ${eventType}`;
                 }
                 default: return `${this.getNodeTitle(node)}`;
             }
@@ -2163,6 +2338,16 @@ class EventFlowEditor {
                 case 'hasDonation': node.config = {}; break;
                 case 'channelPointRedemption': node.config = { rewardName: '' }; break;
                 case 'eventType': node.config = { eventType: 'reward' }; break;
+                // New dedicated event triggers
+                case 'eventNewFollower': node.config = { sources: [] }; break;
+                case 'eventNewSubscriber': node.config = { sources: [] }; break;
+                case 'eventResub': node.config = { sources: [] }; break;
+                case 'eventGiftSub': node.config = { sources: [] }; break;
+                case 'eventDonation': node.config = { sources: [], minAmount: 0 }; break;
+                case 'eventRaid': node.config = { sources: [], minViewers: 0 }; break;
+                case 'eventCheer': node.config = { sources: [], minBits: 0 }; break;
+                case 'eventOther': node.config = { eventType: '' }; break;
+                case 'eventCustom': node.config = { eventType: '', customCondition: '' }; break;
                 case 'compareProperty': node.config = { property: 'donationAmount', operator: 'gt', value: 0 }; break;
                 case 'randomChance': node.config = { probability: 0.1, cooldownMs: 0, maxPerMinute: 0, requireMessage: true }; break;
                 case 'timeInterval': node.config = { interval: 60 }; break;
@@ -2708,10 +2893,204 @@ class EventFlowEditor {
 						<div class="property-help">Enter the exact event type from the message object</div>
 					</div>
 					<div class="property-group" style="background: #fff3e0; color: #333; padding: 10px; border-radius: 4px;">
-						<strong>📣 Event Types</strong><br>
-						Triggers on specific stream events like raids, follows, subs, etc.
+						<strong>📣 Event Types (Legacy)</strong><br>
+						Triggers on specific stream events. Consider using the dedicated Stream Events triggers for easier setup.
 					</div>`;
 				break;
+
+			// === NEW DEDICATED EVENT TRIGGERS ===
+			case 'eventNewFollower':
+				html += this.renderEventSourceFilter(node, 'new_follower');
+				html += `<div class="property-group" style="background: #e3f2fd; color: #333; padding: 10px; border-radius: 4px;">
+					<strong>👋 New Follower</strong><br>
+					Triggers when someone follows the channel.<br><br>
+					<strong>⚡ Supported platforms:</strong><br>
+					• <strong>Twitch:</strong> Real-time (WebSocket mode)<br>
+					• <strong>Kick:</strong> Real-time (WebSocket mode)<br>
+					• <strong>YouTube:</strong> Up to 4-hour delay (WebSocket mode)<br>
+					• <strong>TikTok:</strong> Via DOM detection<br><br>
+					<div style="background: #bbdefb; padding: 6px 8px; border-radius: 3px; margin-bottom: 8px;">
+						⚠️ <strong>Twitch/YouTube/Kick require WebSocket mode</strong> in extension settings for follower events.
+					</div>
+					<a href="docs/event-reference.html#cross-platform" target="_blank" style="color: #1976d2;">📖 Event Reference Documentation</a>
+				</div>`;
+				break;
+
+			case 'eventNewSubscriber':
+				html += this.renderEventSourceFilter(node, 'new_subscriber,sponsorship');
+				html += `<div class="property-group" style="background: #e8f5e9; color: #333; padding: 10px; border-radius: 4px;">
+					<strong>⭐ New Subscriber/Member</strong><br>
+					Triggers when someone subscribes or becomes a member.<br><br>
+					<strong>⚡ Supported platforms:</strong><br>
+					• <strong>Twitch:</strong> New subs (WebSocket mode)<br>
+					• <strong>YouTube:</strong> New memberships/sponsors (WebSocket mode)<br>
+					• <strong>Kick:</strong> New subs (WebSocket mode)<br>
+					• <strong>TikTok:</strong> Gift subs detected<br><br>
+					<div style="background: #c8e6c9; padding: 6px 8px; border-radius: 3px; margin-bottom: 8px;">
+						⚠️ <strong>Twitch/YouTube/Kick require WebSocket mode</strong> for subscription events.
+					</div>
+					<a href="docs/event-reference.html#cross-platform" target="_blank" style="color: #2e7d32;">📖 Event Reference Documentation</a>
+				</div>`;
+				break;
+
+			case 'eventResub':
+				html += this.renderEventSourceFilter(node, 'resub');
+				html += `<div class="property-group" style="background: #fff3e0; color: #333; padding: 10px; border-radius: 4px;">
+					<strong>🔄 Resub/Renewal</strong><br>
+					Triggers when someone renews their subscription or membership.<br><br>
+					<strong>⚡ Supported platforms:</strong><br>
+					• <strong>Twitch:</strong> Resub messages (WebSocket mode)<br>
+					• <strong>YouTube:</strong> Membership renewals (WebSocket mode)<br><br>
+					<div style="background: #ffe0b2; padding: 6px 8px; border-radius: 3px; margin-bottom: 8px;">
+						⚠️ <strong>Requires WebSocket mode</strong> for Twitch/YouTube.
+					</div>
+					<a href="docs/event-reference.html#cross-platform" target="_blank" style="color: #e65100;">📖 Event Reference Documentation</a>
+				</div>`;
+				break;
+
+			case 'eventGiftSub':
+				html += this.renderEventSourceFilter(node, 'subscription_gift,giftpurchase');
+				html += `<div class="property-group" style="background: #fce4ec; color: #333; padding: 10px; border-radius: 4px;">
+					<strong>🎁 Gift Sub</strong><br>
+					Triggers when someone gifts subscriptions.<br><br>
+					<strong>⚡ Supported platforms:</strong><br>
+					• <strong>Twitch:</strong> Gift subs (WebSocket mode)<br>
+					• <strong>YouTube:</strong> Gift memberships (WebSocket mode)<br>
+					• <strong>TikTok:</strong> Gift subs detected<br><br>
+					<div style="background: #f8bbd0; padding: 6px 8px; border-radius: 3px; margin-bottom: 8px;">
+						⚠️ <strong>Requires WebSocket mode</strong> for Twitch/YouTube.
+					</div>
+					<a href="docs/event-reference.html#cross-platform" target="_blank" style="color: #c2185b;">📖 Event Reference Documentation</a>
+				</div>`;
+				break;
+
+			case 'eventDonation':
+				html += this.renderEventSourceFilter(node, 'donation,cheer,supersticker');
+				html += `
+					<div class="property-group">
+						<label class="property-label">Minimum Amount (optional)</label>
+						<input type="number" class="property-input" id="prop-minAmount"
+							value="${node.config.minAmount || 0}" min="0" step="0.01">
+						<div class="property-help">Set to 0 to trigger on any donation amount</div>
+					</div>
+					<div class="property-group" style="background: #fff8e1; color: #333; padding: 10px; border-radius: 4px;">
+						<strong>💰 Donation / Super Chat</strong><br>
+						Triggers on donations, Super Chats, Super Stickers, etc.<br><br>
+						<strong>⚡ Supported platforms:</strong><br>
+						• <strong>YouTube:</strong> Super Chat, Super Stickers (WebSocket mode)<br>
+						• <strong>Twitch:</strong> Cheers/Bits (WebSocket mode)<br>
+						• <strong>TikTok:</strong> Coin gifts (many events)<br>
+						• <strong>Kick:</strong> Donations (WebSocket mode)<br>
+						• <strong>Many others:</strong> Streamlabs, Ko-fi integrations, etc.<br><br>
+						<div style="background: #ffecb3; padding: 6px 8px; border-radius: 3px; margin-bottom: 8px;">
+							⚠️ <strong>YouTube/Twitch/Kick require WebSocket mode</strong> for monetary events.
+						</div>
+						<a href="docs/event-reference.html#cross-platform" target="_blank" style="color: #f57f17;">📖 Event Reference Documentation</a>
+					</div>`;
+				break;
+
+			case 'eventRaid':
+				html += this.renderEventSourceFilter(node, 'raid');
+				html += `
+					<div class="property-group">
+						<label class="property-label">Minimum Viewers (optional)</label>
+						<input type="number" class="property-input" id="prop-minViewers"
+							value="${node.config.minViewers || 0}" min="0">
+						<div class="property-help">Set to 0 to trigger on any raid</div>
+					</div>
+					<div class="property-group" style="background: #ede7f6; color: #333; padding: 10px; border-radius: 4px;">
+						<strong>🚀 Raid</strong><br>
+						Triggers when another streamer raids the channel.<br><br>
+						<strong>⚡ Supported platforms:</strong><br>
+						• <strong>Twitch:</strong> Raid events (WebSocket mode)<br><br>
+						<div style="background: #d1c4e9; padding: 6px 8px; border-radius: 3px; margin-bottom: 8px;">
+							⚠️ <strong>Twitch WebSocket mode required.</strong> Raids are Twitch-specific.
+						</div>
+						<a href="docs/event-reference.html#cross-platform" target="_blank" style="color: #512da8;">📖 Event Reference Documentation</a>
+					</div>`;
+				break;
+
+			case 'eventCheer':
+				html += this.renderEventSourceFilter(node, 'cheer');
+				html += `
+					<div class="property-group">
+						<label class="property-label">Minimum Bits (optional)</label>
+						<input type="number" class="property-input" id="prop-minBits"
+							value="${node.config.minBits || 0}" min="0">
+						<div class="property-help">Set to 0 to trigger on any cheer</div>
+					</div>
+					<div class="property-group" style="background: #e1f5fe; color: #333; padding: 10px; border-radius: 4px;">
+						<strong>💎 Cheer/Bits</strong><br>
+						Triggers when someone cheers with bits.<br><br>
+						<strong>⚡ Supported platforms:</strong><br>
+						• <strong>Twitch:</strong> Bit cheers (WebSocket mode)<br><br>
+						<div style="background: #b3e5fc; padding: 6px 8px; border-radius: 3px; margin-bottom: 8px;">
+							⚠️ <strong>Twitch WebSocket mode required.</strong> Cheers/Bits are Twitch-specific.
+						</div>
+						<a href="docs/event-reference.html#cross-platform" target="_blank" style="color: #0288d1;">📖 Event Reference Documentation</a>
+					</div>`;
+				break;
+
+			case 'eventOther':
+				const otherEventTypes = [
+					{ value: '', label: '-- Select Event --' },
+					{ value: 'channel_points', label: 'Channel Points (Twitch)' },
+					{ value: 'membermilestone', label: 'Member Milestone (YouTube)' },
+					{ value: 'giftredemption', label: 'Gift Received (YouTube)' },
+					{ value: 'stream_online', label: 'Stream Online' },
+					{ value: 'stream_offline', label: 'Stream Offline' },
+					{ value: 'viewer_update', label: 'Viewer Count Update' },
+					{ value: 'follower_update', label: 'Follower Count Update' },
+					{ value: 'subscriber_update', label: 'Subscriber Count Update' },
+					{ value: 'ad_break', label: 'Ad Break (Twitch)' }
+				];
+				html += `
+					<div class="property-group">
+						<label class="property-label">Event Type</label>
+						<select class="property-input" id="prop-eventType">
+							${otherEventTypes.map(e => `<option value="${e.value}" ${node.config.eventType === e.value ? 'selected' : ''}>${e.label}</option>`).join('')}
+						</select>
+						<div class="property-help">Select from other available stream events</div>
+					</div>
+					<div class="property-group" style="background: #eceff1; color: #333; padding: 10px; border-radius: 4px;">
+						<strong>📋 Other Events</strong><br>
+						Select from additional stream events not covered by dedicated triggers.<br><br>
+						<div style="background: #cfd8dc; padding: 6px 8px; border-radius: 3px; margin-bottom: 8px;">
+							⚠️ Most Twitch/YouTube/Kick events require <strong>WebSocket mode</strong> enabled in extension settings.
+						</div>
+						<a href="docs/event-reference.html" target="_blank" style="color: #455a64;">📖 Full Event Reference</a>
+					</div>`;
+				break;
+
+			case 'eventCustom':
+				html += `
+					<div class="property-group">
+						<label class="property-label">Event Type</label>
+						<input type="text" class="property-input" id="prop-eventType"
+							value="${this.escapeHtml(node.config.eventType || '')}" placeholder="e.g., custom_event">
+						<div class="property-help">Enter the exact <code>data.event</code> value to match</div>
+					</div>
+					<div class="property-group">
+						<label class="property-label">Additional Condition (optional)</label>
+						<input type="text" class="property-input" id="prop-customCondition"
+							value="${this.escapeHtml(node.config.customCondition || '')}" placeholder="e.g., data.type === 'youtube'">
+						<div class="property-help">JavaScript expression for additional filtering (advanced)</div>
+					</div>
+					<div class="property-group" style="background: #f3e5f5; color: #333; padding: 10px; border-radius: 4px;">
+						<strong>✏️ Custom Event</strong><br>
+						Create a custom trigger for any event type. Use the Event Reference to find available event names.<br><br>
+						<strong>Examples:</strong><br>
+						• <code>new_follower</code> - New followers<br>
+						• <code>sponsorship</code> - YouTube memberships<br>
+						• <code>subscription_gift</code> - Gift subs<br><br>
+						<div style="background: #e1bee7; padding: 6px 8px; border-radius: 3px; margin-bottom: 8px;">
+							⚠️ <strong>Twitch/YouTube/Kick require WebSocket mode</strong> for most stream events.<br>
+							💡 <strong>TikTok</strong> provides many events via DOM detection without extra config.
+						</div>
+						<a href="docs/event-reference.html" target="_blank" style="color: #7b1fa2;">📖 Full Event Reference</a>
+					</div>`;
+				break;
+
 			case 'compareProperty':
 				const commonProperties = [
 					{ value: 'donationAmount', label: 'Donation Amount' },
@@ -4182,8 +4561,10 @@ class EventFlowEditor {
 						<div class="property-help">Skips to the next track in the current playlist or queue.</div>
 					</div>
 					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
-						<strong>🎵 Spotify Integration:</strong><br>
-						Requires Spotify to be connected in Social Stream settings with playback permissions.
+						<strong>🎵 Spotify Requirements:</strong><br>
+						• Spotify Premium account required<br>
+						• Spotify must be open and playing on a device<br>
+						• Connected in Social Stream settings
 					</div>`;
 				break;
 
@@ -4193,8 +4574,10 @@ class EventFlowEditor {
 						<div class="property-help">Goes back to the previous track.</div>
 					</div>
 					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
-						<strong>🎵 Spotify Integration:</strong><br>
-						Requires Spotify to be connected in Social Stream settings with playback permissions.
+						<strong>🎵 Spotify Requirements:</strong><br>
+						• Spotify Premium account required<br>
+						• Spotify must be open and playing on a device<br>
+						• Connected in Social Stream settings
 					</div>`;
 				break;
 
@@ -4204,8 +4587,10 @@ class EventFlowEditor {
 						<div class="property-help">Pauses the current playback.</div>
 					</div>
 					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
-						<strong>🎵 Spotify Integration:</strong><br>
-						Requires Spotify to be connected in Social Stream settings with playback permissions.
+						<strong>🎵 Spotify Requirements:</strong><br>
+						• Spotify Premium account required<br>
+						• Spotify must be open and playing on a device<br>
+						• Connected in Social Stream settings
 					</div>`;
 				break;
 
@@ -4215,8 +4600,10 @@ class EventFlowEditor {
 						<div class="property-help">Resumes playback if paused.</div>
 					</div>
 					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
-						<strong>🎵 Spotify Integration:</strong><br>
-						Requires Spotify to be connected in Social Stream settings with playback permissions.
+						<strong>🎵 Spotify Requirements:</strong><br>
+						• Spotify Premium account required<br>
+						• Spotify must be open and playing on a device<br>
+						• Connected in Social Stream settings
 					</div>`;
 				break;
 
@@ -4233,8 +4620,10 @@ class EventFlowEditor {
 						<div class="property-help">Set the playback volume (0-100%)</div>
 					</div>
 					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
-						<strong>🎵 Spotify Integration:</strong><br>
-						Requires Spotify to be connected in Social Stream settings with playback permissions.
+						<strong>🎵 Spotify Requirements:</strong><br>
+						• Spotify Premium account required<br>
+						• Spotify must be open and playing on a device<br>
+						• Connected in Social Stream settings
 					</div>`;
 				break;
 
@@ -4255,8 +4644,10 @@ class EventFlowEditor {
 						<div class="property-help">If checked, the triggering chat message will be used as the song search query instead of the text above.</div>
 					</div>
 					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
-						<strong>🎵 Spotify Integration:</strong><br>
-						Requires Spotify to be connected in Social Stream settings with playback permissions.
+						<strong>🎵 Spotify Requirements:</strong><br>
+						• Spotify Premium account required<br>
+						• Spotify must be open and playing on a device<br>
+						• Connected in Social Stream settings
 					</div>
 					<div class="property-group" style="background: #2196F3; color: #fff; padding: 10px; border-radius: 4px;">
 						<strong>💡 Tip:</strong> Combine with a "Message Starts With" trigger (e.g., "!sr") to let viewers request songs!
@@ -4269,8 +4660,10 @@ class EventFlowEditor {
 						<div class="property-help">Toggles between play and pause based on current playback state.</div>
 					</div>
 					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
-						<strong>🎵 Spotify Integration:</strong><br>
-						Requires Spotify to be connected in Social Stream settings with playback permissions.
+						<strong>🎵 Spotify Requirements:</strong><br>
+						• Spotify Premium account required<br>
+						• Spotify must be open and playing on a device<br>
+						• Connected in Social Stream settings
 					</div>
 					<div class="property-group" style="background: #2196F3; color: #fff; padding: 10px; border-radius: 4px;">
 						<strong>💡 Tip:</strong> Great for a "!pause" command that toggles playback!
@@ -4296,8 +4689,9 @@ class EventFlowEditor {
 						<div class="property-help">Sends the announcement to the dock as a chat message.</div>
 					</div>
 					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
-						<strong>🎵 Spotify Integration:</strong><br>
-						Requires Spotify to be connected in Social Stream settings.
+						<strong>🎵 Spotify Requirements:</strong><br>
+						• Connected in Social Stream settings<br>
+						• Works when Spotify is playing (reads current track info)
 					</div>
 					<div class="property-group" style="background: #2196F3; color: #fff; padding: 10px; border-radius: 4px;">
 						<strong>💡 Tip:</strong> Create a custom "!song" response with your own format!
@@ -4316,8 +4710,10 @@ class EventFlowEditor {
 						<div class="property-help">Choose whether to toggle, enable, or disable shuffle mode.</div>
 					</div>
 					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
-						<strong>🎵 Spotify Integration:</strong><br>
-						Requires Spotify to be connected in Social Stream settings with playback permissions.
+						<strong>🎵 Spotify Requirements:</strong><br>
+						• Spotify Premium account required<br>
+						• Spotify must be open and playing on a device<br>
+						• Connected in Social Stream settings
 					</div>`;
 				break;
 
@@ -4333,8 +4729,10 @@ class EventFlowEditor {
 						<div class="property-help">Set the repeat mode for playback.</div>
 					</div>
 					<div class="property-group" style="background: #1DB954; padding: 10px; border-radius: 4px; color: white;">
-						<strong>🎵 Spotify Integration:</strong><br>
-						Requires Spotify to be connected in Social Stream settings with playback permissions.
+						<strong>🎵 Spotify Requirements:</strong><br>
+						• Spotify Premium account required<br>
+						• Spotify must be open and playing on a device<br>
+						• Connected in Social Stream settings
 					</div>`;
 				break;
 
@@ -4728,6 +5126,22 @@ class EventFlowEditor {
                 }
                 this.markUnsavedChanges(true);
                 this.renderNodeOnCanvas(nodeData.id);
+            });
+        }
+
+        // Special handling for source checkboxes in event triggers
+        const sourceCheckboxes = document.querySelectorAll('.source-checkbox');
+        if (sourceCheckboxes.length > 0) {
+            sourceCheckboxes.forEach(checkbox => {
+                checkbox.addEventListener('change', () => {
+                    const selectedSources = [];
+                    document.querySelectorAll('.source-checkbox:checked').forEach(cb => {
+                        selectedSources.push(cb.value);
+                    });
+                    nodeData.config.sources = selectedSources;
+                    this.markUnsavedChanges(true);
+                    this.renderNodeOnCanvas(nodeData.id);
+                });
             });
         }
 

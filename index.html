@@ -116,7 +116,8 @@
                 <option value="cs">🇨🇿 Čeština</option>
                 <option value="it">🇮🇹 Italiano</option>
                 <option value="ja">🇯🇵 日本語</option>
-                <option value="zh">🇨🇳 中文</option>
+                <option value="zh-CN">🇨🇳 简体中文</option>
+                <option value="zh-TW">🇹🇼 繁體中文</option>
                 <option value="ko">🇰🇷 한국어</option>
                 <option value="ru">🇷🇺 Русский</option>
                 <option value="tr">🇹🇷 Türkçe</option>
@@ -310,8 +311,8 @@
         <div class="entry-actions-live">
             <button onclick="refreshWindow(this)" title="Reload the capture page. Try this if having connection issues or just went live." data-reloadhtml
                 class="hidden icon-button">🔄 Reload</button>
-            <button onclick="toggleSourceVisibility(this)" title="Reveal the hidden capture page for this source" data-togglehtml
-                class="hidden icon-button">👁️ Reveal capture page</button>
+            <button onclick="toggleSourceVisibility(this)" title="Hide the capture page for this source" data-togglehtml
+                class="hidden icon-button">👁️ Hide capture page</button>
             <button onclick="toggleSourceMute(this)" title="Pause/mute the video in this source" data-togglemute
                 class="hidden icon-button">🔇</button>
             <button onclick="stopThis(this)" title="Stop and close this source" data-stophtml
@@ -385,7 +386,7 @@
         </div>
         <div class="group-actions">
             <button class="group-control" data-group-visibility title="Show/hide all capture pages in this group. New sources will inherit this setting."
-                onclick="toggleGroupVisibility(this)">👁️ Show all</button>
+                onclick="toggleGroupVisibility(this)">👁️ Hide all</button>
             <button class="group-control" data-group-mute title="Mute/unmute all capture pages in this group. New sources will inherit this setting." onclick="toggleGroupMute(this)">🔊 Unmuted</button>
             <button class="group-control" title="Stop all captures in this group" onclick="stopAllStreamsInGroup(this)">⏹️ Stop all</button>
             <button class="group-control" title="Reload all capture pages. Try this if streams aren't connecting." onclick="reloadAllStreamsInGroup(this)">🔄 Reload all</button>
@@ -1356,7 +1357,7 @@
                     visibilityControl.textContent = '👁️ Reveal capture page';
                     visibilityControl.title = 'Show the TikTok signing window';
                 } else {
-                    visibilityControl.textContent = source.isVisible ? '🙈 Hide capture page' : '👁️ Reveal capture page';
+                    visibilityControl.textContent = source.isVisible ? '👁️ Hide capture page' : '🙈 Reveal capture page';
                     visibilityControl.title = source.isVisible ? 'Hide the capture page for this source' : 'Reveal the hidden capture page for this source';
                 }
                 if (isTikTokLocalSigner && isTikTokApiMode) {
@@ -1567,7 +1568,7 @@
 
             const visibilityButton = element.querySelector('.group-actions button[data-group-visibility]');
             if (visibilityButton) {
-                visibilityButton.textContent = group.groupVisible ? '🙈 Hide all' : '👁️ Show all';
+                visibilityButton.textContent = group.groupVisible ? '👁️ Hide all' : '🙈 Show all';
                 visibilityButton.title = group.groupVisible
                     ? 'Hide all capture pages in this group. New sources will inherit this setting.'
                     : 'Show all capture pages in this group. New sources will inherit this setting.';
@@ -2661,7 +2662,26 @@
             if (!groupId) return;
             const group = stateManager.getGroup(groupId);
             if (!group) return;
-            stateManager.updateGroup(groupId, { groupVisible: !group.groupVisible });
+
+            const newVisibility = !group.groupVisible;
+
+            // Toggle visibility for all active windows in the group
+            // Note: showWindow IPC has inverted logic - send !desiredState
+            const stateToSendToMain = !newVisibility;
+
+            group.streams.forEach(sourceId => {
+                const source = stateManager.getSource(sourceId);
+                if (source && source.vid && ipcRenderer) {
+                    ipcRenderer.invoke('showWindow', {
+                        vid: source.vid,
+                        state: stateToSendToMain
+                    }).catch(err => {
+                        console.error(`Failed to toggle visibility for source ${sourceId}:`, err);
+                    });
+                }
+            });
+
+            stateManager.updateGroup(groupId, { groupVisible: newVisibility });
         }
 
         function toggleGroupMute(buttonElement) {
@@ -3038,15 +3058,19 @@
                         isMuted: group.groupMuted !== undefined ? group.groupMuted : true
                     };
 
-                    console.log("Adding new YouTube stream:", newSource);
+                    console.log(`[Auto-add] Creating new YouTube stream. Group visibility: ${group.groupVisible}, Source isVisible: ${newSource.isVisible}`);
+                    console.log(`[Auto-add] FULL GROUP STATE:`, JSON.stringify({ groupVisible: group.groupVisible, groupMuted: group.groupMuted, id: group.id }, null, 2));
                     stateManager.addSource(newSource);
 
                     // Auto-activate the new source
                     setTimeout(async () => {
                         const addedSource = stateManager.getSources().find(s => s.videoId === stream.videoId);
+                        console.log(`[Auto-add TIMEOUT] Looking for source with videoId: ${stream.videoId}`);
+                        console.log(`[Auto-add TIMEOUT] addedSource:`, addedSource ? JSON.stringify({ id: addedSource.id, isVisible: addedSource.isVisible, isMuted: addedSource.isMuted }) : 'NOT FOUND');
                         if (addedSource) {
                             const sourceElement = document.querySelector(`[data-source-id="${addedSource.id}"]`);
                             const activateButton = sourceElement?.querySelector('[data-activatehtml]');
+                            console.log(`[Auto-add TIMEOUT] sourceElement found: ${!!sourceElement}, activateButton found: ${!!activateButton}`);
                             if (activateButton) {
                                 await createWindow(activateButton);
                             }
@@ -5817,6 +5841,8 @@
             const scriptPath = source.sourceFile || `sources/${targetSourceFile}.js`; // Use sourceFile from state if available
 
             try {
+                console.log(`[CreateClassicWindow] Creating window for ${source.username || source.videoId}, visible: ${source.isVisible}, muted: ${source.isMuted}`);
+                console.log(`[CreateClassicWindow] FULL SOURCE STATE:`, JSON.stringify({ id: source.id, isVisible: source.isVisible, isMuted: source.isMuted, groupId: source.groupId }));
                 // For now, fall back to sync while we debug the async issue
                 const response = ipcRenderer.sendSync('createWindow', {
                     url: rewriteKickUrl(urlToLoad),
@@ -10014,7 +10040,7 @@
                 'group.remove': '🗑️ グループとそのソースを削除',
             },
 
-            'zh': {
+            'zh-CN': {
                 // Navigation
                 'nav.streams': '🎭 来源和设置',
                 'nav.linkoverlay': '🔗 链接和设置',
@@ -10024,7 +10050,7 @@
                 'nav.sessions': '🧑‍🤝‍🧑 会话',
 
                 // Buttons
-                'btn.activate': '▶️ 激活来源',
+                'btn.activate': '▶️ 启用来源',
                 'btn.signin': '🔑 登录',
                 'btn.help': '❓ 帮助！',
                 'btn.stop': '⏹️ 停止',
@@ -10036,27 +10062,29 @@
 
                 // Settings menu
                 'settings.title': '此来源的附加设置',
-                'settings.header': '附加控制',
-                'settings.clear': '🧹 清除缓存和存储',
+                'settings.header': '更多控制',
+                'settings.clear': '🧹 清除缓存与存储',
                 'settings.remove': '🗑️ 删除来源',
 
                 // Sessions
                 'sessions.title': '用户会话',
-                'sessions.info': '使用单独的设置和来源管理多个用户配置文件。',
+                'sessions.info': '使用独立的设置和来源管理多个用户配置文件。',
                 'sessions.current': '当前会话',
                 'sessions.available': '可用会话',
                 'sessions.create': '➕ 创建新会话',
+                'sessions.export': '💾 导出当前会话',
+                'sessions.import': '📂 导入会话',
                 'sessions.switch': '切换',
-                'sessions.active': '活动',
+                'sessions.active': '已启用',
 
                 // Global
 
                 // Sources
-                'source.add': '添加新来源',
+                'source.add': '添加新来源：',
                 'source.mode.standard': '📄 标准',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
-                'source.autoactivate': '自动激活',
+                'source.mode.legacy': '🕰️ 轮询',
+                'source.autoactivate': '自动启用',
                 'source.youtube.username': 'YouTube用户名',
                 'source.youtube.videoid': 'YouTube视频ID',
                 'source.twitch': 'Twitch用户名',
@@ -10068,7 +10096,7 @@
 
                 // App info
                 'app.title': 'Social Stream Ninja 独立版',
-                'app.newversion': '新版本可用',
+                'app.newversion': '有新版本可用',
                 'app.download': '在此下载新版本',
 
                 // Groups
@@ -10077,6 +10105,73 @@
                 'group.stopall': '停止所有流',
                 'group.reloadall': '重新加载所有流',
                 'group.remove': '🗑️ 删除组及其来源',
+            },
+
+            'zh-TW': {
+                // Navigation
+                'nav.streams': '🎭 來源與設定',
+                'nav.linkoverlay': '🔗 連結與設定',
+                'nav.dashboard': '📰 狀態與日誌',
+                'nav.eventfloweditor': '🪤 事件流程編輯器',
+                'nav.vdoninja': '🎦 遠端攝影機畫面',
+                'nav.sessions': '🧑‍🤝‍🧑 工作階段',
+
+                // Buttons
+                'btn.activate': '▶️ 啟用來源',
+                'btn.signin': '🔑 登入',
+                'btn.help': '❓ 說明！',
+                'btn.stop': '⏹️ 停止',
+                'btn.reload': '🔄 重新載入',
+                'btn.visible': '👁️ 可見',
+                'btn.hidden': '🙈 隱藏',
+                'btn.muted': '🔇 靜音',
+                'btn.unmuted': '🔊 音量',
+
+                // Settings menu
+                'settings.title': '此來源的附加設定',
+                'settings.header': '更多控制',
+                'settings.clear': '🧹 清除快取與儲存',
+                'settings.remove': '🗑️ 移除來源',
+
+                // Sessions
+                'sessions.title': '使用者工作階段',
+                'sessions.info': '使用獨立的設定與來源管理多個使用者設定檔。',
+                'sessions.current': '目前工作階段',
+                'sessions.available': '可用工作階段',
+                'sessions.create': '➕ 建立新工作階段',
+                'sessions.export': '💾 匯出目前工作階段',
+                'sessions.import': '📂 匯入工作階段',
+                'sessions.switch': '切換',
+                'sessions.active': '作用中',
+
+                // Global
+
+                // Sources
+                'source.add': '新增來源：',
+                'source.mode.standard': '📄 標準',
+                'source.mode.websocket': '🌐 WebSocket',
+                'source.mode.legacy': '🕰️ 輪詢',
+                'source.autoactivate': '自動啟用',
+                'source.youtube.username': 'YouTube使用者名稱',
+                'source.youtube.videoid': 'YouTube影片ID',
+                'source.twitch': 'Twitch使用者名稱',
+                'source.kick': 'Kick使用者名稱',
+                'source.instagram': 'Instagram使用者名稱',
+                'source.facebook': 'Facebook使用者名稱',
+                'source.tiktok': 'TikTok使用者名稱',
+                'source.other': '其他聊天網站',
+
+                // App info
+                'app.title': 'Social Stream Ninja 獨立版',
+                'app.newversion': '有新版本可用',
+                'app.download': '在此下載新版本',
+
+                // Groups
+                'group.togglevisibility': '切換所有串流的可見性',
+                'group.togglemute': '切換所有串流的靜音',
+                'group.stopall': '停止所有串流',
+                'group.reloadall': '重新載入所有串流',
+                'group.remove': '🗑️ 移除群組及其來源',
             },
 
             'ko': {
@@ -10277,15 +10372,35 @@
             }
         };
 
-        let currentLanguage = localStorage.getItem('language') || 'en';
+        function normalizeLanguage(lang) {
+            if (!lang || typeof lang !== 'string') return 'en';
+            const trimmed = lang.trim();
+            if (!trimmed) return 'en';
+            const lower = trimmed.toLowerCase();
+            if (lower === 'zh' || lower === 'zh-cn' || lower === 'zh-hans') return 'zh-CN';
+            if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-hant') return 'zh-TW';
+            return trimmed;
+        }
+
+        const storedLanguage = localStorage.getItem('language') || 'en';
+        let currentLanguage = normalizeLanguage(storedLanguage);
+        if (currentLanguage !== storedLanguage) {
+            localStorage.setItem('language', currentLanguage);
+        }
 
         function translate(key) {
             return translations[currentLanguage]?.[key] || translations['en'][key] || key;
         }
 
         function changeLanguage(lang) {
-            currentLanguage = lang;
-            localStorage.setItem('language', lang);
+            const normalized = normalizeLanguage(lang);
+            currentLanguage = normalized;
+            localStorage.setItem('language', normalized);
+
+            const languageSelect = document.getElementById('language-select');
+            if (languageSelect && languageSelect.value !== normalized) {
+                languageSelect.value = normalized;
+            }
 
             // Update navigation links
             document.querySelectorAll('#main-navigation a').forEach(link => {
@@ -10331,7 +10446,10 @@
                 'fr': 'fr',  // Add if supported
                 'it': 'it',  // Add if supported
                 'ja': 'ja',  // Add if supported
-                'zh': 'zh',  // Add if supported
+                'zh-CN': 'zh-CN',
+                'zh-TW': 'zh-TW',
+                'zh': 'zh-CN',
+                'zh-HK': 'zh-TW',
                 'ko': 'ko',  // Add if supported
                 'ru': 'ru',  // Add if supported
                 'tr': 'tr',
@@ -10495,7 +10613,7 @@
         // Set up navigation
         document.addEventListener('DOMContentLoaded', () => {
             // Initialize language
-            const savedLanguage = localStorage.getItem('language') || 'en';
+            const savedLanguage = normalizeLanguage(localStorage.getItem('language') || 'en');
             document.getElementById('language-select').value = savedLanguage;
             changeLanguage(savedLanguage);
 

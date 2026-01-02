@@ -781,6 +781,10 @@
 				if (badge.querySelector('[d="M23.5 2.5v3h-3v3h-3v3h-3v3h-3v-3h-6v6h3v3h-3v3h-3v6h6v-3h3v-3h3v3h6v-6h-3v-3h3v-3h3v-3h3v-3h3v-6h-6Z"]')){
 					mod = true;
 				}
+				if (settings.hidecertainbadges && badge.querySelector('[d="M15.6773 22.1533C17.3698 22.1533 18.8182 21.5507 20.0233 20.3461C21.2282 19.1415 21.8307 17.6924 21.8307 16V6.15401C21.8307 4.46162 21.2286 3.01305 20.0233 1.80784C18.8182 0.602907 17.3698 0 15.6773 0C13.9849 0 12.5363 0.602907 11.3311 1.80784C10.1259 3.01285 9.52344 4.46162 9.52344 6.15401V16C9.52344 17.6923 10.1262 19.1415 11.3311 20.3461C12.5361 21.5507 13.9849 22.1533 15.6773 22.1533Z"]')){
+					return;
+				}
+				
 				chatbadges.push(tmp);
 			}
 		} catch(e){  }
@@ -943,7 +947,7 @@
 	  
 	  
 	  try {
-		 console.log(signedInUser);
+		 //console.log(signedInUser);
 		if (signedInUser && signedInUser==chatname){
 			const content = ele.textContent || "";
 			const imgSrcs = Array.from(ele.querySelectorAll('img')).map(img => img.src).join(' ');
@@ -1020,10 +1024,33 @@
 		chatmessage = chatmessage.trim();
 	  }
 	  
+	  var contentImg = "";
+	  var hasDonation = '';
+	  
+	  if (!chatmessage && chatname && ele.querySelector("img[alt='sticker'][src]")){
+		  try {
+			  chatmessage = getAllContentNodes(ele.querySelector("div.flex-shrink-0.break-normal"));
+			  chatmessage = chatmessage.replace(chatname,"").trim();
+			  contentImg = ele.querySelector("img[alt='sticker'][src]").src;
+			  
+			  hasDonation = parseInt(ele.querySelector("svg path[d^='M7.67318 0.0611465L3.07733 1.75287C2.86614']").parentNode.nextElementSibling.textContent);
+			  if (hasDonation===1){
+				  hasDonation = hasDonation + " KICK";
+			  } else if (hasDonation){
+				  hasDonation = hasDonation + " KICKs";
+			  } else {
+				  hasDonation = "";
+			  }
+			  eventName = "gift";
+		  } catch(e){
+		  }
+	  }
+	  
 	  if (!chatmessage){return;}
 	  
 	  var originalMessage = "";
 	  var replyMessage = "";
+	  
 	  
 	  if (!settings.excludeReplyingTo){
 		  let reply = ele.querySelector(".text-xs button");
@@ -1060,13 +1087,16 @@
 				if (badge.querySelector('[d="M23.5 2.5v3h-3v3h-3v3h-3v3h-3v-3h-6v6h3v3h-3v3h-3v6h6v-3h3v-3h3v3h6v-6h-3v-3h3v-3h3v-3h3v-3h3v-6h-6Z"]')){
 					mod = true;
 				}
+				if (settings.hidecertainbadges && badge.querySelector('[d="M15.6773 22.1533C17.3698 22.1533 18.8182 21.5507 20.0233 20.3461C21.2282 19.1415 21.8307 17.6924 21.8307 16V6.15401C21.8307 4.46162 21.2286 3.01305 20.0233 1.80784C18.8182 0.602907 17.3698 0 15.6773 0C13.9849 0 12.5363 0.602907 11.3311 1.80784C10.1259 3.01285 9.52344 4.46162 9.52344 6.15401V16C9.52344 17.6923 10.1262 19.1415 11.3311 20.3461C12.5361 21.5507 13.9849 22.1533 15.6773 22.1533Z"]')){
+					return;
+				}
 				chatbadges.push(tmp);
 			}
 		} catch(e){  }
 	  });
 
 
-	  var hasDonation = '';
+	 
 	  
 	  chatname = chatname.replace("Channel Host", "");
 	  chatname = chatname.replace(":", "");
@@ -1099,6 +1129,9 @@
 	  data.chatmessage = chatmessage;
 	  data.chatimg = chatimg;
 	  data.hasDonation = hasDonation;
+	  if (contentImg){
+		data.contentimg = contentImg;
+	  }
 	  if (member){
 		data.membership = member;
 	  }

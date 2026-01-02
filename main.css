@@ -578,7 +578,7 @@ button {
   padding: 6px 12px;
   white-space: nowrap;
   border-radius: 4px;
-  background: rgba(74, 141, 199, 0.2); 
+  background: rgba(74, 141, 199, 0.2);
   color: white;
   border: 1px solid rgba(74, 141, 199, 0.4);
   cursor: pointer;
@@ -592,6 +592,7 @@ button {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3) !important;
   height: 32px !important;
   line-height: 1 !important;
+  box-sizing: border-box !important;
 }
 
 .entry button:hover {
@@ -603,7 +604,7 @@ button {
 
 .entry button.icon-button {
   margin: 0 2px;
-  padding: 0 8px;
+  padding: 6px 12px !important;
   white-space: nowrap;
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.1);
@@ -611,19 +612,21 @@ button {
   border: 1px solid rgba(74, 141, 199, 0.4);
   cursor: pointer;
   transition: all 0.2s ease;
-  font-size: 18px;
+  font-size: 13px;
+  font-weight: 500 !important;
   display: inline-flex;
   align-items: center;
   gap: 5px;
   vertical-align: middle;
   width: auto;
   text-align: center;
-  height: 32px;
+  height: 32px !important;
   justify-content: center;
   min-width: 32px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3) !important;
   font-style: normal !important;
   line-height: 1;
+  box-sizing: border-box !important;
 }
 
 /* Emoji button specific styles */
@@ -826,9 +829,9 @@ button {
 }
 
 button.group-control {
-  width: 32px;
-  height: 32px;
-  padding: 0;
+  min-width: 32px !important;
+  height: 32px !important;
+  max-width: 100% !important;
   justify-content: center;
   display: flex;
   align-items: center;
@@ -838,12 +841,13 @@ button.group-control {
   color: white;
   cursor: pointer;
   transition: all 0.2s ease;
-  font-size: 18px !important;
+  font-size: 16px !important;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3) !important;
   flex-shrink: 0 !important;
   position: relative !important;
   overflow: visible !important;
   line-height: 1 !important;
+  box-sizing: border-box !important;
 }
 
 .toast-container {
@@ -1869,11 +1873,11 @@ button[data-activatehtml].hidden {
 /* Help button icon removed */
 
 .entry-actions-main {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 5px;
   flex-wrap: wrap;
-  margin-bottom: 5px;
+  margin: 0;
   justify-content: flex-start;
 }
 
@@ -2444,15 +2448,15 @@ input:checked + .slider:before {
 }
 
 .entry-actions-live {
-  display: flex;
+  display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 5px;
-  margin-bottom: 5px;
+  margin: 0;
   justify-content: flex-start;
 }
 
-parcialmente modificado main.css .entry > img[data-sourceicon] {
+.entry > img[data-sourceicon] {
   flex-shrink: 0;
 }
 

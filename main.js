@@ -5160,8 +5160,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
         if (isMainAppWindow) {
             // This is the main app window, inject language preference
             try {
-                const savedLanguage = store.get('language');
+                const normalizeUiLanguage = (lang) => {
+                    if (!lang || typeof lang !== 'string') return lang;
+                    const trimmed = lang.trim();
+                    if (!trimmed) return lang;
+                    const lower = trimmed.toLowerCase();
+                    if (lower === 'zh' || lower === 'zh-cn' || lower === 'zh-hans') return 'zh-CN';
+                    if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-hant') return 'zh-TW';
+                    return trimmed;
+                };
+
+                const savedLanguageRaw = store.get('language');
+                const savedLanguage = normalizeUiLanguage(savedLanguageRaw);
                 if (savedLanguage) {
+                    if (savedLanguageRaw && savedLanguage !== savedLanguageRaw) {
+                        store.set('language', savedLanguage);
+                    }
                     mainWindow.webContents.executeJavaScript(`
                         // Set the language preference in localStorage for the UI to use
                         localStorage.setItem('language', '${savedLanguage}');
@@ -5187,8 +5201,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         'cs-CZ': 'cs',
                         'it-IT': 'it',
                         'ja-JP': 'ja',
-                        'zh-CN': 'zh',
-                        'zh-TW': 'zh',
+                        'zh-CN': 'zh-CN',
+                        'zh-TW': 'zh-TW',
+                        'zh-HK': 'zh-TW',
+                        'zh-Hans': 'zh-CN',
+                        'zh-Hant': 'zh-TW',
                         'ko-KR': 'ko',
                         'ru-RU': 'ru'
                     };
@@ -5199,6 +5216,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     } else if (SYSTEM_LOCALE.includes('-')) {
                         uiLanguage = SYSTEM_LOCALE.split('-')[0];
                     }
+                    uiLanguage = normalizeUiLanguage(uiLanguage);
 
                     mainWindow.webContents.executeJavaScript(`
                         localStorage.setItem('language', '${uiLanguage}');

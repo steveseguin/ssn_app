@@ -25,6 +25,10 @@
     --new-version-banner-border: 1px solid #7eff7e;
     --new-version-link-color: green;
     --new-version-installed-color: #3a413a;
+    --important-changes-background: #fff3cd;
+    --important-changes-text: #856404;
+    --important-changes-border: 1px solid #ffc107;
+    --important-changes-link: #0056b3;
     --options-group-background-color: #f6f8fa;
     --options-group-text-color: #362e26;
     --extension-enabled-background-color: rgb(153, 255, 153);
@@ -70,6 +74,10 @@
         --new-version-banner-border: 1px solid #7eff7e;
         --new-version-link-color: #90f190;
         --new-version-installed-color: #bebebe;
+        --important-changes-background: #664d03;
+        --important-changes-text: #fff3cd;
+        --important-changes-border: 1px solid #997404;
+        --important-changes-link: #6ea8fe;
         --options-group-background-color: #161b22;
         --options-group-text-color: #c9d1d9;
         --extension-enabled-background-color: rgb(153, 255, 153);
@@ -606,6 +614,48 @@ p a {
     display: block;
 }
 
+#importantChanges {
+    padding: 1em;
+    background: var(--important-changes-background);
+    color: var(--important-changes-text);
+    border-bottom: var(--important-changes-border);
+    display: none;
+    position: relative;
+}
+
+#importantChanges.show {
+    display: block;
+}
+
+#importantChanges a {
+    color: var(--important-changes-link);
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+#importantChanges .important-change {
+    position: relative;
+    padding-bottom: 0.5em;
+}
+
+#importantChanges .dismiss-btn {
+    position: absolute;
+    bottom: 0.3em;
+    right: 0;
+    background: none;
+    border: none;
+    font-size: 1.2em;
+    cursor: pointer;
+    color: var(--important-changes-text);
+    opacity: 0.7;
+    line-height: 1;
+    padding: 0.2em 0.5em;
+}
+
+#importantChanges .dismiss-btn:hover {
+    opacity: 1;
+}
+
 .container {
     padding: 0 0.5em;
 }
@@ -1010,6 +1060,58 @@ input:checked + .slider:before {
     top: 0;
     border: 1px solid var(--collapsible-border-color);
     border-radius: 4px;
+}
+
+/* Help toggle for link sections */
+.help-link {
+    cursor: help;
+    text-decoration: none;
+    color: var(--text-button-text);
+    font-size: 0.6rem;
+}
+.help-link:hover {
+    text-decoration: underline;
+}
+.link-help-toggle {
+    display: none;
+}
+.link-help-content {
+    display: none;
+    background: rgba(255,255,255,0.03);
+    border-radius: 6px;
+    font-size: 0.9em;
+    line-height: 1.5;
+    color: var(--options-group-text-color);
+    padding: 12px 15px;
+    margin: 10px 0;
+    border: 1px solid rgba(255,255,255,0.1);
+}
+.link-help-toggle:checked + .link-help-content {
+    display: block;
+}
+.link-help-content ul {
+    margin: 8px 0 8px 20px;
+    padding: 0;
+}
+.link-help-content li {
+    margin: 4px 0;
+}
+.link-help-content strong {
+    color: var(--h3-color);
+}
+.link-help-content .help-warning {
+    background: rgba(255,193,7,0.15);
+    border-left: 3px solid #ffc107;
+    padding: 8px 12px;
+    margin: 8px 0;
+    border-radius: 0 4px 4px 0;
+}
+.link-help-content .help-tip {
+    background: rgba(76,175,80,0.15);
+    border-left: 3px solid #4caf50;
+    padding: 8px 12px;
+    margin: 8px 0;
+    border-radius: 0 4px 4px 0;
 }
 
 .glowingButton {
@@ -1514,6 +1616,34 @@ input:checked + .slider:before {
     min-width: 70px;
 }
 
+.spotify-command-row .spotify-cmd-trigger {
+    background: var(--color-accent-subtle);
+    border: 1px solid transparent;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.9em;
+    font-family: monospace;
+    min-width: 90px;
+    max-width: 150px;
+    color: inherit;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.spotify-command-row .spotify-cmd-trigger:hover {
+    border-color: var(--collapsible-border-color);
+}
+
+.spotify-command-row .spotify-cmd-trigger:focus {
+    outline: none;
+    border-color: var(--accent-color, #007bff);
+    background: var(--options-group-background-color);
+}
+
+.spotify-command-row .spotify-cmd-trigger::placeholder {
+    color: var(--text-secondary);
+    opacity: 0.7;
+}
+
 .spotify-command-row .spotify-cmd-desc {
     flex: 1;
     color: var(--text-secondary);
@@ -1578,6 +1708,7 @@ input:checked + .slider:before {
             </button>
         </div>
         <div id="newVersion"></div>
+        <div id="importantChanges"></div>
         <input type="text" id="searchInput" placeholder="Search all options by keyword..." data-translate="placeholder-search-options" />
         <div id="searchIcon" title="Search all options by keyword">🔍</div>
 		<div id="activeIcon" title="Show only enabled options">🔰</div>
@@ -1598,6 +1729,8 @@ input:checked + .slider:before {
                 <option value="tr" title="Turkish">Turkish</option>
                 <option value="cs" title="Czech">Czech</option>
                 <option value="th" title="Thai">Thai</option>
+                <option value="zh-CN" title="Simplified Chinese">简体中文</option>
+                <option value="zh-TW" title="Traditional Chinese">繁體中文</option>
                 <option value="test">Test Translations</option>
             </select>
             <br />
@@ -1611,9 +1744,24 @@ input:checked + .slider:before {
                     <span class="title-group"><span class="emoji" aria-hidden="true">💬</span><span data-translate="streaming-chat-dockable">Streaming chat (dock & overlay) </span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
                     <a class="options-link rounded_area" href="#streaming-chat-options" title="Jump to dockable streaming chat link options."><span data-translate="options">[options]</span></a>
-					
+					<label for="help-dock" class="help-link rounded_area" title="Click for detailed help">[?]</label>
                 </h2>
                 <div id="dock" data-raw="" class="streaming_chat"></div>
+				<input type="checkbox" id="help-dock" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Your all-in-one chat control center.</strong>
+					<p><strong>As an OVERLAY:</strong> Add this URL as a browser source in OBS/Streamlabs to display consolidated chat from all your connected platforms directly on your stream.</p>
+					<p><strong>As a DOCK/DASHBOARD:</strong> Open this URL in a browser window to manage your stream:</p>
+					<ul>
+						<li>Select messages to highlight on the Featured Chat overlay</li>
+						<li>Control text-to-speech (TTS) for chat messages</li>
+						<li>Trigger bot commands and custom actions</li>
+						<li>Manage queues and waiting lists</li>
+						<li>Moderate chat across all platforms</li>
+						<li>Access quick actions via the bottom menu bar</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Most streamers open this as a dock to control features while using other overlays (like Featured Chat) on stream.</div>
+				</div>
 					
 					<!-- Stream Overlay Preset Selector -->
 					<div class="overlay-selector" style="margin: 10px 0; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 8px;overflow:hidden;">
@@ -1640,6 +1788,7 @@ input:checked + .slider:before {
 							<option value="themes/deuks_overlay/overlay2.html">🎬 Deuks Overlay 2 - Alternative layout</option>
 							<option value="themes/rainbowpuke/index.html">🌈 Rainbow Puke - Colorful chaos</option>
 							<option value="themes/t3nk3y/index.html">🎮 T3nk3y Theme - Gaming style</option>
+                            <option value="themes/LuckyLootTube/luckyloottube.html">🎁 LuckyLootTube - Liquid Glass</option>
 						</select>
 						<span style="margin-left: 10px; font-size: 14px;;display: block;overflow:visible;">
 							👉ℹ️ <i data-translate="overlay-note">ONLY the default preset can be customized!</i>
@@ -1916,6 +2065,13 @@ input:checked + .slider:before {
                                     <input type="text" id="custombeep" class="textInput instant" autocomplete="off" placeholder="eg: https://www.yourdomain.com/beep.wav" data-translate="placeholder-audio-url" data-textparam1="custombeep" />
                                     <label for="custombeep"><span data-translate="custombeep">&gt; URL for custom beep audio file</span></label>
                                     <button type="button" id="uploadBeepBtn" style="position: absolute; right: 5px; top: 50%; transform: translateY(-50%); padding: 5px 10px; background: #667eea; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Upload</button>
+                                </div>
+								<div title="Allow beep sounds to overlap when messages arrive quickly (experimental)" data-keywords="beep sound overlap concurrent multiple simultaneous experimental">
+                                    <label class="switch">
+                                        <input type="checkbox" data-param1="overlapbeep" />
+                                        <span class="slider round"></span>
+                                    </label>
+                                    <span>Allow overlapping beeps (experimental)</span>
                                 </div>
                                 <div data-keywords="refresh history backlog cache resume reconnect restore">
                                     <label class="switch">
@@ -3815,8 +3971,17 @@ input:checked + .slider:before {
                     <span class="title-group"><span class="emoji" aria-hidden="true">🌟</span><span data-translate="featured-chat-overlay">Featured chat overlay </span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
                     <a class="options-link rounded_area" href="#single-message-options" title="Jump to single message overlay link options."><span data-translate="options">[options]</span></a>
+					<label for="help-featured" class="help-link rounded_area" title="Click for detailed help">[?]</label>
                 </h2>
                 <div id="overlay" data-raw="" class="single_message"></div>
+				<input type="checkbox" id="help-featured" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Displays ONE highlighted message at a time on your stream.</strong>
+					<p>Use this overlay to spotlight individual chat messages, making them easy to read for viewers and creating engagement moments.</p>
+					<div class="help-warning">⚠️ <strong>Requires the Streaming Chat dock</strong> to select which messages to feature. Open the dock in a browser and click messages to highlight them on this overlay.</div>
+					<p><strong>Alternative:</strong> Enable "Auto-feature without dock" in the options below to automatically display messages one at a time without needing to manually select them.</p>
+					<div class="help-tip">💡 <strong>Tip:</strong> Add this as a browser source in OBS, then use the Streaming Chat dock to click on messages you want to highlight during your stream.</div>
+				</div>
                 
                 <!-- Featured Overlay Preset Selector -->
                 <div class="preset-selector" style="margin: 10px 0; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 8px;">
@@ -3931,6 +4096,15 @@ input:checked + .slider:before {
                                     </label>
                                     <span data-translate="queue-time">
                                         ⌚ Queue + Show messages for at least <input type="number" style="max-width: 8ch;" max="999999" min="1" value="10000" size="6" data-numbersetting2="queuetime" />ms
+                                    </span>
+                                </div>
+                                <div title="Rotate through the last N highlighted messages endlessly, showing each for the specified duration.">
+                                    <label class="switch">
+                                        <input type="checkbox" data-param2="rotate" data-related-settings2="rotatecount,rotatetime" />
+                                        <span class="slider round"></span>
+                                    </label>
+                                    <span data-translate="rotate-featured-messages">
+                                        🔄 Rotate last <input type="number" style="max-width: 4ch;" max="10" min="1" value="5" size="2" data-numbersetting2="rotatecount" /> messages every <input type="number" style="max-width: 8ch;" max="999999" min="1000" value="10000" size="6" data-numbersetting2="rotatetime" />ms
                                     </span>
                                 </div>
                                 <div title="Console prints featured message payloads so developers can inspect live data updates.">
@@ -5221,12 +5395,12 @@ input:checked + .slider:before {
                     <div class="collapsible-text">
                         <div class="options">
                             <div class="options_group">
-                                <div title="Capture likes, subs, and other available event data.">
+                                <div title="Block stream events (follows, likes, subs) from appearing anywhere. Note: Also blocks events.html and Event Flow Editor.">
                                     <label class="switch">
-                                        <input type="checkbox" data-setting="captureevents" />
+                                        <input type="checkbox" data-setting="hideevents" />
                                         <span class="slider round"></span>
                                     </label>
-                                    <span data-translate="capture-stream-events-and-actions"> Capture stream events and actions </span>
+                                    <span data-translate="hide-stream-events"> Hide stream events (follows, likes, subs) </span>
                                 </div>
                                 <div title="By default all inbound messages are saved to a local database for later look-up reference">
                                     <label class="switch">
@@ -5292,6 +5466,14 @@ input:checked + .slider:before {
                                     </label>
                                     <img class="icon" src="./sources/images/tiktok.png" style="display: inline-block;" />🌹
                                     <span data-translate="notiktokdonations"> Do NOT treat roses/etc as donations on TikTok </span>
+                                </div>
+								<div title="Disable the TikTok keep-alive poke that can cause window focus grabbing">
+                                    <label class="switch">
+                                        <input type="checkbox" data-setting="disabletiktokpoke" />
+                                        <span class="slider round"></span>
+                                    </label>
+                                    <img class="icon" src="./sources/images/tiktok.png" style="display: inline-block;" />🚫👆
+                                    <span data-translate="disabletiktokpoke"> Disable TikTok keep-alive (prevents focus grab) </span>
                                 </div>
                                 <div title="Block donations/memberships from Youtube Shorts. Requires &shorts added to the Youtube chat pop out also.">
                                     <label class="switch">
@@ -5411,7 +5593,7 @@ input:checked + .slider:before {
                                     </label>
                                     <span data-translate="disable-host-chat">🚫🗨️ Disable the host chat and block functions </span>
                                 </div>
-								 <div title="See documentation on socialstream.ninja for details.">
+								 <div title="Allows external apps (Python, Node, StreamDeck, etc.) to control SSN via HTTP/WebSocket API. Enable this to send commands like sendChat, blockUser, etc. to the extension.">
                                     <label class="switch">
                                         <input type="checkbox" data-setting="socketserver" />
                                         <span class="slider round"></span>
@@ -5421,21 +5603,21 @@ input:checked + .slider:before {
                                         <span data-translate="remote-httpwss-api-control-extension">remote API control of extension</span>
                                     </a>
                                 </div>
-                                <div title="This is needed if HTTP/WSS commands are being sent to the dock for remote control, to bypass p2p if needed, and to publish featured messages via server instead of P2P">
+                                <div title="Connects the Dock/Featured pages to the API server for remote control. Needed if you want to send commands (clear, feature, nextInQueue, etc.) directly to the Dock via HTTP/WebSocket.">
                                     <label class="switch">
                                         <input type="checkbox" id="server" data-both="server" />
                                         <span class="slider round"></span>
                                     </label>
                                     <span data-translate="send-featured-chat-via-server-instead-of-p2p">Enable Dock to use and publish via API server</span>
                                 </div>
-                                <div  title="Mainly useful if P2P not working. It can also be used to send messages to the Dock via the API using channel 3/4">
+                                <div  title="IMPORTANT: Enable this to receive chat messages via WebSocket API! Routes chat from Twitch/YouTube/etc. through the API server (channel 4) so external apps can listen. Required for Python/Node chat listeners.">
                                     <label class="switch">
                                         <input type="checkbox" id="server2" data-both="server2" />
                                         <span class="slider round"></span>
                                     </label>
-                                    <span data-translate="send-messages-to-dock-via-server-instead-of-p2p">Send messages to Dock from Extension via server</span>
+                                    <span data-translate="send-messages-to-dock-via-server-instead-of-p2p">📡 Send chat messages to API server (for external listeners)</span>
                                 </div>
-                                <div title="Mainly useful if P2P not working in cases where you want to send messages to a social end point via the Dock page.">
+                                <div title="Allows the Dock page to send commands back to the extension via the API server instead of P2P. Useful if P2P connections are blocked or unreliable.">
                                     <label class="switch" >
                                         <input type="checkbox" id="server3" data-both="server3" />
                                         <span class="slider round"></span>
@@ -5468,35 +5650,23 @@ input:checked + .slider:before {
 
                                 </div>
 								<hr>
+
 								<!-- Social Stream Chat Integration -->
-								<div title="Relay messages from other sites to Social Stream Chat">
-									<label class="switch">
-										<input type="checkbox" id="sscrelay" data-setting="sscrelay" />
-										<span class="slider round"></span>
-									</label>
-									<img class="icon" src="./sources/images/socialstream.png" style="display: inline-block;" />📨 <span>Send all messages to Social Stream Chat</span>
+								<div title="Relay all messages to Ninja Chatter">
+								  <label class="switch">
+									  <input type="checkbox" id="ssc" data-setting="ssc" />
+									  <span class="slider round"></span>
+								  </label>
+								  <img class="icon" src="./sources/images/socialstream.png" style="display: inline-block;" />📨 <span>Send messages to <a href="https://ninjachatter.com/" target="_blank" style="font-size: 13px; color: #38bdf8;" title="Free public-facing embeddable chat">Ninja Chatter</a></span>
 								</div>
 								<div>
-                                    <label class="switch">
-                                        <input type="checkbox" data-setting="ssc" />
-                                        <span class="slider round"></span>
-                                    </label>
-                                    <div class="textInputContainer" style="display: inline-block; width: 250px;">
-                                        <input type="text" id="sscroomid" class="textInput" autocomplete="off" placeholder="Room ID (from dashboard)" data-textsetting="sscroomid" />
-                                        <label for="sscroomid"><span>&gt; Social Stream Chat Room ID</span></label>
-                                    </div>
-                                </div>
-								<div>
-                                    <div class="textInputContainer" style="display: inline-block; width: 300px; margin-left: 52px;">
-                                        <input type="text" id="sscapikey" class="textInput" autocomplete="off" placeholder="API Key (from Bot & Webhook section)" data-textsetting="sscapikey" />
-                                        <label for="sscapikey"><span>&gt; Ingress API Key</span></label>
-                                    </div>
-                                </div>
-								<div style="margin-left: 52px; margin-top: 4px;">
-									<a href="https://chat.socialstream.ninja/docs/ingress.html" target="_blank" style="font-size: 11px; color: #38bdf8;">API Documentation</a> |
-									<a href="https://chat.socialstream.ninja/dashboard.html" target="_blank" style="font-size: 11px; color: #38bdf8;">Dashboard</a>
+								  <div class="textInputContainer" style="display: inline-block; width: 300px; ">
+									  <input type="text" id="sscapikey" class="textInput" autocomplete="off" placeholder="API Key (from Bot & Webhook section)" data-textsetting="sscapikey" />
+									  <label for="sscapikey"><span>&gt; Ingress API Key</span></label>
+								  </div>
 								</div>
 								<hr>
+
 								<div>
 									<label class="switch">
 										<input type="checkbox" data-setting="streamerbot" />
@@ -6181,6 +6351,13 @@ input:checked + .slider:before {
                                         <span class="slider round"></span>
                                     </label>
                                     <span data-translate="lightencolorname">☀️ Lighten and desaturat name colors</span>
+                                </div>
+								<div title="Makes it easier to see names on darker backgrounds.">
+                                    <label class="switch"> 
+                                        <input type="checkbox" data-setting="hidecertainbadges" />
+                                        <span class="slider round"></span>
+                                    </label>
+                                    <span data-translate="hidecertainbadges">📛 Remove commonly unwanted badges</span>
                                 </div>
 								
 								<div class="textInputContainer" style="width: 95%;" title="Trivial events can be highlighted in the dock using &trivialevents">
@@ -7818,7 +7995,20 @@ input:checked + .slider:before {
 					<span class="title-group"><span class="emoji" aria-hidden="true">📊</span><span data-translate="eventsdashboard">Events Dashboard</span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#eventsdashboard-options" title="Jump to the events dashboard options."><span data-translate="options">[options]</span></a>
+					<label for="help-events" class="help-link rounded_area" title="Click for detailed help">[?]</label>
 				</h2>
+				<input type="checkbox" id="help-events" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Real-time activity feed for stream events.</strong>
+					<p>Monitor follows, subscriptions, raids, donations, and other platform events as they happen across all connected sources.</p>
+					<ul>
+						<li>Track new followers and subscribers</li>
+						<li>See raids, hosts, and gift subs</li>
+						<li>Monitor donations and tips</li>
+						<li>Customize which events to display</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Great for keeping track of supporter activity during streams or for creating an on-stream event ticker.</div>
+				</div>
 				<h3>
 					<span data-translate="when-enabled-donation-events">
 						A real-time dashboard displaying donations and stream events. Create a customized view for monitoring.
@@ -7952,8 +8142,21 @@ input:checked + .slider:before {
                     <span class="title-group"><span class="emoji" aria-hidden="true">😄</span><span data-translate="emotes-wall">Emotes wall </span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#emote-wall-options" title="Jump to the emote wall link options."><span data-translate="options">[options]</span></a>
+					<label for="help-emotes" class="help-link rounded_area" title="Click for detailed help">[?]</label>
                 </h2>
                 <div id="emoteswall" data-raw="" class="emotes_wall"></div>
+				<input type="checkbox" id="help-emotes" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Animated emote display that reacts to chat.</strong>
+					<p>When viewers send emotes in chat, they appear on screen bouncing and floating around. Creates an exciting visual effect when chat spams emotes.</p>
+					<ul>
+						<li>Emotes bounce and animate across the overlay</li>
+						<li>Supports emotes from all connected platforms</li>
+						<li>Great for hype moments and celebrations</li>
+						<li>Customize physics, size, and behavior</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Add as a full-screen browser source in OBS for maximum impact during emote spam moments.</div>
+				</div>
             </div>
             <a href="" id="emote-wall-options"></a>
 
@@ -8048,8 +8251,20 @@ input:checked + .slider:before {
 					<span class="title-group"><span class="emoji" aria-hidden="true">🔥</span><span data-translate="hype-meter">Hype Meter and Viewer Count</span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#hype-meter" title="Jump to the hype meter link options."><span data-translate="options">[options]</span></a>
-					
+					<label for="help-hype" class="help-link rounded_area" title="Click for detailed help">[?]</label>
                 </h2>
+				<input type="checkbox" id="help-hype" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Visual indicator of chat activity and audience size.</strong>
+					<p>Shows how active your chat is and displays combined viewer counts from all connected platforms.</p>
+					<ul>
+						<li>Hype meter rises with chat activity</li>
+						<li>Combined viewer count across all platforms</li>
+						<li>Tracks unique chatters per source</li>
+						<li>Customizable thresholds and appearance</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Use to encourage chat participation or create hype-based goals during streams.</div>
+				</div>
                 <h3>
                     <span data-translate="when-enabled-a-tally-score-of-unique-names-per-chat-source-is-tracked-stopstart-to-reset-the-tally">
                         When enabled, a tally score of unique names per chat source is tracked. Stop/start to reset the tally.
@@ -8213,7 +8428,20 @@ input:checked + .slider:before {
 					<span class="title-group"><span class="emoji" aria-hidden="true">💰</span><span data-translate="tipjar">Tip Jar and Goal Meter</span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#tipjarhref" title="Jump to the tip jar link options."><span data-translate="options">[options]</span></a>
+					<label for="help-tipjar" class="help-link rounded_area" title="Click for detailed help">[?]</label>
                 </h2>
+				<input type="checkbox" id="help-tipjar" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Track donations and display fundraising progress.</strong>
+					<p>Keep a running total of donations received and display progress toward goals like charity drives, equipment upgrades, or subscriber milestones.</p>
+					<ul>
+						<li>Running total of all donations</li>
+						<li>Set custom fundraising goals</li>
+						<li>Visual progress bar display</li>
+						<li>Supports multiple donation platforms</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Perfect for charity streams or setting up sub/donation goals for your community.</div>
+				</div>
                 <h3>
                     <span data-translate="when-enabled-a-tally-tipjar">
                         When enabled, a tally of donations receieved is kept.
@@ -8311,7 +8539,20 @@ input:checked + .slider:before {
                     <span class="title-group"><span class="emoji" aria-hidden="true">🏆</span><span data-translate="wait-list">Wait List / Winner Draw</span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#waitlist" title="Jump to the waitlist link options."><span data-translate="options">[options]</span></a>
+					<label for="help-waitlist" class="help-link rounded_area" title="Click for detailed help">[?]</label>
                 </h2>
+				<input type="checkbox" id="help-waitlist" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Queue management and random winner selection.</strong>
+					<p>Let viewers join a waiting list by typing a command in chat. Perfect for viewer games, Q&A sessions, or randomly selecting winners.</p>
+					<ul>
+						<li>Viewers join by typing a command (e.g., !join)</li>
+						<li>Display the queue on stream</li>
+						<li>Randomly draw winners from the list</li>
+						<li>Manage queue order and remove entries</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Great for viewer games, giveaways, or managing who gets to participate in activities.</div>
+				</div>
                 <h3>
                     <span data-translate="when-enabled-guests-can-type">When enabled, guests can type </span>
                     <i>
@@ -8526,7 +8767,20 @@ input:checked + .slider:before {
                     <span data-translate="flowactions">🔄 Flow actions</span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#flowactions" title="Jump to the Flow Actions link options."><span data-translate="options">[options]</span></a>
+					<label for="help-flowactions" class="help-link rounded_area" title="Click for detailed help">[?]</label>
                 </h2>
+				<input type="checkbox" id="help-flowactions" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Visual automation tool for chat-triggered actions.</strong>
+					<p>Create custom automations using the Event Flow Editor. This overlay page displays the results of those automations (images, sounds, animations, etc.).</p>
+					<ul>
+						<li>Trigger images, sounds, or animations from chat</li>
+						<li>Create custom command responses</li>
+						<li>Build complex event-driven workflows</li>
+						<li>No coding required - visual drag-and-drop editor</li>
+					</ul>
+					<div class="help-warning">⚠️ <strong>Requires setup:</strong> Use the Event Flow Editor (in the extension menu) to create your automations first.</div>
+				</div>
 				<h3>
                     <span data-translate="flowactions-description">This page is the output for actions triggered by the Flow Editor page.</span>
                     <br>
@@ -9032,7 +9286,20 @@ input:checked + .slider:before {
                     <span class="title-group"><span class="emoji" aria-hidden="true">🎁</span><span data-translate="giveaway">Giveaway Tool</span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#giveaway" title="Jump to the giveaway link options."><span data-translate="options">[options]</span></a>
+					<label for="help-giveaway" class="help-link rounded_area" title="Click for detailed help">[?]</label>
                 </h2>
+				<input type="checkbox" id="help-giveaway" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Run chat-based giveaways with automatic entry and winner selection.</strong>
+					<p>Let viewers enter giveaways by typing a keyword in chat. Randomly select winners with visual animations.</p>
+					<ul>
+						<li>Custom entry keywords</li>
+						<li>Automatic duplicate prevention</li>
+						<li>Animated winner selection</li>
+						<li>Multi-platform support</li>
+					</ul>
+					<div class="help-warning">⚠️ <strong>Note:</strong> Community-contributed feature - may have occasional bugs.</div>
+				</div>
 				<h3>
                     <span data-translate="giveaway-made">
                        A giveaway made by a community member -- ⚠️ it's not yet considered "stable", so I may avoid this for now.
@@ -9047,7 +9314,20 @@ input:checked + .slider:before {
                     <span class="title-group"><span class="emoji" aria-hidden="true">🗳️</span><span data-translate="pollmeter">Graphical Poll </span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#poll" title="Jump to the poll link options."><span data-translate="options">[options]</span></a>
+					<label for="help-poll" class="help-link rounded_area" title="Click for detailed help">[?]</label>
                 </h2>
+				<input type="checkbox" id="help-poll" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Create visual polls that viewers vote on via chat.</strong>
+					<p>Viewers vote by typing hashtag keywords in chat (e.g., #option1, #yes). Results display as animated bars or charts.</p>
+					<ul>
+						<li>Viewers vote with hashtags in chat</li>
+						<li>Real-time animated results</li>
+						<li>Customizable poll options</li>
+						<li>Works across all platforms</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Great for audience decisions, game choices, or just fun community engagement.</div>
+				</div>
                 <h3>
                     <span data-translate="when-enabled-a-poll">
                        A graphic poll. Users can enter a hash-tagged word to vote it it.
@@ -9166,7 +9446,20 @@ input:checked + .slider:before {
                     <span class="title-group"><span class="emoji" aria-hidden="true">🗺️</span><span data-translate="mapmeter">User Map </span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#map" title="Jump to the map link options."><span data-translate="options">[options]</span></a>
+					<label for="help-map" class="help-link rounded_area" title="Click for detailed help">[?]</label>
                 </h2>
+				<input type="checkbox" id="help-map" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Display a world map showing where your viewers are located.</strong>
+					<p>Viewers can share their location by typing it in chat, and pins appear on the map showing your global audience.</p>
+					<ul>
+						<li>Interactive world map visualization</li>
+						<li>Viewers type their city/country to place a pin</li>
+						<li>See your community's geographic spread</li>
+						<li>Great for international streams</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Fun way to show your community how global your audience is!</div>
+				</div>
                 <h3>
                     <span data-translate="when-enabled-a-map">
                        A graphical map. Users can enter their location to mark on it.
@@ -9328,7 +9621,20 @@ input:checked + .slider:before {
                     <span class="title-group"><span class="emoji" aria-hidden="true">🎬</span><span data-translate="creditsmeter">Credits roll</span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#credits" title="Jump to the credits link options."><span data-translate="options">[options]</span></a>
+					<label for="help-credits" class="help-link rounded_area" title="Click for detailed help">[?]</label>
 				</h2>
+				<input type="checkbox" id="help-credits" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Movie-style scrolling credits featuring your community.</strong>
+					<p>Display scrolling credits at the end of your stream showing chatters, subscribers, donors, and anyone you want to thank.</p>
+					<ul>
+						<li>Auto-populate from chat participants</li>
+						<li>Include donors and subscribers</li>
+						<li>Customizable sections and styling</li>
+						<li>Movie-style scrolling animation</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Great for ending streams with a thank-you to your community!</div>
+				</div>
 				<h3>
 					<span data-translate="when-enabled-a-credits">
 					   A credits roll overlay. Show appreciation to your chat participants and donors.
@@ -9504,7 +9810,20 @@ input:checked + .slider:before {
                     <span class="title-group"><span class="emoji" aria-hidden="true">🏅</span><span data-translate="leaderboardmeter">Leaderboard</span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#leaderboard" title="Jump to the leaderboard link options."><span data-translate="options">[options]</span></a>
+					<label for="help-leaderboard" class="help-link rounded_area" title="Click for detailed help">[?]</label>
 				</h2>
+				<input type="checkbox" id="help-leaderboard" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Rank and display your top community members.</strong>
+					<p>Show rankings based on chat activity, points earned, donations, or custom metrics you define.</p>
+					<ul>
+						<li>Track top chatters and contributors</li>
+						<li>Display donation/sub rankings</li>
+						<li>Custom scoring systems</li>
+						<li>Animated leaderboard updates</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Encourages engagement by showing viewers how they rank in your community!</div>
+				</div>
 				<h3>
 					<span data-translate="when-enabled-a-leaderboard">
 					   An interactive leaderboard overlay. Track and display top contributors, chatters, or custom scores.
@@ -9711,7 +10030,20 @@ input:checked + .slider:before {
 					<span data-translate="scoreboard">Scoreboard (🚧 Work in Progress)</span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#scoreboard" title="Jump to the scoreboard link options."><span data-translate="options">[options]</span></a>
+					<label for="help-scoreboard" class="help-link rounded_area" title="Click for detailed help">[?]</label>
 				</h2>
+				<input type="checkbox" id="help-scoreboard" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Real-time points and score tracking display.</strong>
+					<p>Display points, rankings, and engagement scores for your viewers. Perfect for gamified streams with rewards systems.</p>
+					<ul>
+						<li>Real-time point updates</li>
+						<li>Customizable triggers and rewards</li>
+						<li>Viewer rankings display</li>
+						<li>Integration with chat activity</li>
+					</ul>
+					<div class="help-warning">⚠️ <strong>Work in Progress:</strong> This feature is still being developed and may have limited functionality.</div>
+				</div>
 				<h3>
 					<span data-translate="when-enabled-a-scoreboard">
 					   A real-time points tracking scoreboard. Display user points, rankings, and engagement scores with customizable triggers and rewards.
@@ -10108,6 +10440,20 @@ input:checked + .slider:before {
 									</span>
 								</div>
 							</div>
+
+                            <!-- LuckyLootTube Theme Options -->
+							<div class="overlay-config-section" id="luckyloottube-overlay-config" style="display: none;">
+								<h3>🎁 <span data-translate="luckyloottube-overlay-options">LuckyLootTube Theme Options</span></h3>
+								<div>
+									<label class="switch">
+										<input type="checkbox" data-param1="luckyloottube" />
+										<span class="slider round"></span>
+									</label>
+									<span data-translate="luckyloottube-mode">
+										🎁 From LuckyLootTube with Love
+									</span>
+								</div>
+							</div>
 						</div>
 					</div>
 				</div>
@@ -10119,7 +10465,20 @@ input:checked + .slider:before {
 					<span data-translate="interactive-games">🎮 Interactive Games</span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#games" title="Jump to the games link options."><span data-translate="options">[options]</span></a>
+					<label for="help-games" class="help-link rounded_area" title="Click for detailed help">[?]</label>
 				</h2>
+				<input type="checkbox" id="help-games" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Mini-games your viewers can play through chat.</strong>
+					<p>A collection of chat-controlled games for viewer engagement. Viewers participate by typing commands in chat.</p>
+					<ul>
+						<li>Multiple game modes available</li>
+						<li>Chat-controlled gameplay</li>
+						<li>Works across all platforms</li>
+						<li>Great for breaks or viewer interaction</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Perfect for BRB screens or dedicated game segments!</div>
+				</div>
 				<h3>
 					<span data-translate="interactive-chat-games">
 					   Interactive chat-based games for viewer engagement. Choose from various mini-games.
@@ -10430,7 +10789,20 @@ input:checked + .slider:before {
                     <span class="title-group"><span class="emoji" aria-hidden="true">⚔️</span><span data-translate="battlemeter">Battle Royal </span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#battle" title="Jump to the battle royal link options."><span data-translate="options">[options]</span></a>
+					<label for="help-battle" class="help-link rounded_area" title="Click for detailed help">[?]</label>
                 </h2>
+				<input type="checkbox" id="help-battle" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Viewer vs viewer elimination game.</strong>
+					<p>Viewers join by typing !join in chat, then battle each other in an automated elimination-style game until one winner remains.</p>
+					<ul>
+						<li>Viewers type !join to enter</li>
+						<li>Automated battle rounds</li>
+						<li>Last viewer standing wins</li>
+						<li>Fun visual battle animations</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Great for giveaways or just fun viewer engagement!</div>
+				</div>
                 <h3>
                     <span data-translate="when-enabled-a-battle">
                        A battle royal mini game. Users can enter !join to play
@@ -10485,7 +10857,20 @@ input:checked + .slider:before {
                     <span class="title-group"><span class="emoji" aria-hidden="true">📰</span><span data-translate="tickermeter">Ticker </span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#ticker" title="Jump to the ticker link options."><span data-translate="options">[options]</span></a>
+					<label for="help-ticker" class="help-link rounded_area" title="Click for detailed help">[?]</label>
                 </h2>
+				<input type="checkbox" id="help-ticker" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Scrolling horizontal text banner.</strong>
+					<p>Display scrolling text across your stream - perfect for announcements, recent events, or a news ticker-style chat display.</p>
+					<ul>
+						<li>Scrolling horizontal text</li>
+						<li>Show chat messages, events, or custom text</li>
+						<li>Customizable speed and appearance</li>
+						<li>Great for announcements or alerts</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Use for stream announcements, social media handles, or a scrolling chat feed.</div>
+				</div>
                 <h3>
                     <span data-translate="when-enabled-a-ticker">
                        A ticker banner. Select the source for the ticker text messages
@@ -10645,7 +11030,20 @@ input:checked + .slider:before {
                     <span class="title-group"><span class="emoji" aria-hidden="true">☁️</span><span data-translate="wordcloudmeter">Word Cloud </span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#wordcloud" title="Jump to the wordcloud link options."><span data-translate="options">[options]</span></a>
+					<label for="help-wordcloud" class="help-link rounded_area" title="Click for detailed help">[?]</label>
                 </h2>
+				<input type="checkbox" id="help-wordcloud" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Real-time word cloud generated from chat.</strong>
+					<p>Displays a dynamic word cloud that grows based on what your chat is saying. Popular words appear larger.</p>
+					<ul>
+						<li>Real-time word frequency visualization</li>
+						<li>Single-word messages contribute to the cloud</li>
+						<li>Customizable appearance and filters</li>
+						<li>Great for polls or seeing chat trends</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Ask your chat a question and watch the most popular answers grow in the cloud!</div>
+				</div>
                 <h3>
                     <span data-translate="when-enabled-a-wordcloud">
                        A wordcloud overlay. Chat messages that contain a single word are allowed.
@@ -10722,7 +11120,20 @@ input:checked + .slider:before {
                     <span class="title-group"><span class="emoji" aria-hidden="true">🖼️</span><span data-translate="custom-gif-commands">Custom GIF Commands </span></span>
 					<a class="copy-link rounded_area" title="Copy link to clipboard" data-copy="true"><span data-translate="copy">[copy link]</span></a>
 					<a class="options-link rounded_area" href="#custom-gif-commands" title="Jump to the custom GIF commands options."><span data-translate="options">[options]</span></a>
+					<label for="help-gif" class="help-link rounded_area" title="Click for detailed help">[?]</label>
 				</h2>
+				<input type="checkbox" id="help-gif" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Trigger GIFs and images on screen via chat commands.</strong>
+					<p>Set up custom commands that display specific GIFs, images, or animations on your stream when viewers type them in chat.</p>
+					<ul>
+						<li>Define custom trigger commands (e.g., !hype, !gg)</li>
+						<li>Display GIFs, images, or videos</li>
+						<li>Customizable display duration and position</li>
+						<li>Multiple command support</li>
+					</ul>
+					<div class="help-tip">💡 <strong>Tip:</strong> Create fun reactions for your community - like a celebration GIF when someone says !party.</div>
+				</div>
 				<h3>
 					<span data-translate="when-enabled-custom-commands">
 						When enabled, custom commands will trigger specific GIFs or media in the overlay.
@@ -10780,8 +11191,21 @@ input:checked + .slider:before {
 						<a class="options-link rounded_area" href="#wrapper-spotify-announcements" title="Jump to Spotify dock announcements."><span>[dock]</span></a>
 						<a class="options-link rounded_area" href="#wrapper-spotify-commands" title="Jump to Spotify chat commands."><span>[chat]</span></a>
 						<a class="options-link rounded_area" href="#wrapper-spotify-overlay-options" title="Jump to the Spotify overlay options."><span>[overlay]</span></a>
+						<label for="help-spotify" class="help-link rounded_area" title="Click for detailed help">[?]</label>
 					</span>
 				</h2>
+				<input type="checkbox" id="help-spotify" class="link-help-toggle">
+				<div class="link-help-content">
+					<strong>Display currently playing Spotify tracks on stream.</strong>
+					<p>Connect your Spotify account to show what song is playing as an overlay, or announce tracks to chat automatically.</p>
+					<ul>
+						<li>"Now Playing" overlay widget</li>
+						<li>Auto-announce songs to chat</li>
+						<li>Chat commands for song info (!song, !np)</li>
+						<li>Customizable overlay appearance</li>
+					</ul>
+					<div class="help-warning">⚠️ <strong>Requires setup:</strong> You need to authorize your Spotify account in the setup section below.</div>
+				</div>
 				<p style="margin-top: -5px;">
 					Connect your Spotify account to create a widget overlay or announce to chat the current song.
 				</p>
@@ -10978,6 +11402,16 @@ input:checked + .slider:before {
                                 <p style="font-size: 0.9em; color: var(--text-secondary); margin-bottom: 15px;">
                                     Configure which Spotify commands are available and who can use them.
                                 </p>
+                                <div style="margin: 0 0 8px 0;">
+                                    <label class="switch" title="Enable managed queue for !revoke support">
+                                        <input type="checkbox" id="spotifyManagedQueue" data-setting="spotifyManagedQueue" />
+                                        <span class="slider round"></span>
+                                    </label>
+                                    <span>Use managed queue for song requests (enables !revoke)</span>
+                                </div>
+                                <p style="font-size: 0.85em; color: var(--text-secondary); margin: 0 0 12px;">
+                                    Spotify does not allow removing items from its queue. Managed queue keeps only one request inside Spotify at a time so !revoke can work on pending requests.
+                                </p>
 
                                 <div id="spotifyCommandsList" style="display: flex; flex-direction: column; gap: 10px;">
                                     <!-- Info Commands -->
@@ -10988,7 +11422,7 @@ input:checked + .slider:before {
                                                 <input type="checkbox" class="spotify-cmd-enabled" checked />
                                                 <span class="slider round"></span>
                                             </label>
-                                            <code>!song</code>
+                                            <input type="text" class="spotify-cmd-trigger" value="!song" placeholder="!song" title="Command trigger(s). Supports comma-separated aliases like !song, !cancion" />
                                             <span class="spotify-cmd-desc">Show current track</span>
                                             <div class="spotify-cmd-roles">
                                                 <label><input type="checkbox" value="anyone" checked /> Anyone</label>
@@ -11002,7 +11436,7 @@ input:checked + .slider:before {
                                                 <input type="checkbox" class="spotify-cmd-enabled" checked />
                                                 <span class="slider round"></span>
                                             </label>
-                                            <code>!np</code>
+                                            <input type="text" class="spotify-cmd-trigger" value="!np" placeholder="!np" title="Command trigger(s). Supports comma-separated aliases" />
                                             <span class="spotify-cmd-desc">Alias for !song</span>
                                             <div class="spotify-cmd-roles">
                                                 <label><input type="checkbox" value="anyone" checked /> Anyone</label>
@@ -11021,7 +11455,7 @@ input:checked + .slider:before {
                                                 <input type="checkbox" class="spotify-cmd-enabled" checked />
                                                 <span class="slider round"></span>
                                             </label>
-                                            <code>!skip</code>
+                                            <input type="text" class="spotify-cmd-trigger" value="!skip" placeholder="!skip" title="Command trigger(s). Supports comma-separated aliases" />
                                             <span class="spotify-cmd-desc">Skip to next track</span>
                                             <div class="spotify-cmd-roles">
                                                 <label><input type="checkbox" value="anyone" /> Anyone</label>
@@ -11035,7 +11469,7 @@ input:checked + .slider:before {
                                                 <input type="checkbox" class="spotify-cmd-enabled" checked />
                                                 <span class="slider round"></span>
                                             </label>
-                                            <code>!previous</code>
+                                            <input type="text" class="spotify-cmd-trigger" value="!previous" placeholder="!previous" title="Command trigger(s). Supports comma-separated aliases" />
                                             <span class="spotify-cmd-desc">Go to previous track</span>
                                             <div class="spotify-cmd-roles">
                                                 <label><input type="checkbox" value="anyone" /> Anyone</label>
@@ -11049,7 +11483,7 @@ input:checked + .slider:before {
                                                 <input type="checkbox" class="spotify-cmd-enabled" checked />
                                                 <span class="slider round"></span>
                                             </label>
-                                            <code>!pause</code>
+                                            <input type="text" class="spotify-cmd-trigger" value="!pause" placeholder="!pause" title="Command trigger(s). Supports comma-separated aliases" />
                                             <span class="spotify-cmd-desc">Pause playback</span>
                                             <div class="spotify-cmd-roles">
                                                 <label><input type="checkbox" value="anyone" /> Anyone</label>
@@ -11063,7 +11497,7 @@ input:checked + .slider:before {
                                                 <input type="checkbox" class="spotify-cmd-enabled" checked />
                                                 <span class="slider round"></span>
                                             </label>
-                                            <code>!play</code>
+                                            <input type="text" class="spotify-cmd-trigger" value="!play" placeholder="!play" title="Command trigger(s). Supports comma-separated aliases" />
                                             <span class="spotify-cmd-desc">Resume playback</span>
                                             <div class="spotify-cmd-roles">
                                                 <label><input type="checkbox" value="anyone" /> Anyone</label>
@@ -11077,7 +11511,7 @@ input:checked + .slider:before {
                                                 <input type="checkbox" class="spotify-cmd-enabled" checked />
                                                 <span class="slider round"></span>
                                             </label>
-                                            <code>!volume</code>
+                                            <input type="text" class="spotify-cmd-trigger" value="!volume" placeholder="!volume" title="Command trigger(s). Supports comma-separated aliases" />
                                             <span class="spotify-cmd-desc">Set volume (0-100)</span>
                                             <div class="spotify-cmd-roles">
                                                 <label><input type="checkbox" value="anyone" /> Anyone</label>
@@ -11096,7 +11530,7 @@ input:checked + .slider:before {
                                                 <input type="checkbox" class="spotify-cmd-enabled" checked />
                                                 <span class="slider round"></span>
                                             </label>
-                                            <code>!queue</code>
+                                            <input type="text" class="spotify-cmd-trigger" value="!queue" placeholder="!queue" title="Command trigger(s). Supports comma-separated aliases" />
                                             <span class="spotify-cmd-desc">Add song to queue</span>
                                             <div class="spotify-cmd-roles">
                                                 <label><input type="checkbox" value="anyone" checked /> Anyone</label>
@@ -11110,8 +11544,22 @@ input:checked + .slider:before {
                                                 <input type="checkbox" class="spotify-cmd-enabled" checked />
                                                 <span class="slider round"></span>
                                             </label>
-                                            <code>!sr</code>
+                                            <input type="text" class="spotify-cmd-trigger" value="!sr" placeholder="!sr" title="Command trigger(s). Supports comma-separated aliases" />
                                             <span class="spotify-cmd-desc">Song request (alias)</span>
+                                            <div class="spotify-cmd-roles">
+                                                <label><input type="checkbox" value="anyone" checked /> Anyone</label>
+                                                <label><input type="checkbox" value="subscriber" /> Subs</label>
+                                                <label><input type="checkbox" value="vip" /> VIPs</label>
+                                                <label><input type="checkbox" value="mod" /> Mods</label>
+                                            </div>
+                                        </div>
+                                        <div class="spotify-command-row" data-command="!revoke" data-default-roles="anyone">
+                                            <label class="switch" title="Enable or disable this command">
+                                                <input type="checkbox" class="spotify-cmd-enabled" checked />
+                                                <span class="slider round"></span>
+                                            </label>
+                                            <input type="text" class="spotify-cmd-trigger" value="!revoke" placeholder="!revoke" title="Command trigger(s). Supports comma-separated aliases" />
+                                            <span class="spotify-cmd-desc">Remove your last request</span>
                                             <div class="spotify-cmd-roles">
                                                 <label><input type="checkbox" value="anyone" checked /> Anyone</label>
                                                 <label><input type="checkbox" value="subscriber" /> Subs</label>

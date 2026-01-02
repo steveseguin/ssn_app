@@ -3088,7 +3088,140 @@ function processManifestData(data, manifestData) {
     }
 }
 
+// Important Changes Notification System
+const importantChanges = [
+    {
+        id: "events-always-on-v3.40",
+        minVersion: "3.40.0",  // Only show to users with this version or newer
+        title: "Heads up! Stream events now show by default",
+        message: "Follows, likes, and subs now appear in your overlay. Want to turn them off?",
+        actionText: "Disable stream events",
+        targetSection: "wrapper-global-mechanics-options",
+        targetSetting: "hideevents"
+    }
+];
 
+function checkImportantChanges() {
+    const container = document.getElementById("importantChanges");
+    if (!container) return;
+
+    // Get current extension version
+    let currentVersion = "0.0.0";
+    try {
+        const manifestData = chrome.runtime.getManifest();
+        if (manifestData && manifestData.version) {
+            currentVersion = manifestData.version;
+        }
+    } catch (e) {
+        console.error("Error getting extension version:", e);
+        return; // Can't determine version, don't show notifications
+    }
+
+    // Get dismissed changes from localStorage
+    let dismissedChanges = [];
+    try {
+        const stored = localStorage.getItem('dismissedImportantChanges');
+        if (stored) {
+            dismissedChanges = JSON.parse(stored);
+        }
+    } catch (e) {
+        console.error("Error loading dismissed changes:", e);
+    }
+
+    // Filter changes: not dismissed AND user's version >= minVersion
+    const activeChanges = importantChanges.filter(change => {
+        if (dismissedChanges.includes(change.id)) return false;
+        if (change.minVersion && compareVersions(currentVersion, change.minVersion) < 0) return false;
+        return true;
+    });
+
+    if (activeChanges.length === 0) {
+        container.classList.remove('show');
+        container.innerHTML = '';
+        return;
+    }
+
+    // Build notification HTML (dismiss button now at bottom right)
+    let html = '';
+    activeChanges.forEach(change => {
+        html += `
+            <div class="important-change" data-change-id="${change.id}">
+                <strong>${change.title}</strong><br>
+                <small>${change.message}</small><br>
+                <a href="#" class="change-action-link" data-target-section="${change.targetSection}" data-target-setting="${change.targetSetting}">${change.actionText}</a>
+                <button class="dismiss-btn" data-change-id="${change.id}" title="Dismiss">&times;</button>
+            </div>
+        `;
+    });
+
+    container.innerHTML = html;
+    container.classList.add('show');
+
+    // Add event listeners for dismiss buttons
+    container.querySelectorAll('.dismiss-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            const changeId = this.dataset.changeId;
+            dismissImportantChange(changeId);
+        });
+    });
+
+    // Add event listeners for action links
+    container.querySelectorAll('.change-action-link').forEach(link => {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            const targetSection = this.dataset.targetSection;
+            const targetSetting = this.dataset.targetSetting;
+            scrollToSetting(targetSection, targetSetting);
+        });
+    });
+}
+
+function dismissImportantChange(changeId) {
+    let dismissedChanges = [];
+    try {
+        const stored = localStorage.getItem('dismissedImportantChanges');
+        if (stored) {
+            dismissedChanges = JSON.parse(stored);
+        }
+    } catch (e) {
+        console.error("Error loading dismissed changes:", e);
+    }
+
+    if (!dismissedChanges.includes(changeId)) {
+        dismissedChanges.push(changeId);
+        localStorage.setItem('dismissedImportantChanges', JSON.stringify(dismissedChanges));
+    }
+
+    // Re-check to update the display
+    checkImportantChanges();
+}
+
+function scrollToSetting(targetSection, targetSetting) {
+    // Find the collapsible section
+    const sectionCheckbox = document.getElementById(targetSection);
+    if (sectionCheckbox) {
+        // Expand the collapsible if collapsed
+        sectionCheckbox.checked = true;
+    }
+
+    // Find the setting element
+    const settingElement = document.querySelector(`[data-setting="${targetSetting}"]`);
+    if (settingElement) {
+        // Scroll to the setting
+        settingElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        // Add a brief highlight effect
+        const parentDiv = settingElement.closest('div');
+        if (parentDiv) {
+            parentDiv.style.transition = 'background-color 0.3s';
+            parentDiv.style.backgroundColor = 'rgba(255, 193, 7, 0.3)';
+            setTimeout(() => {
+                parentDiv.style.backgroundColor = '';
+            }, 2000);
+        }
+    }
+}
 
 // Language parameter handling removed - use the translation dropdown instead
 
@@ -3289,11 +3422,33 @@ function handleElementParam(ele, targetId, paramType, sync, value = null) {
             }
         }
 
+        // Handle related number settings (e.g., rotate checkbox with rotatecount/rotatetime)
+        const relatedSettingsAttr = `relatedSettings${paramNum}`;
+        const relatedSettings = ele.dataset[relatedSettingsAttr];
+        if (relatedSettings) {
+            const numSuffix = paramNum === '1' ? '' : paramNum;
+            relatedSettings.split(',').forEach(settingName => {
+                const relatedInput = document.querySelector(`[data-numbersetting${numSuffix}='${settingName}']`);
+                if (relatedInput && relatedInput.value) {
+                    targetElement.raw = updateURL(`${settingName}=${encodeURIComponent(relatedInput.value)}`, targetElement.raw);
+                }
+            });
+        }
+
         // Handle special case exclusions
         handleExclusiveCases(ele, paramType, paramValue, sync);
     } else { // ele.checked is false
         // If checkbox is unchecked, remove the parameter from URL based on the key part
         targetElement.raw = removeQueryParamWithValue(targetElement.raw, effectiveKey);
+
+        // Remove related settings when checkbox is unchecked
+        const relatedSettingsAttr = `relatedSettings${paramNum}`;
+        const relatedSettings = ele.dataset[relatedSettingsAttr];
+        if (relatedSettings) {
+            relatedSettings.split(',').forEach(settingName => {
+                targetElement.raw = removeQueryParamWithValue(targetElement.raw, settingName);
+            });
+        }
         
         // Special handling for language parameters - also remove associated voice parameter
         if (keyOnly === 'googlelang') {
@@ -3942,9 +4097,16 @@ function handleNumberSetting(ele, sync) {
         if (!targetId) continue;
         
         const paramAttr = `data-param${i}`;
-        
+
         // Update URL parameter if corresponding checkbox is checked
-        const checkbox = document.querySelector(`input[${paramAttr}='${settingValue}']`);
+        let checkbox = document.querySelector(`input[${paramAttr}='${settingValue}']`);
+
+        // If no direct checkbox, check for a parent checkbox that has this as a related setting
+        if (!checkbox) {
+            const relatedAttr = `data-related-settings${i}`;
+            checkbox = document.querySelector(`input[${relatedAttr}*='${settingValue}']`);
+        }
+
         if (checkbox && checkbox.checked) {
             const targetElement = document.getElementById(targetId);
             const effectiveKey = normalizeParamKey(settingValue);
@@ -6538,11 +6700,13 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 			// Settings stored as { json: string, object: parsed } - access .object
 			const permissions = result.settings?.spotifyCommandPermissions?.object || {};
 			const disabledCommands = result.settings?.spotifyDisabledCommands?.object || [];
+			const customTriggers = result.settings?.spotifyCommandTriggers?.object || {};
 
 			commandRows.forEach(row => {
 				const command = row.dataset.command;
 				const enabledCheckbox = row.querySelector('.spotify-cmd-enabled');
 				const roleCheckboxes = row.querySelectorAll('.spotify-cmd-roles input[type="checkbox"]');
+				const triggerInput = row.querySelector('.spotify-cmd-trigger');
 
 				// Apply saved enabled state
 				if (enabledCheckbox && disabledCommands.includes(command)) {
@@ -6556,6 +6720,11 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 						cb.checked = savedRoles.includes(cb.value);
 					});
 				}
+
+				// Apply saved custom triggers
+				if (triggerInput && customTriggers[command]) {
+					triggerInput.value = customTriggers[command];
+				}
 			});
 		});
 
@@ -6563,6 +6732,7 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 		commandRows.forEach(row => {
 			const enabledCheckbox = row.querySelector('.spotify-cmd-enabled');
 			const roleCheckboxes = row.querySelectorAll('.spotify-cmd-roles input[type="checkbox"]');
+			const triggerInput = row.querySelector('.spotify-cmd-trigger');
 
 			if (enabledCheckbox) {
 				enabledCheckbox.addEventListener('change', () => saveSpotifyCommandSettings());
@@ -6570,6 +6740,27 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 			roleCheckboxes.forEach(cb => {
 				cb.addEventListener('change', () => saveSpotifyCommandSettings());
 			});
+
+			// Handle trigger input changes
+			if (triggerInput) {
+				const defaultTrigger = row.dataset.command;
+
+				// On blur: revert to default if empty, then save
+				triggerInput.addEventListener('blur', () => {
+					const value = triggerInput.value.trim();
+					if (!value) {
+						triggerInput.value = defaultTrigger;
+					}
+					saveSpotifyCommandSettings();
+				});
+
+				// On Enter key: blur to trigger save
+				triggerInput.addEventListener('keydown', (e) => {
+					if (e.key === 'Enter') {
+						triggerInput.blur();
+					}
+				});
+			}
 		});
 	}
 
@@ -6577,11 +6768,13 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 		const commandRows = document.querySelectorAll('.spotify-command-row');
 		const permissions = {};
 		const disabledCommands = [];
+		const customTriggers = {};
 
 		commandRows.forEach(row => {
 			const command = row.dataset.command;
 			const enabledCheckbox = row.querySelector('.spotify-cmd-enabled');
 			const roleCheckboxes = row.querySelectorAll('.spotify-cmd-roles input[type="checkbox"]:checked');
+			const triggerInput = row.querySelector('.spotify-cmd-trigger');
 
 			if (enabledCheckbox && !enabledCheckbox.checked) {
 				disabledCommands.push(command);
@@ -6600,6 +6793,15 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 			}
 
 			permissions[command] = roles;
+
+			// Collect custom triggers (normalize: trim, lowercase, handle comma-separated)
+			if (triggerInput) {
+				const triggerValue = triggerInput.value.trim();
+				// Only store if different from default
+				if (triggerValue && triggerValue !== command) {
+					customTriggers[command] = triggerValue;
+				}
+			}
 		});
 
 		// Save to storage
@@ -6617,7 +6819,14 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 			value: JSON.stringify(disabledCommands)
 		});
 
-		console.log('Spotify command settings saved:', { permissions, disabledCommands });
+		chrome.runtime.sendMessage({
+			cmd: "saveSetting",
+			type: "json",
+			setting: "spotifyCommandTriggers",
+			value: JSON.stringify(customTriggers)
+		});
+
+		console.log('Spotify command settings saved:', { permissions, disabledCommands, customTriggers });
 	}
 
 	// Initialize on page load
@@ -7227,8 +7436,9 @@ document.addEventListener("DOMContentLoaded", async function(event) {
 		});
 	};
 
-	checkVersion(); 
-	
+	checkVersion();
+	checkImportantChanges();
+
 	let hideLinks = false;
 	document.querySelectorAll("input[data-setting='hideyourlinks']").forEach(x=>{
 		if (x.checked){
