@@ -129,7 +129,7 @@
           "path": "/Applications"
         }
       ],
-      "artifactName": "socialstreamninja_mac_v${version}.dmg",
+      "artifactName": "socialstreamninja_mac_v${version}_${arch}.dmg",
       "writeUpdateInfo": false
     },
     "win": {
