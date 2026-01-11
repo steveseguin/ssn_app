@@ -340,6 +340,26 @@ function configureContextBridge(){
 				return await ipcRenderer.invoke('kick-oauth', payload);
 			  },
 
+			  startKickWebSocket: async (payload) => {
+				return await ipcRenderer.invoke('kick-ws-connect', payload);
+			  },
+
+			  stopKickWebSocket: async (payload) => {
+				return await ipcRenderer.invoke('kick-ws-disconnect', payload);
+			  },
+
+			  onKickWsEvent: (callback) => {
+				ipcRenderer.on('kick-ws-event', (event, data) => {
+				  callback(data);
+				});
+			  },
+
+			  onKickWsStatus: (callback) => {
+				ipcRenderer.on('kick-ws-status', (event, data) => {
+				  callback(data);
+				});
+			  },
+
 			  startYouTubeLiveChatGrpcStream: async (options) => {
 				return await ipcRenderer.invoke('youtube-livechat-grpc:start', options);
 			  },
@@ -458,6 +478,26 @@ try {
 
 			startKickOAuth: async (payload) => {
 				return await ipcRenderer.invoke('kick-oauth', payload);
+			},
+
+			startKickWebSocket: async (payload) => {
+				return await ipcRenderer.invoke('kick-ws-connect', payload);
+			},
+
+			stopKickWebSocket: async (payload) => {
+				return await ipcRenderer.invoke('kick-ws-disconnect', payload);
+			},
+
+			onKickWsEvent: (callback) => {
+				ipcRenderer.on('kick-ws-event', (event, data) => {
+					callback(data);
+				});
+			},
+
+			onKickWsStatus: (callback) => {
+				ipcRenderer.on('kick-ws-status', (event, data) => {
+					callback(data);
+				});
 			}
 		};
 		window.ssappLocale = {

@@ -62,6 +62,7 @@ const {
 const { setupYouTubeOAuthHandler } = require('./resources/electron-youtube-handler');
 const { setupTwitchOAuthHandler } = require('./resources/electron-twitch-handler');
 const { setupKickOAuthHandler } = require('./resources/electron-kick-handler');
+const { KickWsClient } = require('./resources/kick-ws-client');
 
 const {
     fetch: undiciFetch
@@ -967,6 +968,83 @@ const remoteControlPort = (() => {
 })();
 const remoteControlToken = (process.env.SSAPP_REMOTE_CONTROL_TOKEN || '').trim();
 
+function normalizeKickSlug(value) {
+    if (!value) return '';
+    return String(value).trim().replace(/^@+/, '').toLowerCase();
+}
+
+function buildKickSocketPacket(message, client) {
+    const body = message && typeof message === 'object' ? { ...message } : {};
+    if (client?.userId != null) {
+        body.broadcaster_user_id = client.userId;
+    }
+    if (client?.channelId != null) {
+        body.channel_id = client.channelId;
+    }
+    if (client?.chatroomId != null) {
+        body.chatroom_id = client.chatroomId;
+    }
+    if (client?.slug) {
+        body.channel_slug = client.slug;
+    }
+    const messageId = body.id ?? body.message_id ?? null;
+    return {
+        source: 'socket',
+        type: 'chat.message.sent',
+        body,
+        messageId: messageId != null ? String(messageId) : null,
+        timestamp: body.created_at || null,
+        verified: true,
+        version: 'socket',
+        channel_slug: body.channel_slug || null
+    };
+}
+
+function logKickWs(message, details) {
+    try {
+        if (details !== undefined) {
+            console.log('[KickWs]', message, details);
+        } else {
+            console.log('[KickWs]', message);
+        }
+    } catch (_) {}
+}
+
+function sendKickWsStatus(sender, payload) {
+    if (!sender || (typeof sender.isDestroyed === 'function' && sender.isDestroyed())) {
+        return;
+    }
+    try {
+        sender.send('kick-ws-status', payload);
+    } catch (_) {}
+}
+
+function sendKickWsEvent(sender, payload) {
+    if (!sender || (typeof sender.isDestroyed === 'function' && sender.isDestroyed())) {
+        return;
+    }
+    try {
+        sender.send('kick-ws-event', payload);
+    } catch (_) {}
+}
+
+function stopKickWsEntry(entry, reason) {
+    if (!entry) return;
+    try {
+        entry.client?.removeAllListeners?.();
+        entry.client?.stop?.();
+    } catch (err) {
+        console.warn('[KickWs] Failed to stop client', err);
+    }
+    if (entry.sender) {
+        sendKickWsStatus(entry.sender, {
+            connectionId: entry.id,
+            status: 'disconnected',
+            reason: reason || 'stopped'
+        });
+    }
+}
+
 function findYouTubeOAuthView() {
     try {
         for (const view of Object.values(browserViews)) {
@@ -1140,7 +1218,7 @@ function setupRemoteControlServer() {
                     const basePath = localPath || path.join(__dirname, 'resources/social_stream_fallback/main/');
 
                     // Create the YouTube source window directly
-                    const wssUrl = `file://${basePath}sources/websocket/youtube.html?videoId=${encodeURIComponent(videoId)}&devmode=`;
+                    const wssUrl = pathToFileURL(path.join(basePath, 'sources/websocket/youtube.html')).href + `?videoId=${encodeURIComponent(videoId)}&devmode=`;
 
                     const win = new BrowserWindow({
                         width: 400,
@@ -1209,7 +1287,7 @@ function setupRemoteControlServer() {
                     const basePath = localPath || path.join(__dirname, 'resources/social_stream_fallback/main/');
 
                     // Create the Kick source window
-                    const wssUrl = `file://${basePath}sources/websocket/kick.html${username ? '?username=' + encodeURIComponent(username) : ''}`;
+                    const wssUrl = pathToFileURL(path.join(basePath, 'sources/websocket/kick.html')).href + (username ? '?username=' + encodeURIComponent(username) : '');
 
                     const win = new BrowserWindow({
                         width: 500,
@@ -1404,6 +1482,8 @@ let tiktokSigningWindow = null;
 let detachSigningWindowHook = null;
 // Track websocket connections globally for cleanup
 const websocketConnections = {};
+const kickWsConnections = new Map();
+let kickWsNextId = 1;
 
 try {
     const tiktokConnector = require('tiktok-live-connector');
@@ -2746,7 +2826,7 @@ function createYargs() {
     addOption("u", {
         alias: "url",
         describe: "The URL of the window to load.",
-        default: `file://${path.join(__dirname, "index.html")}`,
+        default: pathToFileURL(path.join(__dirname, "index.html")).href,
         type: "string",
     });
     addOption("fs", {
@@ -2868,6 +2948,12 @@ function createYargs() {
         type: "boolean",
         default: false
     });
+    addOption("closetotray", {
+        alias: ["tray"],
+        describe: "Minimize to system tray instead of quitting when closing the window.",
+        type: "boolean",
+        default: false
+    });
 
 
     const options = argv.getOptions();
@@ -2917,6 +3003,15 @@ const cliAllowMultipleInstancesProvided = (
 const cliAllowMultipleInstances = cliAllowMultipleInstancesProvided || Argv.multiinstance === true || Argv.standalone === true;
 const storedAllowMultipleInstances = storedStartupFlags.allowMultipleInstances === true;
 const allowMultipleInstances = cliAllowMultipleInstances || storedAllowMultipleInstances;
+
+// Close-to-tray: minimize to system tray instead of quitting when closing the window
+const cliCloseToTrayProvided = (
+    process.argv.includes('--closetotray') ||
+    process.argv.includes('--tray')
+);
+const cliCloseToTray = cliCloseToTrayProvided || Argv.closetotray === true || Argv.tray === true;
+const storedCloseToTray = storedStartupFlags.closeToTray === true;
+let closeToTrayEnabled = cliCloseToTray || storedCloseToTray;
 
 const cliForceTikTokClassicProvided = (
     process.argv.includes('--tiktokclassic') ||
@@ -3129,7 +3224,7 @@ async function formatURL(inputURL, browserWindow) {
     }
 
     if (inputURL.startsWith('/') || inputURL.match(/^[a-zA-Z]:\\/)) {
-        return `file://${inputURL}`;
+        return pathToFileURL(inputURL).href;
     }
 
     if (inputURL.startsWith('www.')) {
@@ -4385,7 +4480,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             webSecurity = true; // just in case its a remote URI being loaded.
         }
     } catch (e) {
-        URI = `file://${path.join(__dirname, "index.html")}`; // zero idea.
+        URI = pathToFileURL(path.join(__dirname, "index.html")).href; // zero idea.
         webSecurity = false; // should be local, so we're good.
     }
 
@@ -5334,7 +5429,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
         saveWindowState(mainWindow);
         if (!app.isQuitting) {
             e.preventDefault();
-            quitApp();
+            if (closeToTrayEnabled) {
+                minimizeToTray();
+            } else {
+                quitApp();
+            }
         } else {
             try {
                 ipcMain.removeAllListeners("prompt");
@@ -7420,9 +7519,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             const lockState = loadWindowLockState(args.url);
             const isOverlayLike = (args.url && (args.url.includes("transparent") || args.url.includes("chroma=") || args.url.includes("dock.html") || args.url.includes("overlay")));
-            const startLocked = (lockState && typeof lockState.locked === 'boolean') ? lockState.locked : isOverlayLike;
-            const startPinned = (lockState && typeof lockState.pin === 'boolean') ? lockState.pin : startLocked;
-            const startUnclickable = (lockState && typeof lockState.unclickable === 'boolean') ? lockState.unclickable : startLocked;
+            let startLocked = (lockState && typeof lockState.locked === 'boolean') ? lockState.locked : isOverlayLike;
+            let startPinned = (lockState && typeof lockState.pin === 'boolean') ? lockState.pin : startLocked;
+            let startUnclickable = (lockState && typeof lockState.unclickable === 'boolean') ? lockState.unclickable : startLocked;
+            if (args.wss) {
+                startLocked = false;
+                startPinned = false;
+                startUnclickable = false;
+                log('[ACTIVATE] Forcing websocket windows to be clickable.');
+            }
 
             const view = new BrowserWindow({
                 webPreferences,
@@ -10422,6 +10527,17 @@ async function quitApp() {
         });
     }
 
+    if (kickWsConnections && kickWsConnections.size) {
+        for (const entry of kickWsConnections.values()) {
+            try {
+                stopKickWsEntry(entry, 'app_quit');
+            } catch (e) {
+                console.error('Error stopping Kick websocket:', e);
+            }
+        }
+        kickWsConnections.clear();
+    }
+
     // Close all browser views immediately
     if (browserViews) {
         Object.keys(browserViews).forEach(id => {
@@ -10485,10 +10601,11 @@ function ensureTrailingSep(pth) {
 
 function pathToFileUrl(pth) {
     if (!pth) return pth;
-    let withSep = ensureTrailingSep(pth);
-    let forward = withSep.replace(/\\/g, '/');
-    if (!forward.startsWith('/')) forward = '/' + forward; // Windows drive letters
-    return 'file://' + forward;
+    // Use Node's pathToFileURL for proper encoding of special characters (#, %, etc.)
+    let url = pathToFileURL(pth).href;
+    // Ensure trailing separator for directory paths
+    if (!url.endsWith('/')) url += '/';
+    return url;
 }
 
 function fsPathFromMaybeFileUrl(p) {
@@ -10505,7 +10622,7 @@ function reloadWithLocalSource(localPath) {
     try {
         if (!mainWindow) return;
         const src = localPath.startsWith('file://') ? localPath : pathToFileUrl(localPath);
-        const indexUrl = `file://${path.join(__dirname, 'index.html')}`;
+        const indexUrl = pathToFileURL(path.join(__dirname, 'index.html')).href;
         const loadUrl = `${indexUrl}?sourcemode=${encodeURIComponent(src)}`;
         mainWindowReadyForInjectorToasts = false;
         mainWindow.loadURL(loadUrl);
@@ -10519,7 +10636,7 @@ function clearLocalSourceAndReload() {
     try { Argv.filesource = null; } catch (e) { }
     try {
         if (mainWindow) {
-            const indexUrl = `file://${path.join(__dirname, 'index.html')}`;
+            const indexUrl = pathToFileURL(path.join(__dirname, 'index.html')).href;
             mainWindowReadyForInjectorToasts = false;
             mainWindow.loadURL(indexUrl);
             queueInjectorToast('info', 'Classic Mode', 'Returned to online Social Stream scripts.');
@@ -11308,6 +11425,15 @@ function createMenu() {
             {
                 label: 'Minimize to Tray',
                 click: () => minimizeToTray()
+            },
+            {
+                label: 'Close to Tray',
+                type: 'checkbox',
+                checked: closeToTrayEnabled,
+                click: (menuItem) => {
+                    closeToTrayEnabled = menuItem.checked;
+                    store.set('startupFlags.closeToTray', closeToTrayEnabled);
+                }
             },
             {
                 type: 'separator'
@@ -12309,4 +12435,193 @@ ipcMain.handle("sendTikTokMessage", async (event, args) => {
             error: error.message
         };
     }
+});
+
+ipcMain.handle('kick-ws-connect', async (event, args = {}) => {
+    const sender = event.sender;
+    if (!sender || (typeof sender.isDestroyed === 'function' && sender.isDestroyed())) {
+        return { ok: false, error: 'Kick websocket sender not available.' };
+    }
+
+    const slug = normalizeKickSlug(args.slug || args.channel || args.username);
+    if (!slug) {
+        return { ok: false, error: 'Kick channel slug required.' };
+    }
+
+    logKickWs('Connect request', {
+        slug,
+        chatroomId: args.chatroomId ?? null,
+        channelId: args.channelId ?? null,
+        userId: args.userId ?? null,
+        senderId: sender.id,
+        force: Boolean(args.force),
+        hasToken: typeof args.accessToken === 'string' && args.accessToken.trim().length > 0,
+        hasClientId: typeof args.clientId === 'string' && args.clientId.trim().length > 0,
+        hasSiteApiBase: typeof args.siteApiBase === 'string' && args.siteApiBase.trim().length > 0,
+        allowProxy: args.allowProxy !== false
+    });
+
+    const existing = kickWsConnections.get(sender.id);
+    if (existing) {
+        if (existing.slug === slug && !args.force) {
+            return {
+                ok: true,
+                connectionId: existing.id,
+                slug: existing.client.slug || existing.slug,
+                chatroomId: existing.client.chatroomId,
+                channelId: existing.client.channelId,
+                userId: existing.client.userId
+            };
+        }
+        stopKickWsEntry(existing, 'replaced');
+        kickWsConnections.delete(sender.id);
+    }
+
+    const connectionId = kickWsNextId++;
+    const client = new KickWsClient({
+        slug,
+        chatroomId: args.chatroomId ?? null,
+        channelId: args.channelId ?? null,
+        userId: args.userId ?? null,
+        userAgent: typeof args.userAgent === 'string' ? args.userAgent : undefined,
+        accessToken: typeof args.accessToken === 'string' ? args.accessToken : undefined,
+        clientId: typeof args.clientId === 'string' ? args.clientId : undefined,
+        pusherKey: typeof args.pusherKey === 'string' ? args.pusherKey : undefined,
+        pusherQuery: typeof args.pusherQuery === 'string' ? args.pusherQuery : undefined,
+        siteApiBase: typeof args.siteApiBase === 'string' ? args.siteApiBase : undefined,
+        siteApiProxyBase: typeof args.siteApiProxyBase === 'string' ? args.siteApiProxyBase : undefined,
+        allowProxy: args.allowProxy !== false,
+        logger: (...logArgs) => {
+            try {
+                console.log('[KickWs]', ...logArgs);
+            } catch (_) {}
+        }
+    });
+
+    const entry = {
+        id: connectionId,
+        slug,
+        client,
+        sender,
+        createdAt: Date.now(),
+        chatLogCount: 0
+    };
+    kickWsConnections.set(sender.id, entry);
+
+    const statusHandler = (payload) => {
+        logKickWs('Status update', {
+            connectionId,
+            slug: client.slug || slug,
+            status: payload?.status,
+            error: payload?.error || payload?.reason || null
+        });
+        sendKickWsStatus(sender, {
+            connectionId,
+            slug: client.slug || slug,
+            chatroomId: client.chatroomId,
+            channelId: client.channelId,
+            userId: client.userId,
+            ...payload
+        });
+    };
+
+    const resolvedHandler = (payload) => {
+        logKickWs('Resolved IDs', {
+            connectionId,
+            slug: payload.slug || client.slug || slug,
+            chatroomId: payload.chatroomId || client.chatroomId,
+            channelId: payload.channelId || client.channelId,
+            userId: payload.userId || client.userId
+        });
+        sendKickWsStatus(sender, {
+            connectionId,
+            status: client.status || 'connecting',
+            resolved: true,
+            slug: payload.slug || client.slug || slug,
+            chatroomId: payload.chatroomId || client.chatroomId,
+            channelId: payload.channelId || client.channelId,
+            userId: payload.userId || client.userId
+        });
+    };
+
+    const chatHandler = (message) => {
+        if (entry.chatLogCount < 3) {
+            entry.chatLogCount += 1;
+            logKickWs('Chat message received', {
+                connectionId,
+                messageId: message?.id || message?.message_id || null
+            });
+        }
+        const packet = buildKickSocketPacket(message, client);
+        packet.connectionId = connectionId;
+        sendKickWsEvent(sender, packet);
+    };
+
+    client.on('status', statusHandler);
+    client.on('resolved', resolvedHandler);
+    client.on('chat', chatHandler);
+    // Non-chat events are ignored here; alerts flow through the webhook bridge.
+
+    sender.once('destroyed', () => {
+        const current = kickWsConnections.get(sender.id);
+        if (current && current.id === connectionId) {
+            stopKickWsEntry(current, 'sender_destroyed');
+            kickWsConnections.delete(sender.id);
+        }
+    });
+
+    try {
+        await client.connect();
+        logKickWs('Connect success', {
+            connectionId,
+            slug: client.slug || slug,
+            chatroomId: client.chatroomId,
+            channelId: client.channelId,
+            userId: client.userId
+        });
+        return {
+            ok: true,
+            connectionId,
+            slug: client.slug || slug,
+            chatroomId: client.chatroomId,
+            channelId: client.channelId,
+            userId: client.userId
+        };
+    } catch (error) {
+        logKickWs('Connect failed', {
+            connectionId,
+            slug,
+            error: error?.message || String(error)
+        });
+        statusHandler({ status: 'error', error: error?.message || String(error) });
+        return { ok: false, error: error?.message || String(error) };
+    }
+});
+
+ipcMain.handle('kick-ws-disconnect', async (event, args = {}) => {
+    const sender = event.sender;
+    if (!sender || (typeof sender.isDestroyed === 'function' && sender.isDestroyed())) {
+        return { ok: false, error: 'Kick websocket sender not available.' };
+    }
+    const targetId = typeof args.connectionId === 'number' ? args.connectionId : null;
+    let entry = kickWsConnections.get(sender.id);
+    if (!entry && targetId != null) {
+        for (const candidate of kickWsConnections.values()) {
+            if (candidate.id === targetId) {
+                entry = candidate;
+                break;
+            }
+        }
+    }
+    if (!entry) {
+        return { ok: false, error: 'Kick websocket connection not found.' };
+    }
+    logKickWs('Disconnect requested', {
+        connectionId: entry.id,
+        slug: entry.slug || entry.client?.slug || null
+    });
+    stopKickWsEntry(entry, 'user_disconnect');
+    const deleteKey = entry.sender && entry.sender.id ? entry.sender.id : sender.id;
+    kickWsConnections.delete(deleteKey);
+    return { ok: true };
 });

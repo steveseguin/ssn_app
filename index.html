@@ -2602,7 +2602,7 @@
                     </div>
                 </div>
                 <div class="mode-info">
-                    <span class="info-icon" title="WebSocket mode uses less resources and provides additional data like followers/subs when signed in. Requires login for full features.">ℹ️</span>
+                    <span class="info-icon" role="button" tabindex="0" aria-label="Connection modes help" style="cursor: pointer;" title="Click for help on connection modes" onclick="showWebSocketHelpModal(event)" onkeydown="if (event.key === 'Enter' || event.key === ' ') showWebSocketHelpModal(event)">ℹ️</span>
                 </div>`;
 
                     controlPanel.appendChild(modeSelector);
@@ -3540,6 +3540,70 @@
             helpText.innerHTML = html;
         }
 
+        function showWebSocketHelpModal(event) {
+            try { event?.stopPropagation?.(); } catch (_) { }
+            try { event?.preventDefault?.(); } catch (_) { }
+
+            const content = `
+                <div style="padding: 20px; background: #2a2a2a; border-radius: 8px; max-height: 90vh; overflow-y: auto; width: 100%; max-width: 600px;">
+                    <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;">
+                        <div>
+                            <h3 style="margin: 0 0 6px 0;">Connection Modes</h3>
+                            <div style="color: #94a3b8; font-size: 12px; line-height: 1.4;">
+                                Choose how SSAPP connects to retrieve chat messages.
+                            </div>
+                        </div>
+                        <button onclick="closeModal()" class="button" style="background: #374151; white-space: nowrap;">Close</button>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 14px;">
+                        <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px;">
+                            <h4 style="margin: 0 0 6px 0; font-size: 14px;">📄 Standard (Browser Capture)</h4>
+                            <div style="color: #cbd5f5; font-size: 12.5px; line-height: 1.5;">
+                                Opens the stream page in a browser window and reads chat from the page directly.
+                                Most compatible method - use this if WebSocket mode has issues.
+                                The capture window must stay open while running.
+                            </div>
+                        </div>
+
+                        <div style="background: rgba(2, 132, 199, 0.12); border-left: 3px solid #38bdf8; border-radius: 8px; padding: 14px 16px;">
+                            <h4 style="margin: 0 0 6px 0; font-size: 14px;">🌐 WebSocket (API)</h4>
+                            <div style="color: #cbd5f5; font-size: 12.5px; line-height: 1.5;">
+                                Connects directly to the platform's chat API via WebSocket.
+                                <strong>Benefits:</strong>
+                                <ul style="margin: 6px 0 0 0; padding-left: 18px;">
+                                    <li>Uses less system resources</li>
+                                    <li>More reliable message delivery</li>
+                                    <li>Additional data (followers, subs) when signed in</li>
+                                    <li>No browser window required</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 14px; background: rgba(0,0,0,0.2); border-radius: 8px; padding: 12px 14px;">
+                        <div style="font-weight: 600; color: #f8fafc; margin-bottom: 6px;">Recommendation</div>
+                        <div style="color: #cbd5f5; font-size: 12.5px; line-height: 1.6;">
+                            Try <strong>WebSocket</strong> mode first for better performance. If you experience connection issues or missing messages, switch to <strong>Standard</strong> mode.
+                        </div>
+                    </div>
+
+                    <div style="display: flex; justify-content: flex-end; margin-top: 16px;">
+                        <button onclick="closeModal()" class="button" style="background: #374151;">Close</button>
+                    </div>
+                </div>
+            `;
+
+            if (typeof showModal === 'function') {
+                showModal(content);
+                return;
+            }
+
+            try {
+                alert("Connection mode help is unavailable in this build.");
+            } catch (_) { }
+        }
+
         function showTikTokConnectionModesHelpModal(event) {
             try { event?.stopPropagation?.(); } catch (_) { }
             try { event?.preventDefault?.(); } catch (_) { }
@@ -3840,7 +3904,7 @@
                         </div>
                     </div>
                     <div class="mode-info">
-                        <span class="info-icon" title="WebSocket mode uses less resources and provides additional data like followers/subs when signed in. Requires login for full features.">ℹ️</span>
+                        <span class="info-icon" role="button" tabindex="0" aria-label="Connection modes help" style="cursor: pointer;" title="Click for help on connection modes" onclick="showWebSocketHelpModal(event)" onkeydown="if (event.key === 'Enter' || event.key === ' ') showWebSocketHelpModal(event)">ℹ️</span>
                     </div>`;
                         controlPanel.appendChild(modeSelector);
                     }
@@ -11139,9 +11203,30 @@
             if (!confirm('Are you sure you want to remove this custom user agent?')) return;
 
             const savedUserAgents = JSON.parse(localStorage.getItem('customUserAgents') || '[]');
+            const removedAgent = savedUserAgents[index];
             savedUserAgents.splice(index, 1);
             localStorage.setItem('customUserAgents', JSON.stringify(savedUserAgents));
 
+            // Update the custom user agents list display
+            updateCustomUserAgentsList();
+
+            // Update the dropdown - remove the deleted option
+            const select = document.getElementById('userAgentSelect');
+            if (select && removedAgent) {
+                // Find and remove the option with matching value
+                for (let i = select.options.length - 1; i >= 0; i--) {
+                    if (select.options[i].value === removedAgent.value) {
+                        // If this was the selected option, reset to AUTO
+                        if (select.selectedIndex === i) {
+                            select.value = 'AUTO';
+                        }
+                        select.remove(i);
+                        break;
+                    }
+                }
+            }
+
+            Toast.success('User Agent Removed', 'Custom user agent has been removed');
         }
 
         function saveUserAgentSelection() {
