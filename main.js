@@ -5740,6 +5740,55 @@ async function createWindow(args, reuse = false, mainApp = false) {
             } catch (e) {
                 console.log('Could not inject language preference:', e);
             }
+
+            // Check if localStorage seems empty/reset and restore from backup if available
+            try {
+                const localStorageBackup = store.get('localStorageBackup');
+                if (localStorageBackup && Object.keys(localStorageBackup).length > 0) {
+                    // Check if localStorage appears empty or missing key settings
+                    mainWindow.webContents.executeJavaScript(`
+                        (function() {
+                            // Check for key indicators that settings exist
+                            const hasSettings = localStorage.length > 2 ||
+                                localStorage.getItem('settings') ||
+                                localStorage.getItem('sources') ||
+                                localStorage.getItem('socialStreamState');
+                            return { isEmpty: !hasSettings, count: localStorage.length };
+                        })();
+                    `).then((result) => {
+                        if (result && result.isEmpty) {
+                            const backupTime = store.get('localStorageBackupTime');
+                            log(`localStorage appears empty (${result.count} keys), restoring from backup` +
+                                (backupTime ? ` (saved: ${new Date(backupTime).toISOString()})` : ""));
+
+                            // Restore localStorage from backup
+                            const restoreScript = Object.entries(localStorageBackup)
+                                .map(([key, value]) => {
+                                    const safeKey = key.replace(/'/g, "\\'");
+                                    const safeValue = String(value).replace(/'/g, "\\'").replace(/\n/g, "\\n");
+                                    return `localStorage.setItem('${safeKey}', '${safeValue}');`;
+                                })
+                                .join('\n');
+
+                            mainWindow.webContents.executeJavaScript(restoreScript)
+                                .then(() => {
+                                    log(`Restored ${Object.keys(localStorageBackup).length} localStorage keys from backup`);
+                                    // Reload the page to apply restored settings
+                                    mainWindow.webContents.executeJavaScript(`
+                                        if (typeof location !== 'undefined' && location.reload) {
+                                            location.reload();
+                                        }
+                                    `);
+                                })
+                                .catch(err => console.error('Failed to restore localStorage:', err));
+                        } else {
+                            log(`localStorage has ${result.count} keys, no restore needed`);
+                        }
+                    }).catch(err => console.error('Failed to check localStorage:', err));
+                }
+            } catch (e) {
+                console.error('localStorage restore check failed:', e);
+            }
         }
 
         if (mainWindow && mainWindow.webContents && mainWindow.webContents.getURL().includes("youtube.com")) {
@@ -10181,7 +10230,20 @@ function loadCachedStateWithBackup() {
             console.warn("Recovered cachedState from backup");
             return backup;
         } catch (e2) {
-            console.error("Failed to load cachedState", e2);
+            log("Failed to load cachedState from .bak file: " + e2.message);
+            // Final fallback: try electron-store backup (different storage mechanism)
+            try {
+                const storeBackup = store.get('cachedStateBackup');
+                if (storeBackup && typeof storeBackup === 'object' && Object.keys(storeBackup).length > 0) {
+                    const backupTime = store.get('cachedStateBackupTime');
+                    console.warn("Recovered cachedState from electron-store backup" +
+                        (backupTime ? ` (saved: ${new Date(backupTime).toISOString()})` : ""));
+                    return storeBackup;
+                }
+            } catch (e3) {
+                log("Failed to load cachedState from electron-store: " + e3.message);
+            }
+            console.error("Failed to load cachedState from all sources");
             return null;
         }
     }
@@ -10507,6 +10569,43 @@ app.on('browser-window-created', (event, window) => {
 
 async function quitApp() {
     app.isQuitting = true;
+
+    // Save cachedState before quitting to prevent data loss
+    try {
+        if (cachedState && Object.keys(cachedState).length > 0) {
+            saveCachedStateAtomic(cachedState);
+            // Also save to electron-store as secondary backup (different storage, less likely to be cleared)
+            store.set('cachedStateBackup', cachedState);
+            store.set('cachedStateBackupTime', Date.now());
+            log("Saved cachedState on quit (primary + electron-store backup)");
+        }
+    } catch (e) {
+        console.error("Failed to save cachedState on quit:", e);
+    }
+
+    // Backup localStorage from main window before destroying (lightweight settings backup)
+    try {
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+            const localStorageData = await mainWindow.webContents.executeJavaScript(`
+                (function() {
+                    const data = {};
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        data[key] = localStorage.getItem(key);
+                    }
+                    return data;
+                })();
+            `).catch(() => null);
+
+            if (localStorageData && Object.keys(localStorageData).length > 0) {
+                store.set('localStorageBackup', localStorageData);
+                store.set('localStorageBackupTime', Date.now());
+                log(`Backed up ${Object.keys(localStorageData).length} localStorage keys on quit`);
+            }
+        }
+    } catch (e) {
+        console.error("Failed to backup localStorage on quit:", e);
+    }
 
     // Clear all global intervals
     if (global.intervals) {
