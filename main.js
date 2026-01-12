@@ -7550,6 +7550,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
 
             log("Context isolation for window:", contextIsolation, "Platform:", args.domain);
+            log("Preload path for window:", preloadPath, "args.wss:", args.wss, "has config.preload:", args.config && ("preload" in args.config));
+            log("Source window URL:", args.url, "config.preload value:", args.config?.preload);
 
             // Build webPreferences dynamically so we can omit preload when asked
             const webPreferences = {

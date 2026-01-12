@@ -240,6 +240,7 @@ var doSomethingInWebAppWrapper = function(message, sender, sendResponse) {
 };
 function configureContextBridge(){
 	try {
+		console.log('[Preload] Configuring contextBridge with ninjafy (including OAuth methods)');
 		const effectiveLocale = process.env.SSAPP_LOCALE_EFFECTIVE || 'en-US';
 		const acceptLanguageHeader = process.env.SSAPP_ACCEPT_LANGUAGE || 'en-US,en;q=0.9';
 		const localeSource = process.env.SSAPP_LOCALE_SOURCE || 'system';
