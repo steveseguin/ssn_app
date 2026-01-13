@@ -290,7 +290,15 @@ function configureContextBridge(){
 					callback();
 				  });
 			  },
-			  
+
+			  showSaveDialog: async (opts) => {
+				return await ipcRenderer.invoke('show-save-dialog', opts);
+			  },
+
+			  appendToFile: (filePath, data) => {
+				ipcRenderer.send('append-to-file', { filePath, data });
+			  },
+
 			  tts: async (text, settings) => {
 				return await ipcRenderer.invoke('tts', {text, settings});
 			  },

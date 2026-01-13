@@ -89,7 +89,7 @@ class EulerWebsocketServerConnection extends EventEmitter {
     }
 
     async connect() {
-        const url = createEulerWebSocketUrl({
+        const urlOptions = {
             uniqueId: this.uniqueId,
             ...(this.apiKey ? { apiKey: this.apiKey } : {}),
             ...(this.jwtKey ? { jwtKey: this.jwtKey } : {}),
@@ -98,6 +98,17 @@ class EulerWebsocketServerConnection extends EventEmitter {
                 bundleEvents: true,
                 ...(this.features || {})
             }
+        };
+        const url = createEulerWebSocketUrl(urlOptions);
+        
+        // Debug: Log connection details (mask API key for security)
+        const maskedKey = this.apiKey ? `${this.apiKey.slice(0, 10)}...${this.apiKey.slice(-4)}` : null;
+        console.log('[EulerWS] Connecting:', {
+            uniqueId: this.uniqueId,
+            hasApiKey: !!this.apiKey,
+            apiKeyPreview: maskedKey,
+            hasJwtKey: !!this.jwtKey,
+            urlPreview: url.replace(/apiKey=[^&]+/, 'apiKey=***').replace(/jwtKey=[^&]+/, 'jwtKey=***')
         });
 
         return new Promise((resolve, reject) => {
@@ -121,9 +132,29 @@ class EulerWebsocketServerConnection extends EventEmitter {
 
                 socket.on('close', (code, reason) => {
                     this.isConnected = false;
+                    const reasonStr = reason ? reason.toString() : '';
+                    // Log close code for debugging - see https://www.eulerstream.com/docs/sign-server/websockets
+                    const codeLabels = {
+                        1000: 'NORMAL',
+                        1011: 'INTERNAL_SERVER_ERROR',
+                        4005: 'STREAM_END',
+                        4006: 'NO_MESSAGES_TIMEOUT',
+                        4400: 'INVALID_OPTIONS',
+                        4401: 'INVALID_AUTH',
+                        4403: 'NO_PERMISSION',
+                        4404: 'NOT_LIVE',
+                        4429: 'TOO_MANY_CONNECTIONS',
+                        4500: 'TIKTOK_CLOSED_CONNECTION',
+                        4555: 'MAX_LIFETIME_EXCEEDED',
+                        4556: 'WEBCAST_FETCH_ERROR',
+                        4557: 'ROOM_INFO_FETCH_ERROR'
+                    };
+                    const codeLabel = codeLabels[code] || 'UNKNOWN';
+                    console.warn(`[EulerWS] WebSocket closed: code=${code} (${codeLabel})${reasonStr ? `, reason=${reasonStr}` : ''}`);
                     this.emit('disconnect', {
                         code,
-                        reason: reason ? reason.toString() : ''
+                        reason: reasonStr,
+                        codeLabel
                     });
                 });
 
@@ -170,11 +201,47 @@ class EulerWebsocketServerConnection extends EventEmitter {
 
         this.emit('websocketData', buffer);
 
+        // First, try to parse as JSON (room info is sent as JSON on first message)
+        try {
+            const text = buffer.toString('utf8');
+            if (text.startsWith('{') || text.startsWith('[')) {
+                const jsonData = JSON.parse(text);
+                // Room info message from Euler WS
+                if (jsonData.roomInfo || jsonData.room_id || jsonData.uniqueId) {
+                    console.log('[EulerWS] Received room info:', jsonData.uniqueId || jsonData.room_id);
+                    this.roomId = jsonData.room_id || jsonData.roomInfo?.roomId || this.roomId;
+                    this.emit('roomInfo', jsonData);
+                    return;
+                }
+                // Other JSON messages
+                this.emit('jsonMessage', jsonData);
+                return;
+            }
+        } catch (_jsonErr) {
+            // Not JSON, continue to protobuf parsing
+        }
+
+        // Parse as protobuf - try v2 first, then v1 as fallback
         let decodedFrame = null;
+        let parseError = null;
         try {
             decodedFrame = deserializeWebSocketMessage(buffer, SchemaVersion.v2);
-        } catch (error) {
-            this.emit('error', error);
+        } catch (v2Error) {
+            parseError = v2Error;
+            // Try v1 schema as fallback
+            try {
+                decodedFrame = deserializeWebSocketMessage(buffer, SchemaVersion.v1);
+                parseError = null; // v1 worked
+            } catch (v1Error) {
+                // Both failed - log but continue
+            }
+        }
+        if (parseError) {
+            // Log but don't emit error - protobuf parse failures on individual messages
+            // shouldn't kill the connection. This can happen with new/unknown message types.
+            const errMsg = parseError?.message || String(parseError);
+            console.warn('[EulerWS] Protobuf parse warning (continuing):', errMsg.slice(0, 100));
+            // Don't emit error - just skip this message
             return;
         }
 
@@ -4117,9 +4184,14 @@ class ConnectionManager {
             this.logDebug('control.websocketConnected');
             this.handleConnect();
         });
-        this.connection.on('disconnect', () => {
-            this.logDebug('control.disconnect');
-            this.handleDisconnect();
+        this.connection.on('disconnect', (disconnectInfo) => {
+            // For EulerWS, disconnectInfo contains { code, reason, codeLabel }
+            const code = disconnectInfo?.code;
+            const codeLabel = disconnectInfo?.codeLabel || '';
+            const reason = disconnectInfo?.reason || '';
+            this.logDebug('control.disconnect', { code, codeLabel, reason });
+            console.info(`[TikTok] Disconnect detected${code ? ` - code=${code} (${codeLabel})` : ''}${reason ? `: ${reason}` : ''}`);
+            this.handleDisconnect(disconnectInfo);
         });
         this.connection.on('error', (err) => {
             this.logDebug('control.error', err);
@@ -4831,6 +4903,16 @@ class ConnectionManager {
         const runConnect = async () => {
             try {
                 this.logDebug('lifecycle.connect.start');
+
+                // Mark connection attempt in progress to prevent cleanup during slow operations
+                // (e.g., local signer window navigation and fetch)
+                connectionStates.set(this.wssID, {
+                    isConnected: false,
+                    lastAttempt: Date.now(),
+                    isReconnecting: false,
+                    attemptInProgress: true
+                });
+
                 try {
                     emitStatus({
                         wssID: this.wssID,
@@ -4862,8 +4944,19 @@ class ConnectionManager {
                 this.logDebug('lifecycle.connect.success', {
                     effectiveMode,
                     connectionMethod
-	                });
-	                this.signServerFailureCount = 0;
+                });
+
+                // For polling/legacy mode, 'websocketConnected' event won't fire,
+                // so we need to manually trigger handleConnect() to update UI status
+                const usingPolling = this.pollingFallbackActivated
+                    || this.preferredStrategy === 'legacy'
+                    || this.connectionStrategy === 'legacy'
+                    || usingLegacyTikTokConnector;
+                if (usingPolling) {
+                    this.handleConnect();
+                }
+
+                this.signServerFailureCount = 0;
 	                this.websocketFailureCount = 0; // Reset strikes on success
 	                this.tiktokRateLimitCount = 0;
 	                this.tiktokRateLimitLastAt = 0;
@@ -5196,8 +5289,32 @@ class ConnectionManager {
         });
     }
 
-    handleDisconnect() {
-        console.info('Disconnect detected');
+    handleDisconnect(disconnectInfo = null) {
+        const code = disconnectInfo?.code;
+        const codeLabel = disconnectInfo?.codeLabel || '';
+        
+        // For EulerWS close codes, provide actionable guidance
+        const isEulerWs = this.signingProvider === EULER_WS_PROVIDER;
+        if (isEulerWs && code) {
+            const guidance = {
+                4404: 'The streamer is not currently live.',
+                4401: 'Invalid API key or JWT. Check your Euler credentials.',
+                4429: 'Too many connections or connecting too quickly. Check rate limits.',
+                4403: 'JWT does not have permission for this creator.',
+                4400: 'Invalid uniqueId or connection options.',
+                4556: 'Euler failed to fetch TikTok webcast data.',
+                4557: 'Euler failed to fetch room info for this streamer.',
+                4005: 'The TikTok stream ended normally.',
+                4006: 'No messages received - connection timed out.',
+                4500: 'TikTok closed the connection unexpectedly.',
+                4555: 'WebSocket exceeded 8-hour lifetime limit.',
+                1011: 'Internal server error on Euler side.'
+            };
+            if (guidance[code]) {
+                console.warn(`[EulerWS] ${guidance[code]}`);
+            }
+        }
+
         this.replayActive = false;
         connectionStates.set(this.wssID, {
             isConnected: false,
@@ -5209,12 +5326,28 @@ class ConnectionManager {
         if (this.viewerUpdateInterval) clearInterval(this.viewerUpdateInterval);
 
         if (!this.isStopped) {
+            // For certain codes, don't auto-reconnect (no point)
+            const noReconnectCodes = [4401, 4403, 4404, 4005];
+            const shouldSkipReconnect = isEulerWs && code && noReconnectCodes.includes(code);
+            
             emitStatus({
                 wssID: this.wssID,
-                status: 'disconnected'
+                status: 'disconnected',
+                disconnectCode: code || null,
+                disconnectReason: codeLabel || null
             });
 
-            this.attemptReconnect();
+            if (shouldSkipReconnect) {
+                console.warn(`[EulerWS] Skipping auto-reconnect due to terminal close code ${code} (${codeLabel})`);
+                // Emit error so UI shows the issue
+                emitStatus({
+                    wssID: this.wssID,
+                    status: 'error',
+                    error: `Euler WS: ${codeLabel}${code === 4404 ? ' - streamer is offline' : ''}`
+                });
+            } else {
+                this.attemptReconnect();
+            }
         }
     }
 

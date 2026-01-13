@@ -3533,7 +3533,7 @@
             } else if (val === 'local') {
                 html = "<strong>Experimental:</strong> Sign using a local TikTok window on this machine. Keep the window open for chat replies.";
             } else if (val === 'euler-ws') {
-                html = "<strong>Experimental:</strong> Euler’s hosted WebSocket relay (requires API key/JWT). Receive-only (no outbound chat sends).";
+                html = "<strong>Experimental:</strong> Euler's hosted WebSocket relay. Get your API key from <a href=\"#\" onclick=\"window.open('https://www.eulerstream.com/dashboard/api-keys', '_blank'); return false;\" style=\"color: #63a4d8; text-decoration: underline;\">eulerstream.com/dashboard/api-keys</a>. Receive-only (no chat sends).";
             } else if (val === 'custom') {
                 html = "<strong>Experimental:</strong> API key / custom signing URL. If it fails, switch back to Auto or Polling.";
             }
@@ -3676,9 +3676,11 @@
                         <div style="background: rgba(59, 130, 246, 0.10); border-left: 3px solid #3b82f6; border-radius: 8px; padding: 12px 14px;">
                             <div style="font-weight: 600; color: #dbeafe; margin-bottom: 4px;">Euler WebSocket Relay (Hosted Proxy, Experimental)</div>
                             <div style="color: #cbd5f5; font-size: 12.5px; line-height: 1.5;">
-                                Experimental: Connects through EulerStream’s hosted WebSocket relay. Requires an Euler API key/JWT (paid).
-                                Receive-only (no outbound chat sends).
+                                Experimental: Connects through EulerStream's hosted WebSocket relay.
+                                <br><strong>Get your API key:</strong> <a href="#" onclick="window.open('https://www.eulerstream.com/dashboard/api-keys', '_blank'); return false;" style="color: #63a4d8; text-decoration: underline;">eulerstream.com/dashboard/api-keys</a>
+                                <br>Free tier available (Community plan). Receive-only (no outbound chat sends).
                             </div>
+                        </div>
                         </div>
 
                         <div style="background: rgba(148, 163, 184, 0.10); border-left: 3px solid #94a3b8; border-radius: 8px; padding: 12px 14px;">
@@ -6151,7 +6153,7 @@
                 // Suppress warning if using Local Signer explicitly
                 const isLocalSigner = signingProvider === 'local';
                 if (signingProvider === 'euler-ws' && (!signing || !signing.apiKey)) {
-                    Toast.warning('Euler WebSocket (Experimental)', 'Enter your Euler API key or JWT to use the hosted WebSocket relay.');
+                    Toast.warning('Euler WebSocket (Experimental)', 'Enter your Euler API key to use the hosted WebSocket relay. Get one at eulerstream.com/dashboard/api-keys');
                 }
 
                 if (strategy === 'websocket' && !signing && !isLocalSigner && !tiktokWebsocketSigningWarningShown) {
@@ -6452,9 +6454,15 @@
                 mainContent = `
                     <div style="background: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6; padding: 12px 16px; border-radius: 6px; margin-bottom: 20px;">
                         <h4 style="margin: 0 0 6px 0; color: #93c5fd; font-size: 15px;">Hosted WebSocket Relay</h4>
-                        <p style="margin: 0; font-size: 13px; color: #dbeafe;">
-                            Experimental: Use Euler's WebSocket relay (API key or JWT) to bypass local IP rate limits.
-                            Note: receive-only (no outbound chat sends).
+                        <p style="margin: 0; font-size: 13px; color: #dbeafe; line-height: 1.5;">
+                            Connects through EulerStream's hosted WebSocket relay. Receive-only (no outbound chat sends).
+                        </p>
+                        <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbeafe; line-height: 1.5;">
+                            <strong>Get your API key:</strong> 
+                            <a href="#" onclick="window.open('https://www.eulerstream.com/dashboard/api-keys', '_blank'); return false;" style="color: #63a4d8; text-decoration: underline;">
+                                eulerstream.com/dashboard/api-keys
+                            </a>
+                            <br><span style="color: #94a3b8; font-size: 12px;">Free tier available (Community plan: 1,000 requests/day, 10 WebSockets)</span>
                         </p>
                     </div>
                     ${apiInputsBlock}

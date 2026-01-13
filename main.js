@@ -5201,6 +5201,17 @@ async function createWindow(args, reuse = false, mainApp = false) {
         });
     });
 
+    ipcMain.on("append-to-file", (event, { filePath, data }) => {
+        fs.appendFile(filePath, data, (err) => {
+            if (err) {
+                console.error("Failed to append to file:", err);
+                event.reply("append-failure", err.message);
+            } else {
+                event.reply("append-success", filePath);
+            }
+        });
+    });
+
     ipcMain.on("fromBackground", function (eventRet, value) {
         log("\nfromBackground ??????????????????");
         log("Received settings from background:", JSON.stringify(value).substring(0, 200));
@@ -12007,6 +12018,15 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     const signing = normalizeTikTokSigningArgs(args?.signing);
     const signingProvider = args?.signingProvider || 'auto';
     const autoActivate = args?.autoActivate === true;
+    
+    // Debug: Log signing config received from renderer
+    console.log('[TikTok] Signing config received:', {
+        rawSigning: args?.signing,
+        normalizedSigning: signing,
+        signingProvider,
+        hasApiKey: !!(signing && signing.apiKey),
+        hasServiceUrl: !!(signing && signing.serviceUrl)
+    });
 
     const requestedStrategy = args && args.strategy === 'websocket' ? 'websocket' : 'legacy';
     const manager = new ConnectionManager(
