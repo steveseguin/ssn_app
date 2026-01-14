@@ -1,9 +1,9 @@
 name: Update AUR Package
 
 on:
-  release:
-    types: [published]
-  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 6am UTC
+  workflow_dispatch:     # Manual trigger
 
 jobs:
   update-aur:
@@ -19,15 +19,26 @@ jobs:
       - name: Get release version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            VERSION="${{ github.event.release.tag_name }}"
-          else
-            VERSION=$(curl -s https://api.github.com/repos/steveseguin/social_stream/releases/latest | jq -r .tag_name)
-          fi
+          # Always fetch latest from social_stream releases
+          VERSION=$(curl -s https://api.github.com/repos/steveseguin/social_stream/releases/latest | jq -r .tag_name)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Updating AUR package to version: $VERSION"
+          echo "Latest release version: $VERSION"
+          
+          # Get current AUR version
+          CURRENT=$(grep -Po '^pkgver=\K.*' aur/PKGBUILD)
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "Current AUR version: $CURRENT"
+          
+          if [ "$VERSION" = "$CURRENT" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "AUR is already up to date"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Update needed: $CURRENT -> $VERSION"
+          fi
 
       - name: Update PKGBUILD
+        if: steps.version.outputs.skip != 'true'
         working-directory: aur
         run: |
           VERSION=${{ steps.version.outputs.version }}
@@ -57,6 +68,7 @@ jobs:
           cat PKGBUILD
 
       - name: Push to AUR
+        if: steps.version.outputs.skip != 'true'
         working-directory: aur
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
