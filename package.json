@@ -16,7 +16,7 @@
     "check:submodules": "node scripts/check-submodules.js",
     "prebuild": "npm run check:submodules && npm run update:fallback",
     "prebuild:win32": "npm run clean && npm run check:submodules && npm run update:fallback && node -e \"setTimeout(() => {}, 5000)\"",
-    "build:win32": "npm run prebuild:win32 && electron-builder --win --config.electronVersion=40.0.0-qp20 --config.electronDownload.mirror=https://github.com/steveseguin/electron/releases/download/ --config.electronDownload.customDir=v40.0.0-qp20",
+    "build:win32": "npm run prebuild:win32 && electron-builder --win --config.electronVersion=39.2.8-qp20 --config.electronDownload.mirror=https://github.com/steveseguin/electron/releases/download/ --config.electronDownload.customDir=v39.2.8-qp20",
     "prebuild:darwin": "npm run clean && npm run check:submodules && npm run update:fallback",
     "build:darwin": "electron-builder --mac --x64 && electron-builder --mac --arm64",
     "prebuild:linux": "npm run clean && npm run check:submodules && npm run update:fallback",

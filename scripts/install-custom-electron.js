@@ -17,10 +17,10 @@ const PLATFORM_TARGETS = new Map([
 	[
 		"win32",
 		{
-			version: "40.0.0-qp20",
-			releaseTag: "v40.0.0-qp20",
+			version: "39.2.8-qp20",
+			releaseTag: "v39.2.8-qp20",
 			mirrorBase: "https://github.com/steveseguin/electron/releases/download/",
-			artifacts: new Map([["x64", "electron-v40.0.0-qp20-win32-x64.zip"]]),
+			artifacts: new Map([["x64", "electron-v39.2.8-qp20-win32-x64.zip"]]),
 		},
 	],
 ]);
@@ -209,10 +209,11 @@ function parseChecksumManifest(text) {
 			continue;
 		}
 
-		const match = line.match(/^([a-fA-F0-9]{64}) \*(.+)$/);
+		// Support both formats: "<hash> *<file>" (GNU) and "<hash>  <file>" (BSD)
+		const match = line.match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/);
 		if (match) {
 			const [, hash, file] = match;
-			entries.set(file, hash.toLowerCase());
+			entries.set(file.trim(), hash.toLowerCase());
 		}
 	}
 
