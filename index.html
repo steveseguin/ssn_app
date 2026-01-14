@@ -1548,7 +1548,8 @@
             const groupSigninButton = element.querySelector('[data-group-signin]');
             if (groupSigninButton) {
                 const isYouTubeGroup = group.target === 'youtube' || group.target === 'youtubeshorts';
-                if (isYouTubeGroup) {
+                const isWebsocketMode = group.connectionMode === 'websocket';
+                if (isYouTubeGroup && !isWebsocketMode) {
                     const label = typeof translate === 'function' ? translate('btn.signin') : '🔑 Sign-in';
                     groupSigninButton.textContent = label;
                     groupSigninButton.classList.remove('hidden');
@@ -5979,6 +5980,8 @@
             if (devmode) {
                 queryParams.devmode = '';
             }
+            // Signal to the WSS page that we're running in ssapp (Electron)
+            queryParams.ssapp = '1';
 
             const resolvedHtml = await resolveWebSocketHtml(source.target, queryParams, { branch: isBetaMode ? 'beta' : 'main' });
             if (!resolvedHtml) {
@@ -6064,6 +6067,8 @@
             if (devmode && !queryParams.has('devmode')) {
                 queryParams.set('devmode', '');
             }
+            // Signal to the WSS page that we're running in ssapp (Electron)
+            queryParams.set('ssapp', '1');
 
             const resolvedHtml = await resolveWebSocketHtml('youtube', Object.fromEntries(queryParams.entries()), { branch: isBetaMode ? 'beta' : 'main' });
             if (!resolvedHtml) {

@@ -2609,6 +2609,7 @@ function getWindowStateKey(window) {
     // Generate a unique key based on the window's URL
     // This prevents different types of windows from overwriting each other's saved dimensions
     const url = window.webContents.getURL();
+    if (url.includes("index.html")) return "windowState_main";
     if (url.includes("dock.html")) return "windowState_dock";
     if (url.includes("input.html")) return "windowState_input";
     if (url.includes("popup.html")) return "windowState_popup";
@@ -2626,14 +2627,15 @@ function saveWindowState(window) {
     const display = screen.getDisplayMatching(bounds);
     const stateKey = getWindowStateKey(window);
 
-    store.set(stateKey, {
+    const stateToSave = {
         width: Math.max(parseInt(bounds.width), 100),
         height: Math.max(parseInt(bounds.height), 100),
         x: bounds.x,
         y: bounds.y,
         displayId: display.id,
         scaleFactor: display.scaleFactor || 1
-    });
+    };
+    store.set(stateKey, stateToSave);
 }
 
 function loadWindowState(url) {
@@ -2643,7 +2645,8 @@ function loadWindowState(url) {
     }
 
     let stateKey;
-    if (url.includes("dock.html")) stateKey = "windowState_dock";
+    if (url.includes("index.html")) stateKey = "windowState_main";
+    else if (url.includes("dock.html")) stateKey = "windowState_dock";
     else if (url.includes("input.html")) stateKey = "windowState_input";
     else if (url.includes("popup.html")) stateKey = "windowState_popup";
     else if (url.includes("chathistory.html")) stateKey = "windowState_history";
@@ -2668,6 +2671,50 @@ function loadWindowState(url) {
     };
 
     return defaultState;
+}
+
+/**
+ * Validate that saved window bounds are still visible on a connected display.
+ * @param {object} savedState - The saved window state with x, y, width, height
+ * @returns {object|null} - Validated bounds object, or null if position is off-screen
+ */
+function validateSavedBounds(savedState) {
+    if (!savedState || savedState.x === null || savedState.y === null) {
+        return null;
+    }
+
+    const displays = screen.getAllDisplays();
+    const bounds = {
+        x: savedState.x,
+        y: savedState.y,
+        width: Math.max(1, savedState.width || 800),
+        height: Math.max(1, savedState.height || 600)
+    };
+
+    // Check if at least part of the window would be visible on any display
+    // We require at least 100px of the window to be on-screen
+    const minVisiblePx = 100;
+
+    for (const display of displays) {
+        const db = display.bounds;
+        const overlapX = Math.max(0, Math.min(bounds.x + bounds.width, db.x + db.width) - Math.max(bounds.x, db.x));
+        const overlapY = Math.max(0, Math.min(bounds.y + bounds.height, db.y + db.height) - Math.max(bounds.y, db.y));
+
+        if (overlapX >= minVisiblePx && overlapY >= minVisiblePx) {
+            // Electron bounds are already DPI-independent; avoid scaleFactor math.
+
+            // Clamp saved size to the display work area so we don't restore runaway sizes.
+            const maxWidth = display.workArea?.width || display.bounds.width;
+            const maxHeight = display.workArea?.height || display.bounds.height;
+            bounds.width = Math.min(Math.max(bounds.width, 100), maxWidth);
+            bounds.height = Math.min(Math.max(bounds.height, 100), maxHeight);
+
+            return bounds;
+        }
+    }
+
+    // Position is off-screen (monitor likely disconnected)
+    return null;
 }
 
 function getWindowLockKey(windowOrUrl) {
@@ -4706,12 +4753,51 @@ async function createWindow(args, reuse = false, mainApp = false) {
         tainted = true;
     }
 
+    // Restore saved window position/size for main window (remembers which monitor it was on)
+    // On Windows with mixed-DPI monitors, constructor bounds can be applied at the wrong scale.
+    // Workaround: apply saved bounds again after the window is ready.
+    let savedWindowX = undefined;
+    let savedWindowY = undefined;
+    let desiredMainBounds = null;
+    if (mainApp && X === -1 && Y === -1) {
+        // Only restore saved position if no command-line position args were provided (default is -1)
+        const savedState = loadWindowState("index.html");
+        const validatedBounds = validateSavedBounds(savedState);
+        if (validatedBounds) {
+            desiredMainBounds = validatedBounds;
+            savedWindowX = validatedBounds.x;
+            savedWindowY = validatedBounds.y;
+
+            // Restore saved size (clamped to the matched display work area)
+            if (validatedBounds.width && validatedBounds.height) {
+                const matchedDisplay = screen.getDisplayMatching(validatedBounds);
+                const maxWidth = matchedDisplay?.workAreaSize?.width || ttt.width;
+                const maxHeight = matchedDisplay?.workAreaSize?.height || ttt.height;
+                targetWidth = Math.min(Math.max(Math.round(validatedBounds.width), 100), maxWidth);
+                targetHeight = Math.min(Math.max(Math.round(validatedBounds.height), 100), maxHeight);
+                desiredMainBounds = {
+                    x: savedWindowX,
+                    y: savedWindowY,
+                    width: targetWidth,
+                    height: targetHeight
+                };
+            }
+        } else if (savedState && savedState.x !== null) {
+            // Saved position is off-screen (monitor disconnected) - center on primary display
+            const primary = screen.getPrimaryDisplay();
+            savedWindowX = Math.round(primary.bounds.x + (primary.bounds.width - targetWidth) / 2);
+            savedWindowY = Math.round(primary.bounds.y + (primary.bounds.height - targetHeight) / 2);
+        }
+    }
+
     // Create the browser window. 
     mainWindow = new BrowserWindow({
         transparent: false,
         //focusable: false,
         width: targetWidth,
         height: targetHeight,
+        x: savedWindowX,
+        y: savedWindowY,
         frame: true,
         backgroundColor: "#FFF",
         fullscreenable: true,
@@ -4731,9 +4817,26 @@ async function createWindow(args, reuse = false, mainApp = false) {
         title: currentTitle,
     });
 
+
     mainWindowReadyForInjectorToasts = false;
     if (mainWindow && mainWindow.webContents) {
         const wc = mainWindow.webContents;
+
+        if (mainApp && desiredMainBounds && process.platform === "win32") {
+            const applyDesiredBounds = () => {
+                try {
+                    if (!mainWindow || mainWindow.isDestroyed()) return;
+                    mainWindow.setBounds(desiredMainBounds, false);
+                } catch (_) { }
+            };
+
+            // Apply twice to handle Windows per-monitor DPI timing quirks.
+            mainWindow.once("ready-to-show", () => {
+                applyDesiredBounds();
+                setTimeout(applyDesiredBounds, 100);
+            });
+        }
+
         wc.on('did-finish-load', () => {
             mainWindowReadyForInjectorToasts = true;
             flushInjectorToastQueue();
@@ -4849,8 +4952,18 @@ async function createWindow(args, reuse = false, mainApp = false) {
         handleZoom(mainWindow);
 
         // Add window state saving for main window
+        // Skip saving during initial window setup to prevent DPI-related resize from corrupting saved size
+        let mainWindowReadyToSaveState = false;
+        mainWindow.webContents.once("did-finish-load", () => {
+            // Delay enabling state saving to allow any initial resize/positioning to settle
+            setTimeout(() => {
+                mainWindowReadyToSaveState = true;
+            }, 500);
+        });
+
         let saveTimeout;
         mainWindow.on("resize", () => {
+            if (!mainWindowReadyToSaveState) return;
             clearTimeout(saveTimeout);
             saveTimeout = setTimeout(() => {
                 saveWindowState(mainWindow);
@@ -4858,6 +4971,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         });
 
         mainWindow.on("move", () => {
+            if (!mainWindowReadyToSaveState) return;
             clearTimeout(saveTimeout);
             saveTimeout = setTimeout(() => {
                 saveWindowState(mainWindow);
@@ -4940,13 +5054,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             const windowState = loadWindowState(url);
             if (windowState) {
-                // Adjust for display scaling
-                let scaleFactor = 1;
-                if (windowState.scaleFactor) {
-                    const currentDisplay = screen.getPrimaryDisplay();
-                    scaleFactor = (currentDisplay.scaleFactor || 1) / windowState.scaleFactor;
-                }
-
+                // Window bounds are already DPI-independent; avoid scaleFactor math.
                 if (windowState.x !== null && windowState.x !== undefined) {
                     config.x = windowState.x;
                 }
@@ -4954,10 +5062,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     config.y = windowState.y;
                 }
                 if (windowState.width) {
-                    config.width = Math.round(windowState.width * scaleFactor);
+                    config.width = Math.round(windowState.width);
                 }
                 if (windowState.height) {
-                    config.height = Math.round(windowState.height * scaleFactor);
+                    config.height = Math.round(windowState.height);
                 }
             }
 
@@ -7501,7 +7609,18 @@ async function createWindow(args, reuse = false, mainApp = false) {
         } else {
             // AUTO - use platform-based session (without TLD)
             const domain = getPrimaryDomain(args.url);
-            const platform = getDomainToPlatform(domain);
+            let platform = getDomainToPlatform(domain);
+            
+            // For WebSocket pages (file://, localhost, or socialstream.ninja), 
+            // detect platform from URL path instead of domain
+            if (args.url && args.wss) {
+                const platformMatch = args.url.match(/(?:sources\/)?websocket\/(\w+)\.html/i);
+                if (platformMatch && platformMatch[1]) {
+                    platform = platformMatch[1].toLowerCase();
+                    log(`Detected WebSocket platform from URL path: ${platform}`);
+                }
+            }
+            
             sessionPartition = `persist:${platform}`;
             log(`Using auto session based on platform: ${sessionPartition}`);
         }

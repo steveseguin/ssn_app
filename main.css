@@ -787,6 +787,7 @@ button {
   flex-direction: column;
   gap: 8px;
   margin-top: 8px !important;
+  order: 99;
 }
 
 .stream-group .entry {
@@ -1403,7 +1404,7 @@ button.group-control[data-group-visible="false"] {
   border-color: #95a5a6 !important;
 }
 
-.entry[data-is-group-header="true"] .button-group button {
+.entry[data-is-group-header="true"] .button-group button:not(.hidden) {
   display: flex !important;
   opacity: 1;
   visibility: visible;

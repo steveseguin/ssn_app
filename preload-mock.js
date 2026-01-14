@@ -701,6 +701,20 @@ if (contextIsolated) {
       }
     }
   });
+
+  // Expose OAuth methods for WSS pages (YouTube, Twitch, Kick) under __ssapp
+  // This allows OAuth to work even with the mock preload that hides Electron fingerprints
+  contextBridge.exposeInMainWorld('__ssapp', {
+    startYouTubeOAuth: async (payload) => {
+      return await ipcRenderer.invoke('youtube-oauth', payload);
+    },
+    startTwitchOAuth: async (payload) => {
+      return await ipcRenderer.invoke('twitch-oauth', payload);
+    },
+    startKickOAuth: async (payload) => {
+      return await ipcRenderer.invoke('kick-oauth', payload);
+    }
+  });
 } else {
   // When contextIsolation is false, expose directly to window
   console.log('[Preload] Exposing IPC directly to window (contextIsolation disabled)');
@@ -712,6 +726,19 @@ if (contextIsolated) {
       once: (channel, func) => ipcRenderer.once(channel, func),
       invoke: async (channel, ...args) => await ipcRenderer.invoke(channel, ...args),
       sendSync: (channel, ...args) => ipcRenderer.sendSync(channel, ...args)
+    }
+  };
+
+  // Expose OAuth methods for WSS pages (YouTube, Twitch, Kick) under __ssapp
+  window.__ssapp = {
+    startYouTubeOAuth: async (payload) => {
+      return await ipcRenderer.invoke('youtube-oauth', payload);
+    },
+    startTwitchOAuth: async (payload) => {
+      return await ipcRenderer.invoke('twitch-oauth', payload);
+    },
+    startKickOAuth: async (payload) => {
+      return await ipcRenderer.invoke('kick-oauth', payload);
     }
   };
 }
