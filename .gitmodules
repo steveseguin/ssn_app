@@ -1,0 +1,3 @@
+[submodule "tiktok-signing"]
+	path = tiktok-signing
+	url = git@github.com:steveseguin/ssn-tiktok-signer.git
