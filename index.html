@@ -304,8 +304,8 @@
         <div class="entry-actions-main">
             <button onclick="activateSource(this)" data-activatehtml>▶️ Activate source</button>
             <button onclick="signin(this)" title="Sign-in friendly compatible page" data-signin>🔑 Sign-in</button>
-            <button onclick="showTips(this)" title="Show tips for this platform" class="hidden help-btn" data-showtips>❓
-                Help!</button>
+            <button onclick="showTips(this)" title="Show tips for this platform" class="help-btn" data-showtips>❓
+                Help</button>
         </div>
 
         <div class="entry-actions-live">
@@ -1302,11 +1302,8 @@
                 sourceUrlInput.classList.toggle("hidden", !source.url);
             }
 
-            if (tipsContent[source.target]) {
-                element.querySelector("[data-showtips]")?.classList.remove("hidden");
-            } else {
-                element.querySelector("[data-showtips]")?.classList.add("hidden");
-            }
+            // Help button is always visible now
+            element.querySelector("[data-showtips]")?.classList.remove("hidden");
 
             // Update badges: reply-only + session
             try {
@@ -3378,9 +3375,9 @@
 	                    signingToolsMenuItem.classList.toggle('active', showTools);
 		                    if (providerRequiresTools) {
 		                        const providerLabel = source.tiktokSigningProvider === 'custom'
-		                            ? 'API Key / Signing URL'
+		                            ? 'Euler Signing'
 		                            : (source.tiktokSigningProvider === 'euler-ws'
-		                                ? 'Euler WebSocket Relay'
+		                                ? 'Euler Proxy'
 		                                : 'Local Signer');
 		                        signingToolsMenuItem.textContent = `🧪 TikTok signing tools required (${providerLabel})`;
 		                        signingToolsMenuItem.dataset.disabled = 'true';
@@ -3529,13 +3526,13 @@
             const val = selectElement.value;
             let html = '';
             if (val === 'auto') {
-                html = `Uses Euler’s community signing by default (no key). Advanced signing options (API key / signing URL / local signer) are <strong>experimental</strong>. <a href="#" onclick="window.open('${window.SSAPP_SIGNING_HELP_URL || 'https://github.com/SocialStreamNinja/ssapp/wiki/TikTok-Signing'}', '_blank'); return false;" style="color: #63a4d8; text-decoration: underline;">Learn more</a>`;
+                html = `Tries Euler signing, falls back to Polling if it fails. No API key needed.`;
             } else if (val === 'local') {
-                html = "<strong>Experimental:</strong> Sign using a local TikTok window on this machine. Keep the window open for chat replies.";
+                html = "<strong>Experimental:</strong> Signs using a local TikTok browser window. Supports replies. Keep the signer window open.";
             } else if (val === 'euler-ws') {
-                html = "<strong>Experimental:</strong> Euler's hosted WebSocket relay. Get your API key from <a href=\"#\" onclick=\"window.open('https://www.eulerstream.com/dashboard/api-keys', '_blank'); return false;\" style=\"color: #63a4d8; text-decoration: underline;\">eulerstream.com/dashboard/api-keys</a>. Receive-only (no chat sends).";
+                html = "<strong>Experimental:</strong> Connects through Euler's proxy server. Requires API key from <a href=\"#\" onclick=\"window.open('https://www.eulerstream.com/dashboard/api-keys', '_blank'); return false;\" style=\"color: #63a4d8; text-decoration: underline;\">eulerstream.com</a>. No replies.";
             } else if (val === 'custom') {
-                html = "<strong>Experimental:</strong> API key / custom signing URL. If it fails, switch back to Auto or Polling.";
+                html = "<strong>Experimental:</strong> Provide your own Euler API key or custom signing URL.";
             }
             helpText.innerHTML = html;
         }
@@ -3618,97 +3615,110 @@
                         <div>
                             <h3 style="margin: 0 0 6px 0;">TikTok Connection Modes</h3>
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.4;">
-                                A quick guide to how SSAPP connects to TikTok chat.
+                                Choose based on what you need. Each mode has tradeoffs.
                             </div>
                         </div>
                         <button onclick="closeModal()" class="button" style="background: #374151; white-space: nowrap;">Close</button>
                     </div>
 
-                    <div style="margin-top: 14px; font-size: 13px; color: #e5e7eb; line-height: 1.55;">
-                        <p style="margin: 0 0 10px 0;">
-                            SSAPP supports three TikTok connection modes: <strong>Standard</strong>, <strong>Polling</strong>, and <strong>TikTok WS</strong>.
-                            TikTok WS uses a <strong>signing provider</strong> (this generates the signatures TikTok requires).
-                        </p>
-                    </div>
-
-                    <div style="display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 14px;">
-                        <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px;">
-                            <h4 style="margin: 0 0 6px 0; font-size: 14px;">📄 Standard (Classic / Browser Capture)</h4>
-                            <div style="color: #cbd5f5; font-size: 12.5px; line-height: 1.5;">
-                                Opens a TikTok page in a window and reads the chat from the page (DOM). No signing required.
-                                Use this when the API-based modes are failing or you just want maximum compatibility. The capture window must stay open while running.
-                            </div>
-                        </div>
-
-                        <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px;">
-                            <h4 style="margin: 0 0 6px 0; font-size: 14px;">🕰️ Polling (Legacy / HTTP)</h4>
-                            <div style="color: #cbd5f5; font-size: 12.5px; line-height: 1.5;">
-                                Uses TikTok’s HTTP endpoints. Lightweight and usually the safest default. No signer needed.
-                            </div>
-                        </div>
-
-                        <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px;">
-                            <h4 style="margin: 0 0 6px 0; font-size: 14px;">🌐 TikTok WS (API / WebSocket)</h4>
-                            <div style="color: #cbd5f5; font-size: 12.5px; line-height: 1.5;">
-                                Uses the TikTok WebSocket feed via the API connector. Fast and feature-rich, but requires signing.
-                                If signing fails (or gets rate-limited), switching providers can help.
-                            </div>
+                    <!-- Which Should I Use? -->
+                    <div style="margin-top: 16px; background: rgba(34, 197, 94, 0.08); border: 1px solid rgba(34, 197, 94, 0.3); border-radius: 8px; padding: 14px;">
+                        <div style="font-weight: 600; color: #86efac; margin-bottom: 8px; font-size: 14px;">Which should I use?</div>
+                        <div style="color: #d1d5db; font-size: 13px; line-height: 1.7;">
+                            <strong style="color: #f8fafc;">Most users</strong> → Use <strong>TikTok WS</strong> with <strong>Auto</strong> (default). It falls back to Polling if needed.<br>
+                            <strong style="color: #f8fafc;">Need to reply to chat?</strong> → Use <strong>Standard</strong> mode and sign in first.<br>
+                            <strong style="color: #f8fafc;">Standard not working?</strong> → Try <strong>TikTok WS</strong> with <strong>Local Signer</strong> for replies.<br>
+                            <strong style="color: #f8fafc;">Everything failing?</strong> → Try <strong>Euler Proxy</strong> or <strong>Euler Signing</strong> with an API key.
                         </div>
                     </div>
 
-                    <h4 style="margin: 18px 0 8px 0; font-size: 14px;">Signing Providers (used by TikTok WS)</h4>
+                    <!-- Connection Modes Detail -->
+                    <h4 style="margin: 20px 0 10px 0; font-size: 14px; color: #e2e8f0;">Connection Modes</h4>
+                    <div style="display: grid; grid-template-columns: 1fr; gap: 10px;">
+                        <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 12px 14px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <h4 style="margin: 0; font-size: 13px; color: #f8fafc;">🌐 TikTok WS (WebSocket)</h4>
+                                <span style="font-size: 11px; background: rgba(34,197,94,0.2); color: #86efac; padding: 2px 8px; border-radius: 4px;">Recommended</span>
+                            </div>
+                            <div style="color: #94a3b8; font-size: 12px; line-height: 1.5; margin-top: 6px;">
+                                Real-time connection with smooth message flow. With <strong>Auto</strong>, it falls back to Polling if WebSocket fails. Reply support depends on the signing provider (see below).
+                            </div>
+                        </div>
+
+                        <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 12px 14px;">
+                            <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #f8fafc;">📄 Standard</h4>
+                            <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
+                                Opens a browser window to TikTok. <strong style="color: #d1d5db;">Can send replies</strong> if signed in. Click <strong>👁️ Show capture page</strong> to check if sign-in or CAPTCHA is needed. If chat isn't loading, try <strong>🔄 Reload</strong>.
+                            </div>
+                        </div>
+
+                        <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 12px 14px;">
+                            <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #f8fafc;">🕰️ Polling</h4>
+                            <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
+                                Fetches chat via HTTP in batches. No signing needed. Use as a fallback when other modes fail. Cannot send replies. Messages may have slight delay.
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Signing Providers -->
+                    <h4 style="margin: 20px 0 10px 0; font-size: 14px; color: #e2e8f0;">Signing Providers (for TikTok WS mode)</h4>
                     <div style="display: grid; grid-template-columns: 1fr; gap: 10px;">
                         <div style="background: rgba(2, 132, 199, 0.12); border-left: 3px solid #38bdf8; border-radius: 8px; padding: 12px 14px;">
-                            <div style="font-weight: 600; color: #e0f2fe; margin-bottom: 4px;">Auto / Euler (Default)</div>
-                            <div style="color: #cbd5f5; font-size: 12.5px; line-height: 1.5;">
-                                Uses Euler’s community signing by default (no key). Free, but can be rate-limited.
-                                API key / custom signing URL options are experimental.
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                <span style="font-weight: 600; color: #e0f2fe; font-size: 13px;">Auto</span>
+                                <span style="font-size: 11px; background: rgba(34,197,94,0.2); color: #86efac; padding: 2px 8px; border-radius: 4px;">Default</span>
+                            </div>
+                            <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
+                                Tries Euler signing, falls back to Polling automatically if it fails. No API key needed. No replies. Best starting point.
                             </div>
                         </div>
 
                         <div style="background: rgba(34, 197, 94, 0.10); border-left: 3px solid #22c55e; border-radius: 8px; padding: 12px 14px;">
-                            <div style="font-weight: 600; color: #dcfce7; margin-bottom: 4px;">Local Signer (In-House, Experimental)</div>
-                            <div style="color: #cbd5f5; font-size: 12.5px; line-height: 1.5;">
-                                Experimental signing using a local TikTok sign-in window on this machine. Keep that window open for chat replies; for read-only connections you can usually close it after connecting.
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                                <span style="font-weight: 600; color: #dcfce7; font-size: 13px;">Local Signer</span>
+                                <span style="font-size: 10px; background: rgba(251,191,36,0.2); color: #fcd34d; padding: 2px 6px; border-radius: 4px;">Experimental</span>
+                            </div>
+                            <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
+                                Signs requests using a local TikTok browser window. No third-party service. <strong style="color: #d1d5db;">Can send replies.</strong> Keep the signer window open for replies and reconnections.
                             </div>
                         </div>
 
                         <div style="background: rgba(59, 130, 246, 0.10); border-left: 3px solid #3b82f6; border-radius: 8px; padding: 12px 14px;">
-                            <div style="font-weight: 600; color: #dbeafe; margin-bottom: 4px;">Euler WebSocket Relay (Hosted Proxy, Experimental)</div>
-                            <div style="color: #cbd5f5; font-size: 12.5px; line-height: 1.5;">
-                                Experimental: Connects through EulerStream's hosted WebSocket relay.
-                                <br><strong>Get your API key:</strong> <a href="#" onclick="window.open('https://www.eulerstream.com/dashboard/api-keys', '_blank'); return false;" style="color: #63a4d8; text-decoration: underline;">eulerstream.com/dashboard/api-keys</a>
-                                <br>Free tier available (Community plan). Receive-only (no outbound chat sends).
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                                <span style="font-weight: 600; color: #dbeafe; font-size: 13px;">Euler Proxy</span>
+                                <span style="font-size: 10px; background: rgba(251,191,36,0.2); color: #fcd34d; padding: 2px 6px; border-radius: 4px;">Experimental</span>
                             </div>
-                        </div>
+                            <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
+                                Connects through Euler's hosted proxy server. Requires API key from <a href="#" onclick="window.open('https://www.eulerstream.com/dashboard/api-keys', '_blank'); return false;" style="color: #63a4d8;">eulerstream.com</a>. Free tier available. No replies.
+                            </div>
                         </div>
 
                         <div style="background: rgba(148, 163, 184, 0.10); border-left: 3px solid #94a3b8; border-radius: 8px; padding: 12px 14px;">
-                            <div style="font-weight: 600; color: #e5e7eb; margin-bottom: 4px;">API Key / Signing URL (Experimental)</div>
-                            <div style="color: #cbd5f5; font-size: 12.5px; line-height: 1.5;">
-                                Experimental: Use an Euler API key or a custom signing service URL. If it fails, switch back to Auto or Polling.
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                                <span style="font-weight: 600; color: #e5e7eb; font-size: 13px;">Euler Signing</span>
+                                <span style="font-size: 10px; background: rgba(251,191,36,0.2); color: #fcd34d; padding: 2px 6px; border-radius: 4px;">Experimental</span>
+                            </div>
+                            <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
+                                Like Auto, but lets you provide your own Euler API key or custom signing URL. For advanced users.
                             </div>
                         </div>
                     </div>
 
-                    <div style="margin-top: 14px; background: rgba(0,0,0,0.2); border-radius: 8px; padding: 12px 14px;">
-                        <div style="font-weight: 600; color: #f8fafc; margin-bottom: 6px;">Quick picks</div>
-                        <ul style="margin: 0; padding-left: 18px; color: #cbd5f5; font-size: 12.5px; line-height: 1.6;">
-                            <li>Start with <strong>Polling</strong> for stability.</li>
-                            <li>Use <strong>TikTok WS + Auto/Euler</strong> for better performance/features.</li>
-                            <li>If WS keeps failing, switch to <strong>Polling</strong> (recommended) or try <strong>Experimental</strong> signing options.</li>
-                            <li>If you need a hosted proxy, try <strong>Euler WebSocket Relay</strong> (experimental, paid).</li>
-                            <li>If everything breaks, fall back to <strong>Standard</strong>.</li>
-                        </ul>
+                    <!-- Troubleshooting -->
+                    <div style="margin-top: 16px; background: rgba(251, 191, 36, 0.08); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 8px; padding: 14px;">
+                        <div style="font-weight: 600; color: #fcd34d; margin-bottom: 8px; font-size: 14px;">Troubleshooting</div>
+                        <div style="color: #d1d5db; font-size: 12px; line-height: 1.8;">
+                            <strong>Standard mode not working?</strong> → Click <strong>👁️ Show capture page</strong> to check for CAPTCHA or sign-in. If nothing appears, try <strong>🔄 Reload</strong>.<br>
+                            <strong>WebSocket keeps failing?</strong> → Try a different signing provider, or switch to Polling.<br>
+                            <strong>Getting blocked/throttled?</strong> → Close other TikTok tabs/apps. Wait a few minutes and retry.<br>
+                            <strong>Need replies but nothing works?</strong> → Standard (with sign-in) or Local Signer are your options.
+                        </div>
                     </div>
 
-                    <div style="margin-top: 12px; font-size: 12px; color: #94a3b8; line-height: 1.45;">
-                        <a href="#" onclick="window.open('${signingHelpUrl}', '_blank'); return false;" style="color: #63a4d8; text-decoration: underline;">
-                            Open the TikTok signing guide
+                    <div style="margin-top: 14px; display: flex; justify-content: space-between; align-items: center;">
+                        <a href="#" onclick="window.open('${signingHelpUrl}', '_blank'); return false;" style="color: #63a4d8; text-decoration: underline; font-size: 12px;">
+                            Full TikTok signing guide →
                         </a>
-                    </div>
-
-                    <div style="display: flex; justify-content: flex-end; margin-top: 16px;">
                         <button onclick="closeModal()" class="button" style="background: #374151;">Close</button>
                     </div>
                 </div>
@@ -3844,13 +3854,13 @@
 	                <div class="signing-provider-selector hidden" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.1);">
 	    <div class="mode-selector-label" style="font-size: 11px; margin-bottom: 4px;">Signing Provider:</div>
 	    <select onchange="setTikTokSigningProvider(this.closest('.entry'), this.value); updateSigningProviderHelpText(this);" class="signing-provider-select">
-	        <option value="auto">Auto / Euler (Default)</option>
+	        <option value="auto">Auto (Default)</option>
 	        <option value="local">Local Signer (Experimental)</option>
-	        <option value="euler-ws">Euler WebSocket Relay (Experimental)</option>
-	        <option value="custom">API Key / Signing URL (Experimental)</option>
+	        <option value="euler-ws">Euler Proxy (Experimental)</option>
+	        <option value="custom">Euler Signing (Experimental)</option>
 	    </select>
 	    <div class="provider-help-text" style="font-size: 10px; color: #94a3b8; line-height: 1.3; font-style: italic; min-height: 2.6em;">
-	        Uses Euler's community signing by default (recommended).
+	        Tries Euler signing, falls back to Polling if it fails. No API key needed.
 	    </div>
 	</div>
 	                <div class="mode-info">
@@ -4163,7 +4173,7 @@
 	            if (provider === 'custom' || provider === 'local' || provider === 'euler-ws') {
 	                const providerLabel = provider === 'local'
 	                    ? 'Local Signer'
-	                    : (provider === 'euler-ws' ? 'Euler WebSocket Relay' : 'API Key / Signing URL');
+	                    : (provider === 'euler-ws' ? 'Euler Proxy' : 'Euler Signing');
 	                Toast.info('TikTok Signing', `${providerLabel} is experimental and requires these tools to stay visible.`);
 	                return;
 	            }
@@ -6153,7 +6163,7 @@
                 // Suppress warning if using Local Signer explicitly
                 const isLocalSigner = signingProvider === 'local';
                 if (signingProvider === 'euler-ws' && (!signing || !signing.apiKey)) {
-                    Toast.warning('Euler WebSocket (Experimental)', 'Enter your Euler API key to use the hosted WebSocket relay. Get one at eulerstream.com/dashboard/api-keys');
+                    Toast.warning('Euler Proxy (Experimental)', 'Enter your Euler API key to use the proxy. Get one at eulerstream.com/dashboard/api-keys');
                 }
 
                 if (strategy === 'websocket' && !signing && !isLocalSigner && !tiktokWebsocketSigningWarningShown) {
@@ -6305,15 +6315,15 @@
 
             // --- Building Blocks ---
             const credentialsTitle = providerValue === 'custom'
-                ? 'Custom Signing Credentials (Experimental)'
+                ? 'Euler Signing Credentials (Experimental)'
                 : (providerValue === 'euler-ws'
-                    ? 'Euler WebSocket Credentials (Experimental)'
-                    : 'Euler Signing Credentials (Optional, Experimental)');
+                    ? 'Euler Proxy Credentials (Experimental)'
+                    : 'Euler API Key (Optional, Experimental)');
             const credentialsDescription = providerValue === 'custom'
-                ? 'API key / custom signing URL support is experimental. If it fails, switch back to Auto or Polling.'
+                ? 'Provide your own Euler API key or custom signing URL.'
                 : (providerValue === 'euler-ws'
-                    ? 'Experimental: Enter your Euler API key (or JWT-enabled key) to use the hosted WebSocket relay (receive-only).'
-                    : 'Optional (experimental): Add an Euler API key or a custom signing URL if you need it.');
+                    ? 'Enter your Euler API key to use the proxy. No replies supported.'
+                    : 'Optional: Add an Euler API key or custom signing URL.');
 
             // 1. Euler / Custom API Inputs
             const signingHelpBlock = signingHelpUrl
@@ -6432,13 +6442,13 @@
             let headerTitle = 'Manage TikTok Signing';
 
             if (providerValue === 'auto') {
-                headerTitle = 'TikTok Signing: Auto / Euler';
+                headerTitle = 'TikTok Signing: Auto';
                 mainContent = `
                     <div style="background: rgba(34, 197, 94, 0.1); border-left: 3px solid #22c55e; padding: 12px 16px; border-radius: 6px; margin-bottom: 20px;">
                         <h4 style="margin: 0 0 6px 0; color: #4ade80; font-size: 15px;">Auto Mode Active</h4>
                         <p style="margin: 0; font-size: 13px; color: #dcfce7;">
-                            The app is using Euler's community signing by default. No configuration is required for most users.
-                            <span style="color: #fde68a;">API key / custom signer options below are experimental.</span>
+                            Tries Euler signing, falls back to Polling if it fails. No configuration required.
+                            <span style="color: #fde68a;">Options below are for advanced users.</span>
                         </p>
                     </div>
                 `;
@@ -6450,19 +6460,19 @@
                 advancedContent = manualAndDebugBlock;
 
             } else if (providerValue === 'euler-ws') {
-                headerTitle = 'TikTok Signing: Euler WebSocket (Experimental)';
+                headerTitle = 'TikTok Signing: Euler Proxy (Experimental)';
                 mainContent = `
                     <div style="background: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6; padding: 12px 16px; border-radius: 6px; margin-bottom: 20px;">
-                        <h4 style="margin: 0 0 6px 0; color: #93c5fd; font-size: 15px;">Hosted WebSocket Relay</h4>
+                        <h4 style="margin: 0 0 6px 0; color: #93c5fd; font-size: 15px;">Euler Proxy</h4>
                         <p style="margin: 0; font-size: 13px; color: #dbeafe; line-height: 1.5;">
-                            Connects through EulerStream's hosted WebSocket relay. Receive-only (no outbound chat sends).
+                            Connects through Euler's hosted proxy server. No replies supported.
                         </p>
                         <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbeafe; line-height: 1.5;">
                             <strong>Get your API key:</strong> 
                             <a href="#" onclick="window.open('https://www.eulerstream.com/dashboard/api-keys', '_blank'); return false;" style="color: #63a4d8; text-decoration: underline;">
                                 eulerstream.com/dashboard/api-keys
                             </a>
-                            <br><span style="color: #94a3b8; font-size: 12px;">Free tier available (Community plan: 1,000 requests/day, 10 WebSockets)</span>
+                            <br><span style="color: #94a3b8; font-size: 12px;">Free tier available (Community plan)</span>
                         </p>
                     </div>
                     ${apiInputsBlock}
@@ -6470,7 +6480,7 @@
                 advancedContent = localSignerBlock + manualAndDebugBlock;
 
             } else if (providerValue === 'custom') {
-                headerTitle = 'TikTok Signing: API Key / Signing URL (Experimental)';
+                headerTitle = 'TikTok Signing: Euler Signing (Experimental)';
                 mainContent = apiInputsBlock;
                 advancedContent = localSignerBlock + manualAndDebugBlock;
             }
@@ -9600,7 +9610,7 @@
                 // Buttons
                 'btn.activate': '▶️ Activate source',
                 'btn.signin': '🔑 Sign-in',
-                'btn.help': '❓ Help!',
+                'btn.help': '❓ Help',
                 'btn.stop': '⏹️ Stop',
                 'btn.reload': '🔄 Reload',
                 'btn.visible': '👁️ Visible',
