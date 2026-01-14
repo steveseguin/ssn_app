@@ -1,0 +1,94 @@
+name: Update AUR Package
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  update-aur:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm base-devel git openssh curl jq
+
+      - name: Get release version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          else
+            VERSION=$(curl -s https://api.github.com/repos/steveseguin/social_stream/releases/latest | jq -r .tag_name)
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Updating AUR package to version: $VERSION"
+
+      - name: Update PKGBUILD
+        working-directory: aur
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          echo "Updating PKGBUILD to version $VERSION"
+          
+          # Update pkgver
+          sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          
+          # Download and compute checksum
+          URL="https://github.com/steveseguin/social_stream/releases/download/${VERSION}/socialstreamninja_linux_v${VERSION}_x86_64.AppImage"
+          echo "Downloading AppImage from: $URL"
+          CHECKSUM=$(curl -sL "$URL" | sha256sum | cut -d' ' -f1)
+          echo "Computed SHA256: $CHECKSUM"
+          
+          # Update sha256sums (first entry)
+          sed -i "s/^sha256sums=('[^']*'/sha256sums=('$CHECKSUM'/" PKGBUILD
+          
+          # Create non-root user for makepkg (required by makepkg)
+          useradd -m builder
+          chown -R builder:builder .
+          
+          # Regenerate .SRCINFO
+          su builder -c "makepkg --printsrcinfo > .SRCINFO"
+          
+          echo "PKGBUILD updated successfully"
+          cat PKGBUILD
+
+      - name: Push to AUR
+        working-directory: aur
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          # Setup SSH for AUR
+          mkdir -p ~/.ssh
+          echo "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          cat >> ~/.ssh/config << 'EOF'
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            User aur
+            StrictHostKeyChecking accept-new
+          EOF
+          
+          # Configure git
+          git config --global user.email "steve@seguin.email"
+          git config --global user.name "Steve Seguin"
+          
+          # Clone AUR repo
+          git clone aur@aur.archlinux.org:socialstreamninja.git ../aur-push
+          
+          # Copy updated files
+          cp PKGBUILD .SRCINFO socialstreamninja.desktop ../aur-push/
+          
+          # Commit and push
+          cd ../aur-push
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit - AUR is already up to date"
+          else
+            git commit -m "Update to ${{ steps.version.outputs.version }}"
+            git push
+            echo "Successfully pushed update to AUR"
+          fi

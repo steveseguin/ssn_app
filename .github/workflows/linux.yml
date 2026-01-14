@@ -2,10 +2,12 @@ name: Build SS App for Linux
 on:
   push:
     branches:
-      - maindisabled
+      - main
   pull_request:
     branches:
-      - maindisabled
+      - main
+  workflow_dispatch:
+
 jobs:
   build:
     env:
@@ -14,18 +16,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          ssh-key: ${{ secrets.SUBMODULE_SSH_KEY }}
+        continue-on-error: true
+
+      - name: Checkout code (fallback without submodules)
+        if: failure()
+        uses: actions/checkout@v4
+
+      - name: Check for TikTok signing module
+        run: |
+          if [ -f "tiktok-signing/electron-signer.js" ]; then
+            echo "TikTok signing module found"
+          else
+            echo "::warning::TikTok signing module not available - TikTok WebSocket signing will be disabled"
+          fi
+
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: '18'
+
       - name: Clean install
         run: |
           rm -rf node_modules
           rm -f package-lock.json
           npm install
+
       - name: Build Electron app for Linux
         run: npm run build:linux
+
       - name: Archive Artifacts
         uses: actions/upload-artifact@v4
         with:
