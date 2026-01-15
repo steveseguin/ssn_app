@@ -1,0 +1,53 @@
+commit 555c149739909c737024c16a98a3cbbd243112f8
+Author: steveseguin <punkrawker@gmail.com>
+Date:   Sun Nov 23 11:48:43 2025 -0500
+
+    >
+
+diff --git a/main.js b/main.js
+index 294ddff5..42a75ca3 100644
+--- a/main.js
++++ b/main.js
+@@ -9791,6 +9791,23 @@ async function ensureTikTokSigningWindow(targetUrl, options = {}) {
+         }
+     }
+     try {
++        // Mute the window to prevent audio playback
++        tiktokSigningWindow.webContents.setAudioMuted(true);
++
++        // Inject script to stop video playback and save resources
++        const resourceSaverScript = `
++            setInterval(() => {
++                const videos = document.querySelectorAll('video');
++                videos.forEach(v => {
++                    if (!v.paused) v.pause();
++                    v.src = '';
++                    v.load();
++                    v.remove(); // Aggressively remove video elements
++                });
++            }, 1000);
++        `;
++        tiktokSigningWindow.webContents.executeJavaScript(resourceSaverScript).catch(() => { });
++
+         tiktokSigningWindow.show();
+         tiktokSigningWindow.focus();
+     } catch (_) { }
+diff --git a/tiktok/connection-manager.js b/tiktok/connection-manager.js
+index 77f2d7e0..0d2c0706 100644
+--- a/tiktok/connection-manager.js
++++ b/tiktok/connection-manager.js
+@@ -5383,7 +5383,13 @@ class ConnectionManager {
+ 
+                         if (fetchResult && fetchResult.fetchResult) {
+                             const { status, bodyBase64, bodyError } = fetchResult.fetchResult;
+-                            console.log('[TikTok] Local signer fetch completed', { status, bodyError });
++                            let decodedBody = null;
++                            if (bodyBase64) {
++                                try {
++                                    decodedBody = Buffer.from(bodyBase64, 'base64').toString('utf8');
++                                } catch (e) { decodedBody = '[Failed to decode]'; }
++                            }
++                            console.log('[TikTok] Local signer fetch completed', { status, bodyError, decodedBody });
+ 
+                             if (status === 200) {
+                                 // Success!

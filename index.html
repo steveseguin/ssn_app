@@ -4955,27 +4955,45 @@
                     username: source.username
                 });
 
-                // Check if we're switching connection modes
-                const currentMode = source.connectionMode;
-                const isTikTokModeSwitch = target === 'tiktok' &&
-                    (((currentMode === 'tiktok-websocket' || currentMode === 'tiktok-legacy') && source.vid && source.vid < 900000) || // Was classic, now websocket
-                        (currentMode === 'classic' && source.vid && source.vid > 900000)); // Was websocket, now classic
+                const desiredMode = source.connectionMode || 'classic';
+                const activeMode = source.activeConnectionMode || (target !== 'tiktok' && source.wssId ? 'websocket' : 'classic');
+                const isNonTikTokModeSwitch = target !== 'tiktok' && desiredMode && activeMode && desiredMode !== activeMode;
 
-                if (isTikTokModeSwitch) {
-                    console.log(`[Mode Switch] Switching TikTok from ${source.vid > 900000 ? 'websocket' : 'classic'} to ${currentMode}`);
-                    // Close the old connection/window
+                if (isNonTikTokModeSwitch) {
+                    console.log(`[Mode Switch] Switching ${target} from ${activeMode} to ${desiredMode}`);
                     try {
-                        if (source.vid > 900000 && currentTikTokWssId) {
-                            // Close websocket connection
-                            await ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: currentTikTokWssId });
-                        } else if (source.vid) {
-                            // Close classic window
+                        Toast.info('Mode Switch', `${target} connection updated from ${activeMode} to ${desiredMode}. Closing the previous session.`);
+                    } catch (_) { }
+                    try {
+                        if (source.vid && ipcRenderer) {
                             await ipcRenderer.sendSync('closeWindow', { vid: source.vid });
                         }
                     } catch (e) {
                         console.warn('Error closing old connection during mode switch:', e);
                     }
-                    // Clear the old IDs
+                    stateManager.updateSource(sourceId, { vid: null, wssId: null, status: 'inactive', activeConnectionMode: null });
+                } else {
+                    // Check if we're switching connection modes
+                    const currentMode = source.connectionMode;
+                    const isTikTokModeSwitch = target === 'tiktok' &&
+                        (((currentMode === 'tiktok-websocket' || currentMode === 'tiktok-legacy') && source.vid && source.vid < 900000) || // Was classic, now websocket
+                            (currentMode === 'classic' && source.vid && source.vid > 900000)); // Was websocket, now classic
+
+                    if (isTikTokModeSwitch) {
+                        console.log(`[Mode Switch] Switching TikTok from ${source.vid > 900000 ? 'websocket' : 'classic'} to ${currentMode}`);
+                        // Close the old connection/window
+                        try {
+                            if (source.vid > 900000 && currentTikTokWssId) {
+                                // Close websocket connection
+                                await ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: currentTikTokWssId });
+                            } else if (source.vid) {
+                                // Close classic window
+                                await ipcRenderer.sendSync('closeWindow', { vid: source.vid });
+                            }
+                        } catch (e) {
+                            console.warn('Error closing old connection during mode switch:', e);
+                        }
+                        // Clear the old IDs
                     stateManager.updateSource(sourceId, { vid: null, wssId: null, tiktokWssId: null, status: 'inactive', activeConnectionMode: null });
                 } else {
                     // Verify the window actually exists before reusing the ID
@@ -4984,6 +5002,9 @@
                         if (!windowExists) {
                             stateManager.updateSource(sourceId, { vid: null, wssId: null, tiktokWssId: null, status: 'inactive', activeConnectionMode: null });
                         } else {
+                            if (target !== 'tiktok' && source.activeConnectionMode !== 'classic') {
+                                stateManager.updateSource(sourceId, { activeConnectionMode: 'classic' });
+                            }
                             return source.vid;
                         }
                     } else if (currentTikTokWssId && target === 'tiktok' && (currentMode === 'tiktok-websocket' || currentMode === 'tiktok-legacy')) {
@@ -4993,9 +5014,13 @@
                         stateManager.updateSource(sourceId, { vid: null, wssId: null, tiktokWssId: null, status: 'inactive', activeConnectionMode: null });
                         return false;
                     } else if (source.wssId) {
+                        if (target !== 'tiktok' && source.activeConnectionMode !== 'websocket') {
+                            stateManager.updateSource(sourceId, { activeConnectionMode: 'websocket' });
+                        }
                         return source.wssId;
                     }
                 }
+            }
             }
 
             let mode = source.connectionMode;
@@ -5437,12 +5462,14 @@
                         ? 'activating'
                         : 'active';
 
+                    const resolvedActiveMode = normalizedMode === 'websocket' ? 'websocket' : 'classic';
+
                     stateManager.updateSource(sourceId, {
                         vid: windowId,
                         wssId: resolvedTarget === 'tiktok' ? null : actualWssId,
                         tiktokWssId: resolvedTarget === 'tiktok' ? actualWssId : null,
                         status: statusValue,
-                        activeConnectionMode: normalizedMode,
+                        activeConnectionMode: resolvedActiveMode,
                         error: null
                     });
 

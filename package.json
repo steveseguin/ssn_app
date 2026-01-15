@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.3.81",
+  "version": "0.3.82",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "main": "main.js",
@@ -34,6 +34,7 @@
   "build": {
     "appId": "socialstream.electron",
     "productName": "socialstream",
+    "npmRebuild": false,
     "files": [
       "package.json",
       "main.js",
