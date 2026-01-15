@@ -5343,6 +5343,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         log("\nstorageSave:");
         const incoming = (value && typeof value === "object") ? value : {};
+        const allowEmptySettings = incoming.allowEmptySettings === true;
+        if ("allowEmptySettings" in incoming) {
+            delete incoming.allowEmptySettings;
+        }
         const sanitized = {};
         Object.entries(incoming).forEach(([key, val]) => {
             if (val === undefined || val === null) {
@@ -5350,6 +5354,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
             if (key === "streamID" && typeof val === "string" && val.trim() === "") {
                 return; // avoid clearing a good stream ID with an empty value
+            }
+            if (key === "settings" && val && typeof val === "object" && Object.keys(val).length === 0) {
+                const hasCachedSettings = cachedState && cachedState.settings && typeof cachedState.settings === "object"
+                    && Object.keys(cachedState.settings).length > 0;
+                if (hasCachedSettings && !allowEmptySettings) {
+                    return;
+                }
             }
             sanitized[key] = val;
         });
