@@ -17,10 +17,10 @@ const PLATFORM_TARGETS = new Map([
 	[
 		"win32",
 		{
-			version: "39.2.8-qp20",
-			releaseTag: "v39.2.8-qp20",
+			version: "39.2.9-qp20",
+			releaseTag: "v39.2.9-qp20",
 			mirrorBase: "https://github.com/steveseguin/electron/releases/download/",
-			artifacts: new Map([["x64", "electron-v39.2.8-qp20-win32-x64.zip"]]),
+			artifacts: new Map([["x64", "electron-v39.2.9-qp20-win32-x64.zip"]]),
 		},
 	],
 ]);

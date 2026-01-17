@@ -3579,6 +3579,22 @@ async function clearAllData() {
             console.error('Failed to clear settings store during reset:', storeError);
         }
 
+        try {
+            if (mainWindow && mainWindow.webContents) {
+                const clearScript = `
+                    (function(){
+                        const keys = ['settings','streamID','password','state','ssninja_stream_id','ssninja_state'];
+                        keys.forEach((key) => {
+                            try { localStorage.removeItem(key); } catch (e) {}
+                        });
+                    })();
+                `;
+                mainWindow.webContents.executeJavaScript(clearScript).catch(() => null);
+            }
+        } catch (e) {
+            console.warn('Failed to clear localStorage mirror during reset:', e?.message || e);
+        }
+
         sessions = {
             default: {
                 name: 'Default Session (Original)',
@@ -5371,6 +5387,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
         } catch (e) {
             console.error(e);
         }
+        try {
+            const payload = buildLocalStorageMirrorPayload(cachedState);
+            updateLocalStorageBackup(payload);
+            if (mainWindow && mainWindow.webContents) {
+                mirrorCachedStateToLocalStorage(mainWindow);
+            }
+        } catch (e) {
+            console.warn("Failed to mirror cachedState to localStorage on save:", e?.message || e);
+        }
 
 
         log("Updating popup.html"); // Since the pop up is open, any setting I make I need to reflect back into the pop up, since there is no "on dom load -> getSettings" trigger to do that for us as the pop up is always open
@@ -5396,11 +5421,20 @@ async function createWindow(args, reuse = false, mainApp = false) {
         ////log("!!!!!!!!!!!!!cachedState");
         //log(cachedState);
 
-        if (cachedState && (!cachedState.streamID && !cachedState.password && cachedState.state === undefined)) {
+        if (!hasCachedStateData(cachedState)) {
             const diskState = loadCachedStateWithBackup();
             if (diskState && typeof diskState === "object") {
                 cachedState = { ...diskState, ...cachedState };
+                log("Loaded cachedState from disk backup (storageGet)");
             }
+        }
+
+        if (!hasCachedStateData(cachedState)) {
+            try {
+                if (hydrateCachedStateFromStoreBackup()) {
+                    log("Hydrated cachedState from localStorage backup (storageGet)");
+                }
+            } catch (_) {}
         }
 
         value.forEach((key) => {
@@ -5413,6 +5447,36 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         log(response);
         eventRet.returnValue = response;
+    });
+
+    ipcMain.handle("storageGetAsync", async (eventRet, value) => {
+        const response = {};
+        if (!hasCachedStateData(cachedState)) {
+            const diskState = loadCachedStateWithBackup();
+            if (diskState && typeof diskState === "object") {
+                cachedState = { ...diskState, ...cachedState };
+                log("Loaded cachedState from disk backup (storageGetAsync)");
+            }
+        }
+        if (!hasCachedStateData(cachedState)) {
+            const raw = await readLocalStorageMirror(mainWindow);
+            if (hydrateCachedStateFromLocalStorage(raw)) {
+                log("Hydrated cachedState from localStorage mirror (storageGetAsync)");
+            }
+        }
+        if (!hasCachedStateData(cachedState)) {
+            if (hydrateCachedStateFromStoreBackup()) {
+                log("Hydrated cachedState from localStorage backup (storageGetAsync)");
+            }
+        }
+        if (Array.isArray(value)) {
+            value.forEach((key) => {
+                if (cachedState && key in cachedState) {
+                    response[key] = cachedState[key];
+                }
+            });
+        }
+        return response;
     });
 
     ipcMain.on("fromBackgroundPopupResponse", function (eventRet, value) {
@@ -5434,6 +5498,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
         if ("state" in value) {
             cachedState.state = value.state;
+        }
+
+        try {
+            const payload = buildLocalStorageMirrorPayload(cachedState);
+            updateLocalStorageBackup(payload);
+            if (mainWindow && mainWindow.webContents) {
+                mirrorCachedStateToLocalStorage(mainWindow);
+            }
+        } catch (e) {
+            console.warn("Failed to mirror cachedState after popup response:", e?.message || e);
         }
 
         // Forward response to popup frame
@@ -5467,6 +5541,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
         if ("state" in value) {
             cachedState.state = value.state;
+        }
+
+        try {
+            const payload = buildLocalStorageMirrorPayload(cachedState);
+            updateLocalStorageBackup(payload);
+            if (mainWindow && mainWindow.webContents) {
+                mirrorCachedStateToLocalStorage(mainWindow);
+            }
+        } catch (e) {
+            console.warn("Failed to mirror cachedState after background response:", e?.message || e);
         }
         eventRet.returnValue = value;
     });
@@ -5918,6 +6002,18 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 }
             } catch (e) {
                 console.error('localStorage restore check failed:', e);
+            }
+
+            // Ensure cachedState and localStorage stay in sync
+            try {
+                const diskResult = loadCachedStateWithBackupSource();
+                if (diskResult && diskResult.state && typeof diskResult.state === "object") {
+                    cachedState = { ...diskResult.state, ...cachedState };
+                    log(`Loaded cachedState from ${diskResult.source} (did-finish-load)`);
+                }
+                syncCachedStateWithLocalStorage(mainWindow, "did-finish-load");
+            } catch (e) {
+                console.warn("Failed to sync cachedState/localStorage:", e?.message || e);
             }
         }
 
@@ -10347,12 +10443,182 @@ app.setPath("userData", folder);
 log("folder: " + folder);
 
 function getSavedSyncPaths() {
-    const mainPath = path.join(folder, "savedSync.json");
-    return {
-        mainPath,
-        tmpPath: `${mainPath}.tmp`,
-        bakPath: path.join(folder, "savedSync.json.bak")
-    };
+	const mainPath = path.join(folder, "savedSync.json");
+	return {
+		mainPath,
+		tmpPath: `${mainPath}.tmp`,
+		bakPath: path.join(folder, "savedSync.json.bak")
+	};
+}
+
+function hasCachedStateData(state) {
+	if (!state || typeof state !== "object") return false;
+	if (state.settings && typeof state.settings === "object" && Object.keys(state.settings).length > 0) return true;
+	if (state.streamID) return true;
+	if (state.password) return true;
+	if (state.state !== undefined) return true;
+	return false;
+}
+
+function buildLocalStorageMirrorPayload(state) {
+	const payload = {};
+	const settings = state && state.settings;
+	if (settings && typeof settings === "object") {
+		payload.settings = JSON.stringify(settings);
+	} else if (typeof settings === "string") {
+		payload.settings = settings;
+	} else {
+		payload.settings = null;
+	}
+
+	payload.streamID = state && state.streamID ? String(state.streamID) : null;
+	payload.password = state && state.password !== undefined && state.password !== null ? String(state.password) : null;
+	if (state && typeof state.state === "boolean") {
+		payload.state = state.state ? "true" : "false";
+	} else if (state && typeof state.state === "string") {
+		payload.state = state.state;
+	} else {
+		payload.state = null;
+	}
+
+	payload.ssninja_stream_id = payload.streamID;
+	payload.ssninja_state = payload.state;
+
+	return payload;
+}
+
+function updateLocalStorageBackup(payload) {
+	try {
+		if (!payload || typeof payload !== "object") return;
+		const existing = store.get('localStorageBackup');
+		const merged = existing && typeof existing === "object" ? { ...existing } : {};
+		Object.entries(payload).forEach(([key, value]) => {
+			if (value === null || value === undefined) {
+				delete merged[key];
+				return;
+			}
+			merged[key] = value;
+		});
+		store.set('localStorageBackup', merged);
+		store.set('localStorageBackupTime', Date.now());
+		log(`Updated localStorageBackup with ${Object.keys(payload).length} keys`);
+	} catch (e) {
+		console.warn("Failed to update localStorageBackup:", e?.message || e);
+	}
+}
+
+async function mirrorCachedStateToLocalStorage(win) {
+	if (!win || win.isDestroyed() || !win.webContents) return;
+	if (!hasCachedStateData(cachedState)) return;
+	const payload = buildLocalStorageMirrorPayload(cachedState);
+	const script = `(function(){\n` +
+		`const payload = ${JSON.stringify(payload)};\n` +
+		`Object.keys(payload).forEach((key) => {\n` +
+		`  const value = payload[key];\n` +
+		`  try {\n` +
+		`    if (value === null || value === undefined) {\n` +
+		`      localStorage.removeItem(key);\n` +
+		`    } else {\n` +
+		`      localStorage.setItem(key, String(value));\n` +
+		`    }\n` +
+		`  } catch (e) {}\n` +
+		`});\n` +
+		`})();`;
+	try {
+		await win.webContents.executeJavaScript(script, true);
+		log("Mirrored cachedState to localStorage");
+	} catch (e) {
+		console.warn("Failed to mirror cachedState to localStorage:", e?.message || e);
+	}
+}
+
+async function readLocalStorageMirror(win) {
+	if (!win || win.isDestroyed() || !win.webContents) return null;
+	const keys = ["settings", "streamID", "password", "state", "ssninja_stream_id", "ssninja_state"];
+	const script = `(function(){\n` +
+		`const keys = ${JSON.stringify(keys)};\n` +
+		`const out = {};\n` +
+		`keys.forEach((key) => {\n` +
+		`  try {\n` +
+		`    const value = localStorage.getItem(key);\n` +
+		`    if (value !== null) { out[key] = value; }\n` +
+		`  } catch (e) {}\n` +
+		`});\n` +
+		`return out;\n` +
+		`})();`;
+	try {
+		return await win.webContents.executeJavaScript(script, true);
+	} catch (e) {
+		console.warn("Failed to read localStorage mirror:", e?.message || e);
+		return null;
+	}
+}
+
+function hydrateCachedStateFromLocalStorage(raw) {
+	if (!raw || typeof raw !== "object") return false;
+	const next = {};
+	const streamID = raw.streamID || raw.ssninja_stream_id;
+	if (streamID) next.streamID = String(streamID);
+	if (raw.password) next.password = String(raw.password);
+	const stateValue = raw.state !== undefined ? raw.state : raw.ssninja_state;
+	if (typeof stateValue === "string") {
+		if (stateValue === "true" || stateValue === "false") {
+			next.state = stateValue === "true";
+		}
+	} else if (typeof stateValue === "boolean") {
+		next.state = stateValue;
+	}
+	if (raw.settings) {
+		if (typeof raw.settings === "string") {
+			try {
+				const parsed = JSON.parse(raw.settings);
+				if (parsed && typeof parsed === "object") {
+					next.settings = parsed;
+				}
+			} catch (_) {}
+		} else if (typeof raw.settings === "object") {
+			next.settings = raw.settings;
+		}
+	}
+
+	if (!Object.keys(next).length) return false;
+	cachedState = { ...cachedState, ...next };
+	try {
+		saveCachedStateAtomic(cachedState);
+		store.set('cachedStateBackup', cachedState);
+		store.set('cachedStateBackupTime', Date.now());
+		log(`Hydrated cachedState from localStorage with ${Object.keys(next).length} keys`);
+	} catch (e) {
+		console.warn("Failed to persist cachedState after localStorage hydrate:", e?.message || e);
+	}
+	return true;
+}
+
+function hydrateCachedStateFromStoreBackup() {
+	try {
+		const backup = store.get('localStorageBackup');
+		if (backup && typeof backup === "object" && Object.keys(backup).length > 0) {
+			return hydrateCachedStateFromLocalStorage(backup);
+		}
+	} catch (e) {
+		console.warn("Failed to hydrate cachedState from localStorage backup:", e?.message || e);
+	}
+	return false;
+}
+
+async function syncCachedStateWithLocalStorage(win, reason = "") {
+	if (!win || win.isDestroyed()) return;
+	if (!hasCachedStateData(cachedState)) {
+		const raw = await readLocalStorageMirror(win);
+		if (hydrateCachedStateFromLocalStorage(raw)) {
+			log(`Hydrated cachedState from localStorage${reason ? ` (${reason})` : ""}`);
+		}
+	}
+	if (hasCachedStateData(cachedState)) {
+		await mirrorCachedStateToLocalStorage(win);
+	} else {
+		log(`No cachedState data available${reason ? ` (${reason})` : ""}`);
+	}
 }
 
 function loadCachedStateWithBackup() {
@@ -10387,6 +10653,36 @@ function loadCachedStateWithBackup() {
                 log("Failed to load cachedState from electron-store: " + e3.message);
             }
             console.error("Failed to load cachedState from all sources");
+            return null;
+        }
+    }
+}
+
+function loadCachedStateWithBackupSource() {
+    const { mainPath, bakPath } = getSavedSyncPaths();
+    const tryRead = (p) => {
+        const txt = fs.readFileSync(p, "utf8");
+        const parsed = JSON.parse(txt);
+        if (!parsed || typeof parsed !== "object") {
+            throw new Error("empty cached state");
+        }
+        return parsed;
+    };
+    try {
+        return { state: tryRead(mainPath), source: "savedSync.json" };
+    } catch (_) {
+        try {
+            return { state: tryRead(bakPath), source: "savedSync.json.bak" };
+        } catch (e2) {
+            log("Failed to load cachedState from .bak file: " + e2.message);
+            try {
+                const storeBackup = store.get('cachedStateBackup');
+                if (storeBackup && typeof storeBackup === 'object' && Object.keys(storeBackup).length > 0) {
+                    return { state: storeBackup, source: "electron-store backup" };
+                }
+            } catch (e3) {
+                log("Failed to load cachedState from electron-store: " + e3.message);
+            }
             return null;
         }
     }
@@ -10726,29 +11022,31 @@ async function quitApp() {
         console.error("Failed to save cachedState on quit:", e);
     }
 
-    // Backup localStorage from main window before destroying (lightweight settings backup)
-    try {
-        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
-            const localStorageData = await mainWindow.webContents.executeJavaScript(`
-                (function() {
-                    const data = {};
-                    for (let i = 0; i < localStorage.length; i++) {
-                        const key = localStorage.key(i);
-                        data[key] = localStorage.getItem(key);
-                    }
-                    return data;
-                })();
-            `).catch(() => null);
+        // Backup localStorage from main window before destroying (lightweight settings backup)
+        try {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+                await mirrorCachedStateToLocalStorage(mainWindow);
+                const localStorageData = await mainWindow.webContents.executeJavaScript(`
+                    (function() {
+                        const data = {};
+                        for (let i = 0; i < localStorage.length; i++) {
+                            const key = localStorage.key(i);
+                            data[key] = localStorage.getItem(key);
+                        }
+                        return data;
+                    })();
+                `).catch(() => null);
 
-            if (localStorageData && Object.keys(localStorageData).length > 0) {
-                store.set('localStorageBackup', localStorageData);
-                store.set('localStorageBackupTime', Date.now());
-                log(`Backed up ${Object.keys(localStorageData).length} localStorage keys on quit`);
+                if (localStorageData && Object.keys(localStorageData).length > 0) {
+                    store.set('localStorageBackup', localStorageData);
+                    store.set('localStorageBackupTime', Date.now());
+                    log(`Backed up ${Object.keys(localStorageData).length} localStorage keys on quit`);
+                }
             }
+        } catch (e) {
+            console.error("Failed to backup localStorage on quit:", e);
         }
-    } catch (e) {
-        console.error("Failed to backup localStorage on quit:", e);
-    }
+
 
     // Clear all global intervals
     if (global.intervals) {
