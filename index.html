@@ -8366,41 +8366,8 @@
                 }
 
                 function toggle() {
-                    const collapsed = localStorage.getItem('popupCollapsed') === 'true';
-                    const next = !collapsed;
-                    localStorage.setItem('popupCollapsed', String(next));
-                    applyCollapsedState(next);
-                }
-
-                function isFrameReady() {
-                    if (!frame1) return false;
-                    const src = frame1.getAttribute('src') || frame1.src || '';
-                    return src && src !== 'about:blank';
-                }
-
-                function forceExpanded(reason) {
-                    if (!frame1) return;
-                    if (!document.body.classList.contains('overlay-collapsed')) return;
-                    if (!reason) return;
-                    localStorage.setItem('popupCollapsed', 'false');
-                    applyCollapsedState(false);
-                    console.warn(`[SSAPP] Restored popup panel (${reason}).`);
-                }
-
-                function scheduleRecovery() {
-                    if (!frame1) return;
-                    frame1.addEventListener('load', () => {
-                        if (document.body.classList.contains('overlay-collapsed')) {
-                            forceExpanded('iframe-loaded');
-                        }
-                    }, { once: true });
-
-                    setTimeout(() => {
-                        if (!isFrameReady()) return;
-                        if (document.body.classList.contains('overlay-collapsed')) {
-                            forceExpanded('stale-collapsed');
-                        }
-                    }, 3000);
+                    const collapsed = document.body.classList.contains('overlay-collapsed');
+                    applyCollapsedState(!collapsed);
                 }
 
                 handle.addEventListener('click', toggle);
@@ -8411,10 +8378,8 @@
                     }
                 });
 
-                // Initialize from saved state
-                const savedCollapsed = localStorage.getItem('popupCollapsed') === 'true';
-                applyCollapsedState(savedCollapsed);
-                scheduleRecovery();
+                // Initialize to expanded on load
+                applyCollapsedState(false);
             })();
 
             if (ipcRenderer) {
