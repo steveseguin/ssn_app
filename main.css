@@ -2498,7 +2498,7 @@ input:checked + .slider:before {
   cursor: pointer;
   user-select: none;
   opacity: 0.4;
-  transition: opacity 0.15s ease-in-out, background 0.15s ease-in-out;
+  transition: opacity 0.15s ease-in-out, background 0.15s ease-in-out, transform 0.15s ease-in-out;
   z-index: 5;
 }
 
@@ -2507,6 +2507,13 @@ input:checked + .slider:before {
   opacity: 0.95;
   outline: none;
 }
+
+.overlay-collapsed #link-overlay-page .overlay-handle {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.75);
+  transform: translateY(-50%) scale(1.08);
+}
+
 
 /* Collapsed state: make overlay a thin handle; expand sources to full width */
 .overlay-collapsed #link-overlay-page {
