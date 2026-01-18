@@ -8242,6 +8242,7 @@
             } else {
                 console.error("Application initialization failed. Some features may be unavailable.");
                 Toast.error("Initialization Error", "App could not start correctly. Please check console or try restarting.");
+                try { manageWelcomePage(); } catch (e) { console.warn('Failed to render welcome page after init failure', e); }
             }
 
             if (!window.streamSelector) {
@@ -8253,86 +8254,111 @@
             const frame2 = document.getElementById('frame2');
             const frame3 = document.getElementById('frame3');
 
-            async function switchToPage(pageId) {
-                navigationLinks.forEach(link => {
-                    link.classList.toggle('active', link.dataset.page === pageId);
-                });
+        async function switchToPage(pageId) {
+            navigationLinks.forEach(link => {
+                link.classList.toggle('active', link.dataset.page === pageId);
+            });
 
-                document.getElementById('streams-page')?.style.setProperty('display', 'none', 'important');
-                document.getElementById('dashboard-page')?.style.setProperty('display', 'none', 'important');
-                //document.getElementById('link-overlay-page')?.style.setProperty('display', 'none', 'important');
-                document.getElementById('vdo-ninja-page')?.style.setProperty('display', 'none', 'important');
-                // if (frame1) frame1.style.setProperty('display', 'none', 'important');
-                if (frame2) frame2.style.setProperty('display', 'none', 'important');
-                if (frame3) frame3.style.setProperty('display', 'none', 'important');
+            document.getElementById('streams-page')?.style.setProperty('display', 'none', 'important');
+            document.getElementById('dashboard-page')?.style.setProperty('display', 'none', 'important');
+            //document.getElementById('link-overlay-page')?.style.setProperty('display', 'none', 'important');
+            document.getElementById('vdo-ninja-page')?.style.setProperty('display', 'none', 'important');
+            // if (frame1) frame1.style.setProperty('display', 'none', 'important');
+            if (frame2) frame2.style.setProperty('display', 'none', 'important');
+            if (frame3) frame3.style.setProperty('display', 'none', 'important');
 
 
-                const streamsPage = document.getElementById('streams-page');
-                const dashboardPage = document.getElementById('dashboard-page');
-                //const linkOverlayPage = document.getElementById('link-overlay-page');
-                const vdoNinjaPage = document.getElementById('vdo-ninja-page');
+            const streamsPage = document.getElementById('streams-page');
+            const dashboardPage = document.getElementById('dashboard-page');
+            //const linkOverlayPage = document.getElementById('link-overlay-page');
+            const vdoNinjaPage = document.getElementById('vdo-ninja-page');
 
-                if (pageId === 'dashboard' || pageId === 'event-flow-editor') {
-                    if (dashboardPage) dashboardPage.style.display = 'block';
-                    if (frame2) {
-                        frame2.style.display = 'block';
-                        const viewFunction = pageId === 'dashboard' ? 'showDashboardView' : 'showEditorView';
-                        // Use postMessage for cross-origin communication
-                        const sendViewMessage = () => {
-                            try {
-                                frame2.contentWindow.postMessage({ action: viewFunction }, '*');
-                            } catch (err) {
-                                console.error('Failed to communicate with iframe:', err);
-                            }
-                        };
-
-                        // Check if iframe is already loaded
-                        if (frame2.contentDocument && frame2.contentDocument.readyState === 'complete') {
-                            sendViewMessage();
-                        } else {
-                            // Wait for iframe to load
-                            frame2.addEventListener('load', sendViewMessage, { once: true });
-                            // Also try sending after a delay in case the load event already fired
-                            setTimeout(sendViewMessage, 500);
+            if (pageId === 'dashboard' || pageId === 'event-flow-editor') {
+                if (dashboardPage) dashboardPage.style.display = 'block';
+                if (frame2) {
+                    frame2.style.display = 'block';
+                    const viewFunction = pageId === 'dashboard' ? 'showDashboardView' : 'showEditorView';
+                    // Use postMessage for cross-origin communication
+                    const sendViewMessage = () => {
+                        try {
+                            frame2.contentWindow.postMessage({ action: viewFunction }, '*');
+                        } catch (err) {
+                            console.error('Failed to communicate with iframe:', err);
                         }
-                    }
-                } else if (pageId === 'link-overlay') {
-                    //if (linkOverlayPage) linkOverlayPage.style.display = 'block';
-                    //	if (frame1) frame1.style.display = 'block';
-                } else if (pageId === 'streams') {
-                    if (streamsPage) streamsPage.style.display = 'block';
-                } else if (pageId === 'vdo-ninja') {
-                    if (vdoNinjaPage) vdoNinjaPage.style.display = 'block';
-                    if (frame3) frame3.style.display = 'block';
-                }
+                    };
 
-                if ((pageId === 'dashboard' || pageId === 'event-flow-editor') && frame2 && (!frame2.src || frame2.src === "about:blank")) {
-                    await setupIframeSource();
-                } else if (pageId === 'link-overlay' && frame1 && (!frame1.src || frame1.src === "about:blank")) {
-                    try {
-                        const resolved = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2' });
-                        if (resolved && resolved.url) {
-                            frame1.src = resolved.url;
-                            frame1.dataset.ssappOrigin = resolved.origin;
-                            frame1.classList.add('loading');
-                        }
-                    } catch (error) {
-                        console.error('Failed to resolve popup frame source:', error);
-                    }
-                } else if (pageId === 'vdo-ninja' && frame3 && (!frame3.src || frame3.src === "about:blank")) {
-                    try {
-                        const resolved = await resolveSocialStreamPage('vdo.html', { versionParam: 'v=2' });
-                        if (resolved && resolved.url) {
-                            frame3.src = resolved.url;
-                            frame3.dataset.ssappOrigin = resolved.origin;
-                            frame3.classList.add('loading');
-                        }
-                    } catch (error) {
-                        console.error('Failed to resolve vdo frame source:', error);
+                    // Check if iframe is already loaded
+                    if (frame2.contentDocument && frame2.contentDocument.readyState === 'complete') {
+                        sendViewMessage();
+                    } else {
+                        // Wait for iframe to load
+                        frame2.addEventListener('load', sendViewMessage, { once: true });
+                        // Also try sending after a delay in case the load event already fired
+                        setTimeout(sendViewMessage, 500);
                     }
                 }
-                stateManager.updateGlobal({ currentPage: pageId });
+            } else if (pageId === 'link-overlay') {
+                //if (linkOverlayPage) linkOverlayPage.style.display = 'block';
+                //	if (frame1) frame1.style.display = 'block';
+            } else if (pageId === 'streams') {
+                if (streamsPage) streamsPage.style.display = 'block';
+            } else if (pageId === 'vdo-ninja') {
+                if (vdoNinjaPage) vdoNinjaPage.style.display = 'block';
+                if (frame3) frame3.style.display = 'block';
             }
+
+            if ((pageId === 'dashboard' || pageId === 'event-flow-editor') && frame2 && (!frame2.src || frame2.src === "about:blank")) {
+                await setupIframeSource();
+            } else if (pageId === 'link-overlay' && frame1 && (!frame1.src || frame1.src === "about:blank")) {
+                try {
+                    const resolved = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2' });
+                    if (resolved && resolved.url) {
+                        frame1.src = resolved.url;
+                        frame1.dataset.ssappOrigin = resolved.origin;
+                        frame1.classList.add('loading');
+                    } else {
+                        const fallback = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2', forceLocal: true });
+                        if (fallback && fallback.url) {
+                            frame1.src = fallback.url;
+                            frame1.dataset.ssappOrigin = fallback.origin;
+                            frame1.classList.add('loading');
+                            Toast.warning('Popup Fallback', 'Loaded local popup panel.');
+                        } else {
+                            Toast.error('Popup Error', 'Could not load popup panel.');
+                        }
+                    }
+                } catch (error) {
+                    console.error('Failed to resolve popup frame source:', error);
+                    try {
+                        const fallback = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2', forceLocal: true });
+                        if (fallback && fallback.url) {
+                            frame1.src = fallback.url;
+                            frame1.dataset.ssappOrigin = fallback.origin;
+                            frame1.classList.add('loading');
+                            Toast.warning('Popup Fallback', 'Loaded local popup panel.');
+                        } else {
+                            Toast.error('Popup Error', 'Could not load popup panel.');
+                        }
+                    } catch (fallbackError) {
+                        console.error('Failed to resolve popup frame fallback:', fallbackError);
+                        Toast.error('Popup Error', 'Could not load popup panel.');
+                    }
+                }
+            } else if (pageId === 'vdo-ninja' && frame3 && (!frame3.src || frame3.src === "about:blank")) {
+                try {
+                    const resolved = await resolveSocialStreamPage('vdo.html', { versionParam: 'v=2' });
+                    if (resolved && resolved.url) {
+                        frame3.src = resolved.url;
+                        frame3.dataset.ssappOrigin = resolved.origin;
+                        frame3.classList.add('loading');
+                    }
+                } catch (error) {
+                    console.error('Failed to resolve vdo frame source:', error);
+                }
+            }
+            stateManager.updateGlobal({ currentPage: pageId });
+        }
+
 
             navigationLinks.forEach(link => {
                 link.addEventListener('click', function (event) {
@@ -8344,6 +8370,40 @@
 
             const initialPage = stateManager.state.global.currentPage || 'streams';
             switchToPage(initialPage).catch(err => console.error('Failed to switch to initial page:', err));
+
+            (async function ensurePopupPanelLoaded() {
+                if (!frame1) return;
+                if (frame1.src && frame1.src !== 'about:blank') return;
+                try {
+                    const resolved = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2' });
+                    if (resolved && resolved.url) {
+                        frame1.src = resolved.url;
+                        frame1.dataset.ssappOrigin = resolved.origin;
+                        frame1.classList.add('loading');
+                    } else {
+                        const fallback = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2', forceLocal: true });
+                        if (fallback && fallback.url) {
+                            frame1.src = fallback.url;
+                            frame1.dataset.ssappOrigin = fallback.origin;
+                            frame1.classList.add('loading');
+                            Toast.warning('Popup Fallback', 'Loaded local popup panel.');
+                        }
+                    }
+                } catch (error) {
+                    console.error('Failed to resolve popup frame on boot:', error);
+                    try {
+                        const fallback = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2', forceLocal: true });
+                        if (fallback && fallback.url) {
+                            frame1.src = fallback.url;
+                            frame1.dataset.ssappOrigin = fallback.origin;
+                            frame1.classList.add('loading');
+                            Toast.warning('Popup Fallback', 'Loaded local popup panel.');
+                        }
+                    } catch (fallbackError) {
+                        console.error('Failed to resolve popup fallback on boot:', fallbackError);
+                    }
+                }
+            })();
 
             // Popup sidebar show/hide toggle setup (subtle edge handle)
             (function setupPopupSidebarToggle() {
@@ -8366,8 +8426,10 @@
                 }
 
                 function toggle() {
-                    const collapsed = document.body.classList.contains('overlay-collapsed');
-                    applyCollapsedState(!collapsed);
+                    const collapsed = localStorage.getItem('popupCollapsed') === 'true';
+                    const next = !collapsed;
+                    localStorage.setItem('popupCollapsed', String(next));
+                    applyCollapsedState(next);
                 }
 
                 handle.addEventListener('click', toggle);
@@ -8378,8 +8440,9 @@
                     }
                 });
 
-                // Initialize to expanded on load
-                applyCollapsedState(false);
+                // Initialize from saved state
+                const savedCollapsed = localStorage.getItem('popupCollapsed') === 'true';
+                applyCollapsedState(savedCollapsed);
             })();
 
             if (ipcRenderer) {
@@ -9246,9 +9309,41 @@
                         frame2.dataset.ssappOrigin = resolved.origin;
                         frame2.classList.add('loading');
                     }
+                } else {
+                    const fallback = await resolveSocialStreamPage('background.html', {
+                        versionParam: 'v=2',
+                        extraParams: [langParam, viewParam].filter(Boolean),
+                        forceLocal: true
+                    });
+                    if (fallback && fallback.url) {
+                        frame2.src = fallback.url;
+                        frame2.dataset.ssappOrigin = fallback.origin;
+                        frame2.classList.add('loading');
+                        Toast.warning('Background Fallback', 'Loaded local background service.');
+                    } else {
+                        Toast.error('Background Error', 'Could not load background service.');
+                    }
                 }
             } catch (error) {
                 console.error('Failed to resolve background frame source:', error);
+                try {
+                    const fallback = await resolveSocialStreamPage('background.html', {
+                        versionParam: 'v=2',
+                        extraParams: [langParam, viewParam].filter(Boolean),
+                        forceLocal: true
+                    });
+                    if (fallback && fallback.url) {
+                        frame2.src = fallback.url;
+                        frame2.dataset.ssappOrigin = fallback.origin;
+                        frame2.classList.add('loading');
+                        Toast.warning('Background Fallback', 'Loaded local background service.');
+                    } else {
+                        Toast.error('Background Error', 'Could not load background service.');
+                    }
+                } catch (fallbackError) {
+                    console.error('Failed to resolve background fallback:', fallbackError);
+                    Toast.error('Background Error', 'Could not load background service.');
+                }
             }
         }
         async function checkForUpdates() {
