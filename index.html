@@ -11,6 +11,7 @@
     <link rel="stylesheet"
         href="https://maxst.icons8.com/vue-static/landings/line-awesome/line-awesome/1.3.0/css/line-awesome.min.css">
     <link rel="stylesheet" type="text/css" href="main.css" />
+    <script src="thirdparty/vdoninja-sdk.js"></script>
     <script>
         window.SSAPP_DEBUG_LOGS = Boolean(window.SSAPP_DEBUG_LOGS);
         (function () {
@@ -693,7 +694,7 @@
                 preferLocal = options.forceLocal;
             }
             const extraParams = Array.isArray(options.extraParams) ? options.extraParams.slice() : [];
-            const appendFrameParams = (baseUrl) => {
+            const appendFrameParams = (baseUrl, localBaseUrl) => {
                 if (!baseUrl) {
                     return baseUrl;
                 }
@@ -703,6 +704,10 @@
                 }
                 const frameParams = buildFrameQueryParams(extraParams);
                 finalUrl += finalUrl.includes('?') ? `&${frameParams}` : `?${frameParams}`;
+                // Add sourcemode for local file:// URLs so popup.js knows the correct base path
+                if (localBaseUrl && localBaseUrl.startsWith('file://')) {
+                    finalUrl += `&sourcemode=${encodeURIComponent(localBaseUrl)}`;
+                }
                 return finalUrl;
             };
             const fallbackBranches = branch === 'beta' ? ['beta', 'main'] : ['main'];
@@ -719,7 +724,7 @@
                         if (fallback && fallback.url) {
                             const baseUrl = fallback.baseUrl || fallback.url.substring(0, fallback.url.lastIndexOf('/') + 1);
                             return {
-                                url: appendFrameParams(fallback.url),
+                                url: appendFrameParams(fallback.url, baseUrl),
                                 origin: 'local',
                                 baseUrl: baseUrl || fallback.url,
                                 branch: fallback.branch || fbBranch
@@ -742,7 +747,7 @@
                         if (cacheResult && cacheResult.success && cacheResult.url) {
                             const baseUrl = cacheResult.url.substring(0, cacheResult.url.lastIndexOf('/') + 1);
                             return {
-                                url: appendFrameParams(cacheResult.url),
+                                url: appendFrameParams(cacheResult.url, baseUrl),
                                 origin: cacheBranch === branch ? 'cache' : `cache-${cacheBranch}`,
                                 baseUrl: baseUrl || cacheResult.url,
                                 branch: cacheBranch

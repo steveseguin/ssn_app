@@ -95,6 +95,15 @@ try {
   });
 } catch (_) {}
 
+// Forward main-process sendToTab to the page without exposing APIs
+try {
+  ipcRenderer.on('sendToTab', (event, message) => {
+    try {
+      window.postMessage({ __ssappSendToTab: message }, '*');
+    } catch (_) {}
+  });
+} catch (_) {}
+
 // Override CDP detection - Chrome DevTools Protocol
 // Removed as it causes recursion with toString override
 
@@ -713,6 +722,27 @@ if (contextIsolated) {
     },
     startKickOAuth: async (payload) => {
       return await ipcRenderer.invoke('kick-oauth', payload);
+    }
+  });
+
+  // Expose ninjafy bridge for message routing in mock preload
+  contextBridge.exposeInMainWorld('ninjafy', {
+    _authToken: null,
+    getInjectedScriptFlag: () => null,
+    exposeDoSomethingInWebApp: (callback) => {
+      window.doSomethingInWebApp = callback;
+    },
+    sendMessage: (ignore, data, callback, tabID) => {
+      const outgoingData = { ...data };
+      if (tabID !== undefined && tabID !== null && tabID !== false) {
+        outgoingData.__tabID__ = tabID;
+      }
+      if (callback) {
+        const response = ipcRenderer.sendSync('postMessage', outgoingData);
+        callback(response);
+      } else {
+        ipcRenderer.send('postMessage', outgoingData);
+      }
     }
   });
 } else {

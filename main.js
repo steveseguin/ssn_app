@@ -6110,7 +6110,35 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 const text = typeof overlay.response === 'string' ? overlay.response.trim() : '';
                 if (!text) {
                     console.warn('[Dock IPC] Empty text in handleDockChatSend');
-                    return;
+                    return false;
+                }
+
+                let handled = false;
+
+                const websocketTargets = Object.values(browserViews)
+                    .filter((view) => view && view.webContents)
+                    .filter((view) => {
+                        try {
+                            const url = view.args?.url || view.webContents.getURL();
+                            return typeof url === 'string' && url.includes('/sources/websocket/');
+                        } catch (_) {
+                            return false;
+                        }
+                    });
+
+                if (websocketTargets.length) {
+                    handled = true;
+                    console.log('[Dock IPC] Sending to websocket targets', { count: websocketTargets.length });
+                    websocketTargets.forEach((view) => {
+                        try {
+                            view.webContents.send('sendToTab', {
+                                type: 'SEND_MESSAGE',
+                                message: text
+                            });
+                        } catch (error) {
+                            console.warn('[Dock IPC] Websocket send failed', { error: error?.message || error });
+                        }
+                    });
                 }
 
                 const rawTargets = [];
@@ -6138,10 +6166,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 console.log('[Dock IPC] Final target WSS IDs:', targetWssIds);
 
                 if (!targetWssIds.length) {
-                    console.warn('[Dock IPC] No valid targets found');
-                    return;
+                    return handled;
                 }
 
+                handled = true;
                 for (const wssId of targetWssIds) {
                     if (!Number.isFinite(wssId)) continue;
                     console.log(`[Dock IPC] Sending to TikTok WSS ID: ${wssId}`);
@@ -6149,8 +6177,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         console.warn('[Dock IPC] TikTok chat send failed', { wssId, error: error?.message || error });
                     });
                 }
+                return handled;
             } catch (error) {
                 console.warn('[Dock IPC] Failed to route chat to TikTok', error);
+                return false;
             }
         };
 
@@ -6179,7 +6209,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 console.log('[Dock IPC] Received postMessage from dock.html', { payloadKeys: payload ? Object.keys(payload) : 'null' });
                 if (payload && payload.overlayNinja && payload.overlayNinja.response !== undefined) {
                     console.log('[Dock IPC] Calling handleDockChatSend');
-                    handleDockChatSend(payload.overlayNinja);
+                    const handled = handleDockChatSend(payload.overlayNinja);
+                    if (handled) {
+                        eventRet.returnValue = { ok: true };
+                        return;
+                    }
                 } else {
                     console.log('[Dock IPC] Payload does not match overlayNinja response structure');
                 }
@@ -9329,10 +9363,20 @@ async function createWindow(args, reuse = false, mainApp = false) {
         var keys = Object.keys(browserViews);
         var tabs = [];
         keys.forEach((key) => {
-            if (browserViews[key].args && browserViews[key].args.url) {
+            const view = browserViews[key];
+            if (!view) return;
+            let url = null;
+            if (view.args && view.args.url) {
+                url = view.args.url;
+            } else if (view.webContents && !view.webContents.isDestroyed()) {
+                url = view.webContents.getURL();
+            } else if (view.url) {
+                url = view.url;
+            }
+            if (url) {
                 tabs.push({
                     id: parseInt(key),
-                    url: browserViews[key].args.url
+                    url: url
                 });
             }
         });
