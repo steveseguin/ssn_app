@@ -3193,6 +3193,10 @@ var forcingAspectRatio = false;
 var cachedState = {};
 // cachedState.state = false;
 
+// Debounce state for storageSave to batch rapid sequential saves
+let storageSaveDebounceTimer = null;
+let storageSavePending = false;
+
 var mainWindow = null;
 let ttt = {
     width: 1280,
@@ -4171,10 +4175,12 @@ function stealthHideView(view) {
         }
         // Compute an off-screen coordinate
         const vb = getVirtualScreenBounds();
-        // Place far to the left/top and reduce size to 1x1
-        const offX = Math.floor(vb.x - 3000);
-        const offY = Math.floor(vb.y - 3000);
-        view.setBounds({ x: offX, y: offY, width: 1, height: 1 });
+        // Place far to the left/top but keep original size to avoid triggering
+        // viewport-based throttling in pages like TikTok
+        const offX = Math.floor(vb.x - 10000);
+        const offY = Math.floor(vb.y - 10000);
+        const currentBounds = view.__prevBounds || { width: 800, height: 600 };
+        view.setBounds({ x: offX, y: offY, width: currentBounds.width, height: currentBounds.height });
         // Avoid taskbar clutter while hidden
         try { view.setSkipTaskbar(true); } catch (_) { }
         // Keep window technically visible; do not call hide()/minimize()
@@ -4866,25 +4872,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         wc.on('destroyed', () => {
             mainWindowReadyForInjectorToasts = false;
         });
-
-        // Handle permission requests
-        wc.session.setPermissionRequestHandler((webContents, permission, callback) => {
-            const allowedPermissions = [
-                'screen-wake-lock',
-                'media',
-                'notifications',
-                'fullscreen',
-                'clipboard-read',
-                'clipboard-write'
-            ];
-
-            if (allowedPermissions.includes(permission)) {
-                callback(true);
-            } else {
-                console.warn(`[Permission Denied] ${permission}`);
-                callback(false);
-            }
-        });
+        // Note: Permission handler is set later on mainWindow.webContents.session (see below)
     }
 
     const consoleFilterPatterns = [
@@ -4930,14 +4918,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     "midiSysex",
                     "midi",
                     "shared-array-buffer",
-                    "clipboard-sanitized-write"
+                    "clipboard-sanitized-write",
+                    "screen-wake-lock",
+                    "notifications",
+                    "fullscreen",
+                    "clipboard-read",
+                    "clipboard-write"
                 ];
 
                 if (allowedPermissions.includes(permission)) {
                     callback(true); // Approve permission request
                 } else {
-                    console.error(
-                        `The application tried to request permission for '${permission}'. This permission was not whitelisted and has been blocked.`
+                    console.warn(
+                        `[Permission] '${permission}' was not whitelisted and has been blocked.`
                     );
                     callback(false); // Deny
                 }
@@ -5354,10 +5347,52 @@ async function createWindow(args, reuse = false, mainApp = false) {
         eventRet.returnValue = cachedState;
     });
 
+    /**
+     * Flush any pending debounced storageSave operations immediately.
+     * Called on app quit to ensure no data loss and prevent post-quit timer firing.
+     */
+    function flushPendingStorageSave() {
+        if (!storageSavePending) return;
+
+        clearTimeout(storageSaveDebounceTimer);
+        storageSaveDebounceTimer = null;
+        storageSavePending = false;
+
+        log("[storageSave] Flushing pending save");
+        try {
+            saveCachedStateAtomic(cachedState);
+        } catch (e) {
+            console.error(e);
+        }
+        try {
+            const payload = buildLocalStorageMirrorPayload(cachedState);
+            updateLocalStorageBackup(payload);
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+                mirrorCachedStateToLocalStorage(mainWindow);
+            }
+        } catch (e) {
+            console.warn("Failed to mirror cachedState to localStorage on flush:", e?.message || e);
+        }
+        try {
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+                mainWindow.webContents.mainFrame.frames.forEach((frame) => {
+                    if (frame.url.split("?")[0].endsWith("popup.html")) {
+                        frame.postMessage("fromMain", cachedState);
+                    }
+                });
+            }
+        } catch (e) {
+            console.warn("Failed to update popup.html on flush:", e?.message || e);
+        }
+    }
+
+    // Expose flushPendingStorageSave globally so quitApp can call it
+    global.flushPendingStorageSave = flushPendingStorageSave;
+
     ipcMain.on("storageSave", function (eventRet, value) {
         // from background
 
-        log("\nstorageSave:");
+        // Sanitize and merge incoming state immediately (caller expects updated state back)
         const incoming = (value && typeof value === "object") ? value : {};
         const allowEmptySettings = incoming.allowEmptySettings === true;
         if ("allowEmptySettings" in incoming) {
@@ -5381,35 +5416,46 @@ async function createWindow(args, reuse = false, mainApp = false) {
             sanitized[key] = val;
         });
         cachedState = { ...cachedState, ...sanitized };
-        log("saving to storage");
-        try {
-            saveCachedStateAtomic(cachedState);
-        } catch (e) {
-            console.error(e);
-        }
-        try {
-            const payload = buildLocalStorageMirrorPayload(cachedState);
-            updateLocalStorageBackup(payload);
-            if (mainWindow && mainWindow.webContents) {
-                mirrorCachedStateToLocalStorage(mainWindow);
-            }
-        } catch (e) {
-            console.warn("Failed to mirror cachedState to localStorage on save:", e?.message || e);
-        }
 
-
-        log("Updating popup.html"); // Since the pop up is open, any setting I make I need to reflect back into the pop up, since there is no "on dom load -> getSettings" trigger to do that for us as the pop up is always open
-        if (mainWindow && mainWindow.webContents) {
-            mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (frame.url.split("?")[0].endsWith("popup.html")) {
-                    frame.postMessage("fromMain", cachedState); // just sync what's been saved. I need to send everything else the copy-URL in the pop up won't have all the settings needed to update right.
-                }
-            });
-        }
+        // Return merged state immediately (required for sendSync callers)
         eventRet.returnValue = cachedState;
 
-        log("SAVING:");
-        log(cachedState);
+        // Debounce the expensive I/O operations to batch rapid sequential saves
+        storageSavePending = true;
+        clearTimeout(storageSaveDebounceTimer);
+        storageSaveDebounceTimer = setTimeout(() => {
+            storageSavePending = false;
+            storageSaveDebounceTimer = null;
+
+            log("[storageSave] Persisting batched changes");
+            try {
+                saveCachedStateAtomic(cachedState);
+            } catch (e) {
+                console.error(e);
+            }
+            try {
+                const payload = buildLocalStorageMirrorPayload(cachedState);
+                updateLocalStorageBackup(payload);
+                if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+                    mirrorCachedStateToLocalStorage(mainWindow);
+                }
+            } catch (e) {
+                console.warn("Failed to mirror cachedState to localStorage on save:", e?.message || e);
+            }
+
+            // Update popup.html with latest state
+            try {
+                if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+                    mainWindow.webContents.mainFrame.frames.forEach((frame) => {
+                        if (frame.url.split("?")[0].endsWith("popup.html")) {
+                            frame.postMessage("fromMain", cachedState);
+                        }
+                    });
+                }
+            } catch (e) {
+                console.warn("Failed to update popup.html:", e?.message || e);
+            }
+        }, 150);
     });
 
     ipcMain.on("storageGet", function (eventRet, value) {
@@ -11052,6 +11098,16 @@ app.on('browser-window-created', (event, window) => {
 
 async function quitApp() {
     app.isQuitting = true;
+
+    // Flush any pending debounced storageSave immediately to prevent data loss
+    // This also cancels the debounce timer so it won't fire after windows are destroyed
+    try {
+        if (typeof global.flushPendingStorageSave === 'function') {
+            global.flushPendingStorageSave();
+        }
+    } catch (e) {
+        console.warn("Failed to flush pending storageSave on quit:", e?.message || e);
+    }
 
     // Save cachedState before quitting to prevent data loss
     try {
