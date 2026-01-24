@@ -5082,7 +5082,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const isOverlayLike = ((!frame || useTransparency) && (url.includes("dock.html") || url.includes("overlay") || url.includes("transparent") || url.includes("chroma=")));
             const startLocked = (lockState && typeof lockState.locked === 'boolean') ? lockState.locked : isOverlayLike;
             const startPinned = (lockState && typeof lockState.pin === 'boolean') ? lockState.pin : startLocked;
-            const startUnclickable = (lockState && typeof lockState.unclickable === 'boolean') ? lockState.unclickable : startLocked;
+            const startUnclickable = (lockState && typeof lockState.unclickable === 'boolean') ? lockState.unclickable : false;
 
             const view = new BrowserWindow(config);
 
@@ -7889,7 +7889,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const isOverlayLike = (args.url && (args.url.includes("transparent") || args.url.includes("chroma=") || args.url.includes("dock.html") || args.url.includes("overlay")));
             let startLocked = (lockState && typeof lockState.locked === 'boolean') ? lockState.locked : isOverlayLike;
             let startPinned = (lockState && typeof lockState.pin === 'boolean') ? lockState.pin : startLocked;
-            let startUnclickable = (lockState && typeof lockState.unclickable === 'boolean') ? lockState.unclickable : startLocked;
+            let startUnclickable = (lockState && typeof lockState.unclickable === 'boolean') ? lockState.unclickable : false;
             if (args.wss) {
                 startLocked = false;
                 startPinned = false;
