@@ -4,7 +4,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 const LOOPBACK_HOST = '127.0.0.1';
-const LOOPBACK_PORTS = [8080, 8181];
+const LOOPBACK_PORTS = [8181, 8080];
 const CALLBACK_PATH = '/sources/websocket/kick.html';
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
