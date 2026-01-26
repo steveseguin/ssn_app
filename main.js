@@ -5143,9 +5143,17 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 });
             }
 
-            // Add a small delay to save window state to ensure we get the correct bounds
+            // Skip saving during initial window setup to prevent DPI-related resize from corrupting saved size
+            let viewReadyToSaveState = false;
+            view.webContents.once("did-finish-load", () => {
+                setTimeout(() => {
+                    viewReadyToSaveState = true;
+                }, 500);
+            });
+
             let saveTimeout;
             view.on("resize", () => {
+                if (!viewReadyToSaveState) return;
                 clearTimeout(saveTimeout);
                 saveTimeout = setTimeout(() => {
                     saveWindowState(view);
@@ -5153,6 +5161,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             });
 
             view.on("move", () => {
+                if (!viewReadyToSaveState) return;
                 clearTimeout(saveTimeout);
                 saveTimeout = setTimeout(() => {
                     saveWindowState(view);
