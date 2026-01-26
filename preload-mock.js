@@ -95,14 +95,7 @@ try {
   });
 } catch (_) {}
 
-// Forward main-process sendToTab to the page without exposing APIs
-try {
-  ipcRenderer.on('sendToTab', (event, message) => {
-    try {
-      window.postMessage({ __ssappSendToTab: message }, '*');
-    } catch (_) {}
-  });
-} catch (_) {}
+// NOTE: sendToTab listener moved to after require('electron') at line ~670
 
 // Override CDP detection - Chrome DevTools Protocol
 // Removed as it causes recursion with toString override
@@ -664,6 +657,14 @@ Function.prototype.toString = function() {
 
 // Handle IPC exposure based on context isolation setting
 const { contextBridge, ipcRenderer } = require('electron');
+
+// Forward main-process sendToTab to the page without exposing APIs
+// This must be after require('electron') so ipcRenderer is defined
+ipcRenderer.on('sendToTab', (event, message) => {
+  try {
+    window.postMessage({ __ssappSendToTab: message }, '*');
+  } catch (_) {}
+});
 
 // Check if contextIsolation is enabled
 const contextIsolated = process.contextIsolated;

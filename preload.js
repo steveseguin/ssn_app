@@ -1,4 +1,5 @@
 var { ipcRenderer, contextBridge } = require('electron');
+
 let cachedEnvironment = null;
 const environmentPromise = (async () => {
 	try {
@@ -223,9 +224,7 @@ window.addEventListener('error', (event) => {
 
 var actualHandler = null;
 var doSomethingInWebApp = function(callback){
-	//console.log("doSomethingInWebApp registration called with:", typeof callback);
 	if (callback){
-		//console.log("Registering handler - success!");
 		actualHandler = callback;
 	}
 };
@@ -233,9 +232,9 @@ var doSomethingInWebApp = function(callback){
 // Create a wrapper that always delegates to the current handler
 var doSomethingInWebAppWrapper = function(message, sender, sendResponse) {
 	if (actualHandler) {
-		actualHandler(message, sender, sendResponse);
-	} else {
-		console.warn("doSomethingInWebApp: No handler registered yet, message dropped:", message);
+		try {
+			actualHandler(message, sender, sendResponse);
+		} catch (_) {}
 	}
 };
 function configureContextBridge(){
@@ -357,17 +356,27 @@ function configureContextBridge(){
 				return await ipcRenderer.invoke('kick-ws-disconnect', payload);
 			  },
 
-			  onKickWsEvent: (callback) => {
-				ipcRenderer.on('kick-ws-event', (event, data) => {
-				  callback(data);
-				});
-			  },
+			  onKickWsEvent: (() => {
+				let registered = false;
+				return (callback) => {
+					if (registered) return;
+					registered = true;
+					ipcRenderer.on('kick-ws-event', (event, data) => {
+						callback(data);
+					});
+				};
+			  })(),
 
-			  onKickWsStatus: (callback) => {
-				ipcRenderer.on('kick-ws-status', (event, data) => {
-				  callback(data);
-				});
-			  },
+			  onKickWsStatus: (() => {
+				let registered = false;
+				return (callback) => {
+					if (registered) return;
+					registered = true;
+					ipcRenderer.on('kick-ws-status', (event, data) => {
+						callback(data);
+					});
+				};
+			  })(),
 
 			  startYouTubeLiveChatGrpcStream: async (options) => {
 				return await ipcRenderer.invoke('youtube-livechat-grpc:start', options);
@@ -497,17 +506,27 @@ try {
 				return await ipcRenderer.invoke('kick-ws-disconnect', payload);
 			},
 
-			onKickWsEvent: (callback) => {
-				ipcRenderer.on('kick-ws-event', (event, data) => {
-					callback(data);
-				});
-			},
+			onKickWsEvent: (() => {
+				let registered = false;
+				return (callback) => {
+					if (registered) return;
+					registered = true;
+					ipcRenderer.on('kick-ws-event', (event, data) => {
+						callback(data);
+					});
+				};
+			})(),
 
-			onKickWsStatus: (callback) => {
-				ipcRenderer.on('kick-ws-status', (event, data) => {
-					callback(data);
-				});
-			}
+			onKickWsStatus: (() => {
+				let registered = false;
+				return (callback) => {
+					if (registered) return;
+					registered = true;
+					ipcRenderer.on('kick-ws-status', (event, data) => {
+						callback(data);
+					});
+				};
+			})()
 		};
 		window.ssappLocale = {
 			locale: process.env.SSAPP_LOCALE_EFFECTIVE || 'en-US',
@@ -563,7 +582,11 @@ function injectDockBridge() {
 							fromDock: true
 						});
 					} catch (_) {}
-					if (typeof originalSend2Extension === 'function') {
+					// For response messages (chat replies), Electron's handleDockChatSend
+					// already broadcasts to websocket sources. Only call original for
+					// non-response messages (settings sync, P2P state, etc.) to avoid
+					// duplicate sends through background.html path.
+					if (typeof originalSend2Extension === 'function' && !data?.response) {
 						return originalSend2Extension.apply(this, arguments);
 					}
 				};
@@ -605,7 +628,6 @@ ipcRenderer.on('sendToTab-request', (event, data) => {
 
 // Handle regular sendToTab messages (no response expected)
 ipcRenderer.on('sendToTab', (event, ...args) => {
-	//console.log("SEND TO TAB 2");
 	doSomethingInWebAppWrapper(args[0], null, function(response){});
 });
 

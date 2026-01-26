@@ -6161,12 +6161,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         const handleDockChatSend = (overlay = {}) => {
             try {
-                console.log('[Dock IPC] handleDockChatSend called', { overlay });
                 const text = typeof overlay.response === 'string' ? overlay.response.trim() : '';
-                if (!text) {
-                    console.warn('[Dock IPC] Empty text in handleDockChatSend');
-                    return false;
-                }
+                if (!text) return false;
 
                 let handled = false;
 
@@ -6183,17 +6179,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                 if (websocketTargets.length) {
                     handled = true;
-                    console.log('[Dock IPC] Sending to websocket targets', { count: websocketTargets.length });
-                    websocketTargets.forEach((view) => {
+                    for (const view of websocketTargets) {
                         try {
+                            if (!view || !view.webContents || view.webContents.isDestroyed()) continue;
                             view.webContents.send('sendToTab', {
                                 type: 'SEND_MESSAGE',
                                 message: text
                             });
-                        } catch (error) {
-                            console.warn('[Dock IPC] Websocket send failed', { error: error?.message || error });
-                        }
-                    });
+                        } catch (_) {}
+                    }
                 }
 
                 const rawTargets = [];
@@ -6212,13 +6206,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     .filter((t) => t !== null);
 
                 const availableWssIds = Object.keys(websocketConnections).map((key) => Number(key)).filter((n) => Number.isFinite(n));
-                console.log('[Dock IPC] Target resolution', { rawTargets, parsedTargets, availableWssIds });
 
                 const targetWssIds = parsedTargets.length
                     ? parsedTargets.map((t) => (t >= 900000 ? t - 900000 : t))
                     : availableWssIds;
-
-                console.log('[Dock IPC] Final target WSS IDs:', targetWssIds);
 
                 if (!targetWssIds.length) {
                     return handled;
@@ -6227,14 +6218,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 handled = true;
                 for (const wssId of targetWssIds) {
                     if (!Number.isFinite(wssId)) continue;
-                    console.log(`[Dock IPC] Sending to TikTok WSS ID: ${wssId}`);
-                    sendToTikTok({ wssID: wssId, message: text }).catch((error) => {
-                        console.warn('[Dock IPC] TikTok chat send failed', { wssId, error: error?.message || error });
-                    });
+                    sendToTikTok({ wssID: wssId, message: text }).catch(() => {});
                 }
                 return handled;
-            } catch (error) {
-                console.warn('[Dock IPC] Failed to route chat to TikTok', error);
+            } catch (_) {
                 return false;
             }
         };
@@ -6261,22 +6248,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             if (senderUrl.includes('/dock.html') || senderUrl.includes('/background.html')) {
                 const payload = args && args[0] ? args[0] : null;
-                console.log('[Dock IPC] Received postMessage from dock.html', { payloadKeys: payload ? Object.keys(payload) : 'null' });
                 if (payload && payload.overlayNinja && payload.overlayNinja.response !== undefined) {
-                    console.log('[Dock IPC] Calling handleDockChatSend');
                     const handled = handleDockChatSend(payload.overlayNinja);
                     if (handled) {
                         eventRet.returnValue = { ok: true };
                         return;
                     }
-                } else {
-                    console.log('[Dock IPC] Payload does not match overlayNinja response structure');
-                }
-                try {
-                    const preview = args && args[0] ? JSON.stringify(args[0]).slice(0, 400) : '';
-                    console.log('[Dock IPC] postMessage received', { senderUrl, preview });
-                } catch (err) {
-                    console.log('[Dock IPC] postMessage received (unserializable payload)', { senderUrl });
                 }
             }
         } catch (e) { }
@@ -8517,14 +8494,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
 									function tryRegister() {
 										if (window.ninjafy && window.ninjafy.exposeDoSomethingInWebApp) {
 											window.ninjafy.exposeDoSomethingInWebApp(function(message, sender, sendResponse) {
-												// This receives messages from sendToTab
 												callback(message, sender, sendResponse);
 											});
 											return true;
 										}
 										return false;
 									}
-									
+
 									// Try immediately
 									if (!tryRegister()) {
 										// If failed, retry a few times with delays
