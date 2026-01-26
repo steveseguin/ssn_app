@@ -1404,7 +1404,7 @@
             if (stopButton) {
                 const showStop = isTikTokLocalSigner
                     ? true
-                    : (source.status === 'active' || source.status === 'activating' || !!source.vid);
+                    : (source.status === 'active' || source.status === 'activating' || !!source.vid || !!source.tiktokWssId);
                 stopButton.classList.toggle('hidden', !showStop);
                 if (isTikTokLocalSigner && source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy')) {
                     stopButton.onclick = () => tiktokSigningWindowControl(source.id, 'stop');

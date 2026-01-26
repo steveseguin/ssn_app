@@ -3,7 +3,7 @@ const http = require('http');
 const url = require('url');
 
 const LOOPBACK_HOST = '127.0.0.1';
-const LOOPBACK_PORT = 8080;
+const LOOPBACK_PORTS = [8080, 8181];
 const CALLBACK_PATH = '/sources/websocket/twitch.html';
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -17,6 +17,41 @@ function buildTwitchAuthUrl({ clientId, scopes, redirectUri, state }) {
         `&redirect_uri=${encodeURIComponent(redirectUri || '')}` +
         `&scope=${encodeURIComponent(scopeString)}` +
         `&state=${encodeURIComponent(state || '')}`;
+}
+
+function tryListenOnPort(server, port) {
+    return new Promise((resolve, reject) => {
+        const onError = (err) => {
+            server.removeListener('listening', onListening);
+            reject(err);
+        };
+        const onListening = () => {
+            server.removeListener('error', onError);
+            resolve(port);
+        };
+        server.once('error', onError);
+        server.once('listening', onListening);
+        server.listen(port, LOOPBACK_HOST);
+    });
+}
+
+async function tryStartServer(server) {
+    for (const port of LOOPBACK_PORTS) {
+        try {
+            await tryListenOnPort(server, port);
+            console.log(`[Twitch OAuth] Server started on port ${port}`);
+            return port;
+        } catch (err) {
+            if (err.code === 'EADDRINUSE') {
+                console.log(`[Twitch OAuth] Port ${port} in use, trying next...`);
+                continue;
+            }
+            throw err;
+        }
+    }
+    const error = new Error('PORTS_UNAVAILABLE');
+    error.code = 'PORTS_UNAVAILABLE';
+    throw error;
 }
 
 function runTwitchLoopbackOAuthSession(payload = {}) {
@@ -195,32 +230,48 @@ h1 { color: #eb0400; }</style></head>
             res.end('Not found');
         });
 
-        server.on('error', (err) => {
-            console.error('[Twitch OAuth] Local server error:', err);
-            fail(err);
-        });
+        (async () => {
+            try {
+                const port = await tryStartServer(server);
+                redirectUri = `http://localhost:${port}${CALLBACK_PATH}`;
 
-        server.listen(LOOPBACK_PORT, LOOPBACK_HOST, () => {
-            redirectUri = `http://localhost:${LOOPBACK_PORT}${CALLBACK_PATH}`;
+                const authUrl = buildTwitchAuthUrl({
+                    clientId: payload.clientId,
+                    scopes: payload.scopes,
+                    redirectUri,
+                    state: payload.state
+                });
 
-            const authUrl = buildTwitchAuthUrl({
-                clientId: payload.clientId,
-                scopes: payload.scopes,
-                redirectUri,
-                state: payload.state
-            });
+                payload.redirectUri = redirectUri;
 
-            payload.redirectUri = redirectUri;
-
-            Promise.resolve(shell.openExternal(authUrl, { activate: true }))
-                .then(() => {
+                try {
+                    await shell.openExternal(authUrl, { activate: true });
                     console.log('[Twitch OAuth] Opening auth URL in default browser');
-                })
-                .catch((shellError) => {
+                } catch (shellError) {
                     console.error('[Twitch OAuth] Failed to launch default browser:', shellError);
                     fail(shellError);
-                });
-        });
+                }
+            } catch (err) {
+                if (err.code === 'PORTS_UNAVAILABLE') {
+                    const { dialog } = require('electron');
+                    dialog.showMessageBox({
+                        type: 'error',
+                        title: 'Unable to Sign In',
+                        message: 'Port Conflict Detected',
+                        detail: 'Both ports 8080 and 8181 are in use by other applications.\n\n' +
+                                'Common causes:\n' +
+                                '• Streamer.bot (uses port 8080 by default)\n' +
+                                '• Other streaming software\n\n' +
+                                'To fix this:\n' +
+                                '1. Stop applications using these ports, OR\n' +
+                                '2. Configure Streamer.bot to use a different port (e.g., 9000)\n\n' +
+                                'Then try signing in again.',
+                        buttons: ['OK']
+                    });
+                }
+                fail(err);
+            }
+        })();
 
         const timeoutMs = Number.isFinite(payload.timeoutMs) ? payload.timeoutMs : DEFAULT_TIMEOUT_MS;
         timeoutId = setTimeout(() => {
