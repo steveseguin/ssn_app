@@ -1893,7 +1893,7 @@ app.commandLine.appendSwitch('ignore-gpu-blocklist');
 // app.commandLine.appendSwitch('user-data-dir', path.join(app.getPath('userData'), 'ChromeProfile'));
 // User agent override at app level - this will be overridden by config if available
 // Set platform-specific user agent with simplified Chrome version
-const CHROME_UA_VERSION = '142.0.0.0';  // Chrome shows simplified version in UA string
+const CHROME_UA_VERSION = '144.0.0.0';  // Chrome shows simplified version in UA string
 if (isMac) {
     app.userAgentFallback = app.userAgentFallback || `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
 } else if (process.platform === 'linux') {
@@ -7092,19 +7092,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                     const chromeVersion = chromeMatch[1];
                                     
                                     // Set Client Hints headers to match the User-Agent
-                                    requestHeaders['sec-ch-ua'] = `"Google Chrome";v="${chromeVersion}", "Chromium";v="${chromeVersion}", "Not;A=Brand";v="99"`;
+                                    requestHeaders['sec-ch-ua'] = `"Google Chrome";v="${chromeVersion}", "Chromium";v="${chromeVersion}", "Not(A:Brand";v="8"`;
                                     requestHeaders['sec-ch-ua-mobile'] = '?0';
                                     requestHeaders['sec-ch-ua-platform'] = '"Windows"';
                                     
                                     // Only set full version list if requested by server
                                     if (requestHeaders['sec-ch-ua-full-version-list']) {
-                                        requestHeaders['sec-ch-ua-full-version-list'] = `"Google Chrome";v="${chromeVersion}.0.0.0", "Chromium";v="${chromeVersion}.0.0.0", "Not;A=Brand";v="99.0.0.0"`;
+                                        requestHeaders['sec-ch-ua-full-version-list'] = `"Google Chrome";v="${chromeVersion}.0.0.0", "Chromium";v="${chromeVersion}.0.0.0", "Not(A:Brand";v="8.0.0.0"`;
                                     }
                                 } else if (edgeMatch) {
                                     const edgeVersion = edgeMatch[1];
                                     
                                     // Edge also uses Chromium-based Client Hints
-                                    requestHeaders['sec-ch-ua'] = `"Microsoft Edge";v="${edgeVersion}", "Chromium";v="${edgeVersion}", "Not;A=Brand";v="99"`;
+                                    requestHeaders['sec-ch-ua'] = `"Microsoft Edge";v="${edgeVersion}", "Chromium";v="${edgeVersion}", "Not(A:Brand";v="8"`;
                                     requestHeaders['sec-ch-ua-mobile'] = '?0';
                                     requestHeaders['sec-ch-ua-platform'] = '"Windows"';
                                 } else if (firefoxMatch) {
@@ -7487,7 +7487,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             log(`Loading URL with configured user agent for kasada: ${userAgent}`);
                         } else {
                             // Use platform-specific fallback
-                            const CHROME_UA_VERSION = '142.0.0.0';
+                            const CHROME_UA_VERSION = '144.0.0.0';
                             if (isMac) {
                                 userAgent = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
                             } else if (process.platform === 'linux') {
@@ -10802,8 +10802,8 @@ app.whenReady().then(async function () {
 
     // Set a global fallback user agent WITHOUT Electron to avoid detection
     // Chrome shows simplified version in UA string
-    const CHROME_UA_VERSION = '142.0.0.0';  // For user agent string
-    const CHROME_UA_FULL_VERSION = '142.0.7444.163'; // For Client Hints full version
+    const CHROME_UA_VERSION = '144.0.0.0';  // For user agent string
+    const CHROME_UA_FULL_VERSION = '144.0.7559.97'; // For Client Hints full version
     let CHROME_UA;
     if (isMac) {
         CHROME_UA = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
@@ -10833,7 +10833,7 @@ app.whenReady().then(async function () {
 
         // Chrome's security headers / Client Hints
         const chromeMainVersion = CHROME_UA_VERSION.split('.')[0]; // Extract "140" from "140.0.0.0"
-        headers['Sec-CH-UA'] = `"Not;A=Brand";v="99", "Chromium";v="${chromeMainVersion}", "Google Chrome";v="${chromeMainVersion}"`;
+        headers['Sec-CH-UA'] = `"Not(A:Brand";v="8", "Chromium";v="${chromeMainVersion}", "Google Chrome";v="${chromeMainVersion}"`;
         headers['Sec-CH-UA-Mobile'] = '?0';
         headers['Sec-CH-UA-Platform'] = '"Windows"';
         headers['Sec-CH-UA-Platform-Version'] = '"19.0.0"';
@@ -10841,7 +10841,7 @@ app.whenReady().then(async function () {
         headers['Sec-CH-UA-Bitness'] = '"64"';
         headers['Sec-CH-UA-Model'] = '""';
         headers['Sec-CH-UA-Full-Version'] = `"${CHROME_UA_FULL_VERSION}"`;
-        headers['Sec-CH-UA-Full-Version-List'] = `"Not;A=Brand";v="99.0.0.0", "Chromium";v="${CHROME_UA_FULL_VERSION}", "Google Chrome";v="${CHROME_UA_FULL_VERSION}"`;
+        headers['Sec-CH-UA-Full-Version-List'] = `"Not(A:Brand";v="8.0.0.0", "Chromium";v="${CHROME_UA_FULL_VERSION}", "Google Chrome";v="${CHROME_UA_FULL_VERSION}"`;
         headers['Sec-Fetch-Site'] = headers['Sec-Fetch-Site'] || 'none';
         headers['Sec-Fetch-Mode'] = headers['Sec-Fetch-Mode'] || 'navigate';
         headers['Sec-Fetch-User'] = headers['Sec-Fetch-User'] || '?1';

@@ -38,7 +38,7 @@ const PUBLIC_API_BASE = 'https://api.kick.com/public/v1';
 
 const DEFAULT_USER_AGENT =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-    '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    '(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36';
 
 function resolveFetch() {
     if (typeof fetch === 'function') {

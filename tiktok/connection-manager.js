@@ -72,7 +72,7 @@ let TikTokPollingFallbackClass = null;
 let usingLegacyTikTokConnector = false;
 let EulerSignerClass = null;
 const SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD = 3;
-const DEFAULT_TIKTOK_WEB_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const DEFAULT_TIKTOK_WEB_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36';
 const EULER_WS_PROVIDER = 'euler-ws';
 
 class EulerWebsocketServerConnection extends EventEmitter {

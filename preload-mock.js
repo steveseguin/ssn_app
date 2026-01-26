@@ -174,7 +174,7 @@ Object.defineProperty(navigator, 'productSub', {
 if (navigator.userAgentData && navigator.userAgent.includes('Chrome')) {
   // Extract Chrome version from the actual user agent that was set
   const chromeMatch = navigator.userAgent.match(/Chrome\/(\d+)/);
-  const chromeVersion = chromeMatch ? chromeMatch[1] : '139'; // Default to 139 if not detectable
+  const chromeVersion = chromeMatch ? chromeMatch[1] : '144'; // Default to 144 if not detectable
   
   if (PRELOAD_DEBUG) console.log('[Preload] Detected Chrome version from UA:', chromeVersion);
   
@@ -187,7 +187,7 @@ if (navigator.userAgentData && navigator.userAgent.includes('Chrome')) {
       result.brands = [
         {"brand": "Google Chrome", "version": chromeVersion},
         {"brand": "Chromium", "version": chromeVersion},
-        {"brand": "Not;A=Brand", "version": "99"}
+        {"brand": "Not(A:Brand", "version": "8"}
       ];
     }
     
@@ -195,7 +195,7 @@ if (navigator.userAgentData && navigator.userAgent.includes('Chrome')) {
       result.fullVersionList = [
         {"brand": "Google Chrome", "version": `${chromeVersion}.0.0.0`},
         {"brand": "Chromium", "version": `${chromeVersion}.0.0.0`},
-        {"brand": "Not;A=Brand", "version": "99.0.0.0"}
+        {"brand": "Not(A:Brand", "version": "8.0.0.0"}
       ];
     }
     
@@ -212,7 +212,7 @@ if (navigator.userAgentData && navigator.userAgent.includes('Chrome')) {
     get: () => [
       {"brand": "Google Chrome", "version": chromeVersion},
       {"brand": "Chromium", "version": chromeVersion},
-      {"brand": "Not;A=Brand", "version": "99"}
+      {"brand": "Not(A:Brand", "version": "8"}
     ],
     configurable: true
   });
