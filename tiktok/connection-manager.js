@@ -1713,7 +1713,8 @@ const CONFIG = {
         HIGH_WATER_INTERVAL: 5
     },
     GIFT: {
-        PROCESSING_INTERVAL: 50
+        PROCESSING_INTERVAL: 50,
+        STREAK_SAFETY_TIMEOUT_MS: 30000  // 30s fallback for orphaned combos
     }
 };
 
@@ -2394,6 +2395,7 @@ class GiftProcessor {
         }
 
         // Merge ongoing streaks (even if payload lacks repeatEnd)
+        // Wait for repeatEnd to flush; only set a long safety timeout once
         if (existingStreak || streakable) {
             const next = existingStreak || { count: 0, lastData: null, lastTotal: 0, timer: null };
             const prevTotal = Number(next.lastTotal) || 0;
@@ -2402,12 +2404,13 @@ class GiftProcessor {
             next.count += safeIncrement;
             next.lastData = data;
             next.lastTotal = Math.max(prevTotal, aggregatedCount);
-            if (next.timer) {
-                clearTimeout(next.timer);
+            // Only set a safety timer once (don't reset on each event)
+            // The combo will flush when repeatEnd arrives; this is just a fallback
+            if (!next.timer) {
+                next.timer = setTimeout(() => {
+                    this.flushStreak(streakKey);
+                }, CONFIG.GIFT.STREAK_SAFETY_TIMEOUT_MS || 30000);
             }
-            next.timer = setTimeout(() => {
-                this.flushStreak(streakKey);
-            }, 600);
             this.streaks.set(streakKey, next);
             return;
         }

@@ -4200,7 +4200,7 @@ function stealthShowView(view) {
             view.setBounds(view.__prevBounds);
         }
         try { view.setSkipTaskbar(false); } catch (_) { }
-        try { view.show(); } catch (_) { }
+        try { view.showInactive(); } catch (_) { }
         return true;
     } catch (_) {
         return true;
@@ -7885,7 +7885,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             const view = new BrowserWindow({
                 webPreferences,
-                show: visibibility,
+                show: false,  // Always create hidden to prevent focus stealing
                 backgroundColor: "#0000",
                 transparent: false,
                 frame: true,
@@ -7894,6 +7894,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
             });
             //log(args);
             view.args = args;
+
+            // Show without stealing focus if visibility is enabled
+            if (visibibility) {
+                view.showInactive();
+            }
             applyPinnedAndClickState(view, {
                 pin: startPinned,
                 unclickable: startUnclickable,
