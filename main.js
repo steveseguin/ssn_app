@@ -1287,7 +1287,7 @@ function setupRemoteControlServer() {
                     const basePath = localPath || path.join(__dirname, 'resources/social_stream_fallback/main/');
 
                     // Create the Kick source window
-                    const wssUrl = pathToFileURL(path.join(basePath, 'sources/websocket/kick.html')).href + (username ? '?username=' + encodeURIComponent(username) : '');
+                    const wssUrl = pathToFileURL(path.join(basePath, 'sources/websocket/kick.html')).href + '?ssapp=1' + (username ? '&username=' + encodeURIComponent(username) : '');
 
                     const win = new BrowserWindow({
                         width: 500,
