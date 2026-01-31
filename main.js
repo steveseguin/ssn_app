@@ -3191,6 +3191,16 @@ var counter = 0;
 var forcingAspectRatio = false;
 
 var cachedState = {};
+var cachedStateReady = false;
+
+// Settings validation thresholds
+const SETTINGS_VALIDATION = {
+    // Minimum keys before we consider settings "established" and worth protecting
+    MIN_EXISTING_KEYS: 5,
+    // If incoming has less than this ratio of existing keys, likely incomplete load
+    PARTIAL_THRESHOLD_RATIO: 0.5,
+};
+
 // cachedState.state = false;
 
 // Debounce state for storageSave to batch rapid sequential saves
@@ -5415,10 +5425,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (key === "streamID" && typeof val === "string" && val.trim() === "") {
                 return; // avoid clearing a good stream ID with an empty value
             }
-            if (key === "settings" && val && typeof val === "object" && Object.keys(val).length === 0) {
-                const hasCachedSettings = cachedState && cachedState.settings && typeof cachedState.settings === "object"
-                    && Object.keys(cachedState.settings).length > 0;
-                if (hasCachedSettings && !allowEmptySettings) {
+            if (key === "settings" && val && typeof val === "object") {
+                const existingSettings = cachedState?.settings || {};
+                const existingCount = Object.keys(existingSettings).length;
+                const incomingCount = Object.keys(val).length;
+
+                const hasEstablishedSettings = existingCount > SETTINGS_VALIDATION.MIN_EXISTING_KEYS;
+                const isPartialLoad = incomingCount < existingCount * SETTINGS_VALIDATION.PARTIAL_THRESHOLD_RATIO;
+
+                // Block if incoming has significantly fewer keys (likely incomplete load)
+                if (hasEstablishedSettings && isPartialLoad && !allowEmptySettings) {
+                    log(`[storageSave] Blocking partial settings overwrite (incoming: ${incomingCount}, existing: ${existingCount})`);
+                    return;
+                }
+                // Block completely empty settings
+                if (incomingCount === 0 && existingCount > 0 && !allowEmptySettings) {
+                    log(`[storageSave] Blocking empty settings overwrite`);
                     return;
                 }
             }
@@ -5469,6 +5491,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     ipcMain.on("storageGet", function (eventRet, value) {
         // from background , ["streamID", "password", "state", "settings"];
+
+        if (!cachedStateReady) {
+            // This should not happen - state loads before createWindow registers these handlers
+            console.warn("[storageGet] Called before cachedState ready - returning current state");
+        }
 
         var response = {};
 
@@ -6275,6 +6302,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
         } catch (_) { }
 
         if (args[0] && args[0].getSettings) {
+            if (!cachedStateReady) {
+                // This should not happen - state loads before createWindow registers these handlers
+                console.warn("[getSettings] Called before cachedState ready - returning current state");
+            }
+
             let tab = options.tabID || tabID;
 
             // Create settings response matching background.js format
@@ -10868,28 +10900,34 @@ app.whenReady().then(async function () {
         }
     });
 
-    const diskState = loadCachedStateWithBackup();
-    if (diskState) {
-        cachedState = diskState;
-        if ("streamID" in cachedState && !cachedState.streamID) {
-            log("invalid cachedState");
-        } else {
-            log("loaded cachedState");
-            if (cachedState && !("state" in cachedState) && "isExtensionOn" in cachedState) {
-                cachedState.state = cachedState.isExtensionOn;
-                delete cachedState.isExtensionOn;
-            } else if (cachedState && "isExtensionOn" in cachedState) {
-                delete cachedState.isExtensionOn;
+    try {
+        const diskState = loadCachedStateWithBackup();
+        if (diskState) {
+            cachedState = diskState;
+            if ("streamID" in cachedState && !cachedState.streamID) {
+                log("invalid cachedState");
+            } else {
+                log("loaded cachedState");
+                if (cachedState && !("state" in cachedState) && "isExtensionOn" in cachedState) {
+                    cachedState.state = cachedState.isExtensionOn;
+                    delete cachedState.isExtensionOn;
+                } else if (cachedState && "isExtensionOn" in cachedState) {
+                    delete cachedState.isExtensionOn;
+                }
             }
-        }
-        log(cachedState);
+            log(cachedState);
 
-        if (cachedState.wsServer) {
-            wsServer.start();
+            if (cachedState.wsServer) {
+                wsServer.start();
+            }
+        } else {
+            log("Failed to load cachedState -- it probably doesn't yet exist");
         }
-    } else {
-        log("Failed to load cachedState -- it probably doesn't yet exist");
-        // fs.writeFileSync(path.join(folder, "savedSync.json"), JSON.stringify(cachedState));
+    } catch (e) {
+        console.error("[STARTUP] Error loading cachedState:", e);
+    } finally {
+        cachedStateReady = true;
+        log(`[STARTUP] cachedState ready. Settings keys: ${cachedState?.settings ? Object.keys(cachedState.settings).length : 0}`);
     }
 
     // If no --filesource provided, use saved local source path (if any)

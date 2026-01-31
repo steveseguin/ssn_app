@@ -10842,6 +10842,30 @@
                 });
             });
 
+            // Listen for postMessage from iframes (e.g., popup requesting to open Event Flow Editor)
+            window.addEventListener('message', (event) => {
+                // Only accept messages from same origin or sandboxed iframes (which report 'null')
+                const trustedOrigins = [window.location.origin, 'null'];
+                if (!trustedOrigins.includes(event.origin)) {
+                    console.warn('[postMessage] Rejected message from untrusted origin:', event.origin);
+                    return;
+                }
+
+                if (event.data && event.data.action === 'switchToEventFlowEditor') {
+                    // Send acknowledgment back to the iframe (only if we have a valid origin)
+                    if (event.source && event.origin) {
+                        try {
+                            event.source.postMessage({ action: 'switchToEventFlowEditorAck' }, event.origin);
+                        } catch (e) {
+                            console.warn('[postMessage] Failed to send ack:', e);
+                        }
+                    }
+                    if (typeof switchToPage === 'function') {
+                        switchToPage('event-flow-editor').catch(err => console.error('Failed to switch to event-flow-editor:', err));
+                    }
+                }
+            });
+
             // Restore last active page or show streams by default
             const savedPage = localStorage.getItem('currentPage') || 'streams';
 
