@@ -77,6 +77,11 @@ const {
 
 const Store = require("electron-store");
 const store = new Store();
+const POPUP_UNCLICKABLE_ALL_KEY = 'popupUnclickableAll';
+let popupUnclickableEnabled = false;
+try {
+    popupUnclickableEnabled = store.get(POPUP_UNCLICKABLE_ALL_KEY) === true;
+} catch (_) { }
 
 const TRANSFER_BACKUP_STORE_KEY = 'transferBackup';
 const DEFAULT_TRANSFER_BACKUP_CONFIG = {
@@ -2715,6 +2720,33 @@ function validateSavedBounds(savedState) {
 
     // Position is off-screen (monitor likely disconnected)
     return null;
+}
+
+function setPopupUnclickableForWindow(win, enabled) {
+    try {
+        if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed())) return;
+        if (win === mainWindow) return;
+        win.mouseEvent = !!enabled;
+        win.setIgnoreMouseEvents(!!enabled);
+    } catch (_) { }
+}
+
+function applyPopupUnclickableStateToWindows(enabled) {
+    const windows = BrowserWindow.getAllWindows();
+    for (const win of windows) {
+        setPopupUnclickableForWindow(win, enabled);
+    }
+}
+
+function setPopupUnclickableEnabled(enabled) {
+    popupUnclickableEnabled = !!enabled;
+    try {
+        store.set(POPUP_UNCLICKABLE_ALL_KEY, popupUnclickableEnabled);
+    } catch (_) { }
+    applyPopupUnclickableStateToWindows(popupUnclickableEnabled);
+    try {
+        createMenu();
+    } catch (_) { }
 }
 
 var ver = app.getVersion();
@@ -10936,6 +10968,9 @@ app.on("ready", () => {
             try {
                 // Check if window still exists and is not destroyed
                 if (win && !win.isDestroyed() && win.isFocused()) {
+                    if (popupUnclickableEnabled && win !== mainWindow) {
+                        return;
+                    }
                     win.setIgnoreMouseEvents(false);
                 }
             } catch (e) {
@@ -10958,6 +10993,10 @@ app.on('browser-window-created', (event, window) => {
     window.webContents.on('will-prevent-unload', (event) => {
         event.preventDefault();
     });
+
+    if (popupUnclickableEnabled && window !== mainWindow) {
+        setPopupUnclickableForWindow(window, true);
+    }
 
     /*   window.on('close', (event) => {
          log("window close");
@@ -11931,7 +11970,15 @@ function createMenu() {
                 }
             },
             {
-                label: 'Make Unclickable',
+                label: 'Lock popups unclickable (global)',
+                type: 'checkbox',
+                checked: popupUnclickableEnabled,
+                click: (menuItem) => {
+                    setPopupUnclickableEnabled(menuItem.checked);
+                }
+            },
+            {
+                label: 'Make main window unclickable',
                 click: () => {
                     if (mainWindow) {
                         mainWindow.setIgnoreMouseEvents(true);
