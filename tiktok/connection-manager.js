@@ -2374,7 +2374,7 @@ class GiftProcessor {
         // Flush and emit immediately when repeatEnd arrives, merging any pending streak
         if (data.repeatEnd) {
             const previousTotal = existingStreak ? existingStreak.lastTotal || 0 : 0;
-            const increment = aggregatedCount > previousTotal ? aggregatedCount - previousTotal : aggregatedCount;
+            const increment = aggregatedCount > previousTotal ? aggregatedCount - previousTotal : 0;
             if (existingStreak) {
                 clearTimeout(existingStreak.timer);
                 this.streaks.delete(streakKey);
@@ -2399,7 +2399,7 @@ class GiftProcessor {
         if (existingStreak || streakable) {
             const next = existingStreak || { count: 0, lastData: null, lastTotal: 0, timer: null };
             const prevTotal = Number(next.lastTotal) || 0;
-            const increment = aggregatedCount > prevTotal ? aggregatedCount - prevTotal : aggregatedCount;
+            const increment = aggregatedCount > prevTotal ? aggregatedCount - prevTotal : 0;
             const safeIncrement = Math.max(0, increment);
             next.count += safeIncrement;
             next.lastData = data;
