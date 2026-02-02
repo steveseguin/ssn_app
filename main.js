@@ -2717,90 +2717,6 @@ function validateSavedBounds(savedState) {
     return null;
 }
 
-function getWindowLockKey(windowOrUrl) {
-    try {
-        let url;
-        if (typeof windowOrUrl === 'string') {
-            url = windowOrUrl;
-        } else if (windowOrUrl && windowOrUrl.webContents) {
-            url = windowOrUrl.webContents.getURL();
-        }
-        if (!url) return null;
-        if (url.includes("dock.html")) return "windowLock_dock";
-        if (url.includes("input.html")) return "windowLock_input";
-        if (url.includes("popup.html")) return "windowLock_popup";
-        if (url.includes("chathistory.html")) return "windowLock_history";
-        if (url.includes("sampleoverlay.html")) return "windowLock_overlay";
-        const baseUrl = url.split('?')[0].split('#')[0];
-        return "windowLock_" + baseUrl.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
-    } catch (e) {
-        return null;
-    }
-}
-
-function loadWindowLockState(url) {
-    const lockKey = getWindowLockKey(url);
-    if (!lockKey) return null;
-    const saved = store.get(lockKey);
-    if (saved && typeof saved === 'object') {
-        return {
-            locked: !!saved.locked,
-            pin: !!saved.pin,
-            unclickable: !!saved.unclickable
-        };
-    }
-    return null;
-}
-
-function saveWindowLockState(window) {
-    const lockKey = getWindowLockKey(window);
-    if (!lockKey) return;
-    try {
-        store.set(lockKey, {
-            locked: !!window.__lockPinClick,
-            pin: window.isAlwaysOnTop(),
-            unclickable: !!window.mouseEvent
-        });
-    } catch (e) { }
-}
-
-function applyPinnedAndClickState(win, { pin, unclickable, lock } = {}) {
-    try {
-        const shouldPin = !!pin;
-        const shouldIgnore = !!unclickable;
-        const lockFlag = !!lock;
-
-        if (!win.args) {
-            win.args = {};
-        }
-
-        win.__lockPinClick = lockFlag;
-        win.mouseEvent = shouldIgnore;
-        win.args.pin = shouldPin;
-
-        if (shouldPin) {
-            if (process.platform === "darwin") {
-                win.setAlwaysOnTop(true, "floating", 1);
-            } else {
-                win.setAlwaysOnTop(true, "level");
-            }
-            win.setVisibleOnAllWorkspaces(true);
-        } else {
-            win.setAlwaysOnTop(false);
-            win.setVisibleOnAllWorkspaces(false);
-        }
-
-        if (shouldIgnore) {
-            win.setIgnoreMouseEvents(true);
-        } else {
-            win.setIgnoreMouseEvents(false);
-        }
-
-        saveWindowLockState(win);
-    } catch (e) {
-        console.error('Failed to apply pin/click state:', e);
-    }
-}
 var ver = app.getVersion();
 
 const argDescriptions = {};
@@ -5088,19 +5004,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 }
             }
 
-            const lockState = loadWindowLockState(url);
-            const isOverlayLike = ((!frame || useTransparency) && (url.includes("dock.html") || url.includes("overlay") || url.includes("transparent") || url.includes("chroma=")));
-            const startLocked = (lockState && typeof lockState.locked === 'boolean') ? lockState.locked : isOverlayLike;
-            const startPinned = (lockState && typeof lockState.pin === 'boolean') ? lockState.pin : startLocked;
-            const startUnclickable = (lockState && typeof lockState.unclickable === 'boolean') ? lockState.unclickable : false;
-
             const view = new BrowserWindow(config);
-
-            applyPinnedAndClickState(view, {
-                pin: startPinned,
-                unclickable: startUnclickable,
-                lock: startLocked
-            });
 
             // Workaround for Electron 36 frameless window titlebar issue
             if (!frame && process.platform === 'win32') {
@@ -5187,7 +5091,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                 view.hide(); // Hide immediately for better UX
                 saveWindowState(view);
-                saveWindowLockState(view);
                 view.webContents.closeDevTools();
 
                 view.webContents.send('close-file-stream');
@@ -7903,18 +7806,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 webPreferences.preload = preloadPath;
             }
 
-            const lockState = loadWindowLockState(args.url);
-            const isOverlayLike = (args.url && (args.url.includes("transparent") || args.url.includes("chroma=") || args.url.includes("dock.html") || args.url.includes("overlay")));
-            let startLocked = (lockState && typeof lockState.locked === 'boolean') ? lockState.locked : isOverlayLike;
-            let startPinned = (lockState && typeof lockState.pin === 'boolean') ? lockState.pin : startLocked;
-            let startUnclickable = (lockState && typeof lockState.unclickable === 'boolean') ? lockState.unclickable : false;
-            if (args.wss) {
-                startLocked = false;
-                startPinned = false;
-                startUnclickable = false;
-                log('[ACTIVATE] Forcing websocket windows to be clickable.');
-            }
-
             const view = new BrowserWindow({
                 webPreferences,
                 show: false,  // Always create hidden to prevent focus stealing
@@ -7931,12 +7822,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (visibibility) {
                 view.showInactive();
             }
-            applyPinnedAndClickState(view, {
-                pin: startPinned,
-                unclickable: startUnclickable,
-                lock: startLocked
-            });
-
             if (view.webContents && view.webContents.session) {
                 // Workaround: Block LinkedIn's passkey initiation endpoint only for this activate window
                 // This prevents Windows Security "Sign in with your passkey" popups in activate-source windows
@@ -8169,7 +8054,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
             view.on("close", function (e) {
                 log("I do not want to be closed 2");
                 e.preventDefault();
-                saveWindowLockState(view);
 
                 // Clean up WebSocket debugger if it exists
                 if (view.__websocketMonitorCleanup) {
@@ -9632,25 +9516,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
         log("registration failed3");
     }
 
-    const lockToggle = globalShortcut.register("CommandOrControl+Shift+Alt+P", () => {
-        log("CommandOrControl+Shift+Alt+P");
-        const windows = BrowserWindow.getAllWindows().filter(win => win.__lockPinClick);
-        if (!windows.length) {
-            return;
-        }
-        const anyCurrentlyLocked = windows.some(win => win.__lockPinClick && (win.isAlwaysOnTop() || win.mouseEvent));
-        for (const win of windows) {
-            if (anyCurrentlyLocked) {
-                applyPinnedAndClickState(win, { pin: false, unclickable: false, lock: true });
-            } else {
-                applyPinnedAndClickState(win, { pin: true, unclickable: true, lock: true });
-            }
-        }
-    });
-    if (!lockToggle) {
-        log("registration failed lock toggle");
-    }
-
     // "CommandOrControl+Shift+X
 
     try {
@@ -10419,20 +10284,6 @@ contextMenu({
         },
     },
     {
-        label: "🔒 Lock always-on-top + unclickable",
-        type: "checkbox",
-        visible: true,
-        checked: !!browserWindow.__lockPinClick,
-        click: () => {
-            const nextLock = !browserWindow.__lockPinClick;
-            applyPinnedAndClickState(browserWindow, {
-                pin: nextLock ? true : browserWindow.isAlwaysOnTop(),
-                unclickable: nextLock ? true : browserWindow.mouseEvent,
-                lock: nextLock
-            });
-        },
-    },
-    {
         label: "📌 Always on top",
         type: "checkbox",
         visible: true,
@@ -11084,7 +10935,7 @@ app.on("ready", () => {
             // Check if window is still focused
             try {
                 // Check if window still exists and is not destroyed
-                if (win && !win.isDestroyed() && win.isFocused() && !win.__lockPinClick) {
+                if (win && !win.isDestroyed() && win.isFocused()) {
                     win.setIgnoreMouseEvents(false);
                 }
             } catch (e) {
