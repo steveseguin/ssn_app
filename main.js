@@ -5286,7 +5286,28 @@ async function createWindow(args, reuse = false, mainApp = false) {
     ipcMain.on("fromBackground", function (eventRet, value) {
         log("\nfromBackground ??????????????????");
         log("Received settings from background:", JSON.stringify(value).substring(0, 200));
-        cachedState = value;
+
+        // Merge instead of replace to avoid losing keys not sent by the renderer.
+        // Protect established settings from being overwritten with empty/partial data.
+        if (value && typeof value === "object") {
+            if ("settings" in value && value.settings && typeof value.settings === "object") {
+                const existingSettings = cachedState?.settings || {};
+                const existingCount = Object.keys(existingSettings).length;
+                const incomingCount = Object.keys(value.settings).length;
+                const hasEstablished = existingCount > SETTINGS_VALIDATION.MIN_EXISTING_KEYS;
+                const isPartial = incomingCount < existingCount * SETTINGS_VALIDATION.PARTIAL_THRESHOLD_RATIO;
+
+                if (hasEstablished && isPartial) {
+                    log(`[fromBackground] Blocking settings downgrade (incoming: ${incomingCount}, existing: ${existingCount})`);
+                    delete value.settings; // keep existing settings
+                } else if (incomingCount === 0 && existingCount > 0) {
+                    log(`[fromBackground] Blocking empty settings overwrite (existing: ${existingCount})`);
+                    delete value.settings;
+                }
+            }
+            cachedState = { ...cachedState, ...value };
+        }
+
         //log(cachedState);
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
@@ -5399,6 +5420,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
             } catch (e) {
                 console.error(e);
             }
+            // Keep electron-store backup fresh on every persist (not just quit),
+            // so users upgrading from older versions without .bak files have a fallback.
+            try {
+                if (cachedState && Object.keys(cachedState).length > 0) {
+                    store.set('cachedStateBackup', cachedState);
+                    store.set('cachedStateBackupTime', Date.now());
+                }
+            } catch (e) {
+                console.warn("Failed to update electron-store cachedState backup:", e?.message || e);
+            }
             try {
                 const payload = buildLocalStorageMirrorPayload(cachedState);
                 updateLocalStorageBackup(payload);
@@ -5504,8 +5535,20 @@ async function createWindow(args, reuse = false, mainApp = false) {
         if (!value) {
             return;
         }
-        if (value.settings) {
-            cachedState.settings = value.settings;
+        if (value.settings && typeof value.settings === "object") {
+            const existingSettings = cachedState?.settings || {};
+            const existingCount = Object.keys(existingSettings).length;
+            const incomingCount = Object.keys(value.settings).length;
+            const hasEstablished = existingCount > SETTINGS_VALIDATION.MIN_EXISTING_KEYS;
+            const isPartial = incomingCount < existingCount * SETTINGS_VALIDATION.PARTIAL_THRESHOLD_RATIO;
+
+            if (hasEstablished && isPartial) {
+                log(`[fromBackgroundPopupResponse] Blocking settings downgrade (incoming: ${incomingCount}, existing: ${existingCount})`);
+            } else if (incomingCount === 0 && existingCount > 0) {
+                log(`[fromBackgroundPopupResponse] Blocking empty settings overwrite (existing: ${existingCount})`);
+            } else {
+                cachedState.settings = value.settings;
+            }
         }
         if ("password" in value) {
             cachedState.password = value.password;
@@ -5547,8 +5590,20 @@ async function createWindow(args, reuse = false, mainApp = false) {
         if (!value) {
             return;
         }
-        if (value.settings) {
-            cachedState.settings = value.settings;
+        if (value.settings && typeof value.settings === "object") {
+            const existingSettings = cachedState?.settings || {};
+            const existingCount = Object.keys(existingSettings).length;
+            const incomingCount = Object.keys(value.settings).length;
+            const hasEstablished = existingCount > SETTINGS_VALIDATION.MIN_EXISTING_KEYS;
+            const isPartial = incomingCount < existingCount * SETTINGS_VALIDATION.PARTIAL_THRESHOLD_RATIO;
+
+            if (hasEstablished && isPartial) {
+                log(`[fromBackgroundResponse] Blocking settings downgrade (incoming: ${incomingCount}, existing: ${existingCount})`);
+            } else if (incomingCount === 0 && existingCount > 0) {
+                log(`[fromBackgroundResponse] Blocking empty settings overwrite (existing: ${existingCount})`);
+            } else {
+                cachedState.settings = value.settings;
+            }
         }
         if ("password" in value) {
             cachedState.password = value.password;
@@ -10620,18 +10675,26 @@ function loadCachedStateWithBackup() {
     const { mainPath, bakPath } = getSavedSyncPaths();
     const tryRead = (p) => {
         const txt = fs.readFileSync(p, "utf8");
+        if (!txt || !txt.trim()) {
+            throw new Error("file is empty");
+        }
         const parsed = JSON.parse(txt);
         if (!parsed || typeof parsed !== "object") {
             throw new Error("empty cached state");
+        }
+        // Reject objects with no meaningful data (e.g. truncated write left "{}")
+        if (Object.keys(parsed).length === 0) {
+            throw new Error("parsed object has no keys");
         }
         return parsed;
     };
     try {
         return tryRead(mainPath);
     } catch (e) {
+        log("Failed to load cachedState from primary file: " + e.message);
         try {
             const backup = tryRead(bakPath);
-            console.warn("Recovered cachedState from backup");
+            console.warn("Recovered cachedState from backup (.bak)");
             return backup;
         } catch (e2) {
             log("Failed to load cachedState from .bak file: " + e2.message);
@@ -10657,9 +10720,15 @@ function loadCachedStateWithBackupSource() {
     const { mainPath, bakPath } = getSavedSyncPaths();
     const tryRead = (p) => {
         const txt = fs.readFileSync(p, "utf8");
+        if (!txt || !txt.trim()) {
+            throw new Error("file is empty");
+        }
         const parsed = JSON.parse(txt);
         if (!parsed || typeof parsed !== "object") {
             throw new Error("empty cached state");
+        }
+        if (Object.keys(parsed).length === 0) {
+            throw new Error("parsed object has no keys");
         }
         return parsed;
     };
