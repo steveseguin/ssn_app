@@ -3495,7 +3495,8 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
 
     const hooks = {
         passkeyBlockWebContentsIds: new Set(),
-        headerOverrideByWebContentsId: new Map()
+        headerOverrideByWebContentsId: new Map(),
+        stripElectronGlobally: false
     };
 
     try {
@@ -3521,6 +3522,7 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
     try {
         ses.webRequest.onBeforeSendHeaders({ urls: ['*://*/*'] }, (details, callback) => {
             const requestHeaders = details && details.requestHeaders ? details.requestHeaders : {};
+            let shouldStripElectron = hooks.stripElectronGlobally;
             try {
                 const webContentsId = typeof details?.webContentsId === 'number' ? details.webContentsId : null;
                 if (webContentsId !== null) {
@@ -3533,11 +3535,14 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
                             requestHeaders.Referer = override.referer;
                         }
                         if (override.stripElectron) {
-                            delete requestHeaders.Electron;
+                            shouldStripElectron = true;
                         }
                     }
                 }
             } catch (_) { }
+            if (shouldStripElectron) {
+                delete requestHeaders.Electron;
+            }
             callback({ requestHeaders });
         });
     } catch (error) {
@@ -3546,6 +3551,13 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
 
     activatedWindowSessionHooks.set(ses, hooks);
     return hooks;
+}
+
+function enableSessionElectronHeaderStripping(ses) {
+    const hooks = getOrCreateActivatedWindowSessionHooks(ses);
+    if (hooks) {
+        hooks.stripElectronGlobally = true;
+    }
 }
 
 function registerActivatedWindowSessionHooks(view, args = {}) {
@@ -7163,11 +7175,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 if (ses && !cspConfiguredSessions.has(ses)) {
                     ses.webRequest.onHeadersReceived((details, callback) => {
                         try {
+                            const responseHeaders = details && details.responseHeaders
+                                ? { ...details.responseHeaders }
+                                : {};
+                            // Also remove Accept-CH here so CSP + client-hints logic can share one listener.
+                            delete responseHeaders['Accept-CH'];
+                            delete responseHeaders['accept-ch'];
+                            responseHeaders['Content-Security-Policy'] = ["default-src 'self' https: wss: data: blob:; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:;"];
                             callback({
-                                responseHeaders: {
-                                    ...details.responseHeaders,
-                                    'Content-Security-Policy': ["default-src 'self' https: wss: data: blob:; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:;"]
-                                }
+                                responseHeaders
                             });
                         } catch (e) {
                             callback({ responseHeaders: details.responseHeaders });
@@ -7192,96 +7208,35 @@ async function createWindow(args, reuse = false, mainApp = false) {
             // Skip header manipulation for kasada preload - let it work like the working code
             if (args.config && args.config.userAgent && args.config.mockUserAgentData && preloadScript !== 'preload-kasada.js') {
                 const session = view.webContents.session;
-                // Guard: avoid stacking client hints handlers on the same session
+                // Guard: avoid stacking client hints handlers on the same session.
+                // Use shared session hooks so this does not clobber activate-window listeners.
                 if (session && !clientHintsConfiguredSessions.has(session)) {
 
                     // Don't set user agent here - let it be set once at session creation
                     // session.setUserAgent(args.config.userAgent);
 
-                    // First, handle the Accept-CH response headers to prevent client hints negotiation
-                    session.webRequest.onHeadersReceived({
-                        urls: ['*://*/*']
-                    },
-                        (details, callback) => {
-                            const responseHeaders = details.responseHeaders;
+                    if (!enforceSignInCSP && !cspConfiguredSessions.has(session)) {
+                        // If CSP override is disabled, we still need to remove Accept-CH headers.
+                        session.webRequest.onHeadersReceived({
+                            urls: ['*://*/*']
+                        },
+                            (details, callback) => {
+                                const responseHeaders = details && details.responseHeaders
+                                    ? details.responseHeaders
+                                    : {};
 
-                            // Remove Accept-CH headers that trigger client hints
-                            delete responseHeaders['Accept-CH'];
-                            delete responseHeaders['accept-ch'];
+                                delete responseHeaders['Accept-CH'];
+                                delete responseHeaders['accept-ch'];
 
-                            callback({
-                                responseHeaders
-                            });
-                        }
-                    );
-
-                    // Use onBeforeRequest to modify the request details
-                    session.webRequest.onBeforeRequest({
-                        urls: ['*://*/*']
-                    },
-                        (details, callback) => {
-                            callback({
-                                cancel: false
-                            });
-                        }
-                    );
-
-                    // Minimal header modification - let Chromium handle most headers naturally
-                    session.webRequest.onBeforeSendHeaders({
-                        urls: ['*://*/*']
-                    },
-                        (details, callback) => {
-                            const {
-                                requestHeaders
-                            } = details;
-
-                            // Don't manipulate User-Agent in headers - let session handle it
-                            /* DISABLED - This manipulation might be causing iframe issues
-                            if (args.config.userAgent) {
-                                requestHeaders['User-Agent'] = args.config.userAgent;
-                                
-                                // Handle Client Hints based on browser type
-                                const chromeMatch = args.config.userAgent.match(/Chrome\/(\d+)/);
-                                const firefoxMatch = args.config.userAgent.match(/Firefox\/(\d+)/);
-                                const edgeMatch = args.config.userAgent.match(/Edg\/(\d+)/);
-                                
-                                if (chromeMatch) {
-                                    const chromeVersion = chromeMatch[1];
-                                    
-                                    // Set Client Hints headers to match the User-Agent
-                                    requestHeaders['sec-ch-ua'] = `"Google Chrome";v="${chromeVersion}", "Chromium";v="${chromeVersion}", "Not(A:Brand";v="8"`;
-                                    requestHeaders['sec-ch-ua-mobile'] = '?0';
-                                    requestHeaders['sec-ch-ua-platform'] = '"Windows"';
-                                    
-                                    // Only set full version list if requested by server
-                                    if (requestHeaders['sec-ch-ua-full-version-list']) {
-                                        requestHeaders['sec-ch-ua-full-version-list'] = `"Google Chrome";v="${chromeVersion}.0.0.0", "Chromium";v="${chromeVersion}.0.0.0", "Not(A:Brand";v="8.0.0.0"`;
-                                    }
-                                } else if (edgeMatch) {
-                                    const edgeVersion = edgeMatch[1];
-                                    
-                                    // Edge also uses Chromium-based Client Hints
-                                    requestHeaders['sec-ch-ua'] = `"Microsoft Edge";v="${edgeVersion}", "Chromium";v="${edgeVersion}", "Not(A:Brand";v="8"`;
-                                    requestHeaders['sec-ch-ua-mobile'] = '?0';
-                                    requestHeaders['sec-ch-ua-platform'] = '"Windows"';
-                                } else if (firefoxMatch) {
-                                    // Firefox doesn't send Client Hints headers - remove them if present
-                                    delete requestHeaders['sec-ch-ua'];
-                                    delete requestHeaders['sec-ch-ua-mobile'];
-                                    delete requestHeaders['sec-ch-ua-platform'];
-                                    delete requestHeaders['sec-ch-ua-full-version-list'];
-                                }
+                                callback({
+                                    responseHeaders
+                                });
                             }
-                            */ // END DISABLED BLOCK
+                        );
+                    }
 
-                            // Remove any Electron-specific headers that might give us away
-                            delete requestHeaders['Electron'];
-
-                            callback({
-                                requestHeaders
-                            });
-                        }
-                    );
+                    // Strip Electron header through shared onBeforeSendHeaders hook.
+                    enableSessionElectronHeaderStripping(session);
                     clientHintsConfiguredSessions.add(session);
                 }
             }
