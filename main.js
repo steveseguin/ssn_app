@@ -6717,6 +6717,18 @@ async function createWindow(args, reuse = false, mainApp = false) {
         return domainMap[domain] || domain;
     }
 
+    function resolveSessionPlatform(args, domain) {
+        let platform = getDomainToPlatform(domain);
+        if (args && args.url && args.wss) {
+            const platformMatch = args.url.match(/(?:sources\/)?websocket\/(\w+)\.html/i);
+            if (platformMatch && platformMatch[1]) {
+                platform = platformMatch[1].toLowerCase();
+                log(`Detected WebSocket platform from URL path: ${platform}`);
+            }
+        }
+        return platform;
+    }
+
     ipcMain.on("signIn", function (eventRet, args2) {
         log("IPC CREATE WINDOW - SIGN IN");
         var args = Object.assign({}, Argv, args2);
@@ -6819,20 +6831,25 @@ async function createWindow(args, reuse = false, mainApp = false) {
     async function createSignInWindow(args) {
         try {
             const domain = getPrimaryDomain(args.url);
+            const platform = resolveSessionPlatform(args, domain);
 
             // Always use in-app sign-in (never system browser)
 
             // Determine session partition name first (same logic as below)
             let sessionPartition;
             if (args.customSession && args.customSession !== 'AUTO') {
-                if (args.customSession.startsWith('default-')) {
-                    const platform = args.customSession.replace('default-', '');
-                    sessionPartition = `persist:${platform}`;
+                const normalizedSession = String(args.customSession).trim();
+                if (normalizedSession.startsWith('default-')) {
+                    const explicitPlatform = normalizedSession.replace('default-', '').trim();
+                    sessionPartition = `persist:${explicitPlatform || platform}`;
+                } else if (normalizedSession === 'default') {
+                    // Backward compatibility for older records that used plain "default".
+                    // Keep legacy partition mapping to avoid breaking existing sign-ins.
+                    sessionPartition = 'persist:custom-default';
                 } else {
-                    sessionPartition = `persist:custom-${args.customSession}`;
+                    sessionPartition = `persist:custom-${normalizedSession}`;
                 }
             } else {
-                const platform = getDomainToPlatform(domain);
                 sessionPartition = `persist:${platform}`;
             }
 
@@ -7919,35 +7936,25 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
 
         // Determine session based on customSession parameter
+        const domain = getPrimaryDomain(args.url);
+        const platform = resolveSessionPlatform(args, domain);
         let sessionPartition;
         let persistentSession;
 
         if (args.customSession && args.customSession !== 'AUTO') {
-            // Use custom session
-            if (args.customSession.startsWith('default-')) {
-                // Platform default (e.g., 'default-youtube')
-                const platform = args.customSession.replace('default-', '');
-                sessionPartition = `persist:${platform}`;
+            const normalizedSession = String(args.customSession).trim();
+            if (normalizedSession.startsWith('default-')) {
+                const explicitPlatform = normalizedSession.replace('default-', '').trim();
+                sessionPartition = `persist:${explicitPlatform || platform}`;
+            } else if (normalizedSession === 'default') {
+                // Backward compatibility for older records that used plain "default".
+                // Keep legacy partition mapping to avoid breaking existing sign-ins.
+                sessionPartition = 'persist:custom-default';
             } else {
-                // Custom user-defined session
-                sessionPartition = `persist:custom-${args.customSession}`;
+                sessionPartition = `persist:custom-${normalizedSession}`;
             }
             log(`Using custom session: ${sessionPartition}`);
         } else {
-            // AUTO - use platform-based session (without TLD)
-            const domain = getPrimaryDomain(args.url);
-            let platform = getDomainToPlatform(domain);
-            
-            // For WebSocket pages (file://, localhost, or socialstream.ninja), 
-            // detect platform from URL path instead of domain
-            if (args.url && args.wss) {
-                const platformMatch = args.url.match(/(?:sources\/)?websocket\/(\w+)\.html/i);
-                if (platformMatch && platformMatch[1]) {
-                    platform = platformMatch[1].toLowerCase();
-                    log(`Detected WebSocket platform from URL path: ${platform}`);
-                }
-            }
-            
             sessionPartition = `persist:${platform}`;
             log(`Using auto session based on platform: ${sessionPartition}`);
         }
@@ -7955,8 +7962,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
         // Always use the platform-based session, regardless of preload type
         persistentSession = session.fromPartition(sessionPartition);
         createdPartitions.add(sessionPartition); // Track this partition
-        const domain = getPrimaryDomain(args.url);
-        const platform = getDomainToPlatform(domain);
         log(`[ACTIVATE] URL: ${args.url}, Domain: ${domain}, Platform: ${platform}, Session: ${sessionPartition}, CustomSession: ${args.customSession}`);
 
         // Language is now set globally via command line to match system locale
