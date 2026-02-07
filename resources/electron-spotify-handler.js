@@ -5,6 +5,11 @@ const { BrowserWindow, ipcMain, shell } = require('electron');
 const http = require('http');
 const url = require('url');
 
+function escapeHtml(str) {
+    if (typeof str !== 'string') return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 const LOOPBACK_HOST = '127.0.0.1';
 const LOOPBACK_PORT = 8888;
 const DEFAULT_LOOPBACK_REDIRECT = `http://${LOOPBACK_HOST}:${LOOPBACK_PORT}/callback`;
@@ -120,6 +125,7 @@ function runLoopbackOAuthSession({ authUrl, redirectUri, state }) {
         let server;
         let session = null;
         const resolvedRedirect = redirectUri || DEFAULT_LOOPBACK_REDIRECT;
+        const stateParam = state || require('crypto').randomBytes(16).toString('hex');
 
         const cleanup = () => {
             if (timeoutId) {
@@ -160,6 +166,13 @@ function runLoopbackOAuthSession({ authUrl, redirectUri, state }) {
             const query = url.parse(req.url, true).query;
 
             if (query.code) {
+                if (query.state && query.state !== stateParam) {
+                    res.writeHead(200, { 'Content-Type': 'text/html' });
+                    res.end('<html><body><h1>State Mismatch</h1><p>Possible CSRF attack. Please try again.</p><script>window.close();</script></body></html>');
+                    fail(new Error('State mismatch - possible CSRF attack'));
+                    return;
+                }
+
                 res.writeHead(200, { 'Content-Type': 'text/html' });
                 res.end(`
                     <html>
@@ -183,7 +196,7 @@ function runLoopbackOAuthSession({ authUrl, redirectUri, state }) {
                     <html>
                         <body>
                             <h1>Authorization Failed</h1>
-                            <p>Error: ${query.error}</p>
+                            <p>Error: ${escapeHtml(query.error)}</p>
                             <script>window.close();</script>
                         </body>
                     </html>

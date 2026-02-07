@@ -455,6 +455,13 @@ async function runWithLocalSignerSessionGate(manager, uniqueId, taskName, fn) {
         localSignerSessionGate.nextAllowedAt = Math.max(localSignerSessionGate.nextAllowedAt || 0, nextAt);
         if (key) {
             const existing = localSignerSessionGate.perUniqueIdNextAllowedAt.get(key) || 0;
+            // Prune stale entries to prevent unbounded growth
+            if (localSignerSessionGate.perUniqueIdNextAllowedAt.size > 500) {
+                const now = Date.now();
+                for (const [k, v] of localSignerSessionGate.perUniqueIdNextAllowedAt) {
+                    if (v < now) localSignerSessionGate.perUniqueIdNextAllowedAt.delete(k);
+                }
+            }
             localSignerSessionGate.perUniqueIdNextAllowedAt.set(key, Math.max(existing, nextAt));
         }
         try { release && release(); } catch (_) { /* noop */ }
@@ -3265,6 +3272,9 @@ class ConnectionManager {
                     const name = trimmed.slice(0, eqIndex).trim();
                     const value = trimmed.slice(eqIndex + 1);
                     if (!name) continue;
+                    // Block prototype pollution and method overwrite via cookie names
+                    if (!/^[a-zA-Z0-9_.-]+$/.test(name)) continue;
+                    if (name === '__proto__' || name === 'constructor' || name === 'prototype') continue;
                     try {
                         this.connection.webClient.cookieJar[name] = value;
                     } catch (_) {
@@ -5544,6 +5554,13 @@ class ConnectionManager {
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
+        }
+        // Clear orphaned gift streak timers to prevent ghost data after disconnect
+        if (this.giftProcessor && this.giftProcessor.streaks instanceof Map) {
+            for (const [, streak] of this.giftProcessor.streaks) {
+                if (streak.timer) clearTimeout(streak.timer);
+            }
+            this.giftProcessor.streaks.clear();
         }
         this.offlineRetry = false;
         this.offlineRetryCount = 0;

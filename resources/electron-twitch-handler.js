@@ -2,6 +2,11 @@ const { ipcMain, shell } = require('electron');
 const http = require('http');
 const url = require('url');
 
+function escapeHtml(str) {
+    if (typeof str !== 'string') return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 const LOOPBACK_HOST = '127.0.0.1';
 const LOOPBACK_PORTS = [8181, 8080];
 const CALLBACK_PATH = '/sources/websocket/twitch.html';
@@ -61,6 +66,7 @@ function runTwitchLoopbackOAuthSession(payload = {}) {
         let server = null;
         let session = null;
         let redirectUri = null;
+        const stateParam = payload.state || require('crypto').randomBytes(16).toString('hex');
 
         const cleanup = () => {
             if (timeoutId) {
@@ -100,10 +106,23 @@ function runTwitchLoopbackOAuthSession(payload = {}) {
             // Handle POST request with token data from the landing page JavaScript
             if (req.method === 'POST' && parsed.pathname === '/token') {
                 let body = '';
-                req.on('data', chunk => { body += chunk; });
+                let bodySize = 0;
+                req.on('data', chunk => {
+                    bodySize += chunk.length;
+                    if (bodySize > 65536) { req.destroy(); return; }
+                    body += chunk;
+                });
                 req.on('end', () => {
                     try {
                         const data = JSON.parse(body);
+
+                        if (data.state && data.state !== stateParam) {
+                            res.writeHead(200, { 'Content-Type': 'application/json' });
+                            res.end(JSON.stringify({ ok: false, error: 'state_mismatch' }));
+                            fail(new Error('State mismatch - possible CSRF attack'));
+                            return;
+                        }
+
                         res.writeHead(200, { 'Content-Type': 'application/json' });
                         res.end(JSON.stringify({ ok: true }));
 
@@ -220,7 +239,7 @@ function runTwitchLoopbackOAuthSession(payload = {}) {
 <head><title>Authorization Failed</title>
 <style>body { font-family: sans-serif; text-align: center; padding: 50px; background: #0e0e10; color: #efeff1; }
 h1 { color: #eb0400; }</style></head>
-<body><h1>Authorization Failed</h1><p>${query.error_description || query.error}</p>
+<body><h1>Authorization Failed</h1><p>${escapeHtml(query.error_description || query.error)}</p>
 <script>setTimeout(() => window.close(), 3000);</script></body></html>`);
                 fail(new Error(query.error_description || query.error));
                 return;
@@ -239,7 +258,7 @@ h1 { color: #eb0400; }</style></head>
                     clientId: payload.clientId,
                     scopes: payload.scopes,
                     redirectUri,
-                    state: payload.state
+                    state: stateParam
                 });
 
                 payload.redirectUri = redirectUri;

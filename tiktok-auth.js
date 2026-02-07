@@ -67,6 +67,12 @@ class TikTokAuth {
             if (sessionId) {
               resolved = true;
               resolve({ sessionId, ttTargetIdc: ttTargetIdc || null });
+              // Close the auth window after successful login
+              try {
+                  if (this.authWindow && !this.authWindow.isDestroyed()) {
+                      this.authWindow.close();
+                  }
+              } catch (_) {}
             }
           } catch (error) {
             console.error('Error getting cookies:', error);

@@ -101,13 +101,16 @@ async function main() {
 		try {
 			const checksums = await loadChecksums(target).catch((err) => {
 				console.warn(`[custom-electron] Warning: Could not fetch checksum manifest: ${err.message}`);
-				console.warn("[custom-electron] Proceeding without checksum verification.");
 				return new Map();
 			});
 			expectedChecksum = checksums.get(filename);
 
 			if (!expectedChecksum) {
-				console.warn(`[custom-electron] No checksum entry found for ${filename}; skipping verification.`);
+				if (process.env.CUSTOM_ELECTRON_SKIP_CHECKSUM === '1') {
+					console.warn(`[custom-electron] No checksum found for ${filename}; SKIPPING verification (CUSTOM_ELECTRON_SKIP_CHECKSUM=1).`);
+				} else {
+					throw new Error(`[custom-electron] No checksum available for ${filename}. Set CUSTOM_ELECTRON_SKIP_CHECKSUM=1 to override.`);
+				}
 			}
 
 			console.log(`[custom-electron] Downloading ${downloadUrl}`);

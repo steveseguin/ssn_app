@@ -2,6 +2,11 @@ const { ipcMain, shell } = require('electron');
 const http = require('http');
 const url = require('url');
 
+function escapeHtml(str) {
+    if (typeof str !== 'string') return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 const LOOPBACK_HOST = '127.0.0.1';
 const LOOPBACK_PORTS = [8181, 8080];
 const CALLBACK_PATH = '/sources/websocket/youtube.html';
@@ -61,6 +66,7 @@ function runLoopbackOAuthSession(payload = {}) {
         let settled = false;
         let server = null;
         let session = null;
+        const stateParam = payload.state || require('crypto').randomBytes(16).toString('hex');
 
         const cleanup = () => {
             if (timeoutId) {
@@ -100,6 +106,18 @@ function runLoopbackOAuthSession(payload = {}) {
             // Handle the callback path
             if (parsed.pathname === CALLBACK_PATH || parsed.pathname === '/callback' || parsed.pathname === '/') {
                 if (query.code) {
+                    if (query.state && query.state !== stateParam) {
+                        res.writeHead(200, { 'Content-Type': 'text/html' });
+                        res.end(`<!DOCTYPE html>
+<html><head><title>Authorization Failed</title>
+<style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#0f0f0f;color:#fff}
+.container{text-align:center}h1{color:#ff0000}</style></head>
+<body><div class="container"><h1>State Mismatch</h1><p>Possible CSRF attack detected. Please try again.</p></div>
+<script>setTimeout(()=>window.close(),3000);</script></body></html>`);
+                        fail(new Error('State mismatch - possible CSRF attack'));
+                        return;
+                    }
+
                     res.writeHead(200, { 'Content-Type': 'text/html' });
                     res.end(`<!DOCTYPE html>
 <html><head><title>YouTube Authorization</title>
@@ -122,7 +140,7 @@ function runLoopbackOAuthSession(payload = {}) {
 <html><head><title>Authorization Failed</title>
 <style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#0f0f0f;color:#fff}
 .container{text-align:center}h1{color:#ff0000}</style></head>
-<body><div class="container"><h1>Authorization Failed</h1><p>Error: ${query.error}</p></div>
+<body><div class="container"><h1>Authorization Failed</h1><p>Error: ${escapeHtml(query.error)}</p></div>
 <script>setTimeout(()=>window.close(),3000);</script></body></html>`);
                     fail(new Error(query.error));
                     return;
@@ -152,7 +170,7 @@ function runLoopbackOAuthSession(payload = {}) {
                     clientId: payload.clientId,
                     scopes: payload.scopes,
                     redirectUri,
-                    state: payload.state
+                    state: stateParam
                 });
 
                 payload.redirectUri = redirectUri;

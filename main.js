@@ -971,7 +971,13 @@ const remoteControlPort = (() => {
     const parsed = parseInt(raw, 10);
     return Number.isFinite(parsed) ? parsed : 17777;
 })();
-const remoteControlToken = (process.env.SSAPP_REMOTE_CONTROL_TOKEN || '').trim();
+const remoteControlToken = (() => {
+    const env = (process.env.SSAPP_REMOTE_CONTROL_TOKEN || '').trim();
+    if (env) return env;
+    // Generate a random token when none is configured so endpoints are never open by default
+    return crypto.randomBytes(24).toString('hex');
+})();
+
 
 function normalizeKickSlug(value) {
     if (!value) return '';
@@ -1173,6 +1179,24 @@ async function triggerKickExternalAuth() {
     }
 }
 
+function readBodyLimited(req, maxBytes = 1048576) {
+    return new Promise((resolve, reject) => {
+        let body = '';
+        let bytes = 0;
+        req.on('data', chunk => {
+            bytes += chunk.length;
+            if (bytes > maxBytes) {
+                req.destroy();
+                reject(new Error('Request body too large'));
+                return;
+            }
+            body += chunk;
+        });
+        req.on('end', () => resolve(body));
+        req.on('error', reject);
+    });
+}
+
 function setupRemoteControlServer() {
     if (!remoteControlEnabled) {
         return;
@@ -1181,7 +1205,8 @@ function setupRemoteControlServer() {
     const server = http.createServer(async (req, res) => {
         const parsed = url.parse(req.url, true);
         const token = (parsed.query && parsed.query.token) || req.headers['x-ssapp-token'];
-        if (remoteControlToken && token !== remoteControlToken) {
+        // Always enforce token auth — token is auto-generated if not configured
+        if (token !== remoteControlToken) {
             res.writeHead(403, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
             return;
@@ -1206,9 +1231,7 @@ function setupRemoteControlServer() {
 
         // Create a YouTube source for testing (POST /create-youtube-source with videoId in body)
         if (parsed.pathname === '/create-youtube-source' && req.method === 'POST') {
-            let body = '';
-            req.on('data', chunk => { body += chunk; });
-            req.on('end', async () => {
+            readBodyLimited(req).then(async (body) => {
                 try {
                     const { videoId } = JSON.parse(body);
                     if (!videoId) {
@@ -1280,9 +1303,7 @@ function setupRemoteControlServer() {
 
         // Create a Kick source for testing (POST /create-kick-source with username in body)
         if (parsed.pathname === '/create-kick-source' && req.method === 'POST') {
-            let body = '';
-            req.on('data', chunk => { body += chunk; });
-            req.on('end', async () => {
+            readBodyLimited(req).then(async (body) => {
                 try {
                     const { username } = JSON.parse(body);
 
@@ -1409,9 +1430,7 @@ function setupRemoteControlServer() {
         }
 
         if (parsed.pathname === '/exec' && req.method === 'POST') {
-            let body = '';
-            req.on('data', chunk => { body += chunk; });
-            req.on('end', async () => {
+            readBodyLimited(req).then(async (body) => {
                 try {
                     const { windowId, code } = JSON.parse(body);
                     const wins = BrowserWindow.getAllWindows();
@@ -1428,6 +1447,9 @@ function setupRemoteControlServer() {
                     res.writeHead(500, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ ok: false, error: err.message }));
                 }
+            }).catch(err => {
+                res.writeHead(413, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: err.message }));
             });
             return;
         }
@@ -1442,6 +1464,9 @@ function setupRemoteControlServer() {
 
     server.listen(remoteControlPort, '127.0.0.1', () => {
         console.log(`[Remote Control] Listening on http://127.0.0.1:${remoteControlPort}`);
+        if (!process.env.SSAPP_REMOTE_CONTROL_TOKEN) {
+            console.log(`[Remote Control] Auto-generated token: ${remoteControlToken}`);
+        }
     });
 }
 
@@ -1618,6 +1643,7 @@ try {
 
 // --- AUTOMATED TEST HARNESS ---
 // Watch for a trigger file to send test messages. This allows external agents/scripts to trigger a chat send.
+if (isDevMode) {
 const TEST_TRIGGER_FILE = path.join(app.getPath('userData'), '.test-trigger');
 try {
     console.log('[Test Harness] Watching for test trigger at:', TEST_TRIGGER_FILE);
@@ -1669,6 +1695,7 @@ try {
 } catch (err) {
     console.warn('[Test Harness] Failed to setup file watcher:', err);
 }
+} // end isDevMode gate
 // ------------------------------
 
 // Generate a random flag for this session to authenticate injected scripts
@@ -4187,6 +4214,22 @@ ipcMain.handle('ssapp:choose-ticker-file', async (_event, options = {}) => {
     }
 });
 
+// Track paths that the user approved via a native save/open dialog
+const dialogApprovedPaths = new Set();
+
+function isPathAllowed(filePath) {
+    if (!filePath || typeof filePath !== 'string') return false;
+    const resolved = path.resolve(filePath);
+    // Always allow files inside the app's userData directory
+    try {
+        const userData = app.getPath('userData');
+        if (resolved.startsWith(userData + path.sep) || resolved === userData) return true;
+    } catch (_) {}
+    // Allow paths the user explicitly approved via a native dialog
+    if (dialogApprovedPaths.has(resolved)) return true;
+    return false;
+}
+
 ipcMain.handle("show-save-dialog", async (event, opts) => {
     const dialogOpts = {
         title: "Save File",
@@ -4197,6 +4240,9 @@ ipcMain.handle("show-save-dialog", async (event, opts) => {
         const {
             filePath
         } = await dialog.showSaveDialog(dialogOpts);
+        if (filePath) {
+            dialogApprovedPaths.add(path.resolve(filePath));
+        }
         return filePath;
     } catch (error) {
         log(error);
@@ -4204,6 +4250,10 @@ ipcMain.handle("show-save-dialog", async (event, opts) => {
 });
 
 ipcMain.handle('read-from-file', async (event, filePath) => {
+    if (!isPathAllowed(filePath)) {
+        console.warn('read-from-file blocked: path not allowed:', filePath);
+        return null;
+    }
     try {
         return fs.readFileSync(filePath, 'utf8');
     } catch (error) {
@@ -5097,9 +5147,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         partition: getTrackedPartition(currentSessionName),
                         contextIsolation: false,
                         backgroundThrottling: false,
-                        webSecurity: true, // this is probably a remote file, so we will ensure its off
-                        nodeIntegrationInSubFrames: true, // also security concern
-                        nodeIntegration: true, // this could be a security hazard, but useful for enabling screen sharing and global hotkeys
+                        webSecurity: true,
+                        nodeIntegrationInSubFrames: true,
+                        nodeIntegration: true, // required for screen sharing, hotkeys, and code injection in cohost
                         additionalPermissions: ['clipboard-write']
                     },
                     show: true,
@@ -5371,22 +5421,30 @@ async function createWindow(args, reuse = false, mainApp = false) {
         filePath,
         data
     }) => {
+        if (!isPathAllowed(filePath)) {
+            console.warn("write-to-file blocked: path not allowed:", filePath);
+            event.reply("write-failure", "Path not allowed");
+            return;
+        }
         log("WRITING FILE: " + filePath);
 
         fs.writeFile(filePath, data, (err) => {
             if (err) {
                 console.error("Failed to write the file:", err);
-                // If you need to send a response back to the renderer process indicating failure
                 event.reply("write-failure", err.message);
             } else {
                 log("File has been written successfully.");
-                // If you need to send a response back to the renderer process indicating success
                 event.reply("write-success", filePath);
             }
         });
     });
 
     ipcMain.on("append-to-file", (event, { filePath, data }) => {
+        if (!isPathAllowed(filePath)) {
+            console.warn("append-to-file blocked: path not allowed:", filePath);
+            event.reply("append-failure", "Path not allowed");
+            return;
+        }
         fs.appendFile(filePath, data, (err) => {
             if (err) {
                 console.error("Failed to append to file:", err);
@@ -6090,10 +6148,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
                     mainWindow.webContents.executeJavaScript(`
                         // Set the language preference in localStorage for the UI to use
-                        localStorage.setItem('language', '${savedLanguage}');
+                        localStorage.setItem('language', ${JSON.stringify(savedLanguage)});
                         // Also trigger language change if the page is already loaded
                         if (typeof changeLanguage === 'function') {
-                            changeLanguage('${savedLanguage}');
+                            changeLanguage(${JSON.stringify(savedLanguage)});
                         }
                     `);
                 } else if (SYSTEM_LOCALE && SYSTEM_LOCALE !== 'en-US') {
@@ -6131,9 +6189,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     uiLanguage = normalizeUiLanguage(uiLanguage);
 
                     mainWindow.webContents.executeJavaScript(`
-                        localStorage.setItem('language', '${uiLanguage}');
+                        localStorage.setItem('language', ${JSON.stringify(uiLanguage)});
                         if (typeof changeLanguage === 'function') {
-                            changeLanguage('${uiLanguage}');
+                            changeLanguage(${JSON.stringify(uiLanguage)});
                         }
                     `);
                 }
@@ -7939,9 +7997,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 webSecurity = args.config.webSecurity;
             }
             let contextIsolation = true;
-            if (args.config && ("contextIsolation" in args.config)) {
-                contextIsolation = args.config.contextIsolation;
-            }
 
             // Allow websocket windows to select a preload via config (to better match sign-in behavior)
             // Supported values: 'mock' -> preload-mock.js, 'kasada' -> preload-kasada.js, 'full'|true -> preload.js, 'none'|false -> no preload
@@ -7960,9 +8015,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     preloadPath = path.join(__dirname, 'preload.js');
                 } else if (p === 'none' || p === false) {
                     preloadPath = null; // omit preload entirely
-                } else if (typeof p === 'string') {
-                    // Allow specifying a custom preload file relative to app dir
-                    preloadPath = path.join(__dirname, p);
+                } else {
+                    // Unknown preload value — ignore to prevent path traversal
+                    console.warn('[createWindow] Ignoring unknown preload config value:', p);
                 }
             }
 
@@ -12038,7 +12093,7 @@ function createMenu() {
                             type: 'input'
                         }).then(r => {
                             if (r !== null) {
-                                mainWindow.webContents.executeJavaScript(`localStorage.setItem('insertCSS', '${r}');`);
+                                mainWindow.webContents.executeJavaScript(`localStorage.setItem('insertCSS', ${JSON.stringify(r)});`);
                                 mainWindow.webContents.insertCSS(r, {
                                     cssOrigin: 'user'
                                 });

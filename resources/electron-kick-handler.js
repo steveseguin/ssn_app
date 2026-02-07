@@ -3,6 +3,11 @@ const http = require('http');
 const url = require('url');
 const crypto = require('crypto');
 
+function escapeHtml(str) {
+    if (typeof str !== 'string') return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 const LOOPBACK_HOST = '127.0.0.1';
 const LOOPBACK_PORTS = [8181, 8080];
 const CALLBACK_PATH = '/sources/websocket/kick.html';
@@ -76,7 +81,8 @@ async function tryStartServer(server) {
 }
 
 function runKickLoopbackOAuthSession(payload = {}) {
-    return new Promise(async (resolve, reject) => {
+    return new Promise((resolve, reject) => {
+        (async () => {
         let timeoutId = null;
         let settled = false;
         let server = null;
@@ -161,7 +167,7 @@ function runKickLoopbackOAuthSession(payload = {}) {
 <html><head><title>Authorization Failed</title>
 <style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a1a;color:#fff}
 .container{text-align:center}h1{color:#ff4444}</style></head>
-<body><div class="container"><h1>Authorization Failed</h1><p>Error: ${query.error}</p><p>${query.error_description || ''}</p></div>
+<body><div class="container"><h1>Authorization Failed</h1><p>Error: ${escapeHtml(query.error)}</p><p>${escapeHtml(query.error_description || '')}</p></div>
 <script>setTimeout(()=>window.close(),3000);</script></body></html>`);
                     fail(new Error(query.error_description || query.error));
                     return;
@@ -229,6 +235,7 @@ function runKickLoopbackOAuthSession(payload = {}) {
         timeoutId = setTimeout(() => {
             fail(new Error('OAuth timeout'));
         }, timeoutMs);
+        })().catch(reject);
     });
 }
 
