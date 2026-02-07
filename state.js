@@ -262,6 +262,15 @@ class StateManager {
     }
 
     // Generate unique ID for a source
+    hashSourceKey(value) {
+        const input = String(value || '');
+        let hash = 5381;
+        for (let i = 0; i < input.length; i++) {
+            hash = ((hash << 5) + hash) ^ input.charCodeAt(i);
+        }
+        return (hash >>> 0).toString(36);
+    }
+
     generateSourceId(source) {
         if (source.videoId) {
             return `${source.target}-vid-${source.videoId}`;
@@ -269,7 +278,8 @@ class StateManager {
             return `${source.target}-user-${source.username}`;
         } else if (source.url || source.URL) {
             const url = source.url || source.URL;
-            return `${source.target}-url-${btoa(url).substring(0, 10)}`;
+            const normalizedUrl = this.normalizeUrlForSession(url);
+            return `${source.target}-url-${this.hashSourceKey(normalizedUrl)}`;
         }
         return `${source.target}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     }
@@ -500,7 +510,7 @@ class StateManager {
     }
 
     // Update source state
-    updateSource(sourceId, updates) {
+    updateSource(sourceId, updates, options = {}) {
         const source = this.state.sources.get(sourceId);
         if (!source) {
             console.error('Source not found:', sourceId);
@@ -525,7 +535,9 @@ class StateManager {
         }
         
         this.emit('sourceUpdated', { sourceId, updates, oldState });
-        this.persist();
+        if (!options.skipPersist) {
+            this.persist();
+        }
         return true;
     }
 
@@ -587,12 +599,14 @@ class StateManager {
             group.streams.forEach(sourceId => {
                 const source = this.state.sources.get(sourceId);
                 if (source) {
+                    const sourceUpdates = {};
                     if ('groupVisible' in updates) {
-                        this.updateSource(sourceId, { isVisible: updates.groupVisible });
+                        sourceUpdates.isVisible = updates.groupVisible;
                     }
                     if ('groupMuted' in updates) {
-                        this.updateSource(sourceId, { isMuted: updates.groupMuted });
+                        sourceUpdates.isMuted = updates.groupMuted;
                     }
+                    this.updateSource(sourceId, sourceUpdates, { skipPersist: true });
                 }
             });
         }

@@ -3484,6 +3484,106 @@ const wsServer = new WebSocketServer();
 const cspConfiguredSessions = new WeakSet();
 const clientHintsConfiguredSessions = new WeakSet();
 const cookiesListenerConfiguredSessions = new WeakSet();
+const activatedWindowSessionHooks = new WeakMap();
+
+function getOrCreateActivatedWindowSessionHooks(ses) {
+    if (!ses) return null;
+    const existing = activatedWindowSessionHooks.get(ses);
+    if (existing) {
+        return existing;
+    }
+
+    const hooks = {
+        passkeyBlockWebContentsIds: new Set(),
+        headerOverrideByWebContentsId: new Map()
+    };
+
+    try {
+        ses.webRequest.onBeforeRequest({ urls: ['https://www.linkedin.com/checkpoint/pk/*'] }, (details, callback) => {
+            try {
+                const webContentsId = typeof details?.webContentsId === 'number' ? details.webContentsId : null;
+                if (
+                    webContentsId !== null &&
+                    hooks.passkeyBlockWebContentsIds.has(webContentsId) &&
+                    typeof details?.url === 'string' &&
+                    details.url.includes('/checkpoint/pk/initiateLogin')
+                ) {
+                    console.log('[LinkedIn] Blocking passkey initiation:', details.url);
+                    return callback({ cancel: true });
+                }
+            } catch (_) { }
+            return callback({});
+        });
+    } catch (error) {
+        console.warn('Failed to configure LinkedIn passkey blocker for activated windows:', error);
+    }
+
+    try {
+        ses.webRequest.onBeforeSendHeaders({ urls: ['*://*/*'] }, (details, callback) => {
+            const requestHeaders = details && details.requestHeaders ? details.requestHeaders : {};
+            try {
+                const webContentsId = typeof details?.webContentsId === 'number' ? details.webContentsId : null;
+                if (webContentsId !== null) {
+                    const override = hooks.headerOverrideByWebContentsId.get(webContentsId);
+                    if (override) {
+                        if (override.origin) {
+                            requestHeaders.Origin = override.origin;
+                        }
+                        if (override.referer) {
+                            requestHeaders.Referer = override.referer;
+                        }
+                        if (override.stripElectron) {
+                            delete requestHeaders.Electron;
+                        }
+                    }
+                }
+            } catch (_) { }
+            callback({ requestHeaders });
+        });
+    } catch (error) {
+        console.warn('Failed to configure header overrides for activated windows:', error);
+    }
+
+    activatedWindowSessionHooks.set(ses, hooks);
+    return hooks;
+}
+
+function registerActivatedWindowSessionHooks(view, args = {}) {
+    if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
+        return () => { };
+    }
+    if (!view.webContents || !view.webContents.session) {
+        return () => { };
+    }
+
+    const ses = view.webContents.session;
+    const hooks = getOrCreateActivatedWindowSessionHooks(ses);
+    if (!hooks) {
+        return () => { };
+    }
+
+    const webContentsId = view.webContents.id;
+    hooks.passkeyBlockWebContentsIds.add(webContentsId);
+
+    const config = args && typeof args.config === 'object' ? args.config : null;
+    const needsOriginReferer = !!(config && ('Origin' in config || 'Referer' in config));
+    const needsUserAgentHeaders = !!(config && config.userAgent && config.mockUserAgentData);
+    if (needsOriginReferer || needsUserAgentHeaders) {
+        hooks.headerOverrideByWebContentsId.set(webContentsId, {
+            origin: needsOriginReferer && typeof config.Origin === 'string' ? config.Origin : null,
+            referer: needsOriginReferer && typeof config.Referer === 'string' ? config.Referer : null,
+            stripElectron: needsUserAgentHeaders
+        });
+    }
+
+    let released = false;
+    return () => {
+        if (released) return;
+        released = true;
+        hooks.passkeyBlockWebContentsIds.delete(webContentsId);
+        hooks.headerOverrideByWebContentsId.delete(webContentsId);
+    };
+}
 
 function getOrCreatePersistentSession(domain) {
     const sessionName = `persist:${domain}`;
@@ -3569,6 +3669,8 @@ async function clearAllData() {
         store.set('currentSession', currentSessionName);
         store.set('sessionSystemInitialized', true);
 
+        // Snapshot tracked partitions before clearing so they are still included in cleanup.
+        const trackedPartitions = new Set(createdPartitions);
         createdPartitions.clear();
 
         // Clear data from default session
@@ -3591,7 +3693,7 @@ async function clearAllData() {
         }
 
         // Add all dynamically created partitions
-        for (const partition of createdPartitions) {
+        for (const partition of trackedPartitions) {
             sessionsToClean.add(partition);
         }
 
@@ -6047,24 +6149,46 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             log(`localStorage appears empty (${result.count} keys), restoring from backup` +
                                 (backupTime ? ` (saved: ${new Date(backupTime).toISOString()})` : ""));
 
-                            // Restore localStorage from backup
-                            const restoreScript = Object.entries(localStorageBackup)
-                                .map(([key, value]) => {
-                                    const safeKey = key.replace(/'/g, "\\'");
-                                    const safeValue = String(value).replace(/'/g, "\\'").replace(/\n/g, "\\n");
-                                    return `localStorage.setItem('${safeKey}', '${safeValue}');`;
-                                })
-                                .join('\n');
+                            // Restore localStorage from backup using serialized payload
+                            // to avoid escaping bugs with quotes, backslashes, and newlines.
+                            const backupBase64 = Buffer.from(JSON.stringify(localStorageBackup), 'utf8').toString('base64');
+                            const restoreScript = `
+                                (function() {
+                                    try {
+                                        const binary = atob(${JSON.stringify(backupBase64)});
+                                        let raw = binary;
+                                        try {
+                                            raw = decodeURIComponent(escape(binary));
+                                        } catch (_) {}
+                                        const backup = JSON.parse(raw);
+                                        if (!backup || typeof backup !== 'object') return 0;
+                                        let restored = 0;
+                                        Object.entries(backup).forEach(([key, value]) => {
+                                            try {
+                                                if (value === null || value === undefined) return;
+                                                localStorage.setItem(String(key), String(value));
+                                                restored++;
+                                            } catch (_) {}
+                                        });
+                                        return restored;
+                                    } catch (_) {
+                                        return 0;
+                                    }
+                                })();
+                            `;
 
                             mainWindow.webContents.executeJavaScript(restoreScript)
-                                .then(() => {
-                                    log(`Restored ${Object.keys(localStorageBackup).length} localStorage keys from backup`);
-                                    // Reload the page to apply restored settings
-                                    mainWindow.webContents.executeJavaScript(`
-                                        if (typeof location !== 'undefined' && location.reload) {
-                                            location.reload();
-                                        }
-                                    `);
+                                .then((restoredCount) => {
+                                    const restored = Number.isFinite(restoredCount) ? restoredCount : 0;
+                                    log(`Restored ${restored} localStorage keys from backup`);
+                                    if (restored > 0) {
+                                        // Reload the page to apply restored settings
+                                        mainWindow.webContents.executeJavaScript(`
+                                            if (typeof location !== 'undefined' && location.reload) {
+                                                location.reload();
+                                            }
+                                        `);
+                                    }
                                 })
                                 .catch(err => console.error('Failed to restore localStorage:', err));
                         } else {
@@ -6484,6 +6608,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
             headers
         } = args;
         const abortController = new AbortController();
+        const abortChannel = `${channelId}-abort`;
+        const closeChannel = `${channelId}-close`;
+        const abortHandler = () => {
+            try {
+                abortController.abort();
+            } catch (_) { }
+        };
+
+        ipcMain.once(abortChannel, abortHandler);
+        ipcMain.once(closeChannel, abortHandler);
 
         try {
             const response = await undiciFetch(url, {
@@ -6505,6 +6639,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
 
             const reader = response.body.getReader();
+            const textDecoder = new TextDecoder();
 
             while (true) {
                 const {
@@ -6516,23 +6651,20 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     break;
                 }
 
-                const chunk = new TextDecoder().decode(value);
+                const chunk = textDecoder.decode(value);
                 event.reply(channelId, chunk);
                 // {"model":"llama3.2:latest","created_at":"2024-10-11T07:49:42.864094Z","response":"","done":true,"done_reason":"stop","context":[128006,9125,128007,271,38766,1303,33025,2696,25,6790,220,2366,18,271,128009,128006,882,128007,271,882,25,24748,198,78191,25,128009,128006,78191,128007,271,9906,0,2650,649,358,7945,499,3432,30],"total_duration":196930300,"load_duration":19191800,"prompt_eval_count":31,"prompt_eval_duration":21749000,"eval_count":10,"eval_duration":154659000}
             }
 
         } catch (error) {
-            console.error('Fetch error:', error);
+            if (error?.name !== 'AbortError') {
+                console.error('Fetch error:', error);
+            }
             event.reply(channelId, null);
+        } finally {
+            ipcMain.removeListener(abortChannel, abortHandler);
+            ipcMain.removeListener(closeChannel, abortHandler);
         }
-
-        ipcMain.once(`${channelId}-abort`, () => {
-            abortController.abort();
-        });
-
-        ipcMain.once(`${channelId}-close`, () => {
-            // Clean up any resources if needed
-        });
     });
 
 
@@ -7904,78 +8036,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
             });
             //log(args);
             view.args = args;
+            const releaseActivatedWindowSessionHooks = registerActivatedWindowSessionHooks(view, args);
+            view.once('closed', () => {
+                try {
+                    releaseActivatedWindowSessionHooks();
+                } catch (_) { }
+            });
 
             // Show without stealing focus if visibility is enabled
             if (visibibility) {
                 view.showInactive();
-            }
-            if (view.webContents && view.webContents.session) {
-                // Workaround: Block LinkedIn's passkey initiation endpoint only for this activate window
-                // This prevents Windows Security "Sign in with your passkey" popups in activate-source windows
-                try {
-                    const thisWebContentsId = view.webContents.id;
-                    const liFilter = { urls: ['https://www.linkedin.com/checkpoint/pk/*'] };
-                    view.webContents.session.webRequest.onBeforeRequest(liFilter, (details, callback) => {
-                        try {
-                            if (details.webContentsId === thisWebContentsId && details.url.includes('/checkpoint/pk/initiateLogin')) {
-                                console.log('[LinkedIn] Blocking passkey initiation:', details.url);
-                                return callback({ cancel: true });
-                            }
-                        } catch (e) { }
-                        return callback({});
-                    });
-                } catch (e) {
-                    console.warn('Failed to attach LinkedIn passkey blocker:', e);
-                }
-
-                // Set session user agent if configured
-                // Don't set user agent on session - already set at session creation
-                /* if (args.config && args.config.userAgent) {
-                    log(`Setting session user agent: ${args.config.userAgent}`);
-                    view.webContents.session.setUserAgent(args.config.userAgent);
-                } */
-
-                // Check if we need to set any headers
-                const needsOriginReferer = args.config && (("Origin" in args.config) || ("Referer" in args.config));
-                const needsUserAgentHeaders = args.config && args.config.userAgent && args.config.mockUserAgentData;
-
-                if (needsOriginReferer || needsUserAgentHeaders) {
-                    view.webContents.session.webRequest.onBeforeSendHeaders({
-                        urls: ['*://*/*']
-                    },
-                        (details, callback) => {
-                            const {
-                                requestHeaders
-                            } = details;
-
-                            // Handle Origin/Referer headers
-                            if (needsOriginReferer) {
-                                if ("Origin" in args.config) {
-                                    requestHeaders['Origin'] = args.config.Origin;
-                                }
-                                if ("Referer" in args.config) {
-                                    requestHeaders['Referer'] = args.config.Referer;
-                                }
-                            }
-
-                            // Handle User-Agent and client hint headers
-                            if (needsUserAgentHeaders) {
-                                // Don't manipulate User-Agent - let session handle it
-                                // requestHeaders['User-Agent'] = args.config.userAgent;
-
-                                // Remove any Electron-specific headers
-                                delete requestHeaders['Electron'];
-
-                                // Let Chromium handle all other headers naturally
-                                // The browser will generate sec-ch-ua headers based on the User-Agent
-                            }
-
-                            callback({
-                                requestHeaders
-                            });
-                        }
-                    );
-                }
             }
 
             view.tabID = generateUniqueWindowId();;
@@ -8126,6 +8196,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
 
             view.onbeforeunload = (e) => {
+                if (app.isQuitting) {
+                    return;
+                }
                 log("I do not want to be closed 1");
                 e.preventDefault();
                 try { stealthHideView(view); } catch (_) { try { view.hide(); } catch (_) { } }
@@ -8139,6 +8212,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             };
 
             view.on("close", function (e) {
+                if (app.isQuitting) {
+                    return;
+                }
                 log("I do not want to be closed 2");
                 e.preventDefault();
 
@@ -12442,15 +12518,27 @@ async function ensureTikTokSigningWindow(targetUrl, options = {}) {
 
         // Inject script to stop video playback and save resources
         const resourceSaverScript = `
-            setInterval(() => {
-                const videos = document.querySelectorAll('video');
-                videos.forEach(v => {
-                    if (!v.paused) v.pause();
-                    v.src = '';
-                    v.load();
-                    v.remove(); // Aggressively remove video elements
-                });
-            }, 1000);
+            (function() {
+                try {
+                    if (window.__ssappTikTokResourceSaverInterval) {
+                        return;
+                    }
+                    window.__ssappTikTokResourceSaverInterval = setInterval(() => {
+                        const videos = document.querySelectorAll('video');
+                        if (!videos || videos.length === 0) {
+                            return;
+                        }
+                        videos.forEach((v) => {
+                            try {
+                                if (!v.paused) v.pause();
+                                v.src = '';
+                                v.load();
+                                v.remove(); // Aggressively remove video elements
+                            } catch (_) { }
+                        });
+                    }, 1000);
+                } catch (_) { }
+            })();
         `;
         tiktokSigningWindow.webContents.executeJavaScript(resourceSaverScript).catch(() => { });
     } catch (_) { }

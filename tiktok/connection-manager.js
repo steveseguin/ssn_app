@@ -1968,7 +1968,7 @@ function resolveFirstImageUrl(candidates = []) {
 // Load CircularBuffer if available
 let CircularBuffer;
 try {
-    CircularBuffer = require('./circular-buffer.js');
+    CircularBuffer = require('../circular-buffer.js');
 } catch (e) {
     // Fallback to array if CircularBuffer not available
     CircularBuffer = null;

@@ -11625,7 +11625,7 @@
             const allSources = stateManager.getSources();
             allSources.forEach(source => {
                 if (source.customSession === sessionName) {
-                    stateManager.updateSource(source.id, { customSession: 'default' });
+                    stateManager.updateSource(source.id, { customSession: `default-${source.target}` });
                 }
             });
 
