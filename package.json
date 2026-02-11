@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.3.90",
+  "version": "0.3.91",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "main": "main.js",
@@ -11,6 +11,8 @@
     "start4": "electron . --running-from-source --filesource /Users/steveseguin/Code/social_stream/",
     "start-linux": "electron . --running-from-source --filesource /home/ubuntu/code/ssn_app/resources/social_stream_fallback/main/",
     "update:fallback": "node scripts/updateSocialStreamFallback.js",
+    "test:settings-loss": "node tests/electron/settings-loss-diagnostics.js",
+    "test:settings-rootcause": "node tests/electron/settings-rootcause-diagnostics.js",
     "test": "electron .",
     "build": "run-os",
     "check:submodules": "node scripts/check-submodules.js",

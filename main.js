@@ -3758,18 +3758,18 @@ async function clearAllData() {
         const preservedStreamID = (cachedState && typeof cachedState === 'object' && 'streamID' in cachedState)
             ? cachedState.streamID
             : null;
-        const preservedPassword = (cachedState && typeof cachedState === 'object' && 'password' in cachedState)
-            ? cachedState.password
-            : null;
+	        const preservedPassword = (cachedState && typeof cachedState === 'object' && 'password' in cachedState)
+	            ? normalizePasswordValue(cachedState.password)
+	            : null;
 
         // Reset cached state while preserving stream credentials
         cachedState = {};
         if (preservedStreamID) {
             cachedState.streamID = preservedStreamID;
         }
-        if (preservedPassword !== null && preservedPassword !== undefined) {
-            cachedState.password = preservedPassword;
-        }
+	        if (preservedPassword !== null && preservedPassword !== undefined) {
+	            cachedState.password = preservedPassword;
+	        }
         cachedState.state = false;
 
         const savedSyncPath = path.join(folder, "savedSync.json");
@@ -4307,6 +4307,7 @@ ipcMain.handle('ssapp:choose-ticker-file', async (_event, options = {}) => {
         if (result.canceled || !result.filePaths || !result.filePaths.length) {
             return { canceled: true };
         }
+        rememberDialogApprovedPath(result.filePaths[0]);
         return {
             canceled: false,
             filePath: result.filePaths[0]
@@ -4320,19 +4321,96 @@ ipcMain.handle('ssapp:choose-ticker-file', async (_event, options = {}) => {
     }
 });
 
+const DIALOG_APPROVED_PATHS_KEY = "dialogApprovedPaths";
+const MAX_DIALOG_APPROVED_PATHS = 256;
+const LEGACY_APPROVED_PATH_LOCAL_STORAGE_KEYS = ["savedFilePath", "savedNamesFilePath", "tickerFilePath"];
+
+function normalizeApprovedPath(filePath) {
+    if (!filePath || typeof filePath !== "string") return "";
+    try {
+        const resolved = path.resolve(filePath);
+        if (!resolved) return "";
+        return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    } catch (_) {
+        return "";
+    }
+}
+
+function isSafeAbsolutePathCandidate(filePath) {
+    if (!filePath || typeof filePath !== "string") return false;
+    if (filePath.length > 4096) return false;
+    if (/[\r\n]/.test(filePath)) return false;
+    return path.isAbsolute(filePath);
+}
+
+function loadDialogApprovedPaths() {
+    const allowed = new Set();
+    try {
+        const stored = store.get(DIALOG_APPROVED_PATHS_KEY, []);
+        if (Array.isArray(stored)) {
+            for (const item of stored) {
+                const normalized = normalizeApprovedPath(item);
+                if (normalized) allowed.add(normalized);
+            }
+        }
+    } catch (_) { }
+    return allowed;
+}
+
+function persistDialogApprovedPaths() {
+    try {
+        store.set(DIALOG_APPROVED_PATHS_KEY, Array.from(dialogApprovedPaths));
+    } catch (error) {
+        console.warn("Failed to persist approved file paths:", error?.message || error);
+    }
+}
+
+function rememberDialogApprovedPath(filePath) {
+    const normalized = normalizeApprovedPath(filePath);
+    if (!normalized) return;
+    if (dialogApprovedPaths.has(normalized)) return;
+    dialogApprovedPaths.add(normalized);
+    while (dialogApprovedPaths.size > MAX_DIALOG_APPROVED_PATHS) {
+        const oldest = dialogApprovedPaths.values().next().value;
+        if (!oldest) break;
+        dialogApprovedPaths.delete(oldest);
+    }
+    persistDialogApprovedPaths();
+}
+
 // Track paths that the user approved via a native save/open dialog
-const dialogApprovedPaths = new Set();
+const dialogApprovedPaths = loadDialogApprovedPaths();
+
+function migrateLegacyApprovedPaths() {
+    let migrated = 0;
+    try {
+        const localStorageBackup = store.get("localStorageBackup", {});
+        if (!localStorageBackup || typeof localStorageBackup !== "object") return;
+        for (const key of LEGACY_APPROVED_PATH_LOCAL_STORAGE_KEYS) {
+            const candidate = localStorageBackup[key];
+            if (!isSafeAbsolutePathCandidate(candidate)) continue;
+            const sizeBefore = dialogApprovedPaths.size;
+            rememberDialogApprovedPath(candidate);
+            if (dialogApprovedPaths.size > sizeBefore) migrated += 1;
+        }
+    } catch (_) { }
+    if (migrated > 0) {
+        console.log(`[PathSandbox] Migrated ${migrated} persisted path approval(s) from localStorage backup`);
+    }
+}
+
+migrateLegacyApprovedPaths();
 
 function isPathAllowed(filePath) {
-    if (!filePath || typeof filePath !== 'string') return false;
-    const resolved = path.resolve(filePath);
+    const normalized = normalizeApprovedPath(filePath);
+    if (!normalized) return false;
     // Always allow files inside the app's userData directory
     try {
-        const userData = app.getPath('userData');
-        if (resolved.startsWith(userData + path.sep) || resolved === userData) return true;
-    } catch (_) {}
+        const userData = normalizeApprovedPath(app.getPath("userData"));
+        if (userData && (normalized.startsWith(userData + path.sep) || normalized === userData)) return true;
+    } catch (_) { }
     // Allow paths the user explicitly approved via a native dialog
-    if (dialogApprovedPaths.has(resolved)) return true;
+    if (dialogApprovedPaths.has(normalized)) return true;
     return false;
 }
 
@@ -4346,9 +4424,7 @@ ipcMain.handle("show-save-dialog", async (event, opts) => {
         const {
             filePath
         } = await dialog.showSaveDialog(dialogOpts);
-        if (filePath) {
-            dialogApprovedPaths.add(path.resolve(filePath));
-        }
+        if (filePath) rememberDialogApprovedPath(filePath);
         return filePath;
     } catch (error) {
         log(error);
@@ -4930,6 +5006,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     log(fileNames);
                     if (fileNames !== undefined) {
                         const filePath = fileNames.filePaths[0]; // Assuming you want to read the first selected file.
+                        rememberDialogApprovedPath(filePath);
                         await fs.readFile(filePath, "utf8", async (err, data) => {
                             if (err) {
                                 console.error(err);
@@ -5563,30 +5640,43 @@ async function createWindow(args, reuse = false, mainApp = false) {
         });
     });
 
-    ipcMain.on("fromBackground", function (eventRet, value) {
+	    ipcMain.on("fromBackground", function (eventRet, value) {
         log("\nfromBackground ??????????????????");
         log("Received settings from background:", JSON.stringify(value).substring(0, 200));
 
         // Merge instead of replace to avoid losing keys not sent by the renderer.
         // Protect established settings from being overwritten with empty/partial data.
-        if (value && typeof value === "object") {
-            if ("settings" in value && value.settings && typeof value.settings === "object") {
-                const existingSettings = cachedState?.settings || {};
-                const existingCount = Object.keys(existingSettings).length;
-                const incomingCount = Object.keys(value.settings).length;
-                const hasEstablished = existingCount > SETTINGS_VALIDATION.MIN_EXISTING_KEYS;
-                const isPartial = incomingCount < existingCount * SETTINGS_VALIDATION.PARTIAL_THRESHOLD_RATIO;
+	        if (value && typeof value === "object") {
+	            const normalizedValue = { ...value };
+	            if ("streamID" in normalizedValue) {
+	                const normalizedStreamID = normalizeStreamIdValue(normalizedValue.streamID);
+	                if (normalizedStreamID === null) {
+	                    delete normalizedValue.streamID;
+	                } else {
+	                    normalizedValue.streamID = normalizedStreamID;
+	                }
+	            }
+	            if ("password" in normalizedValue) {
+	                normalizedValue.password = normalizePasswordValue(normalizedValue.password);
+	            }
 
-                if (hasEstablished && isPartial) {
-                    log(`[fromBackground] Blocking settings downgrade (incoming: ${incomingCount}, existing: ${existingCount})`);
-                    delete value.settings; // keep existing settings
-                } else if (incomingCount === 0 && existingCount > 0) {
-                    log(`[fromBackground] Blocking empty settings overwrite (existing: ${existingCount})`);
-                    delete value.settings;
-                }
-            }
-            cachedState = { ...cachedState, ...value };
-        }
+	            if ("settings" in normalizedValue && normalizedValue.settings && typeof normalizedValue.settings === "object") {
+	                const existingSettings = cachedState?.settings || {};
+	                const existingCount = Object.keys(existingSettings).length;
+	                const incomingCount = Object.keys(normalizedValue.settings).length;
+	                const hasEstablished = existingCount > SETTINGS_VALIDATION.MIN_EXISTING_KEYS;
+	                const isPartial = incomingCount < existingCount * SETTINGS_VALIDATION.PARTIAL_THRESHOLD_RATIO;
+
+	                if (hasEstablished && isPartial) {
+	                    log(`[fromBackground] Blocking settings downgrade (incoming: ${incomingCount}, existing: ${existingCount})`);
+	                    delete normalizedValue.settings; // keep existing settings
+	                } else if (incomingCount === 0 && existingCount > 0) {
+	                    log(`[fromBackground] Blocking empty settings overwrite (existing: ${existingCount})`);
+	                    delete normalizedValue.settings;
+	                }
+	            }
+	            cachedState = { ...cachedState, ...normalizedValue };
+	        }
 
         //log(cachedState);
         if (mainWindow && mainWindow.webContents) {
@@ -5648,21 +5738,29 @@ async function createWindow(args, reuse = false, mainApp = false) {
         // from background
 
         // Sanitize and merge incoming state immediately (caller expects updated state back)
-        const incoming = (value && typeof value === "object") ? value : {};
+	        const incoming = (value && typeof value === "object") ? value : {};
         const allowEmptySettings = incoming.allowEmptySettings === true;
         if ("allowEmptySettings" in incoming) {
             delete incoming.allowEmptySettings;
         }
         const sanitized = {};
-        Object.entries(incoming).forEach(([key, val]) => {
-            if (val === undefined || val === null) {
-                return;
-            }
-            if (key === "streamID" && typeof val === "string" && val.trim() === "") {
-                return; // avoid clearing a good stream ID with an empty value
-            }
-            if (key === "settings" && val && typeof val === "object") {
-                const existingSettings = cachedState?.settings || {};
+	        Object.entries(incoming).forEach(([key, val]) => {
+	            if (key === "password") {
+	                sanitized[key] = normalizePasswordValue(val);
+	                return;
+	            }
+	            if (key === "streamID") {
+	                const normalizedStreamID = normalizeStreamIdValue(val);
+	                if (normalizedStreamID !== null) {
+	                    sanitized[key] = normalizedStreamID;
+	                }
+	                return;
+	            }
+	            if (val === undefined || val === null) {
+	                return;
+	            }
+	            if (key === "settings" && val && typeof val === "object") {
+	                const existingSettings = cachedState?.settings || {};
                 const existingCount = Object.keys(existingSettings).length;
                 const incomingCount = Object.keys(val).length;
 
@@ -5679,9 +5777,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     log(`[storageSave] Blocking empty settings overwrite`);
                     return;
                 }
-            }
-            sanitized[key] = val;
-        });
+	            }
+	            sanitized[key] = val;
+	        });
         cachedState = { ...cachedState, ...sanitized };
 
         // Return merged state immediately (required for sendSync callers)
@@ -5749,13 +5847,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
         ////log("!!!!!!!!!!!!!cachedState");
         //log(cachedState);
 
-        if (!hasCachedStateData(cachedState)) {
-            const diskState = loadCachedStateWithBackup();
-            if (diskState && typeof diskState === "object") {
-                cachedState = { ...diskState, ...cachedState };
-                log("Loaded cachedState from disk backup (storageGet)");
-            }
-        }
+	        if (!hasCachedStateData(cachedState)) {
+	            const diskState = loadCachedStateWithBackup();
+	            if (diskState && typeof diskState === "object") {
+	                cachedState = { ...normalizeCachedStateSnapshot(diskState), ...cachedState };
+	                log("Loaded cachedState from disk backup (storageGet)");
+	            }
+	        }
 
         if (!hasCachedStateData(cachedState)) {
             try {
@@ -5779,13 +5877,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     ipcMain.handle("storageGetAsync", async (eventRet, value) => {
         const response = {};
-        if (!hasCachedStateData(cachedState)) {
-            const diskState = loadCachedStateWithBackup();
-            if (diskState && typeof diskState === "object") {
-                cachedState = { ...diskState, ...cachedState };
-                log("Loaded cachedState from disk backup (storageGetAsync)");
-            }
-        }
+	        if (!hasCachedStateData(cachedState)) {
+	            const diskState = loadCachedStateWithBackup();
+	            if (diskState && typeof diskState === "object") {
+	                cachedState = { ...normalizeCachedStateSnapshot(diskState), ...cachedState };
+	                log("Loaded cachedState from disk backup (storageGetAsync)");
+	            }
+	        }
         if (!hasCachedStateData(cachedState)) {
             const raw = await readLocalStorageMirror(mainWindow);
             if (hydrateCachedStateFromLocalStorage(raw)) {
@@ -5830,12 +5928,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 cachedState.settings = value.settings;
             }
         }
-        if ("password" in value) {
-            cachedState.password = value.password;
-        }
-        if ("streamID" in value) {
-            cachedState.streamID = value.streamID;
-        }
+	        if ("password" in value) {
+	            cachedState.password = normalizePasswordValue(value.password);
+	        }
+	        if ("streamID" in value) {
+	            const normalizedStreamID = normalizeStreamIdValue(value.streamID);
+	            if (normalizedStreamID !== null) {
+	                cachedState.streamID = normalizedStreamID;
+	            }
+	        }
         if ("state" in value) {
             cachedState.state = value.state;
         }
@@ -5885,12 +5986,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 cachedState.settings = value.settings;
             }
         }
-        if ("password" in value) {
-            cachedState.password = value.password;
-        }
-        if ("streamID" in value) {
-            cachedState.streamID = value.streamID;
-        }
+	        if ("password" in value) {
+	            cachedState.password = normalizePasswordValue(value.password);
+	        }
+	        if ("streamID" in value) {
+	            const normalizedStreamID = normalizeStreamIdValue(value.streamID);
+	            if (normalizedStreamID !== null) {
+	                cachedState.streamID = normalizedStreamID;
+	            }
+	        }
         if ("state" in value) {
             cachedState.state = value.state;
         }
@@ -6379,13 +6483,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
 
             // Ensure cachedState and localStorage stay in sync
-            try {
-                const diskResult = loadCachedStateWithBackupSource();
-                if (diskResult && diskResult.state && typeof diskResult.state === "object") {
-                    cachedState = { ...diskResult.state, ...cachedState };
-                    log(`Loaded cachedState from ${diskResult.source} (did-finish-load)`);
-                }
-                syncCachedStateWithLocalStorage(mainWindow, "did-finish-load");
+	            try {
+	                const diskResult = loadCachedStateWithBackupSource();
+	                if (diskResult && diskResult.state && typeof diskResult.state === "object") {
+	                    cachedState = { ...normalizeCachedStateSnapshot(diskResult.state), ...cachedState };
+	                    log(`Loaded cachedState from ${diskResult.source} (did-finish-load)`);
+	                }
+	                syncCachedStateWithLocalStorage(mainWindow, "did-finish-load");
             } catch (e) {
                 console.warn("Failed to sync cachedState/localStorage:", e?.message || e);
             }
@@ -6602,12 +6706,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
             let tab = options.tabID || tabID;
 
             // Create settings response matching background.js format
-            let settingsResponse = {
-                settings: cachedState.settings || {},
-                state: cachedState.state !== undefined ? cachedState.state : true,
-                streamID: cachedState.streamID || null,
-                password: cachedState.password || null
-            };
+	            let settingsResponse = {
+	                settings: cachedState.settings || {},
+	                state: cachedState.state !== undefined ? cachedState.state : true,
+	                streamID: normalizeStreamIdValue(cachedState.streamID),
+	                password: normalizePasswordValue(cachedState.password)
+	            };
 
             log("getSettings request - returning cachedState:", JSON.stringify(settingsResponse).substring(0, 200));
 
@@ -10703,10 +10807,69 @@ function getSavedSyncPaths() {
 function hasCachedStateData(state) {
 	if (!state || typeof state !== "object") return false;
 	if (state.settings && typeof state.settings === "object" && Object.keys(state.settings).length > 0) return true;
-	if (state.streamID) return true;
-	if (state.password) return true;
+	if (normalizeStreamIdValue(state.streamID)) return true;
+	if (normalizePasswordValue(state.password)) return true;
 	if (state.state !== undefined) return true;
 	return false;
+}
+
+function normalizeSessionCredentialValue(value, options = {}) {
+	const { allowZero = false, coerceSentinelStrings = true } = options;
+	if (value === undefined || value === null) return null;
+	if (typeof value === "boolean") return null;
+	if (typeof value === "object" || typeof value === "function" || typeof value === "symbol") return null;
+	if (typeof value === "number") {
+		if (!Number.isFinite(value)) return null;
+		if (value === 0 && !allowZero) return null;
+		return String(value);
+	}
+	let asString = null;
+	try {
+		asString = typeof value === "string" ? value : String(value);
+	} catch (_) {
+		return null;
+	}
+	const trimmed = asString.trim();
+	if (!trimmed) return null;
+	if (coerceSentinelStrings) {
+		const lowered = trimmed.toLowerCase();
+		if (lowered === "undefined" || lowered === "null" || lowered === "false") {
+			return null;
+		}
+	}
+	return asString;
+}
+
+function normalizeStreamIdValue(value) {
+	return normalizeSessionCredentialValue(value, { allowZero: false });
+}
+
+function normalizePasswordValue(value) {
+	// Preserve string passwords verbatim (including "false", "0", "off");
+	// only true non-values (null/undefined/boolean/empty string) are cleared.
+	return normalizeSessionCredentialValue(value, { allowZero: true, coerceSentinelStrings: false });
+}
+
+function normalizeCachedStateSnapshot(state) {
+	if (!state || typeof state !== "object") return {};
+	const normalized = { ...state };
+	if ("streamID" in normalized) {
+		const streamID = normalizeStreamIdValue(normalized.streamID);
+		if (streamID === null) {
+			delete normalized.streamID;
+		} else {
+			normalized.streamID = streamID;
+		}
+	}
+	if ("password" in normalized) {
+		const password = normalizePasswordValue(normalized.password);
+		if (password === null) {
+			delete normalized.password;
+		} else {
+			normalized.password = password;
+		}
+	}
+	return normalized;
 }
 
 function buildLocalStorageMirrorPayload(state) {
@@ -10720,8 +10883,10 @@ function buildLocalStorageMirrorPayload(state) {
 		payload.settings = null;
 	}
 
-	payload.streamID = state && state.streamID ? String(state.streamID) : null;
-	payload.password = state && state.password !== undefined && state.password !== null ? String(state.password) : null;
+	const normalizedStreamID = normalizeStreamIdValue(state && state.streamID);
+	const normalizedPassword = normalizePasswordValue(state && state.password);
+	payload.streamID = normalizedStreamID;
+	payload.password = normalizedPassword;
 	if (state && typeof state.state === "boolean") {
 		payload.state = state.state ? "true" : "false";
 	} else if (state && typeof state.state === "string") {
@@ -10806,9 +10971,16 @@ async function readLocalStorageMirror(win) {
 function hydrateCachedStateFromLocalStorage(raw) {
 	if (!raw || typeof raw !== "object") return false;
 	const next = {};
-	const streamID = raw.streamID || raw.ssninja_stream_id;
-	if (streamID) next.streamID = String(streamID);
-	if (raw.password) next.password = String(raw.password);
+	const streamID = normalizeStreamIdValue(raw.streamID || raw.ssninja_stream_id);
+	if (streamID) next.streamID = streamID;
+	const hasPasswordKey = Object.prototype.hasOwnProperty.call(raw, "password");
+	const normalizedPassword = normalizePasswordValue(raw.password);
+	if (normalizedPassword !== null) {
+		next.password = normalizedPassword;
+	} else if (hasPasswordKey) {
+		// Clear true non-values (eg boolean false/null) while preserving literal strings.
+		next.password = null;
+	}
 	const stateValue = raw.state !== undefined ? raw.state : raw.ssninja_state;
 	if (typeof stateValue === "string") {
 		if (stateValue === "true" || stateValue === "false") {
@@ -11051,13 +11223,14 @@ app.whenReady().then(async function () {
         }
     });
 
-    try {
-        const diskState = loadCachedStateWithBackup();
-        if (diskState) {
-            cachedState = diskState;
-            if ("streamID" in cachedState && !cachedState.streamID) {
-                log("invalid cachedState");
-            } else {
+	    try {
+	        const diskState = loadCachedStateWithBackup();
+	        if (diskState) {
+	            const normalizedDiskState = normalizeCachedStateSnapshot(diskState);
+	            cachedState = normalizedDiskState;
+	            if ("streamID" in cachedState && !cachedState.streamID) {
+	                log("invalid cachedState");
+	            } else {
                 log("loaded cachedState");
                 if (cachedState && !("state" in cachedState) && "isExtensionOn" in cachedState) {
                     cachedState.state = cachedState.isExtensionOn;
@@ -11065,11 +11238,21 @@ app.whenReady().then(async function () {
                 } else if (cachedState && "isExtensionOn" in cachedState) {
                     delete cachedState.isExtensionOn;
                 }
-            }
-            log(cachedState);
+	            }
+	            log(cachedState);
+	            try {
+	                if (JSON.stringify(diskState) !== JSON.stringify(normalizedDiskState)) {
+	                    saveCachedStateAtomic(cachedState);
+	                    store.set('cachedStateBackup', cachedState);
+	                    store.set('cachedStateBackupTime', Date.now());
+	                    log("Normalized cachedState credentials and persisted sanitized values");
+	                }
+	            } catch (normalizePersistError) {
+	                console.warn("Failed to persist normalized cachedState on startup:", normalizePersistError?.message || normalizePersistError);
+	            }
 
-            if (cachedState.wsServer) {
-                wsServer.start();
+	            if (cachedState.wsServer) {
+	                wsServer.start();
             }
         } else {
             log("Failed to load cachedState -- it probably doesn't yet exist");
