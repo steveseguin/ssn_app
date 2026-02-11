@@ -41,7 +41,7 @@ const {
     SchemaVersion
 } = require('@eulerstream/euler-websocket-sdk');
 const { WebcastEventMap, WebcastEvent } = require('tiktok-live-connector/dist/types/events');
-const { ControlAction } = require('tiktok-live-connector/dist/types/tiktok/enums');
+const { ControlAction, GiftMessageIgnoreConfig } = require('tiktok-live-connector/dist/types/tiktok/enums');
 
 const env = {
     shouldEnableTikTokLogging: false,
@@ -74,6 +74,19 @@ let EulerSignerClass = null;
 const SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD = 3;
 const DEFAULT_TIKTOK_WEB_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36';
 const EULER_WS_PROVIDER = 'euler-ws';
+const GIFT_IGNORE_CONFIG_NOT_IGNORE = Number.isFinite(Number(GiftMessageIgnoreConfig?.GIFT_MESSAGE_IGNORE_CONFIG_NOT_IGNORE))
+    ? Number(GiftMessageIgnoreConfig.GIFT_MESSAGE_IGNORE_CONFIG_NOT_IGNORE)
+    : 0;
+const GIFT_IGNORE_CONFIG_IGNORE_TRAY = Number.isFinite(Number(GiftMessageIgnoreConfig?.GIFT_MESSAGE_IGNORE_CONFIG_IGNORE_TRAY))
+    ? Number(GiftMessageIgnoreConfig.GIFT_MESSAGE_IGNORE_CONFIG_IGNORE_TRAY)
+    : 1;
+const GIFT_IGNORE_CONFIG_IGNORE_TRAY_AND_PS_M = Number.isFinite(Number(GiftMessageIgnoreConfig?.GIFT_MESSAGE_IGNORE_CONFIG_IGNORE_TRAY_AND_PS_M))
+    ? Number(GiftMessageIgnoreConfig.GIFT_MESSAGE_IGNORE_CONFIG_IGNORE_TRAY_AND_PS_M)
+    : 3;
+const GIFT_IGNORE_CONFIG_HIDE_TRAY_VALUES = new Set([
+    GIFT_IGNORE_CONFIG_IGNORE_TRAY,
+    GIFT_IGNORE_CONFIG_IGNORE_TRAY_AND_PS_M
+]);
 
 class EulerWebsocketServerConnection extends EventEmitter {
     constructor(uniqueId, options = {}) {
@@ -1972,6 +1985,192 @@ function resolveFirstImageUrl(candidates = []) {
     return null;
 }
 
+function resolveGiftMetricCount(data = {}, metric = 'repeat') {
+    const camel = `${metric}Count`;
+    const snake = `${metric}_count`;
+    const giftData = isPlainObject(data?.gift) ? data.gift : {};
+    const giftDetails = isPlainObject(data?.giftDetails) ? data.giftDetails : {};
+    const extendedGiftInfo = isPlainObject(data?.extendedGiftInfo) ? data.extendedGiftInfo : {};
+
+    let maxValue = 0;
+    const candidates = [
+        data?.[camel],
+        data?.[snake],
+        giftData?.[camel],
+        giftData?.[snake],
+        giftDetails?.[camel],
+        giftDetails?.[snake],
+        extendedGiftInfo?.[camel],
+        extendedGiftInfo?.[snake]
+    ];
+
+    for (const candidate of candidates) {
+        const numeric = Number(candidate);
+        if (Number.isFinite(numeric) && numeric > maxValue) {
+            maxValue = numeric;
+        }
+    }
+
+    return Math.max(0, Math.floor(maxValue));
+}
+
+function resolveGiftAggregatedCount(data = {}) {
+    const repeatCount = resolveGiftMetricCount(data, 'repeat');
+    const comboCount = resolveGiftMetricCount(data, 'combo');
+    const groupCount = resolveGiftMetricCount(data, 'group');
+    return Math.max(1, repeatCount, comboCount, groupCount);
+}
+
+function resolveGiftId(data = {}) {
+    const giftData = isPlainObject(data?.gift) ? data.gift : {};
+    const giftDetails = isPlainObject(data?.giftDetails) ? data.giftDetails : {};
+    const extendedGiftInfo = isPlainObject(data?.extendedGiftInfo) ? data.extendedGiftInfo : {};
+
+    return pickFirstNonEmptyString([
+        data.giftId,
+        data.gift_id,
+        data.giftIdStr,
+        data.gift_id_str,
+        data.id,
+        data.id_str,
+        giftData.giftId,
+        giftData.gift_id,
+        giftData.id,
+        giftData.id_str,
+        giftData.giftIdStr,
+        giftData.gift_id_str,
+        giftDetails.id,
+        giftDetails.id_str,
+        giftDetails.giftId,
+        giftDetails.gift_id,
+        giftDetails.giftIdStr,
+        giftDetails.gift_id_str,
+        extendedGiftInfo.id,
+        extendedGiftInfo.id_str,
+        extendedGiftInfo.giftId,
+        extendedGiftInfo.gift_id,
+        extendedGiftInfo.giftIdStr,
+        extendedGiftInfo.gift_id_str
+    ]);
+}
+
+function normalizeGiftStreakKeyFragment(value) {
+    const cleaned = cleanVisibleString(value);
+    if (!cleaned) {
+        return null;
+    }
+    return cleaned
+        .toLowerCase()
+        .replace(/\s+/g, '-')
+        .replace(/[^a-z0-9._:-]/g, '')
+        .slice(0, 64) || null;
+}
+
+function resolveGiftStreakIdentity(data = {}) {
+    const giftId = resolveGiftId(data);
+    if (giftId) {
+        return { giftId, keyFragment: `id:${giftId}` };
+    }
+
+    const giftData = isPlainObject(data?.gift) ? data.gift : {};
+    const giftDetails = isPlainObject(data?.giftDetails) ? data.giftDetails : {};
+    const extendedGiftInfo = isPlainObject(data?.extendedGiftInfo) ? data.extendedGiftInfo : {};
+
+    const giftName = pickFirstNonEmptyString([
+        data.giftName,
+        giftData.giftName,
+        giftData.name,
+        giftData.displayName,
+        giftData.title,
+        giftDetails.giftName,
+        giftDetails.describe,
+        extendedGiftInfo.name,
+        extendedGiftInfo.describe
+    ]);
+
+    const normalizedName = normalizeGiftStreakKeyFragment(giftName);
+    if (normalizedName) {
+        return { giftId: null, keyFragment: `name:${normalizedName}` };
+    }
+
+    const diamondHint = pickFirstPositiveNumber([
+        data.diamondCount,
+        data.diamond_count,
+        giftData.diamondCount,
+        giftData.diamond_count,
+        giftDetails.diamondCount,
+        giftDetails.diamond_count,
+        extendedGiftInfo.diamondCount,
+        extendedGiftInfo.diamond_count
+    ]);
+
+    if (diamondHint > 0) {
+        return { giftId: null, keyFragment: `value:${diamondHint}` };
+    }
+
+    return { giftId: null, keyFragment: 'gift' };
+}
+
+function normalizeGiftIgnoreConfigValue(value) {
+    if (value === null || value === undefined) {
+        return null;
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    }
+
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+
+        const numeric = Number(trimmed);
+        if (Number.isFinite(numeric)) {
+            return numeric;
+        }
+
+        const normalized = trimmed.toLowerCase();
+        if (normalized.includes('ignore_tray_and_ps_m')) {
+            return GIFT_IGNORE_CONFIG_IGNORE_TRAY_AND_PS_M;
+        }
+        if (normalized.includes('ignore_tray')) {
+            return GIFT_IGNORE_CONFIG_IGNORE_TRAY;
+        }
+        if (normalized.includes('not_ignore')) {
+            return GIFT_IGNORE_CONFIG_NOT_IGNORE;
+        }
+    }
+
+    return null;
+}
+
+function resolveInteractiveGiftIgnoreConfig(data = {}) {
+    const interactiveGiftInfo = isPlainObject(data?.interactiveGiftInfo) ? data.interactiveGiftInfo : {};
+    const candidates = [
+        interactiveGiftInfo.ignoreConfig,
+        interactiveGiftInfo.ignore_config,
+        data.ignoreConfig,
+        data.ignore_config
+    ];
+
+    for (const candidate of candidates) {
+        const normalized = normalizeGiftIgnoreConfigValue(candidate);
+        if (normalized !== null) {
+            return normalized;
+        }
+    }
+
+    return null;
+}
+
+function isGiftHiddenFromTray(data = {}, resolvedIgnoreConfig = null) {
+    const ignoreConfig = resolvedIgnoreConfig !== null
+        ? resolvedIgnoreConfig
+        : resolveInteractiveGiftIgnoreConfig(data);
+
+    return ignoreConfig !== null && GIFT_IGNORE_CONFIG_HIDE_TRAY_VALUES.has(ignoreConfig);
+}
+
 // Load CircularBuffer if available
 let CircularBuffer;
 try {
@@ -2322,9 +2521,9 @@ class GiftProcessor {
             return;
         }
 
-        const repeatCount = Number(data.repeatCount) || 0;
-        const comboCount = Number(data.comboCount) || 0;
-        const groupCount = Number(data.groupCount) || 0;
+        const repeatCount = resolveGiftMetricCount(data, 'repeat');
+        const comboCount = resolveGiftMetricCount(data, 'combo');
+        const groupCount = resolveGiftMetricCount(data, 'group');
 
         let giftType = null;
         const giftTypeCandidates = [
@@ -2343,37 +2542,12 @@ class GiftProcessor {
             }
         }
 
-        const aggregatedCount = Math.max(
-            repeatCount,
-            comboCount,
-            groupCount,
-            Number(data?.giftDetails?.repeatCount) || 0,
-            Number(data?.giftDetails?.comboCount) || 0,
-            Number(data?.giftDetails?.groupCount) || 0,
-            Number(data?.extendedGiftInfo?.repeat_count) || 0,
-            Number(data?.extendedGiftInfo?.combo_count) || 0,
-            Number(data?.extendedGiftInfo?.group_count) || 0,
-            1
-        );
+        const aggregatedCount = resolveGiftAggregatedCount(data);
 
         const identity = extractTikTokIdentity(data);
         const userKey = resolveTikTokUserId(data, identity) || identity.uniqueId || 'unknown';
-        const giftId = pickFirstNonEmptyString([
-            data.giftId,
-            data?.gift?.giftId,
-            data?.gift?.gift_id,
-            data?.gift?.id,
-            data?.gift?.id_str,
-            data?.gift?.giftIdStr,
-            data?.gift?.gift_id_str,
-            data?.giftDetails?.id,
-            data?.giftDetails?.id_str,
-            data?.giftDetails?.giftId,
-            data?.giftDetails?.gift_id,
-            data?.extendedGiftInfo?.id,
-            data?.extendedGiftInfo?.id_str
-        ]) || 'gift';
-        const streakKey = `${userKey}:${giftId}`;
+        const giftIdentity = resolveGiftStreakIdentity(data);
+        const streakKey = `${userKey}:${giftIdentity.keyFragment}`;
 
         const streakable = !data.repeatEnd && (aggregatedCount > 1 || giftType === 1 || repeatCount > 1 || comboCount > 1 || groupCount > 1);
         const existingStreak = this.streaks.get(streakKey);
@@ -2471,21 +2645,7 @@ class GiftProcessor {
         const giftDetails = isPlainObject(data?.giftDetails) ? data.giftDetails : {};
         const extendedGiftInfo = isPlainObject(data?.extendedGiftInfo) ? data.extendedGiftInfo : {};
 
-        const giftId = pickFirstNonEmptyString([
-            data.giftId,
-            giftData.giftId,
-            giftData.gift_id,
-            giftData.id,
-            giftData.id_str,
-            giftData.giftIdStr,
-            giftData.gift_id_str,
-            giftDetails.id,
-            giftDetails.id_str,
-            giftDetails.giftId,
-            giftDetails.gift_id,
-            extendedGiftInfo.id,
-            extendedGiftInfo.id_str
-        ]);
+        const giftId = resolveGiftId(data);
 
         const mappedGiftName = giftId && giftMapping && giftMapping[giftId] ? giftMapping[giftId].name : null;
         const giftName = pickFirstNonEmptyString([
@@ -2518,6 +2678,9 @@ class GiftProcessor {
         ]);
         const totalDiamonds = perGiftDiamonds * count;
         const donationDisplay = totalDiamonds > 0 ? `${totalDiamonds} 💎` : null;
+        const interactiveGiftIgnoreConfig = resolveInteractiveGiftIgnoreConfig(data);
+        const hiddenFromTray = isGiftHiddenFromTray(data, interactiveGiftIgnoreConfig);
+        const outgoingEventType = hiddenFromTray ? 'reaction' : 'gift';
 
         // const giftPictureUrl = resolveFirstImageUrl([
         //     data.giftPictureUrl,
@@ -2548,7 +2711,7 @@ class GiftProcessor {
             type: "tiktok",
             textonly: textOnly,
             textonlymode: textOnly,
-            event: 'gift',
+            event: outgoingEventType,
             chatname: resolvedChatname,
             chatimg: identity.profilePictureUrl
                 || normalizeTikTokImageUrl(data.profilePictureUrl)
@@ -2565,7 +2728,7 @@ class GiftProcessor {
         if (resolvedUserId) {
             msg.userid = resolvedUserId;
         }
-        if (donationDisplay) {
+        if (donationDisplay && !hiddenFromTray) {
             msg.hasDonation = donationDisplay;
             msg.subtitle = donationDisplay;
             msg.donoValue = totalDiamonds * 0.005;
@@ -2580,9 +2743,9 @@ class GiftProcessor {
             extendedGiftInfo.fan_ticket_count
         ]) * count;
 
-        const repeatCount = Number(data.repeatCount) || Number(giftDetails.repeatCount) || Number(extendedGiftInfo.repeat_count) || 0;
-        const comboCount = Number(data.comboCount) || Number(giftDetails.comboCount) || Number(extendedGiftInfo.combo_count) || 0;
-        const groupCount = Number(data.groupCount) || Number(giftDetails.groupCount) || Number(extendedGiftInfo.group_count) || 0;
+        const repeatCount = resolveGiftMetricCount(data, 'repeat');
+        const comboCount = resolveGiftMetricCount(data, 'combo');
+        const groupCount = resolveGiftMetricCount(data, 'group');
 
         const meta = sanitizeEventMeta({
             giftId,
@@ -2592,7 +2755,11 @@ class GiftProcessor {
             groupCount: groupCount > 1 ? groupCount : undefined,
             diamondsPerGift: perGiftDiamonds || undefined,
             diamondsTotal: totalDiamonds || undefined,
-            fanTickets: fanTicketCount > 0 ? fanTicketCount : undefined
+            fanTickets: fanTicketCount > 0 ? fanTicketCount : undefined,
+            interactiveGift: interactiveGiftIgnoreConfig !== null ? {
+                ignoreConfig: interactiveGiftIgnoreConfig,
+                hiddenFromTray
+            } : undefined
         });
         if (meta) {
             msg.meta = meta;
@@ -6837,5 +7004,12 @@ function sendBatchToBackground(messages) {
 module.exports = {
     installTikTokSignServerFallback,
     createTikTokEnvironment,
-    giftMapping
+    giftMapping,
+    __test: {
+        resolveGiftMetricCount,
+        resolveGiftAggregatedCount,
+        resolveGiftId,
+        resolveGiftStreakIdentity,
+        GiftProcessor
+    }
 };

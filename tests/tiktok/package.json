@@ -7,6 +7,7 @@
     "start": "node run.js",
     "ws": "node run.js --mode=websocket",
     "legacy": "node run.js --mode=legacy",
-    "both": "node run.js --mode=both"
+    "both": "node run.js --mode=both",
+    "gift": "node gift-count-regression.js"
   }
 }

@@ -1283,6 +1283,9 @@ function setupRemoteControlServer() {
                     res.writeHead(500, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ ok: false, error: err.message }));
                 }
+            }).catch(err => {
+                res.writeHead(413, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: err.message }));
             });
             return;
         }
@@ -1401,6 +1404,9 @@ function setupRemoteControlServer() {
                     res.writeHead(500, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ ok: false, error: err.message }));
                 }
+            }).catch(err => {
+                res.writeHead(413, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: err.message }));
             });
             return;
         }
