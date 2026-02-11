@@ -83,6 +83,100 @@ try {
     popupUnclickableEnabled = store.get(POPUP_UNCLICKABLE_ALL_KEY) === true;
 } catch (_) { }
 
+function parseBooleanLikeFlag(value) {
+    if (typeof value === 'boolean') return value;
+    if (value === null || value === undefined) return null;
+    const normalized = String(value).trim().toLowerCase();
+    if (!normalized) return null;
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+    return null;
+}
+
+function parseWindowsBuildNumber() {
+    if (process.platform !== 'win32') return 0;
+    try {
+        const release = os.release();
+        const parts = String(release || '').split('.');
+        if (parts.length < 3) return 0;
+        const build = Number.parseInt(parts[2], 10);
+        return Number.isFinite(build) ? build : 0;
+    } catch (_) {
+        return 0;
+    }
+}
+
+function normalizeMacPerformanceModeCandidate(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'aggressive') return 'aggressive';
+    if (normalized === 'balanced') return 'balanced';
+    return '';
+}
+
+function readStartupFlagsSnapshot() {
+    try {
+        const raw = store.get('startupFlags');
+        if (raw && typeof raw === 'object') {
+            return raw;
+        }
+    } catch (_) { }
+    return {};
+}
+
+const WINDOWS_BUILD_NUMBER = parseWindowsBuildNumber();
+const IS_WINDOWS_11 = process.platform === 'win32' && WINDOWS_BUILD_NUMBER >= 22000;
+const IS_WINDOWS_10 = process.platform === 'win32' && WINDOWS_BUILD_NUMBER > 0 && WINDOWS_BUILD_NUMBER < 22000;
+const startupFlagsSnapshot = readStartupFlagsSnapshot();
+
+const win10TransparencyCompatRequested = (() => {
+    const envFlag = parseBooleanLikeFlag(process.env.SSAPP_WIN10_TRANSPARENCY_COMPAT);
+    if (envFlag !== null) return envFlag;
+    if (typeof startupFlagsSnapshot.win10TransparencyCompat === 'boolean') {
+        return startupFlagsSnapshot.win10TransparencyCompat;
+    }
+    return IS_WINDOWS_10;
+})();
+
+const WIN10_TRANSPARENCY_COMPAT_ENABLED = IS_WINDOWS_10 && win10TransparencyCompatRequested;
+const APPLY_WIN_FRAMELESS_WORKAROUND = process.platform === 'win32' && !WIN10_TRANSPARENCY_COMPAT_ENABLED;
+
+const MAC_PERFORMANCE_MODE = (() => {
+    const envValue = normalizeMacPerformanceModeCandidate(
+        process.env.SSAPP_MAC_PERFORMANCE_MODE || process.env.SSAPP_MAC_PERF_MODE
+    );
+    if (envValue) return envValue;
+    const storedValue = normalizeMacPerformanceModeCandidate(startupFlagsSnapshot.macPerformanceMode);
+    if (storedValue) return storedValue;
+    return isMac ? 'balanced' : 'aggressive';
+})();
+
+const IS_MAC_BALANCED_MODE = isMac && MAC_PERFORMANCE_MODE === 'balanced';
+
+process.env.SSAPP_WIN10_TRANSPARENCY_COMPAT_EFFECTIVE = WIN10_TRANSPARENCY_COMPAT_ENABLED ? '1' : '0';
+process.env.SSAPP_MAC_PERFORMANCE_MODE_EFFECTIVE = MAC_PERFORMANCE_MODE;
+if (process.platform === 'win32' && WINDOWS_BUILD_NUMBER) {
+    process.env.SSAPP_WINDOWS_BUILD = String(WINDOWS_BUILD_NUMBER);
+}
+
+function shouldUseWin10TransparencyCompat(frame, transparent) {
+    return WIN10_TRANSPARENCY_COMPAT_ENABLED && frame === false && transparent === true;
+}
+
+function applyPlatformWindowCompatibility(config) {
+    if (!config || typeof config !== 'object') return config;
+    if (shouldUseWin10TransparencyCompat(config.frame, config.transparent)) {
+        config.resizable = false;
+    }
+    return config;
+}
+
+function shouldDisableBackgroundThrottlingForGeneralWindows() {
+    if (IS_MAC_BALANCED_MODE) {
+        return false;
+    }
+    return true;
+}
+
 const TRANSFER_BACKUP_STORE_KEY = 'transferBackup';
 const DEFAULT_TRANSFER_BACKUP_CONFIG = {
     enabled: false,
@@ -1921,11 +2015,13 @@ app.commandLine.appendSwitch('--disable-features', 'TranslateUI,BlinkGenProperty
 app.commandLine.appendSwitch('--use-angle', 'default'); // Chrome's graphics backend
 
 // Performance and stability flags
-app.commandLine.appendSwitch('disable-background-timer-throttling');
-app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-dev-shm-usage');
-app.commandLine.appendSwitch('enable-gpu-rasterization');
-app.commandLine.appendSwitch('ignore-gpu-blocklist');
+if (!IS_MAC_BALANCED_MODE) {
+    app.commandLine.appendSwitch('disable-background-timer-throttling');
+    app.commandLine.appendSwitch('disable-renderer-backgrounding');
+    app.commandLine.appendSwitch('enable-gpu-rasterization');
+    app.commandLine.appendSwitch('ignore-gpu-blocklist');
+}
 
 // User data directory for persistent profile
 // app.commandLine.appendSwitch('user-data-dir', path.join(app.getPath('userData'), 'ChromeProfile'));
@@ -3152,7 +3248,9 @@ if (!Argv.dmf) {
 
 // WebRTC and media performance flags
 app.commandLine.appendSwitch("webrtc-max-cpu-consumption-percentage", "100");
-app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+if (!IS_MAC_BALANCED_MODE) {
+    app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+}
 app.commandLine.appendSwitch("max-web-media-player-count", "5000");
 
 // Network and security flags
@@ -3162,7 +3260,9 @@ app.commandLine.appendSwitch('dns-server', '1.1.1.1,8.8.8.8');
 
 // Enable experimental features for better compatibility
 app.commandLine.appendSwitch("enable-experimental-web-platform-features");
-app.commandLine.appendSwitch('enable-unsafe-webgpu');
+if (!IS_MAC_BALANCED_MODE) {
+    app.commandLine.appendSwitch('enable-unsafe-webgpu');
+}
 app.commandLine.appendSwitch('enable-features', 'WebAssemblySimd');
 
 // Memory allocation for JavaScript
@@ -4091,6 +4191,7 @@ function createCustomDialog(htmlFile, width, height) {
             height: height,
             frame: false,
             transparent: true,
+            resizable: !shouldUseWin10TransparencyCompat(false, true),
             alwaysOnTop: true,
             webPreferences: {
                 nodeIntegration: true,
@@ -4098,9 +4199,8 @@ function createCustomDialog(htmlFile, width, height) {
                 additionalPermissions: ['clipboard-write']
             }
         });
-
         // Workaround for Electron 36 frameless window titlebar issue
-        if (process.platform === 'win32') {
+        if (APPLY_WIN_FRAMELESS_WORKAROUND) {
             // Apply initial fix after window is created
             setTimeout(() => {
                 if (win && !win.isDestroyed()) {
@@ -4959,7 +5059,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             pageVisibility: true,
             partition: currentSessionName === 'default' ? "persist:abc" : `persist:session-${currentSessionName}`,
             contextIsolation: false,
-            backgroundThrottling: false,
+            backgroundThrottling: !shouldDisableBackgroundThrottlingForGeneralWindows(),
             webSecurity: webSecurity, // this is a locally hosted file, so it should be fine.
             nodeIntegrationInSubFrames: !webSecurity, // if security is on, then node support is off.
             nodeIntegration: !webSecurity // this could be a security hazard, but useful for enabling screen sharing and global hotkeys
@@ -5144,6 +5244,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     useTransparency = true;
                 }
             }
+            const forceWin10Compatibility = shouldUseWin10TransparencyCompat(frame, useTransparency);
 
             if (url.startsWith("https://socialstream.ninja/cohost") || url.startsWith("https://beta.socialstream.ninja/cohost") || (url.startsWith("file://") && url.includes("/cohost"))) {
                 var config = {
@@ -5152,7 +5253,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         pageVisibility: true,
                         partition: getTrackedPartition(currentSessionName),
                         contextIsolation: false,
-                        backgroundThrottling: false,
+                        backgroundThrottling: !shouldDisableBackgroundThrottlingForGeneralWindows(),
                         webSecurity: true,
                         nodeIntegrationInSubFrames: true,
                         nodeIntegration: true, // required for screen sharing, hotkeys, and code injection in cohost
@@ -5161,7 +5262,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     show: true,
                     backgroundColor: backgroundColor,
                     transparent: useTransparency,
-                    resizable: true,
+                    resizable: !forceWin10Compatibility,
                     frame: frame,
                     autoHideMenuBar: false,
                     title: url.replace("https://", "").slice(0, 50),
@@ -5173,7 +5274,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         pageVisibility: true,
                         partition: currentSessionName === 'default' ? "persist:abc" : `persist:session-${currentSessionName}`,
                         contextIsolation: true,
-                        backgroundThrottling: false,
+                        backgroundThrottling: !shouldDisableBackgroundThrottlingForGeneralWindows(),
                         webSecurity: true, // this is probably a remote file, so we will ensure its off
                         nodeIntegrationInSubFrames: false, // also security concern
                         nodeIntegration: false, // this could be a security hazard, but useful for enabling screen sharing and global hotkeys
@@ -5181,13 +5282,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     },
                     show: true,
                     backgroundColor: backgroundColor,
-                    transparent: !frame,
-                    resizable: true,
+                    transparent: forceWin10Compatibility ? useTransparency : !frame,
+                    resizable: !forceWin10Compatibility,
                     frame: frame,
                     autoHideMenuBar: false,
                     title: url.replace("https://", "").slice(0, 50),
                 };
             }
+            applyPlatformWindowCompatibility(config);
 
             const windowState = loadWindowState(url);
             if (windowState) {
@@ -5209,7 +5311,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const view = new BrowserWindow(config);
 
             // Workaround for Electron 36 frameless window titlebar issue
-            if (!frame && process.platform === 'win32') {
+            if (!frame && APPLY_WIN_FRAMELESS_WORKAROUND) {
                 // Show the window immediately but apply fixes
                 view.show();
 
@@ -11088,26 +11190,29 @@ app.on("ready", () => {
                 backgroundColor = '#0000';
                 useTransparency = url.includes('&transparent') || url.includes('?transparent');
             }
+            const forceWin10Compatibility = shouldUseWin10TransparencyCompat(frame, useTransparency);
+            const overrideBrowserWindowOptions = applyPlatformWindowCompatibility({
+                width: 800,
+                height: 600,
+                minWidth: 400,
+                minHeight: 200,
+                frame,
+                transparent: useTransparency,
+                backgroundColor,
+                resizable: !forceWin10Compatibility,
+                autoHideMenuBar: false,
+                webPreferences: {
+                    // Inherit session by default (Electron handles this when allowing)
+                    // Keep a safe renderer environment
+                    nodeIntegration: false,
+                    contextIsolation: true,
+                    additionalPermissions: ['clipboard-write']
+                }
+            });
 
             return {
                 action: 'allow',
-                overrideBrowserWindowOptions: {
-                    width: 800,
-                    height: 600,
-                    minWidth: 400,
-                    minHeight: 200,
-                    frame,
-                    transparent: useTransparency,
-                    backgroundColor,
-                    autoHideMenuBar: false,
-                    webPreferences: {
-                        // Inherit session by default (Electron handles this when allowing)
-                        // Keep a safe renderer environment
-                        nodeIntegration: false,
-                        contextIsolation: true,
-                        additionalPermissions: ['clipboard-write']
-                    }
-                }
+                overrideBrowserWindowOptions
             };
         });
 
@@ -11533,7 +11638,9 @@ function getStoredStartupFlagsForUI() {
         locale: '',
         preferLocalAssets: false,
         forceTikTokClassic: false,
-        allowMultipleInstances: false
+        allowMultipleInstances: false,
+        win10TransparencyCompat: IS_WINDOWS_10,
+        macPerformanceMode: isMac ? 'balanced' : 'aggressive'
     };
     try {
         const raw = store.get('startupFlags');
@@ -11542,7 +11649,11 @@ function getStoredStartupFlagsForUI() {
             locale: typeof raw.locale === 'string' ? raw.locale : '',
             preferLocalAssets: raw.preferLocalAssets === true,
             forceTikTokClassic: raw.forceTikTokClassic === true,
-            allowMultipleInstances: raw.allowMultipleInstances === true
+            allowMultipleInstances: raw.allowMultipleInstances === true,
+            win10TransparencyCompat: typeof raw.win10TransparencyCompat === 'boolean'
+                ? raw.win10TransparencyCompat
+                : fallback.win10TransparencyCompat,
+            macPerformanceMode: normalizeMacPerformanceModeCandidate(raw.macPerformanceMode) || fallback.macPerformanceMode
         };
     } catch (_) {
         return fallback;
@@ -11555,6 +11666,8 @@ function saveStartupFlagsFromUI(input) {
     const preferLocalAssets = !!(input && input.preferLocalAssets);
     const forceTikTokClassic = !!(input && input.forceTikTokClassic);
     const allowMultipleInstances = !!(input && input.allowMultipleInstances);
+    const win10TransparencyCompat = !!(input && input.win10TransparencyCompat);
+    const macPerformanceMode = normalizeMacPerformanceModeCandidate(input && input.macPerformanceMode) || 'balanced';
 
     if (locale) {
         store.set('startupFlags.locale', locale);
@@ -11564,12 +11677,16 @@ function saveStartupFlagsFromUI(input) {
     store.set('startupFlags.preferLocalAssets', preferLocalAssets);
     store.set('startupFlags.forceTikTokClassic', forceTikTokClassic);
     store.set('startupFlags.allowMultipleInstances', allowMultipleInstances);
+    store.set('startupFlags.win10TransparencyCompat', win10TransparencyCompat);
+    store.set('startupFlags.macPerformanceMode', macPerformanceMode);
 
     return {
         locale: locale || '',
         preferLocalAssets,
         forceTikTokClassic,
-        allowMultipleInstances
+        allowMultipleInstances,
+        win10TransparencyCompat,
+        macPerformanceMode
     };
 }
 
@@ -11649,6 +11766,21 @@ function generateStartupPreferencesHTML() {
     </div>
 
     <div class="card">
+      <div class="checkbox">
+        <input id="win10TransparencyCompat" type="checkbox" />
+        <label for="win10TransparencyCompat" style="margin:0;">Windows 10 transparency compatibility mode</label>
+      </div>
+      <label for="macPerformanceMode">macOS performance mode</label>
+      <div class="row">
+        <select id="macPerformanceMode">
+          <option value="balanced">Balanced (recommended)</option>
+          <option value="aggressive">Aggressive (legacy behavior)</option>
+        </select>
+      </div>
+      <div class="hint">Win10 mode keeps frameless transparent windows non-resizable. macOS balanced mode avoids aggressive global Chromium flags.</div>
+    </div>
+
+    <div class="card">
       <div><strong>Current run:</strong></div>
       <div class="status" id="effectiveStatus">Loading…</div>
     </div>
@@ -11669,6 +11801,8 @@ function generateStartupPreferencesHTML() {
       const preferLocalAssets = byId('preferLocalAssets');
       const forceTikTokClassic = byId('forceTikTokClassic');
       const allowMultipleInstances = byId('allowMultipleInstances');
+      const win10TransparencyCompat = byId('win10TransparencyCompat');
+      const macPerformanceMode = byId('macPerformanceMode');
       const status = byId('status');
       const effectiveStatus = byId('effectiveStatus');
 
@@ -11702,13 +11836,34 @@ function generateStartupPreferencesHTML() {
         preferLocalAssets.checked = !!stored.preferLocalAssets;
         forceTikTokClassic.checked = !!stored.forceTikTokClassic;
         allowMultipleInstances.checked = !!stored.allowMultipleInstances;
+        win10TransparencyCompat.checked = !!stored.win10TransparencyCompat;
+        macPerformanceMode.value = (stored.macPerformanceMode === 'aggressive') ? 'aggressive' : 'balanced';
+
+        const isWin10 = !!effective.isWindows10;
+        win10TransparencyCompat.disabled = !isWin10;
+        if (!isWin10) {
+          win10TransparencyCompat.checked = !!effective.win10TransparencyCompat;
+        }
+
+        const isMacPlatform = effective.platform === 'darwin';
+        macPerformanceMode.disabled = !isMacPlatform;
+        if (!isMacPlatform) {
+          macPerformanceMode.value = 'aggressive';
+        }
 
         const lines = [];
+        if (effective.platform) lines.push(\`Platform: \${effective.platform}\`);
+        if (typeof effective.windowsBuild === 'number' && effective.windowsBuild > 0) {
+          lines.push(\`Windows build: \${effective.windowsBuild}\`);
+          lines.push(\`Windows 11: \${effective.isWindows11 ? 'yes' : 'no'}\`);
+        }
         lines.push(\`Locale: \${effective.locale || ''} (\${effective.localeSource || ''})\`);
         if (effective.acceptLanguage) lines.push(\`Accept-Language: \${effective.acceptLanguage}\`);
         lines.push(\`Prefer local assets: \${effective.preferLocalAssets ? 'on' : 'off'}\`);
         lines.push(\`TikTok classic: \${effective.forceTikTokClassic ? 'on' : 'off'}\`);
         lines.push(\`Multi-instance: \${effective.allowMultipleInstances ? 'on' : 'off'}\`);
+        lines.push(\`Win10 transparency compatibility: \${effective.win10TransparencyCompat ? 'on' : 'off'}\`);
+        lines.push(\`macOS performance mode: \${effective.macPerformanceMode || 'aggressive'}\`);
         effectiveStatus.textContent = lines.join('\\n');
       }
 
@@ -11725,7 +11880,9 @@ function generateStartupPreferencesHTML() {
           locale: pickLocaleValue(),
           preferLocalAssets: preferLocalAssets.checked,
           forceTikTokClassic: forceTikTokClassic.checked,
-          allowMultipleInstances: allowMultipleInstances.checked
+          allowMultipleInstances: allowMultipleInstances.checked,
+          win10TransparencyCompat: win10TransparencyCompat.checked,
+          macPerformanceMode: macPerformanceMode.value
         };
         await ipcRenderer.invoke('startupPrefs:set', payload);
         setStatus('');
@@ -11753,7 +11910,7 @@ function showStartupPreferencesWindow() {
         const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
         startupPreferencesWindow = new BrowserWindow({
             width: 620,
-            height: 560,
+            height: 660,
             resizable: false,
             title: 'Preferences',
             parent: parent || undefined,
@@ -11809,12 +11966,19 @@ ipcMain.handle('startupPrefs:get', () => {
     return {
         stored,
         effective: {
+            platform: process.platform,
+            windowsBuild: WINDOWS_BUILD_NUMBER,
+            isWindows10: IS_WINDOWS_10,
+            isWindows11: IS_WINDOWS_11,
             locale: SYSTEM_LOCALE,
             localeSource: process.env.SSAPP_LOCALE_SOURCE || 'system',
             acceptLanguage: process.env.SSAPP_ACCEPT_LANGUAGE || null,
             preferLocalAssets: preferLocalAssetsFlag,
             forceTikTokClassic: runtimeForceTikTokClassic,
-            allowMultipleInstances
+            allowMultipleInstances,
+            win10TransparencyCompat: WIN10_TRANSPARENCY_COMPAT_ENABLED,
+            macPerformanceMode: MAC_PERFORMANCE_MODE,
+            macBalancedMode: IS_MAC_BALANCED_MODE
         }
     };
 });

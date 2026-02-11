@@ -69,4 +69,11 @@ function run() {
   console.log('gift-count-regression: all checks passed');
 }
 
-run();
+try {
+  run();
+  process.exit(0);
+} catch (error) {
+  console.error('gift-count-regression: failed');
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+}
