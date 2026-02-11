@@ -91,14 +91,14 @@ function run() {
 	const fallbackPopupPath = path.join(repoRoot, 'resources', 'social_stream_fallback', 'main', 'popup.js');
 	const fallbackBackgroundPath = path.join(repoRoot, 'resources', 'social_stream_fallback', 'main', 'background.js');
 	const fallbackPopupHtmlPath = path.join(repoRoot, 'resources', 'social_stream_fallback', 'main', 'popup.html');
-	const fallbackSocialStreamPng = path.join(repoRoot, 'resources', 'social_stream_fallback', 'main', 'sources', 'images', 'socialStream.png');
+	const fallbackSocialStreamPng = path.join(repoRoot, 'resources', 'social_stream_fallback', 'main', 'sources', 'images', 'socialstream.png');
 	const fallbackVdoSdk = path.join(repoRoot, 'resources', 'social_stream_fallback', 'main', 'thirdparty', 'vdoninja-sdk.js');
 
 	const coreRoot = getCoreRoot();
 	const corePopupPath = coreRoot ? path.join(coreRoot, 'popup.js') : null;
 	const coreBackgroundPath = coreRoot ? path.join(coreRoot, 'background.js') : null;
 	const corePopupHtmlPath = coreRoot ? path.join(coreRoot, 'popup.html') : null;
-	const coreSocialStreamPng = coreRoot ? path.join(coreRoot, 'sources', 'images', 'socialStream.png') : null;
+	const coreSocialStreamPng = coreRoot ? path.join(coreRoot, 'sources', 'images', 'socialstream.png') : null;
 	const coreVdoSdk = coreRoot ? path.join(coreRoot, 'thirdparty', 'vdoninja-sdk.js') : null;
 
 	const checks = [];
@@ -132,8 +132,8 @@ function run() {
 	});
 	checks.push({
 		id: 'fallback_popup_references_socialstream_png',
-		pass: lineContains(fallbackPopupHtmlPath, /sources\/images\/socialStream\.png/),
-		note: 'Popup expects socialStream.png icon'
+		pass: lineContains(fallbackPopupHtmlPath, /sources\/images\/socialstream\.png/i),
+		note: 'Popup references Social Stream icon path'
 	});
 	checks.push({
 		id: 'fallback_socialstream_png_exact_case_exists',
@@ -149,8 +149,8 @@ function run() {
 	if (coreRoot && corePopupPath && coreBackgroundPath && corePopupHtmlPath) {
 		checks.push({
 			id: 'core_popup_references_socialstream_png',
-			pass: lineContains(corePopupHtmlPath, /sources\/images\/socialStream\.png/),
-			note: 'Core popup references same icon path'
+			pass: lineContains(corePopupHtmlPath, /sources\/images\/socialstream\.png/i),
+			note: 'Core popup references Social Stream icon path'
 		});
 		checks.push({
 			id: 'core_socialstream_png_exact_case_exists',
