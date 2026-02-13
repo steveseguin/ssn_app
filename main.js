@@ -158,6 +158,240 @@ if (process.platform === 'win32' && WINDOWS_BUILD_NUMBER) {
     process.env.SSAPP_WINDOWS_BUILD = String(WINDOWS_BUILD_NUMBER);
 }
 
+const STABILITY_RUNTIME_STORE_KEY = 'stabilityRuntime';
+const STABILITY_CRASH_WINDOW_MS = 15 * 60 * 1000;
+const STABILITY_REVERT_UPTIME_MS = 45 * 60 * 1000;
+const STABILITY_MAX_GPU_FALLBACK_LEVEL = 3;
+const STABILITY_GPU_PROFILE_LABELS = {
+    0: 'Default GPU profile',
+    1: 'Stability profile L1 (WebGPU disabled)',
+    2: 'Stability profile L2 (blocklist respected)',
+    3: 'Stability profile L3 (rasterization relaxed)'
+};
+const STABILITY_CRASH_REASONS = new Set(['abnormal-exit', 'crashed', 'oom', 'launch-failed', 'integrity-failure']);
+
+let stabilityCrashSignalSeenThisSession = false;
+let stabilityGracefulExitMarked = false;
+let stabilityPendingStartupNotice = null;
+
+function getDefaultStabilityRuntimeState() {
+    return {
+        sessionActive: false,
+        sessionStartAt: 0,
+        lastExitAt: 0,
+        lastExitReason: 'unknown',
+        lastCrashReason: null,
+        lastCrashSignalAt: 0,
+        crashEvents: [],
+        gpuFallbackLevel: 0,
+        lastFallbackChangeAt: 0,
+        pendingNotice: null
+    };
+}
+
+function clampGpuFallbackLevel(value) {
+    const numeric = Number.parseInt(value, 10);
+    if (!Number.isFinite(numeric)) return 0;
+    return Math.min(STABILITY_MAX_GPU_FALLBACK_LEVEL, Math.max(0, numeric));
+}
+
+function loadStabilityRuntimeState() {
+    const defaults = getDefaultStabilityRuntimeState();
+    try {
+        const raw = store.get(STABILITY_RUNTIME_STORE_KEY);
+        const merged = {
+            ...defaults,
+            ...(raw && typeof raw === 'object' ? raw : {})
+        };
+        const rawEvents = Array.isArray(merged.crashEvents) ? merged.crashEvents : [];
+        merged.crashEvents = rawEvents
+            .map((value) => Number(value))
+            .filter((value) => Number.isFinite(value) && value > 0);
+        merged.gpuFallbackLevel = clampGpuFallbackLevel(merged.gpuFallbackLevel);
+        return merged;
+    } catch (_) {
+        return defaults;
+    }
+}
+
+function saveStabilityRuntimeState(state) {
+    const defaults = getDefaultStabilityRuntimeState();
+    const next = {
+        ...defaults,
+        ...(state && typeof state === 'object' ? state : {})
+    };
+    next.gpuFallbackLevel = clampGpuFallbackLevel(next.gpuFallbackLevel);
+    next.crashEvents = (Array.isArray(next.crashEvents) ? next.crashEvents : [])
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0);
+    try {
+        store.set(STABILITY_RUNTIME_STORE_KEY, next);
+    } catch (error) {
+        console.warn('[Stability] Failed to persist runtime state:', error && error.message ? error.message : error);
+    }
+    return next;
+}
+
+function pruneCrashEvents(events, now = Date.now()) {
+    return (Array.isArray(events) ? events : [])
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0 && (now - value) <= STABILITY_CRASH_WINDOW_MS);
+}
+
+function isStabilityCrashReason(reason) {
+    const normalized = String(reason || '').trim().toLowerCase();
+    if (!normalized) return false;
+    return STABILITY_CRASH_REASONS.has(normalized);
+}
+
+function isStabilityGracefulExitReason(reason) {
+    const normalized = String(reason || '').trim().toLowerCase();
+    if (!normalized || normalized === 'unknown') return false;
+    if (normalized.includes('crash') || normalized.includes('unclean')) return false;
+    return true;
+}
+
+function buildGpuProfileFromFallbackLevel(level) {
+    const normalizedLevel = clampGpuFallbackLevel(level);
+    return {
+        level: normalizedLevel,
+        disableUnsafeWebGpu: process.platform === 'win32' && normalizedLevel >= 1,
+        disableIgnoreGpuBlocklist: process.platform === 'win32' && normalizedLevel >= 2,
+        disableGpuRasterization: process.platform === 'win32' && normalizedLevel >= 3
+    };
+}
+
+function initializeStabilityRuntimeForStartup() {
+    const now = Date.now();
+    const state = loadStabilityRuntimeState();
+    const previousSessionActive = state.sessionActive === true;
+    const previousSessionStartAt = Number(state.sessionStartAt) || 0;
+    const previousExitAt = Number(state.lastExitAt) || 0;
+    const previousExitReason = typeof state.lastExitReason === 'string' ? state.lastExitReason : 'unknown';
+    const previousRunDuration = (previousExitAt >= previousSessionStartAt && previousSessionStartAt > 0)
+        ? (previousExitAt - previousSessionStartAt)
+        : 0;
+
+    let crashEvents = pruneCrashEvents(state.crashEvents, now);
+    let level = clampGpuFallbackLevel(state.gpuFallbackLevel);
+    const notices = [];
+
+    if (previousSessionActive) {
+        const inferredCrashAt = Number(state.lastCrashSignalAt) > 0
+            ? Number(state.lastCrashSignalAt)
+            : (previousSessionStartAt || now);
+        crashEvents.push(inferredCrashAt);
+        const crashReason = state.lastCrashReason || 'unclean-exit';
+        state.lastExitReason = crashReason;
+        state.lastExitAt = inferredCrashAt;
+        notices.push(`[Stability] Unclean exit detected (${crashReason}).`);
+    } else if (isStabilityGracefulExitReason(previousExitReason) && level > 0 && previousRunDuration >= STABILITY_REVERT_UPTIME_MS) {
+        level -= 1;
+        notices.push(`[Stability] Stable session detected; reducing fallback to level ${level}.`);
+        state.lastFallbackChangeAt = now;
+        state.pendingNotice = {
+            level,
+            type: 'revert',
+            message: `Stability mode eased automatically. ${STABILITY_GPU_PROFILE_LABELS[level] || `GPU fallback level ${level}`}.`
+        };
+    }
+
+    crashEvents = pruneCrashEvents(crashEvents, now);
+    if (crashEvents.length >= 2 && level < STABILITY_MAX_GPU_FALLBACK_LEVEL) {
+        level += 1;
+        state.lastFallbackChangeAt = now;
+        state.pendingNotice = {
+            level,
+            type: 'escalate',
+            message: `Stability mode enabled automatically. ${STABILITY_GPU_PROFILE_LABELS[level] || `GPU fallback level ${level}`}.`
+        };
+        notices.push(`[Stability] Crash loop detected; escalating fallback to level ${level}.`);
+        crashEvents = [now];
+    }
+
+    state.gpuFallbackLevel = level;
+    state.crashEvents = crashEvents;
+    state.sessionActive = true;
+    state.sessionStartAt = now;
+    state.lastCrashReason = null;
+    state.lastCrashSignalAt = 0;
+    if (!state.lastExitReason) {
+        state.lastExitReason = 'unknown';
+    }
+
+    const persisted = saveStabilityRuntimeState(state);
+    notices.forEach((line) => console.warn(line));
+    return persisted;
+}
+
+function consumePendingStabilityNotice() {
+    const state = loadStabilityRuntimeState();
+    const notice = state.pendingNotice && typeof state.pendingNotice === 'object' ? state.pendingNotice : null;
+    if (notice) {
+        state.pendingNotice = null;
+        saveStabilityRuntimeState(state);
+    }
+    return notice;
+}
+
+function recordStabilityCrashSignal(reason, details = null) {
+    try {
+        const state = loadStabilityRuntimeState();
+        state.lastCrashReason = reason || 'runtime-crash-signal';
+        state.lastCrashSignalAt = Date.now();
+        saveStabilityRuntimeState(state);
+        stabilityCrashSignalSeenThisSession = true;
+        const payload = details && typeof details === 'object' ? details : { detail: details };
+        console.error('[Stability] Crash signal observed:', state.lastCrashReason, payload);
+    } catch (error) {
+        console.error('[Stability] Failed to record crash signal:', error && error.message ? error.message : error);
+    }
+}
+
+function markStabilitySessionGraceful(reason = 'graceful_quit', options = {}) {
+    if (stabilityGracefulExitMarked) return;
+    if (stabilityCrashSignalSeenThisSession && !options.force) {
+        console.warn('[Stability] Skipping graceful marker due to prior crash signal.');
+        return;
+    }
+    const now = Date.now();
+    const state = loadStabilityRuntimeState();
+    state.sessionActive = false;
+    state.lastExitAt = now;
+    state.lastExitReason = reason || 'graceful_quit';
+    state.lastCrashReason = null;
+    state.lastCrashSignalAt = 0;
+    saveStabilityRuntimeState(state);
+    stabilityGracefulExitMarked = true;
+}
+
+const stabilityRuntimeStateAtLaunch = initializeStabilityRuntimeForStartup();
+const stabilityGpuProfile = buildGpuProfileFromFallbackLevel(stabilityRuntimeStateAtLaunch.gpuFallbackLevel);
+stabilityPendingStartupNotice = consumePendingStabilityNotice();
+if (process.platform === 'win32') {
+    const profileLabel = STABILITY_GPU_PROFILE_LABELS[stabilityGpuProfile.level] || `GPU fallback level ${stabilityGpuProfile.level}`;
+    if (stabilityGpuProfile.level > 0) {
+        console.warn(`[Stability] ${profileLabel} is active for this launch.`);
+    } else {
+        console.log(`[Stability] ${profileLabel} is active for this launch.`);
+    }
+}
+
+function queueStabilityStartupNotice() {
+    if (!stabilityPendingStartupNotice || typeof stabilityPendingStartupNotice !== 'object') {
+        return;
+    }
+    const notice = stabilityPendingStartupNotice;
+    stabilityPendingStartupNotice = null;
+
+    const level = notice.type === 'escalate' ? 'warning' : 'info';
+    const label = STABILITY_GPU_PROFILE_LABELS[clampGpuFallbackLevel(notice.level)];
+    const message = typeof notice.message === 'string' && notice.message.trim()
+        ? notice.message
+        : `Automatic stability adjustment applied. ${label || 'GPU profile updated.'}`;
+    queueInjectorToast(level, 'Stability Mode', message);
+}
+
 function shouldUseWin10TransparencyCompat(frame, transparent) {
     return WIN10_TRANSPARENCY_COMPAT_ENABLED && frame === false && transparent === true;
 }
@@ -682,6 +916,7 @@ async function restoreTransferBackupWithDialog() {
         message: `The app will now close and restore your backup.\n\nIf something goes wrong, check:\n${logPath}`
     });
 
+    markStabilitySessionGraceful('transfer-restore');
     app.quit();
     return { started: true };
 }
@@ -2019,8 +2254,17 @@ app.commandLine.appendSwitch('disable-dev-shm-usage');
 if (!IS_MAC_BALANCED_MODE) {
     app.commandLine.appendSwitch('disable-background-timer-throttling');
     app.commandLine.appendSwitch('disable-renderer-backgrounding');
-    app.commandLine.appendSwitch('enable-gpu-rasterization');
-    app.commandLine.appendSwitch('ignore-gpu-blocklist');
+    if (!stabilityGpuProfile.disableGpuRasterization) {
+        app.commandLine.appendSwitch('enable-gpu-rasterization');
+    } else {
+        app.commandLine.appendSwitch('disable-gpu-rasterization');
+        console.warn('[Stability] Disabled GPU rasterization due to fallback level', stabilityGpuProfile.level);
+    }
+    if (!stabilityGpuProfile.disableIgnoreGpuBlocklist) {
+        app.commandLine.appendSwitch('ignore-gpu-blocklist');
+    } else {
+        console.warn('[Stability] Respecting GPU blocklist due to fallback level', stabilityGpuProfile.level);
+    }
 }
 
 // User data directory for persistent profile
@@ -2078,6 +2322,31 @@ process.on("uncaughtException", function (error) {
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+app.on('render-process-gone', (_event, webContents, details) => {
+    const reason = details && details.reason ? String(details.reason) : 'unknown';
+    if (!isStabilityCrashReason(reason)) return;
+    let crashedUrl = null;
+    try {
+        crashedUrl = webContents && typeof webContents.getURL === 'function' ? webContents.getURL() : null;
+    } catch (_) { }
+    recordStabilityCrashSignal(`render-process-gone:${reason}`, {
+        reason,
+        exitCode: details && Number.isFinite(details.exitCode) ? details.exitCode : null,
+        url: crashedUrl
+    });
+});
+
+app.on('child-process-gone', (_event, details) => {
+    const reason = details && details.reason ? String(details.reason) : 'unknown';
+    if (!isStabilityCrashReason(reason)) return;
+    recordStabilityCrashSignal(`child-process-gone:${details && details.type ? details.type : 'unknown'}:${reason}`, {
+        reason,
+        type: details && details.type ? details.type : null,
+        serviceName: details && details.serviceName ? details.serviceName : null,
+        name: details && details.name ? details.name : null
+    });
 });
 
 app.isQuitting = false;
@@ -3260,8 +3529,10 @@ app.commandLine.appendSwitch('dns-server', '1.1.1.1,8.8.8.8');
 
 // Enable experimental features for better compatibility
 app.commandLine.appendSwitch("enable-experimental-web-platform-features");
-if (!IS_MAC_BALANCED_MODE) {
+if (!IS_MAC_BALANCED_MODE && !stabilityGpuProfile.disableUnsafeWebGpu) {
     app.commandLine.appendSwitch('enable-unsafe-webgpu');
+} else if (stabilityGpuProfile.disableUnsafeWebGpu) {
+    console.warn('[Stability] WebGPU flag disabled due to fallback level', stabilityGpuProfile.level);
 }
 app.commandLine.appendSwitch('enable-features', 'WebAssemblySimd');
 
@@ -3281,12 +3552,22 @@ const SETTINGS_VALIDATION = {
     // If incoming has less than this ratio of existing keys, likely incomplete load
     PARTIAL_THRESHOLD_RATIO: 0.5,
 };
+const CACHED_STATE_SOURCE_PRIORITY = {
+    runtime: 100,
+    "savedSync.json": 80,
+    "savedSync.json.bak": 70,
+    "electron-store backup": 60,
+    "localStorage backup": 40,
+    "localStorage mirror": 30
+};
+let cachedStatePersistenceBaseline = null;
 
 // cachedState.state = false;
 
 // Debounce state for storageSave to batch rapid sequential saves
 let storageSaveDebounceTimer = null;
 let storageSavePending = false;
+let storageSavePendingAllowSettingsDowngrade = false;
 
 var mainWindow = null;
 let ttt = {
@@ -4626,6 +4907,7 @@ ipcMain.handle('switchSession', async (event, sessionId) => {
     store.set('currentSession', sessionId);
 
     // Restart the app to apply new session
+    markStabilitySessionGraceful('session-switch-restart');
     app.relaunch();
     app.exit();
 
@@ -4649,6 +4931,7 @@ ipcMain.handle('deleteSession', (event, sessionId) => {
     // If deleting current session, switch to default
     if (sessionId === currentSessionName) {
         store.set('currentSession', 'default');
+        markStabilitySessionGraceful('session-delete-restart');
         app.relaunch();
         app.exit();
     }
@@ -5702,16 +5985,21 @@ async function createWindow(args, reuse = false, mainApp = false) {
         clearTimeout(storageSaveDebounceTimer);
         storageSaveDebounceTimer = null;
         storageSavePending = false;
+        const allowSettingsDowngrade = storageSavePendingAllowSettingsDowngrade;
+        storageSavePendingAllowSettingsDowngrade = false;
 
         log("[storageSave] Flushing pending save");
         try {
-            saveCachedStateAtomic(cachedState);
+            persistCachedStateSafely(cachedState, {
+                reason: "flush-pending-storageSave",
+                allowSettingsDowngrade
+            });
         } catch (e) {
             console.error(e);
         }
         try {
             const payload = buildLocalStorageMirrorPayload(cachedState);
-            updateLocalStorageBackup(payload);
+            updateLocalStorageBackup(payload, { allowSettingsDowngrade });
             if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
                 mirrorCachedStateToLocalStorage(mainWindow);
             }
@@ -5787,30 +6075,26 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         // Debounce the expensive I/O operations to batch rapid sequential saves
         storageSavePending = true;
+        storageSavePendingAllowSettingsDowngrade = storageSavePendingAllowSettingsDowngrade || allowEmptySettings;
         clearTimeout(storageSaveDebounceTimer);
         storageSaveDebounceTimer = setTimeout(() => {
             storageSavePending = false;
             storageSaveDebounceTimer = null;
+            const allowSettingsDowngrade = storageSavePendingAllowSettingsDowngrade;
+            storageSavePendingAllowSettingsDowngrade = false;
 
             log("[storageSave] Persisting batched changes");
             try {
-                saveCachedStateAtomic(cachedState);
+                persistCachedStateSafely(cachedState, {
+                    reason: "storageSave-batch",
+                    allowSettingsDowngrade
+                });
             } catch (e) {
                 console.error(e);
             }
-            // Keep electron-store backup fresh on every persist (not just quit),
-            // so users upgrading from older versions without .bak files have a fallback.
-            try {
-                if (cachedState && Object.keys(cachedState).length > 0) {
-                    store.set('cachedStateBackup', cachedState);
-                    store.set('cachedStateBackupTime', Date.now());
-                }
-            } catch (e) {
-                console.warn("Failed to update electron-store cachedState backup:", e?.message || e);
-            }
             try {
                 const payload = buildLocalStorageMirrorPayload(cachedState);
-                updateLocalStorageBackup(payload);
+                updateLocalStorageBackup(payload, { allowSettingsDowngrade });
                 if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
                     mirrorCachedStateToLocalStorage(mainWindow);
                 }
@@ -5847,15 +6131,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
         ////log("!!!!!!!!!!!!!cachedState");
         //log(cachedState);
 
-	        if (!hasCachedStateData(cachedState)) {
-	            const diskState = loadCachedStateWithBackup();
-	            if (diskState && typeof diskState === "object") {
-	                cachedState = { ...normalizeCachedStateSnapshot(diskState), ...cachedState };
-	                log("Loaded cachedState from disk backup (storageGet)");
-	            }
-	        }
+        if (shouldRecoverCachedStateFromBackups(cachedState)) {
+            const diskResult = loadCachedStateWithBackupSource({ logSelection: true });
+            if (diskResult && diskResult.state) {
+                applyRecoveredCachedState(diskResult, "storageGet");
+            }
+        }
 
-        if (!hasCachedStateData(cachedState)) {
+        if (shouldRecoverCachedStateFromBackups(cachedState)) {
             try {
                 if (hydrateCachedStateFromStoreBackup()) {
                     log("Hydrated cachedState from localStorage backup (storageGet)");
@@ -5877,20 +6160,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     ipcMain.handle("storageGetAsync", async (eventRet, value) => {
         const response = {};
-	        if (!hasCachedStateData(cachedState)) {
-	            const diskState = loadCachedStateWithBackup();
-	            if (diskState && typeof diskState === "object") {
-	                cachedState = { ...normalizeCachedStateSnapshot(diskState), ...cachedState };
-	                log("Loaded cachedState from disk backup (storageGetAsync)");
-	            }
-	        }
-        if (!hasCachedStateData(cachedState)) {
+        if (shouldRecoverCachedStateFromBackups(cachedState)) {
+            const diskResult = loadCachedStateWithBackupSource({ logSelection: true });
+            if (diskResult && diskResult.state) {
+                applyRecoveredCachedState(diskResult, "storageGetAsync");
+            }
+        }
+        if (shouldRecoverCachedStateFromBackups(cachedState)) {
             const raw = await readLocalStorageMirror(mainWindow);
             if (hydrateCachedStateFromLocalStorage(raw)) {
                 log("Hydrated cachedState from localStorage mirror (storageGetAsync)");
             }
         }
-        if (!hasCachedStateData(cachedState)) {
+        if (shouldRecoverCachedStateFromBackups(cachedState)) {
             if (hydrateCachedStateFromStoreBackup()) {
                 log("Hydrated cachedState from localStorage backup (storageGetAsync)");
             }
@@ -6482,17 +6764,18 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 console.error('localStorage restore check failed:', e);
             }
 
-            // Ensure cachedState and localStorage stay in sync
+	            // Ensure cachedState and localStorage stay in sync
 	            try {
-	                const diskResult = loadCachedStateWithBackupSource();
-	                if (diskResult && diskResult.state && typeof diskResult.state === "object") {
-	                    cachedState = { ...normalizeCachedStateSnapshot(diskResult.state), ...cachedState };
-	                    log(`Loaded cachedState from ${diskResult.source} (did-finish-load)`);
+	                if (shouldRecoverCachedStateFromBackups(cachedState)) {
+	                    const diskResult = loadCachedStateWithBackupSource({ logSelection: true });
+	                    if (diskResult && diskResult.state && typeof diskResult.state === "object") {
+	                        applyRecoveredCachedState(diskResult, "did-finish-load");
+	                    }
 	                }
 	                syncCachedStateWithLocalStorage(mainWindow, "did-finish-load");
-            } catch (e) {
-                console.warn("Failed to sync cachedState/localStorage:", e?.message || e);
-            }
+	            } catch (e) {
+	                console.warn("Failed to sync cachedState/localStorage:", e?.message || e);
+	            }
         }
 
         if (mainWindow && mainWindow.webContents && mainWindow.webContents.getURL().includes("youtube.com")) {
@@ -6701,6 +6984,17 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (!cachedStateReady) {
                 // This should not happen - state loads before createWindow registers these handlers
                 console.warn("[getSettings] Called before cachedState ready - returning current state");
+            }
+            if (shouldRecoverCachedStateFromBackups(cachedState)) {
+                const diskResult = loadCachedStateWithBackupSource({ logSelection: true });
+                if (diskResult && diskResult.state) {
+                    applyRecoveredCachedState(diskResult, "getSettings");
+                }
+            }
+            if (shouldRecoverCachedStateFromBackups(cachedState)) {
+                try {
+                    hydrateCachedStateFromStoreBackup();
+                } catch (_) { }
             }
 
             let tab = options.tabID || tabID;
@@ -10783,6 +11077,7 @@ app.on("before-quit", (event) => {
 });
 
 app.on("will-quit", () => {
+    markStabilitySessionGraceful('will-quit');
     globalShortcut.unregisterAll();
 });
 
@@ -10804,13 +11099,59 @@ function getSavedSyncPaths() {
 	};
 }
 
+function getCachedStateSettingsKeyCount(state) {
+	if (!state || typeof state !== "object") return 0;
+	const settings = state.settings;
+	if (!settings || typeof settings !== "object" || Array.isArray(settings)) return 0;
+	return Object.keys(settings).length;
+}
+
+function describeCachedStateQuality(state) {
+	const normalizedState = normalizeCachedStateSnapshot(state);
+	const settingsCount = getCachedStateSettingsKeyCount(normalizedState);
+	const streamID = normalizeStreamIdValue(normalizedState.streamID);
+	const password = normalizePasswordValue(normalizedState.password);
+	const hasStreamID = streamID !== null;
+	const hasPassword = password !== null;
+	const hasStateFlag = typeof normalizedState.state === "boolean" || normalizedState.state === "true" || normalizedState.state === "false";
+	const hasCoreData = settingsCount > 0 || hasStreamID || hasPassword;
+	const topLevelKeyCount = Object.keys(normalizedState).length;
+
+	let score = 0;
+	score += settingsCount * 5;
+	if (hasStreamID) score += 3;
+	if (hasPassword) score += 2;
+	if (hasStateFlag) score += 1;
+	if (topLevelKeyCount > 0) score += 1;
+
+	return {
+		normalizedState,
+		settingsCount,
+		hasStreamID,
+		hasPassword,
+		hasStateFlag,
+		hasCoreData,
+		topLevelKeyCount,
+		score
+	};
+}
+
 function hasCachedStateData(state) {
-	if (!state || typeof state !== "object") return false;
-	if (state.settings && typeof state.settings === "object" && Object.keys(state.settings).length > 0) return true;
-	if (normalizeStreamIdValue(state.streamID)) return true;
-	if (normalizePasswordValue(state.password)) return true;
-	if (state.state !== undefined) return true;
-	return false;
+	return describeCachedStateQuality(state).hasCoreData;
+}
+
+function isLikelySettingsDowngrade(candidateMetrics, baselineMetrics) {
+	if (!candidateMetrics || !baselineMetrics) return false;
+	const baselineSettingsCount = Number(baselineMetrics.settingsCount) || 0;
+	if (baselineSettingsCount <= SETTINGS_VALIDATION.MIN_EXISTING_KEYS) return false;
+	const candidateSettingsCount = Number(candidateMetrics.settingsCount) || 0;
+	if (candidateSettingsCount === 0) return true;
+	return candidateSettingsCount < baselineSettingsCount * SETTINGS_VALIDATION.PARTIAL_THRESHOLD_RATIO;
+}
+
+function formatCachedStateQuality(metrics) {
+	if (!metrics || typeof metrics !== "object") return "unknown";
+	return `score=${metrics.score || 0}, settings=${metrics.settingsCount || 0}, streamID=${metrics.hasStreamID ? 1 : 0}, password=${metrics.hasPassword ? 1 : 0}`;
 }
 
 function normalizeSessionCredentialValue(value, options = {}) {
@@ -10872,6 +11213,251 @@ function normalizeCachedStateSnapshot(state) {
 	return normalized;
 }
 
+function getCachedStateSourcePriority(source) {
+	return CACHED_STATE_SOURCE_PRIORITY[source] || 0;
+}
+
+function createCachedStateCandidate(state, source, timestamp = 0) {
+	const metrics = describeCachedStateQuality(state);
+	if (!metrics.hasCoreData) return null;
+	return {
+		state: metrics.normalizedState,
+		source,
+		timestamp: Number(timestamp) || 0,
+		metrics
+	};
+}
+
+function compareCachedStateCandidates(a, b) {
+	if (!a && !b) return 0;
+	if (!a) return 1;
+	if (!b) return -1;
+
+	const scoreA = a.metrics && Number.isFinite(a.metrics.score) ? a.metrics.score : 0;
+	const scoreB = b.metrics && Number.isFinite(b.metrics.score) ? b.metrics.score : 0;
+	if (scoreA !== scoreB) return scoreB - scoreA;
+
+	const settingsA = a.metrics && Number.isFinite(a.metrics.settingsCount) ? a.metrics.settingsCount : 0;
+	const settingsB = b.metrics && Number.isFinite(b.metrics.settingsCount) ? b.metrics.settingsCount : 0;
+	if (settingsA !== settingsB) return settingsB - settingsA;
+
+	const timeA = Number(a.timestamp) || 0;
+	const timeB = Number(b.timestamp) || 0;
+	if (timeA !== timeB) return timeB - timeA;
+
+	return getCachedStateSourcePriority(b.source) - getCachedStateSourcePriority(a.source);
+}
+
+function parseCachedStateFromLocalStorageRecord(raw) {
+	if (!raw || typeof raw !== "object") return null;
+	const next = {};
+
+	const streamID = normalizeStreamIdValue(raw.streamID || raw.ssninja_stream_id);
+	if (streamID !== null) {
+		next.streamID = streamID;
+	}
+
+	const hasPasswordKey = Object.prototype.hasOwnProperty.call(raw, "password");
+	const normalizedPassword = normalizePasswordValue(raw.password);
+	if (normalizedPassword !== null) {
+		next.password = normalizedPassword;
+	} else if (hasPasswordKey) {
+		next.password = null;
+	}
+
+	const stateValue = raw.state !== undefined ? raw.state : raw.ssninja_state;
+	if (typeof stateValue === "string") {
+		if (stateValue === "true" || stateValue === "false") {
+			next.state = stateValue === "true";
+		}
+	} else if (typeof stateValue === "boolean") {
+		next.state = stateValue;
+	}
+
+	if (raw.settings !== undefined) {
+		if (typeof raw.settings === "string") {
+			try {
+				const parsed = JSON.parse(raw.settings);
+				if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+					next.settings = parsed;
+				}
+			} catch (_) { }
+		} else if (raw.settings && typeof raw.settings === "object" && !Array.isArray(raw.settings)) {
+			next.settings = raw.settings;
+		}
+	}
+
+	if (!Object.keys(next).length) return null;
+	return normalizeCachedStateSnapshot(next);
+}
+
+function readCachedStateFileCandidate(filePath, source) {
+	try {
+		const txt = fs.readFileSync(filePath, "utf8");
+		if (!txt || !txt.trim()) return null;
+		const parsed = JSON.parse(txt);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+		const stat = fs.statSync(filePath);
+		return createCachedStateCandidate(parsed, source, stat && Number.isFinite(stat.mtimeMs) ? stat.mtimeMs : 0);
+	} catch (_) {
+		return null;
+	}
+}
+
+function collectCachedStateCandidates(options = {}) {
+	const includeDisk = options.includeDisk !== false;
+	const includeStoreBackup = options.includeStoreBackup !== false;
+	const includeLocalStorageBackup = options.includeLocalStorageBackup !== false;
+	const candidates = [];
+
+	if (includeDisk) {
+		const { mainPath, bakPath } = getSavedSyncPaths();
+		const primaryCandidate = readCachedStateFileCandidate(mainPath, "savedSync.json");
+		if (primaryCandidate) candidates.push(primaryCandidate);
+		const bakCandidate = readCachedStateFileCandidate(bakPath, "savedSync.json.bak");
+		if (bakCandidate) candidates.push(bakCandidate);
+	}
+
+	if (includeStoreBackup) {
+		try {
+			const storeBackup = store.get('cachedStateBackup');
+			const storeBackupTime = store.get('cachedStateBackupTime');
+			const candidate = createCachedStateCandidate(storeBackup, "electron-store backup", storeBackupTime);
+			if (candidate) candidates.push(candidate);
+		} catch (_) { }
+	}
+
+	if (includeLocalStorageBackup) {
+		try {
+			const localStorageBackup = store.get('localStorageBackup');
+			const localStorageBackupTime = store.get('localStorageBackupTime');
+			const reconstructed = parseCachedStateFromLocalStorageRecord(localStorageBackup);
+			const candidate = createCachedStateCandidate(reconstructed, "localStorage backup", localStorageBackupTime);
+			if (candidate) candidates.push(candidate);
+		} catch (_) { }
+	}
+
+	return candidates;
+}
+
+function setCachedStatePersistenceBaseline(candidate) {
+	if (!candidate || !candidate.state || !candidate.metrics) return;
+	cachedStatePersistenceBaseline = {
+		state: { ...candidate.state },
+		source: candidate.source || "runtime",
+		timestamp: Number(candidate.timestamp) || Date.now(),
+		metrics: candidate.metrics
+	};
+}
+
+function refreshCachedStatePersistenceBaseline() {
+	const candidates = collectCachedStateCandidates({ includeLocalStorageBackup: false });
+	if (!candidates.length) return cachedStatePersistenceBaseline;
+	candidates.sort(compareCachedStateCandidates);
+	setCachedStatePersistenceBaseline(candidates[0]);
+	return cachedStatePersistenceBaseline;
+}
+
+function getCachedStatePersistenceBaseline() {
+	if (cachedStatePersistenceBaseline && cachedStatePersistenceBaseline.metrics) {
+		return cachedStatePersistenceBaseline;
+	}
+	return refreshCachedStatePersistenceBaseline();
+}
+
+function shouldRecoverCachedStateFromBackups(state) {
+	const metrics = describeCachedStateQuality(state);
+	const baseline = getCachedStatePersistenceBaseline();
+	if (!metrics.hasCoreData) {
+		if (baseline && baseline.metrics && !baseline.metrics.hasCoreData) {
+			return false;
+		}
+		return true;
+	}
+	if (!baseline || !baseline.metrics) return false;
+	return isLikelySettingsDowngrade(metrics, baseline.metrics);
+}
+
+function applyRecoveredCachedState(candidate, reason = "") {
+	if (!candidate || !candidate.state || typeof candidate.state !== "object") return false;
+	const incoming = candidate.state;
+	const merged = { ...cachedState, ...incoming };
+	if (candidate.metrics && candidate.metrics.settingsCount > 0) {
+		merged.settings = incoming.settings;
+	}
+	cachedState = normalizeCachedStateSnapshot(merged);
+	setCachedStatePersistenceBaseline(candidate);
+	log(`Recovered cachedState from ${candidate.source}${reason ? ` (${reason})` : ""} [${formatCachedStateQuality(candidate.metrics)}]`);
+	return true;
+}
+
+function persistCachedStateSafely(state, options = {}) {
+	const reason = options.reason || "unspecified";
+	const allowSettingsDowngrade = options.allowSettingsDowngrade === true;
+	const shouldPersistStoreBackup = options.persistStoreBackup !== false;
+
+	let metrics = describeCachedStateQuality(state);
+	if (!metrics.hasCoreData && !allowSettingsDowngrade) {
+		log(`[cachedState] Skipped persist (${reason}): no meaningful settings data`);
+		return { saved: false, reason: "no-core-data" };
+	}
+
+	let stateToPersist = metrics.normalizedState;
+	const baseline = getCachedStatePersistenceBaseline();
+	if (!allowSettingsDowngrade && baseline && baseline.metrics && isLikelySettingsDowngrade(metrics, baseline.metrics)) {
+		const baselineSettings = baseline.state && baseline.state.settings;
+		if (baselineSettings && typeof baselineSettings === "object" && !Array.isArray(baselineSettings) && Object.keys(baselineSettings).length > 0) {
+			stateToPersist = { ...stateToPersist, settings: { ...baselineSettings } };
+			metrics = describeCachedStateQuality(stateToPersist);
+			console.warn(`[cachedState] Repaired partial settings before persist (${reason}) using baseline from ${baseline.source}.`);
+		} else {
+			console.warn(`[cachedState] Blocked persist (${reason}) due to partial settings and missing baseline settings.`);
+			return { saved: false, reason: "partial-settings-blocked" };
+		}
+	}
+
+	saveCachedStateAtomic(stateToPersist);
+	if (shouldPersistStoreBackup && (metrics.hasCoreData || !allowSettingsDowngrade)) {
+		try {
+			store.set('cachedStateBackup', stateToPersist);
+			store.set('cachedStateBackupTime', Date.now());
+		} catch (e) {
+			console.warn("Failed to update electron-store cachedState backup:", e?.message || e);
+		}
+	}
+	if (allowSettingsDowngrade && !metrics.hasCoreData) {
+		try {
+			const { bakPath } = getSavedSyncPaths();
+			if (fs.existsSync(bakPath)) {
+				fs.unlinkSync(bakPath);
+			}
+		} catch (e) {
+			console.warn("Failed to clear cachedState .bak during explicit reset:", e?.message || e);
+		}
+		try {
+			store.delete('cachedStateBackup');
+			store.delete('cachedStateBackupTime');
+			store.delete('localStorageBackup');
+			store.delete('localStorageBackupTime');
+		} catch (e) {
+			console.warn("Failed to clear cachedState backups during explicit reset:", e?.message || e);
+		}
+	}
+
+	cachedState = { ...stateToPersist };
+	if (metrics.settingsCount > 0) {
+		cachedState.settings = stateToPersist.settings;
+	}
+	setCachedStatePersistenceBaseline({
+		state: stateToPersist,
+		source: "runtime",
+		timestamp: Date.now(),
+		metrics
+	});
+
+	return { saved: true, state: stateToPersist, metrics };
+}
+
 function buildLocalStorageMirrorPayload(state) {
 	const payload = {};
 	const settings = state && state.settings;
@@ -10901,9 +11487,21 @@ function buildLocalStorageMirrorPayload(state) {
 	return payload;
 }
 
-function updateLocalStorageBackup(payload) {
+function updateLocalStorageBackup(payload, options = {}) {
 	try {
 		if (!payload || typeof payload !== "object") return;
+		const allowSettingsDowngrade = options.allowSettingsDowngrade === true;
+		const payloadState = parseCachedStateFromLocalStorageRecord(payload);
+		const payloadMetrics = describeCachedStateQuality(payloadState);
+		const baseline = getCachedStatePersistenceBaseline();
+		if (!payloadMetrics.hasCoreData && !allowSettingsDowngrade) {
+			log("Skipped localStorageBackup update due to missing core settings data");
+			return;
+		}
+		if (!allowSettingsDowngrade && baseline && baseline.metrics && isLikelySettingsDowngrade(payloadMetrics, baseline.metrics)) {
+			console.warn("Skipped localStorageBackup update due to partial settings downgrade gate");
+			return;
+		}
 		const existing = store.get('localStorageBackup');
 		const merged = existing && typeof existing === "object" ? { ...existing } : {};
 		Object.entries(payload).forEach(([key, value]) => {
@@ -10924,6 +11522,10 @@ function updateLocalStorageBackup(payload) {
 async function mirrorCachedStateToLocalStorage(win) {
 	if (!win || win.isDestroyed() || !win.webContents) return;
 	if (!hasCachedStateData(cachedState)) return;
+	if (shouldRecoverCachedStateFromBackups(cachedState)) {
+		log("Skipped mirroring cachedState to localStorage due to partial-state recovery gate");
+		return;
+	}
 	const payload = buildLocalStorageMirrorPayload(cachedState);
 	const script = `(function(){\n` +
 		`const payload = ${JSON.stringify(payload)};\n` +
@@ -10969,48 +11571,22 @@ async function readLocalStorageMirror(win) {
 }
 
 function hydrateCachedStateFromLocalStorage(raw) {
-	if (!raw || typeof raw !== "object") return false;
-	const next = {};
-	const streamID = normalizeStreamIdValue(raw.streamID || raw.ssninja_stream_id);
-	if (streamID) next.streamID = streamID;
-	const hasPasswordKey = Object.prototype.hasOwnProperty.call(raw, "password");
-	const normalizedPassword = normalizePasswordValue(raw.password);
-	if (normalizedPassword !== null) {
-		next.password = normalizedPassword;
-	} else if (hasPasswordKey) {
-		// Clear true non-values (eg boolean false/null) while preserving literal strings.
-		next.password = null;
+	const next = parseCachedStateFromLocalStorageRecord(raw);
+	if (!next || typeof next !== "object") return false;
+	const merged = { ...cachedState, ...next };
+	if (next.settings && typeof next.settings === "object") {
+		merged.settings = next.settings;
 	}
-	const stateValue = raw.state !== undefined ? raw.state : raw.ssninja_state;
-	if (typeof stateValue === "string") {
-		if (stateValue === "true" || stateValue === "false") {
-			next.state = stateValue === "true";
-		}
-	} else if (typeof stateValue === "boolean") {
-		next.state = stateValue;
-	}
-	if (raw.settings) {
-		if (typeof raw.settings === "string") {
-			try {
-				const parsed = JSON.parse(raw.settings);
-				if (parsed && typeof parsed === "object") {
-					next.settings = parsed;
-				}
-			} catch (_) {}
-		} else if (typeof raw.settings === "object") {
-			next.settings = raw.settings;
-		}
-	}
-
-	if (!Object.keys(next).length) return false;
-	cachedState = { ...cachedState, ...next };
+	cachedState = merged;
 	try {
-		saveCachedStateAtomic(cachedState);
-		store.set('cachedStateBackup', cachedState);
-		store.set('cachedStateBackupTime', Date.now());
+		const persistResult = persistCachedStateSafely(cachedState, { reason: "hydrate-from-localStorage" });
+		if (!persistResult.saved) {
+			return false;
+		}
 		log(`Hydrated cachedState from localStorage with ${Object.keys(next).length} keys`);
 	} catch (e) {
 		console.warn("Failed to persist cachedState after localStorage hydrate:", e?.message || e);
+		return false;
 	}
 	return true;
 }
@@ -11029,98 +11605,55 @@ function hydrateCachedStateFromStoreBackup() {
 
 async function syncCachedStateWithLocalStorage(win, reason = "") {
 	if (!win || win.isDestroyed()) return;
-	if (!hasCachedStateData(cachedState)) {
+	if (shouldRecoverCachedStateFromBackups(cachedState)) {
 		const raw = await readLocalStorageMirror(win);
 		if (hydrateCachedStateFromLocalStorage(raw)) {
 			log(`Hydrated cachedState from localStorage${reason ? ` (${reason})` : ""}`);
 		}
 	}
-	if (hasCachedStateData(cachedState)) {
+	if (hasCachedStateData(cachedState) && !shouldRecoverCachedStateFromBackups(cachedState)) {
 		await mirrorCachedStateToLocalStorage(win);
 	} else {
 		log(`No cachedState data available${reason ? ` (${reason})` : ""}`);
 	}
 }
 
-function loadCachedStateWithBackup() {
-    const { mainPath, bakPath } = getSavedSyncPaths();
-    const tryRead = (p) => {
-        const txt = fs.readFileSync(p, "utf8");
-        if (!txt || !txt.trim()) {
-            throw new Error("file is empty");
-        }
-        const parsed = JSON.parse(txt);
-        if (!parsed || typeof parsed !== "object") {
-            throw new Error("empty cached state");
-        }
-        // Reject objects with no meaningful data (e.g. truncated write left "{}")
-        if (Object.keys(parsed).length === 0) {
-            throw new Error("parsed object has no keys");
-        }
-        return parsed;
-    };
-    try {
-        return tryRead(mainPath);
-    } catch (e) {
-        log("Failed to load cachedState from primary file: " + e.message);
-        try {
-            const backup = tryRead(bakPath);
-            console.warn("Recovered cachedState from backup (.bak)");
-            return backup;
-        } catch (e2) {
-            log("Failed to load cachedState from .bak file: " + e2.message);
-            // Final fallback: try electron-store backup (different storage mechanism)
-            try {
-                const storeBackup = store.get('cachedStateBackup');
-                if (storeBackup && typeof storeBackup === 'object' && Object.keys(storeBackup).length > 0) {
-                    const backupTime = store.get('cachedStateBackupTime');
-                    console.warn("Recovered cachedState from electron-store backup" +
-                        (backupTime ? ` (saved: ${new Date(backupTime).toISOString()})` : ""));
-                    return storeBackup;
-                }
-            } catch (e3) {
-                log("Failed to load cachedState from electron-store: " + e3.message);
-            }
-            console.error("Failed to load cachedState from all sources");
-            return null;
-        }
-    }
+function loadCachedStateWithBackupSource(options = {}) {
+	const includeLocalStorageBackup = options.includeLocalStorageBackup !== false;
+	const includeStoreBackup = options.includeStoreBackup !== false;
+	const includeDisk = options.includeDisk !== false;
+	const updateBaseline = options.updateBaseline !== false;
+	const logSelection = options.logSelection === true;
+
+	const candidates = collectCachedStateCandidates({
+		includeDisk,
+		includeStoreBackup,
+		includeLocalStorageBackup
+	});
+	if (!candidates.length) return null;
+
+	candidates.sort(compareCachedStateCandidates);
+	const best = candidates[0];
+	if (!best || !best.state) return null;
+
+	if (updateBaseline) {
+		setCachedStatePersistenceBaseline(best);
+	}
+	if (logSelection) {
+		log(`[cachedState] Selected ${best.source} [${formatCachedStateQuality(best.metrics)}] from ${candidates.length} candidate(s).`);
+	}
+	return {
+		state: { ...best.state },
+		source: best.source,
+		timestamp: best.timestamp,
+		metrics: best.metrics,
+		candidateCount: candidates.length
+	};
 }
 
-function loadCachedStateWithBackupSource() {
-    const { mainPath, bakPath } = getSavedSyncPaths();
-    const tryRead = (p) => {
-        const txt = fs.readFileSync(p, "utf8");
-        if (!txt || !txt.trim()) {
-            throw new Error("file is empty");
-        }
-        const parsed = JSON.parse(txt);
-        if (!parsed || typeof parsed !== "object") {
-            throw new Error("empty cached state");
-        }
-        if (Object.keys(parsed).length === 0) {
-            throw new Error("parsed object has no keys");
-        }
-        return parsed;
-    };
-    try {
-        return { state: tryRead(mainPath), source: "savedSync.json" };
-    } catch (_) {
-        try {
-            return { state: tryRead(bakPath), source: "savedSync.json.bak" };
-        } catch (e2) {
-            log("Failed to load cachedState from .bak file: " + e2.message);
-            try {
-                const storeBackup = store.get('cachedStateBackup');
-                if (storeBackup && typeof storeBackup === 'object' && Object.keys(storeBackup).length > 0) {
-                    return { state: storeBackup, source: "electron-store backup" };
-                }
-            } catch (e3) {
-                log("Failed to load cachedState from electron-store: " + e3.message);
-            }
-            return null;
-        }
-    }
+function loadCachedStateWithBackup(options = {}) {
+	const result = loadCachedStateWithBackupSource(options);
+	return result && result.state ? result.state : null;
 }
 
 function saveCachedStateAtomic(state) {
@@ -11224,45 +11757,57 @@ app.whenReady().then(async function () {
     });
 
 	    try {
-	        const diskState = loadCachedStateWithBackup();
-	        if (diskState) {
-	            const normalizedDiskState = normalizeCachedStateSnapshot(diskState);
-	            cachedState = normalizedDiskState;
+	        const diskResult = loadCachedStateWithBackupSource({ logSelection: true });
+	        if (diskResult && diskResult.state) {
+	            const normalizedDiskState = normalizeCachedStateSnapshot(diskResult.state);
+	            applyRecoveredCachedState({
+	                ...diskResult,
+	                state: normalizedDiskState,
+	                metrics: describeCachedStateQuality(normalizedDiskState)
+	            }, "startup");
 	            if ("streamID" in cachedState && !cachedState.streamID) {
 	                log("invalid cachedState");
 	            } else {
-                log("loaded cachedState");
-                if (cachedState && !("state" in cachedState) && "isExtensionOn" in cachedState) {
-                    cachedState.state = cachedState.isExtensionOn;
-                    delete cachedState.isExtensionOn;
-                } else if (cachedState && "isExtensionOn" in cachedState) {
-                    delete cachedState.isExtensionOn;
-                }
-	            }
-	            log(cachedState);
-	            try {
-	                if (JSON.stringify(diskState) !== JSON.stringify(normalizedDiskState)) {
-	                    saveCachedStateAtomic(cachedState);
-	                    store.set('cachedStateBackup', cachedState);
-	                    store.set('cachedStateBackupTime', Date.now());
-	                    log("Normalized cachedState credentials and persisted sanitized values");
+	                log(`loaded cachedState from ${diskResult.source}`);
+	                if (cachedState && !("state" in cachedState) && "isExtensionOn" in cachedState) {
+	                    cachedState.state = cachedState.isExtensionOn;
+	                    delete cachedState.isExtensionOn;
+	                } else if (cachedState && "isExtensionOn" in cachedState) {
+	                    delete cachedState.isExtensionOn;
 	                }
-	            } catch (normalizePersistError) {
-	                console.warn("Failed to persist normalized cachedState on startup:", normalizePersistError?.message || normalizePersistError);
 	            }
+	            setCachedStatePersistenceBaseline({
+	                state: normalizeCachedStateSnapshot(cachedState),
+	                source: diskResult.source,
+	                timestamp: diskResult.timestamp,
+	                metrics: describeCachedStateQuality(cachedState)
+	            });
+		            log(cachedState);
+		            try {
+		                if (JSON.stringify(diskResult.state) !== JSON.stringify(cachedState)) {
+		                    const normalizeResult = persistCachedStateSafely(cachedState, { reason: "startup-normalize" });
+		                    if (normalizeResult && normalizeResult.saved) {
+		                        log("Normalized cachedState credentials and persisted sanitized values");
+		                    } else {
+		                        log(`[cachedState] Startup normalization skipped: ${normalizeResult && normalizeResult.reason ? normalizeResult.reason : "unknown"}`);
+		                    }
+		                }
+		            } catch (normalizePersistError) {
+		                console.warn("Failed to persist normalized cachedState on startup:", normalizePersistError?.message || normalizePersistError);
+		            }
 
 	            if (cachedState.wsServer) {
 	                wsServer.start();
-            }
-        } else {
-            log("Failed to load cachedState -- it probably doesn't yet exist");
-        }
-    } catch (e) {
-        console.error("[STARTUP] Error loading cachedState:", e);
-    } finally {
-        cachedStateReady = true;
-        log(`[STARTUP] cachedState ready. Settings keys: ${cachedState?.settings ? Object.keys(cachedState.settings).length : 0}`);
-    }
+	            }
+	        } else {
+	            log("Failed to load cachedState -- it probably doesn't yet exist");
+	        }
+	    } catch (e) {
+	        console.error("[STARTUP] Error loading cachedState:", e);
+	    } finally {
+	        cachedStateReady = true;
+	        log(`[STARTUP] cachedState ready. Settings keys: ${cachedState?.settings ? Object.keys(cachedState.settings).length : 0}`);
+	    }
 
     // If no --filesource provided, use saved local source path (if any)
     try {
@@ -11298,6 +11843,7 @@ app.whenReady().then(async function () {
     }
 
     createWindow(Argv, false, true);
+    queueStabilityStartupNotice();
     setupRemoteControlServer();
 
     // Start/refresh transfer backup timers after app is ready.
@@ -11470,6 +12016,7 @@ app.on('browser-window-created', (event, window) => {
 
 async function quitApp() {
     app.isQuitting = true;
+    markStabilitySessionGraceful('quitApp');
 
     // Flush any pending debounced storageSave immediately to prevent data loss
     // This also cancels the debounce timer so it won't fire after windows are destroyed
@@ -11484,11 +12031,12 @@ async function quitApp() {
     // Save cachedState before quitting to prevent data loss
     try {
         if (cachedState && Object.keys(cachedState).length > 0) {
-            saveCachedStateAtomic(cachedState);
-            // Also save to electron-store as secondary backup (different storage, less likely to be cleared)
-            store.set('cachedStateBackup', cachedState);
-            store.set('cachedStateBackupTime', Date.now());
-            log("Saved cachedState on quit (primary + electron-store backup)");
+            const persistResult = persistCachedStateSafely(cachedState, { reason: "quitApp" });
+            if (persistResult && persistResult.saved) {
+                log("Saved cachedState on quit (primary + electron-store backup)");
+            } else {
+                log(`[cachedState] Quit persist skipped: ${persistResult && persistResult.reason ? persistResult.reason : "unknown"}`);
+            }
         }
     } catch (e) {
         console.error("Failed to save cachedState on quit:", e);
@@ -12134,6 +12682,7 @@ async function promptStartupPreferencesRestart(message, detail) {
 
     if (result.response === 0) {
         try {
+            markStabilitySessionGraceful('startup-preferences-restart');
             app.relaunch();
         } catch (e) {
             console.warn('app.relaunch failed:', e);

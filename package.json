@@ -13,6 +13,7 @@
     "update:fallback": "node scripts/updateSocialStreamFallback.js",
     "test:settings-loss": "node tests/electron/settings-loss-diagnostics.js",
     "test:settings-rootcause": "node tests/electron/settings-rootcause-diagnostics.js",
+    "test:stability-recovery": "node tests/electron/stability-recovery-diagnostics.js",
     "test": "electron .",
     "build": "run-os",
     "check:submodules": "node scripts/check-submodules.js",
