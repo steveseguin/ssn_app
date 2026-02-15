@@ -278,20 +278,23 @@ class EulerWebsocketServerConnection extends EventEmitter {
 
         switch (type) {
             case 'WebcastSocialMessage': {
-                const displayType = data?.common?.displayText?.displayType || '';
-                if (typeof displayType === 'string') {
-                    if (displayType.includes('follow')) {
-                        this.emit(WebcastEvent.FOLLOW, data);
-                        return;
-                    }
-                    if (displayType.includes('share')) {
-                        this.emit(WebcastEvent.SHARE, data);
-                        return;
-                    }
-                    if (displayType.toLowerCase().includes('sub')) {
-                        this.emit('subscribe', data);
-                        return;
-                    }
+                const displayType = typeof data?.common?.displayText?.displayType === 'string'
+                    ? data.common.displayText.displayType.toLowerCase()
+                    : '';
+                const displayLabel = typeof data?.common?.displayText?.defaultPattern === 'string'
+                    ? data.common.displayText.defaultPattern.toLowerCase()
+                    : '';
+                if (displayType.includes('follow') || displayLabel.includes('follow')) {
+                    this.emit(WebcastEvent.FOLLOW, data);
+                    return;
+                }
+                if (displayType.includes('share') || displayLabel.includes('share')) {
+                    this.emit(WebcastEvent.SHARE, data);
+                    return;
+                }
+                if (isLikelySubscribeSignal(displayType) || isLikelySubscribeSignal(displayLabel)) {
+                    this.emit('subscribe', data);
+                    return;
                 }
                 this.emit(WebcastEvent.SOCIAL, data);
                 return;
@@ -329,6 +332,13 @@ class EulerWebsocketServerConnection extends EventEmitter {
     async sendMessage() {
         throw new Error('Euler WebSocket relay does not support outbound chat sends.');
     }
+}
+
+function isLikelySubscribeSignal(value) {
+    if (typeof value !== 'string' || !value) return false;
+    const lowered = value.toLowerCase();
+    if (lowered.includes('subscrib') || lowered.includes('membership')) return true;
+    return /(^|[^a-z])sub([^a-z]|$)/.test(lowered);
 }
 
 function log(...args) {
@@ -2031,8 +2041,6 @@ function resolveGiftId(data = {}) {
         data.gift_id,
         data.giftIdStr,
         data.gift_id_str,
-        data.id,
-        data.id_str,
         giftData.giftId,
         giftData.gift_id,
         giftData.id,
@@ -2635,7 +2643,11 @@ class GiftProcessor {
             count
         } = this.queue.shift();
 
-        this.sendGiftMessage(data, count);
+        try {
+            this.sendGiftMessage(data, count);
+        } catch (error) {
+            console.error('[GiftProcessor] sendGiftMessage failed:', error?.message || error);
+        }
 
         setTimeout(() => this.processQueue(), CONFIG.GIFT.PROCESSING_INTERVAL);
     }
@@ -6118,9 +6130,9 @@ class ConnectionManager {
             return; // do not forward captured events from this connection
         }
         // Gifts are handled separately and always forwarded.
-        // For other event types, respect captureevents setting.
+        // For other event types, respect the app-level events capture gate.
         if (!isCaptureEventsEnabled()) {
-            return; // drop non-gift events if captureevents disabled
+            return; // drop non-gift events when events capture is disabled
         }
 
         const includeChatPayload = typeof message === 'string' && message.trim().length > 0;
@@ -7006,6 +7018,8 @@ module.exports = {
     createTikTokEnvironment,
     giftMapping,
     __test: {
+        EulerWebsocketServerConnection,
+        isLikelySubscribeSignal,
         resolveGiftMetricCount,
         resolveGiftAggregatedCount,
         resolveGiftId,

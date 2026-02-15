@@ -43,6 +43,16 @@ function run() {
     __test.resolveGiftStreakIdentity({ giftId: '5656', giftName: 'Rose', giftType: 1 }),
     { giftId: '5656', keyFragment: 'id:5656' }
   );
+  assert.strictEqual(
+    __test.resolveGiftId({ id: '12345', id_str: '98765', giftName: 'Rose' }),
+    null,
+    'top-level id/id_str should not be treated as gift id'
+  );
+  assert.strictEqual(
+    __test.resolveGiftId({ id: '12345', gift: { gift_id: '42' } }),
+    '42',
+    'nested gift id should still resolve'
+  );
 
   // Basic streak count flow with snake_case payloads.
   {
@@ -64,6 +74,33 @@ function run() {
     assert.strictEqual(gp.queue.length, 2, 'expected two flushed gifts');
     const counts = gp.queue.map((entry) => entry.count).sort((a, b) => a - b);
     assert.deepStrictEqual(counts, [2, 3], 'expected independent streak totals per gift name');
+  }
+
+  // Processing should continue even if one queued gift throws while forwarding.
+  {
+    const gp = createGiftProcessorHarness();
+    const originalSetTimeout = global.setTimeout;
+    let sendAttempts = 0;
+    global.setTimeout = (fn) => {
+      fn();
+      return 0;
+    };
+    try {
+      gp.sendGiftMessage = () => {
+        sendAttempts += 1;
+        if (sendAttempts === 1) {
+          throw new Error('synthetic send failure');
+        }
+      };
+      gp.queue.push({ data: buildGiftEvent({ gift_id: '111' }), count: 1 });
+      gp.queue.push({ data: buildGiftEvent({ gift_id: '222' }), count: 1 });
+      gp.processQueue();
+      assert.strictEqual(sendAttempts, 2, 'expected queue to continue after first send failure');
+      assert.strictEqual(gp.queue.length, 0, 'expected queue to drain');
+      assert.strictEqual(gp.isProcessing, false, 'expected processor to stop once queue is empty');
+    } finally {
+      global.setTimeout = originalSetTimeout;
+    }
   }
 
   console.log('gift-count-regression: all checks passed');

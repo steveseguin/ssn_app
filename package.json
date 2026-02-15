@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.3.91",
+  "version": "0.3.92",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "main": "main.js",
@@ -14,6 +14,9 @@
     "test:settings-loss": "node tests/electron/settings-loss-diagnostics.js",
     "test:settings-rootcause": "node tests/electron/settings-rootcause-diagnostics.js",
     "test:stability-recovery": "node tests/electron/stability-recovery-diagnostics.js",
+    "test:tiktok-gift-regression": "node tests/tiktok/gift-count-regression.js",
+    "test:tiktok-social-signals": "node tests/tiktok/social-signal-regression.js",
+    "test:recent-changes": "node tests/electron/stability-recovery-diagnostics.js && node tests/tiktok/gift-count-regression.js && node tests/tiktok/social-signal-regression.js",
     "test": "electron .",
     "build": "run-os",
     "check:submodules": "node scripts/check-submodules.js",

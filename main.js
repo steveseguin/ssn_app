@@ -2039,10 +2039,12 @@ const INJECTED_SCRIPT_FLAG = '_ssapp_' + Math.random().toString(36).substring(2)
 // App-level helper: whether to forward non-gift events to overlays
 function isCaptureEventsEnabled() {
     const settings = cachedState && cachedState.settings;
-    if (!settings || typeof settings !== 'object') return false;
-    return Object.prototype.hasOwnProperty.call(settings, 'captureevents') ||
-        Object.prototype.hasOwnProperty.call(settings, 'captureevent') ||
-        Object.prototype.hasOwnProperty.call(settings, 'capturestreamevents');
+    // Opt-out model: events are enabled unless an explicit block key is present.
+    if (!settings || typeof settings !== 'object') return true;
+    if (Object.prototype.hasOwnProperty.call(settings, 'hideevents')) return false;
+    if (Object.prototype.hasOwnProperty.call(settings, 'disableevents')) return false;
+    if (Object.prototype.hasOwnProperty.call(settings, 'disablecaptureevents')) return false;
+    return true;
 }
 
 function isCaptureJoinedEventEnabled() {
@@ -3561,6 +3563,7 @@ const CACHED_STATE_SOURCE_PRIORITY = {
     "localStorage mirror": 30
 };
 let cachedStatePersistenceBaseline = null;
+let cachedStateRecoveryQueued = false;
 
 // cachedState.state = false;
 
@@ -4051,13 +4054,26 @@ async function clearAllData() {
 	        if (preservedPassword !== null && preservedPassword !== undefined) {
 	            cachedState.password = preservedPassword;
 	        }
-        cachedState.state = false;
+	        cachedState.state = false;
+	        // Explicit reset: replace any old quality baseline to prevent stale recovery.
+	        cachedStatePersistenceBaseline = null;
+	        const resetBaselineCandidate = createCachedStateCandidate(cachedState, "runtime-reset", Date.now());
+	        if (resetBaselineCandidate) {
+	            setCachedStatePersistenceBaseline(resetBaselineCandidate);
+	        }
 
-        const savedSyncPath = path.join(folder, "savedSync.json");
+	        const { mainPath: savedSyncPath, bakPath: savedSyncBackupPath } = getSavedSyncPaths();
         try {
             fs.writeFileSync(savedSyncPath, JSON.stringify(cachedState, null, 2));
         } catch (writeError) {
             console.error('Failed to rewrite cached state during reset:', writeError);
+        }
+        try {
+            if (fs.existsSync(savedSyncBackupPath)) {
+                fs.unlinkSync(savedSyncBackupPath);
+            }
+        } catch (backupError) {
+            console.warn('Failed to remove cachedState backup during reset:', backupError?.message || backupError);
         }
 
         // Clear persisted application settings
@@ -5931,6 +5947,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         // Protect established settings from being overwritten with empty/partial data.
 	        if (value && typeof value === "object") {
 	            const normalizedValue = { ...value };
+	            let shouldClearPassword = false;
 	            if ("streamID" in normalizedValue) {
 	                const normalizedStreamID = normalizeStreamIdValue(normalizedValue.streamID);
 	                if (normalizedStreamID === null) {
@@ -5940,7 +5957,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
 	                }
 	            }
 	            if ("password" in normalizedValue) {
-	                normalizedValue.password = normalizePasswordValue(normalizedValue.password);
+	                const normalizedPassword = normalizePasswordValue(normalizedValue.password);
+	                if (normalizedPassword === null) {
+	                    shouldClearPassword = true;
+	                    delete normalizedValue.password;
+	                } else {
+	                    normalizedValue.password = normalizedPassword;
+	                }
 	            }
 
 	            if ("settings" in normalizedValue && normalizedValue.settings && typeof normalizedValue.settings === "object") {
@@ -5959,6 +5982,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
 	                }
 	            }
 	            cachedState = { ...cachedState, ...normalizedValue };
+	            if (shouldClearPassword) {
+	                delete cachedState.password;
+	            }
 	        }
 
         //log(cachedState);
@@ -6031,10 +6057,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
         if ("allowEmptySettings" in incoming) {
             delete incoming.allowEmptySettings;
         }
-        const sanitized = {};
+	        const sanitized = {};
+	        let shouldClearPassword = false;
 	        Object.entries(incoming).forEach(([key, val]) => {
 	            if (key === "password") {
-	                sanitized[key] = normalizePasswordValue(val);
+	                const normalizedPassword = normalizePasswordValue(val);
+	                if (normalizedPassword !== null) {
+	                    sanitized[key] = normalizedPassword;
+	                } else {
+	                    shouldClearPassword = true;
+	                }
 	                return;
 	            }
 	            if (key === "streamID") {
@@ -6068,7 +6100,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
 	            }
 	            sanitized[key] = val;
 	        });
-        cachedState = { ...cachedState, ...sanitized };
+	        cachedState = { ...cachedState, ...sanitized };
+	        if (shouldClearPassword) {
+	            delete cachedState.password;
+	        }
 
         // Return merged state immediately (required for sendSync callers)
         eventRet.returnValue = cachedState;
@@ -6132,19 +6167,17 @@ async function createWindow(args, reuse = false, mainApp = false) {
         //log(cachedState);
 
         if (shouldRecoverCachedStateFromBackups(cachedState)) {
-            const diskResult = loadCachedStateWithBackupSource({ logSelection: true });
+            const diskResult = loadCachedStateWithBackupSource({ logSelection: true, updateBaseline: false });
             if (diskResult && diskResult.state) {
                 applyRecoveredCachedState(diskResult, "storageGet");
             }
         }
-
         if (shouldRecoverCachedStateFromBackups(cachedState)) {
             try {
-                if (hydrateCachedStateFromStoreBackup()) {
-                    log("Hydrated cachedState from localStorage backup (storageGet)");
-                }
-            } catch (_) {}
+                hydrateCachedStateFromStoreBackup();
+            } catch (_) { }
         }
+        queueCachedStateRecovery("storageGet");
 
         value.forEach((key) => {
             //log(key);
@@ -6160,23 +6193,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     ipcMain.handle("storageGetAsync", async (eventRet, value) => {
         const response = {};
-        if (shouldRecoverCachedStateFromBackups(cachedState)) {
-            const diskResult = loadCachedStateWithBackupSource({ logSelection: true });
-            if (diskResult && diskResult.state) {
-                applyRecoveredCachedState(diskResult, "storageGetAsync");
-            }
-        }
-        if (shouldRecoverCachedStateFromBackups(cachedState)) {
-            const raw = await readLocalStorageMirror(mainWindow);
-            if (hydrateCachedStateFromLocalStorage(raw)) {
-                log("Hydrated cachedState from localStorage mirror (storageGetAsync)");
-            }
-        }
-        if (shouldRecoverCachedStateFromBackups(cachedState)) {
-            if (hydrateCachedStateFromStoreBackup()) {
-                log("Hydrated cachedState from localStorage backup (storageGetAsync)");
-            }
-        }
+        await recoverCachedStateIfNeeded("storageGetAsync");
         if (Array.isArray(value)) {
             value.forEach((key) => {
                 if (cachedState && key in cachedState) {
@@ -6211,7 +6228,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
         }
 	        if ("password" in value) {
-	            cachedState.password = normalizePasswordValue(value.password);
+	            const normalizedPassword = normalizePasswordValue(value.password);
+	            if (normalizedPassword !== null) {
+	                cachedState.password = normalizedPassword;
+	            } else {
+	                delete cachedState.password;
+	            }
 	        }
 	        if ("streamID" in value) {
 	            const normalizedStreamID = normalizeStreamIdValue(value.streamID);
@@ -6269,7 +6291,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
         }
 	        if ("password" in value) {
-	            cachedState.password = normalizePasswordValue(value.password);
+	            const normalizedPassword = normalizePasswordValue(value.password);
+	            if (normalizedPassword !== null) {
+	                cachedState.password = normalizedPassword;
+	            } else {
+	                delete cachedState.password;
+	            }
 	        }
 	        if ("streamID" in value) {
 	            const normalizedStreamID = normalizeStreamIdValue(value.streamID);
@@ -6767,7 +6794,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 	            // Ensure cachedState and localStorage stay in sync
 	            try {
 	                if (shouldRecoverCachedStateFromBackups(cachedState)) {
-	                    const diskResult = loadCachedStateWithBackupSource({ logSelection: true });
+                    const diskResult = loadCachedStateWithBackupSource({ logSelection: true, updateBaseline: false });
 	                    if (diskResult && diskResult.state && typeof diskResult.state === "object") {
 	                        applyRecoveredCachedState(diskResult, "did-finish-load");
 	                    }
@@ -6986,7 +7013,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 console.warn("[getSettings] Called before cachedState ready - returning current state");
             }
             if (shouldRecoverCachedStateFromBackups(cachedState)) {
-                const diskResult = loadCachedStateWithBackupSource({ logSelection: true });
+                const diskResult = loadCachedStateWithBackupSource({ logSelection: true, updateBaseline: false });
                 if (diskResult && diskResult.state) {
                     applyRecoveredCachedState(diskResult, "getSettings");
                 }
@@ -11115,6 +11142,7 @@ function describeCachedStateQuality(state) {
 	const hasPassword = password !== null;
 	const hasStateFlag = typeof normalizedState.state === "boolean" || normalizedState.state === "true" || normalizedState.state === "false";
 	const hasCoreData = settingsCount > 0 || hasStreamID || hasPassword;
+	const hasRecoverableData = hasCoreData || hasStateFlag;
 	const topLevelKeyCount = Object.keys(normalizedState).length;
 
 	let score = 0;
@@ -11131,6 +11159,7 @@ function describeCachedStateQuality(state) {
 		hasPassword,
 		hasStateFlag,
 		hasCoreData,
+		hasRecoverableData,
 		topLevelKeyCount,
 		score
 	};
@@ -11219,7 +11248,7 @@ function getCachedStateSourcePriority(source) {
 
 function createCachedStateCandidate(state, source, timestamp = 0) {
 	const metrics = describeCachedStateQuality(state);
-	if (!metrics.hasCoreData) return null;
+	if (!metrics.hasRecoverableData) return null;
 	return {
 		state: metrics.normalizedState,
 		source,
@@ -11381,13 +11410,49 @@ function shouldRecoverCachedStateFromBackups(state) {
 function applyRecoveredCachedState(candidate, reason = "") {
 	if (!candidate || !candidate.state || typeof candidate.state !== "object") return false;
 	const incoming = candidate.state;
-	const merged = { ...cachedState, ...incoming };
-	if (candidate.metrics && candidate.metrics.settingsCount > 0) {
-		merged.settings = incoming.settings;
+	const incomingMetrics = candidate.metrics && typeof candidate.metrics === "object"
+		? candidate.metrics
+		: describeCachedStateQuality(incoming);
+	const currentMetrics = describeCachedStateQuality(cachedState);
+	const baseline = cachedStatePersistenceBaseline && cachedStatePersistenceBaseline.metrics
+		? cachedStatePersistenceBaseline
+		: null;
+	const incomingTimestamp = Number(candidate.timestamp) || 0;
+	const baselineTimestamp = baseline ? (Number(baseline.timestamp) || 0) : 0;
+	const preserveExistingOnConflict = incomingTimestamp > 0 && baselineTimestamp > 0 && incomingTimestamp < baselineTimestamp && currentMetrics.hasCoreData;
+
+	let merged;
+	if (preserveExistingOnConflict) {
+		// Candidate is older than our best-known persisted baseline; keep current values on conflict
+		// and only use recovered data to fill gaps.
+		merged = { ...incoming, ...cachedState };
+		const incomingSettings = incoming && incoming.settings;
+		const existingSettings = cachedState && cachedState.settings;
+		const hasIncomingSettings = incomingSettings && typeof incomingSettings === "object" && !Array.isArray(incomingSettings);
+		const hasExistingSettings = existingSettings && typeof existingSettings === "object" && !Array.isArray(existingSettings);
+		if (hasIncomingSettings && hasExistingSettings) {
+			merged.settings = { ...incomingSettings, ...existingSettings };
+		} else if (hasIncomingSettings && !hasExistingSettings) {
+			merged.settings = incomingSettings;
+		}
+		log(`[cachedState] Older recovery candidate from ${candidate.source || "unknown"}${reason ? ` (${reason})` : ""}; preserving in-memory values on key conflicts.`);
+	} else {
+		merged = { ...cachedState, ...incoming };
+		if (incomingMetrics.settingsCount > 0) {
+			merged.settings = incoming.settings;
+		}
 	}
 	cachedState = normalizeCachedStateSnapshot(merged);
-	setCachedStatePersistenceBaseline(candidate);
-	log(`Recovered cachedState from ${candidate.source}${reason ? ` (${reason})` : ""} [${formatCachedStateQuality(candidate.metrics)}]`);
+	if (!preserveExistingOnConflict) {
+		const mergedMetrics = describeCachedStateQuality(cachedState);
+		setCachedStatePersistenceBaseline({
+			state: mergedMetrics.normalizedState,
+			source: candidate.source || "recovered",
+			timestamp: incomingTimestamp || Date.now(),
+			metrics: mergedMetrics
+		});
+	}
+	log(`Recovered cachedState from ${candidate.source || "unknown"}${reason ? ` (${reason})` : ""} [${formatCachedStateQuality(incomingMetrics)}]`);
 	return true;
 }
 
@@ -11601,6 +11666,42 @@ function hydrateCachedStateFromStoreBackup() {
 		console.warn("Failed to hydrate cachedState from localStorage backup:", e?.message || e);
 	}
 	return false;
+}
+
+async function recoverCachedStateIfNeeded(reason = "") {
+	if (shouldRecoverCachedStateFromBackups(cachedState)) {
+		const diskResult = loadCachedStateWithBackupSource({ logSelection: true, updateBaseline: false });
+		if (diskResult && diskResult.state) {
+			applyRecoveredCachedState(diskResult, reason);
+		}
+	}
+	if (shouldRecoverCachedStateFromBackups(cachedState)) {
+		const raw = await readLocalStorageMirror(mainWindow);
+		if (hydrateCachedStateFromLocalStorage(raw)) {
+			log(`Hydrated cachedState from localStorage mirror${reason ? ` (${reason})` : ""}`);
+		}
+	}
+	if (shouldRecoverCachedStateFromBackups(cachedState)) {
+		if (hydrateCachedStateFromStoreBackup()) {
+			log(`Hydrated cachedState from localStorage backup${reason ? ` (${reason})` : ""}`);
+		}
+	}
+}
+
+function queueCachedStateRecovery(reason = "") {
+	if (cachedStateRecoveryQueued) return;
+	cachedStateRecoveryQueued = true;
+	setTimeout(() => {
+		(async () => {
+			try {
+				await recoverCachedStateIfNeeded(reason);
+			} catch (e) {
+				console.warn(`[cachedState] Deferred recovery failed${reason ? ` (${reason})` : ""}:`, e?.message || e);
+			} finally {
+				cachedStateRecoveryQueued = false;
+			}
+		})();
+	}, 0);
 }
 
 async function syncCachedStateWithLocalStorage(win, reason = "") {
