@@ -2210,6 +2210,178 @@ function resolveFirstImageUrl(candidates = []) {
     return null;
 }
 
+function isRenderableTikTokContentImageUrl(value) {
+    if (typeof value !== 'string') return false;
+    const trimmed = value.trim();
+    if (!trimmed) return false;
+    if (/^https?:\/\//i.test(trimmed)) return true;
+    if (/^data:image\//i.test(trimmed)) return true;
+    if (/^data:video\//i.test(trimmed)) return true;
+    return false;
+}
+
+function resolveFirstRenderableImageUrl(candidates = []) {
+    const queue = Array.isArray(candidates) ? [...candidates] : [candidates];
+    const seenObjects = new Set();
+
+    while (queue.length) {
+        const candidate = queue.shift();
+        if (candidate === undefined || candidate === null) continue;
+
+        if (typeof candidate === 'string') {
+            const resolved = normalizeTikTokImageUrl(candidate);
+            if (resolved && isRenderableTikTokContentImageUrl(resolved)) {
+                return resolved;
+            }
+            continue;
+        }
+
+        if (Array.isArray(candidate)) {
+            queue.unshift(...candidate);
+            continue;
+        }
+
+        if (typeof candidate !== 'object') {
+            const resolved = normalizeTikTokImageUrl(candidate);
+            if (resolved && isRenderableTikTokContentImageUrl(resolved)) {
+                return resolved;
+            }
+            continue;
+        }
+
+        if (seenObjects.has(candidate)) {
+            continue;
+        }
+        seenObjects.add(candidate);
+
+        // Prioritize public URL lists before uri/resourceUri fields.
+        const publicListKeys = ['urlList', 'urls', 'url_list', 'imageList', 'image_list', 'iconList', 'icon_list'];
+        for (const key of publicListKeys) {
+            if (Array.isArray(candidate[key]) && candidate[key].length) {
+                queue.unshift(...candidate[key]);
+            }
+        }
+
+        const directKeys = ['url', 'href', 'src', 'imageUrl', 'image_url'];
+        for (const key of directKeys) {
+            if (candidate[key] !== undefined && candidate[key] !== null) {
+                queue.unshift(candidate[key]);
+            }
+        }
+
+        const nestedPriorityKeys = ['videoUrl', 'resourceModel', 'resourceByteVC1Model', 'image', 'icon', 'picture', 'resource'];
+        for (const key of nestedPriorityKeys) {
+            if (candidate[key] !== undefined && candidate[key] !== null) {
+                queue.push(candidate[key]);
+            }
+        }
+
+        const uriKeys = ['uri', 'resourceUri', 'mUri'];
+        for (const key of uriKeys) {
+            if (candidate[key] !== undefined && candidate[key] !== null) {
+                queue.push(candidate[key]);
+            }
+        }
+
+        Object.values(candidate).forEach((value) => {
+            if (value === undefined || value === null) return;
+            if (typeof value === 'string' || typeof value === 'object') {
+                queue.push(value);
+            }
+        });
+    }
+
+    return null;
+}
+
+function resolveGiftAssetMediaUrl(asset) {
+    if (!asset || typeof asset !== 'object') return null;
+
+    const stickerVariant = Number(asset.stickerAssetVariant || 0);
+    const stickerVariantReason = Number(asset.stickerAssetVariantReason || 0);
+    const hasVideoResource = Array.isArray(asset.videoResourceList) && asset.videoResourceList.length > 0;
+    const hasExplicitStickerSignal = stickerVariant > 0 || stickerVariantReason > 0 || hasVideoResource;
+    if (!hasExplicitStickerSignal) return null;
+
+    const mediaCandidates = [
+        asset.videoResourceList?.map((entry) => entry?.videoUrl?.urlList || entry?.videoUrl || null),
+        asset.videoResourceList?.map((entry) => entry?.videoUrl?.uri || null),
+        asset.resourceModel,
+        asset.resourceModel?.urlList,
+        asset.resourceByteVC1Model,
+        asset.resourceByteVC1Model?.urlList,
+        asset.resourceUri
+    ];
+    return resolveFirstRenderableImageUrl(mediaCandidates);
+}
+
+function resolveTikTokGiftContentImage(data = {}, giftData = {}, giftDetails = {}, extendedGiftInfo = {}) {
+    const explicitCandidates = [
+        data?.contentimg,
+        data?.contentImage,
+        data?.content_image,
+        data?.stickerUrl,
+        data?.sticker_url,
+        data?.stickerImage,
+        data?.sticker_image,
+        data?.sticker?.url,
+        data?.sticker?.image,
+        data?.mediaUrl,
+        data?.media_url,
+        data?.media?.url,
+        giftData?.stickerUrl,
+        giftData?.sticker_url,
+        giftData?.stickerImage,
+        giftData?.sticker_image,
+        giftData?.sticker?.url,
+        giftData?.sticker?.image,
+        giftDetails?.stickerUrl,
+        giftDetails?.sticker_url,
+        giftDetails?.stickerImage,
+        giftDetails?.sticker_image,
+        giftDetails?.sticker?.url,
+        giftDetails?.sticker?.image,
+        extendedGiftInfo?.stickerUrl,
+        extendedGiftInfo?.sticker_url,
+        extendedGiftInfo?.stickerImage,
+        extendedGiftInfo?.sticker_image,
+        extendedGiftInfo?.sticker?.url,
+        extendedGiftInfo?.sticker?.image,
+        data?.mTrayInfo?.mDynamicImg,
+        giftData?.mTrayInfo?.mDynamicImg,
+        giftDetails?.mTrayInfo?.mDynamicImg,
+        extendedGiftInfo?.mTrayInfo?.mDynamicImg
+    ];
+
+    for (const candidate of explicitCandidates) {
+        const resolved = resolveFirstRenderableImageUrl(candidate);
+        if (resolved) {
+            return resolved;
+        }
+    }
+
+    const assetCandidates = [
+        data?.asset,
+        giftData?.asset,
+        giftDetails?.asset,
+        extendedGiftInfo?.asset
+    ];
+    if (Array.isArray(data?.giftsInBox?.gifts)) {
+        data.giftsInBox.gifts.forEach((giftEntry) => {
+            if (giftEntry?.asset) {
+                assetCandidates.push(giftEntry.asset);
+            }
+        });
+    }
+
+    for (const asset of assetCandidates) {
+        const resolved = resolveGiftAssetMediaUrl(asset);
+        if (resolved) return resolved;
+    }
+
+    return null;
+}
+
 function resolveGiftMetricCount(data = {}, metric = 'repeat') {
     const camel = `${metric}Count`;
     const snake = `${metric}_count`;
@@ -2930,6 +3102,9 @@ class GiftProcessor {
         const resolvedChatname = resolveTikTokDisplayName(data, identity, resolvedUserId);
         const explicitTextOnly = data && (data.textonly === true || data.textonlymode === true);
         const textOnly = explicitTextOnly || isTextOnlyModeEnabled();
+        const contentImage = textOnly
+            ? null
+            : resolveTikTokGiftContentImage(data, giftData, giftDetails, extendedGiftInfo);
 
         let chatmessage = `Sent ${giftName} x${count}`;
 
@@ -2954,6 +3129,9 @@ class GiftProcessor {
 
         if (resolvedUserId) {
             msg.userid = resolvedUserId;
+        }
+        if (contentImage) {
+            msg.contentimg = contentImage;
         }
         if (donationDisplay && !hiddenFromTray) {
             msg.hasDonation = donationDisplay;
@@ -7238,6 +7416,7 @@ module.exports = {
 		composeTikTokChatMessage,
 		normalizeTikTokEmoteEntries,
 		renderTikTokChatWithEmotes,
+		resolveTikTokGiftContentImage,
 		resolveGiftMetricCount,
 		resolveGiftAggregatedCount,
 		resolveGiftId,

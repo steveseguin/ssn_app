@@ -34,6 +34,49 @@ function run() {
   assert.strictEqual(__test.resolveGiftMetricCount({ extendedGiftInfo: { repeat_count: 9 } }, 'repeat'), 9);
   assert.strictEqual(__test.resolveGiftAggregatedCount({ combo_count: 12 }), 12);
 
+  // contentimg should be reserved for explicit sticker/media payloads, not generic gift icons.
+  assert.strictEqual(
+    __test.resolveTikTokGiftContentImage({
+      giftDetails: { giftImage: { urlList: ['https://cdn.example.com/gift-icon.webp'] } }
+    }),
+    null,
+    'generic gift icon should not be treated as content image'
+  );
+  assert.strictEqual(
+    __test.resolveTikTokGiftContentImage({
+      mTrayInfo: {
+        mDynamicImg: {
+          uri: 'webcast://dynamic_internal_only',
+          urlList: ['https://cdn.example.com/sticker-dynamic.webp']
+        }
+      }
+    }),
+    'https://cdn.example.com/sticker-dynamic.webp',
+    'explicit tray dynamic image should map to content image even with internal uri present'
+  );
+  assert.strictEqual(
+    __test.resolveTikTokGiftContentImage({
+      asset: {
+        stickerAssetVariant: 1,
+        videoResourceList: [{ videoUrl: { uri: 'webcast://video_internal_only' } }],
+        resourceModel: { urlList: ['https://cdn.example.com/sticker-asset.webp'] }
+      }
+    }),
+    'https://cdn.example.com/sticker-asset.webp',
+    'sticker-variant asset should keep scanning past internal uri to find public media url'
+  );
+  assert.strictEqual(
+    __test.resolveTikTokGiftContentImage({
+      textonly: true,
+      asset: {
+        stickerAssetVariant: 1,
+        resourceModel: { urlList: ['https://cdn.example.com/sticker-asset.webp'] }
+      }
+    }),
+    'https://cdn.example.com/sticker-asset.webp',
+    'helper remains transport-focused; text-only suppression is handled in sendGiftMessage'
+  );
+
   // Gift identity fallback when giftId is missing.
   assert.deepStrictEqual(
     __test.resolveGiftStreakIdentity({ giftName: 'Galaxy', giftType: 1 }),
