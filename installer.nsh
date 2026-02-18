@@ -1,4 +1,41 @@
+!include "nsDialogs.nsh"
+
+Var AddToPathCheckbox
+Var AddToPathSelection
+
+!macro customInit
+    ; Default to "do not modify PATH" unless the user opts in.
+    StrCpy $AddToPathSelection 0
+!macroend
+
+!macro customPageAfterChangeDir
+    Page custom AddToPathPageCreate AddToPathPageLeave
+!macroend
+
+Function AddToPathPageCreate
+    nsDialogs::Create 1018
+    Pop $0
+    StrCmp $0 error 0 +2
+        Abort
+
+    ${NSD_CreateLabel} 0 0 100% 24u "Optional setup step: add Social Stream Ninja install folder to your user PATH."
+    Pop $0
+
+    ${NSD_CreateCheckbox} 0 32u 100% 12u "Add install directory to PATH (can conflict with anti-cheat in some games)"
+    Pop $AddToPathCheckbox
+    ${NSD_SetState} $AddToPathCheckbox 0
+
+    nsDialogs::Show
+FunctionEnd
+
+Function AddToPathPageLeave
+    ${NSD_GetState} $AddToPathCheckbox $AddToPathSelection
+FunctionEnd
+
 !macro customInstall
+    ; User did not opt in to PATH changes.
+    StrCmp $AddToPathSelection 1 0 Done
+
     ReadEnvStr $0 "PATH"
     FileOpen $1 "$INSTDIR\path_backup.txt" a
     FileWrite $1 "$0$\r$\n"
