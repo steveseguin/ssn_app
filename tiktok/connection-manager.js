@@ -1521,53 +1521,267 @@ function resolveTikTokSubscriberStatus(data = {}) {
         }
     }
 
-    return false;
+	return false;
+}
+
+const LIKELY_EMOTE_PLACEHOLDER_HINTS = /\b(?:emoji|emote|sticker|smiley|smile|face|heart|laugh|grin|wink|kiss|sad|cry|angry|fire|rose|love|happy|joy|thumb|clap)\b/i;
+
+function normalizeEmoteLabelForMatching(value) {
+	const cleaned = cleanVisibleString(value);
+	if (!cleaned) return '';
+	return cleaned.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function normalizePlaceInComment(value) {
+	if (value === undefined || value === null || value === '') return null;
+	const numeric = Number(value);
+	if (!Number.isFinite(numeric)) return null;
+	const floored = Math.floor(numeric);
+	if (floored < 0) return null;
+	return floored;
+}
+
+function normalizeTikTokEmoteEntries(payload = {}) {
+	const sourceEmotes = Array.isArray(payload)
+		? payload
+		: Array.isArray(payload?.emotes)
+			? payload.emotes
+			: Array.isArray(payload?.emoteList)
+				? payload.emoteList
+				: [];
+	if (!sourceEmotes.length) return [];
+
+	const normalized = [];
+	sourceEmotes.forEach((source, sourceIndex) => {
+		if (!source || typeof source !== 'object') return;
+
+		const nestedEmote = isPlainObject(source?.emote) ? source.emote : source;
+		const emoteId = cleanVisibleString(
+			source.emoteId
+			|| source.id
+			|| source.emote_id
+			|| nestedEmote?.emoteId
+			|| nestedEmote?.id
+			|| nestedEmote?.emote_id
+		) || null;
+		const emoteLabel = cleanVisibleString(
+			source.emoteName
+			|| source.name
+			|| source.title
+			|| source.label
+			|| nestedEmote?.emoteName
+			|| nestedEmote?.name
+			|| nestedEmote?.title
+			|| nestedEmote?.label
+			|| nestedEmote?.description
+		) || emoteId || null;
+		const rawUrl = source.emoteImageUrl
+			|| source.imageUrl
+			|| source.url
+			|| source.image?.url
+			|| source.image?.imageUrl
+			|| source.image
+			|| nestedEmote?.emoteImageUrl
+			|| nestedEmote?.imageUrl
+			|| nestedEmote?.url
+			|| nestedEmote?.image?.url
+			|| nestedEmote?.image?.imageUrl
+			|| nestedEmote?.image;
+		const emoteUrl = normalizeTikTokImageUrl(rawUrl) || null;
+		const placeInComment = normalizePlaceInComment(
+			source.placeInComment
+			?? source.place
+			?? source.index
+			?? nestedEmote?.placeInComment
+			?? nestedEmote?.place
+			?? nestedEmote?.index
+		);
+
+		if (!emoteId && !emoteLabel && !emoteUrl) return;
+		normalized.push({
+			emoteId,
+			emoteLabel,
+			emoteUrl,
+			placeInComment,
+			sourceIndex
+		});
+	});
+
+	return normalized;
+}
+
+function renderTikTokEmoteToken(emote = {}, textOnly = false) {
+	const emoteLabel = cleanVisibleString(emote?.emoteLabel);
+	if (textOnly) {
+		return emoteLabel || '[sticker]';
+	}
+
+	const emoteUrl = normalizeTikTokImageUrl(emote?.emoteUrl);
+	if (emoteUrl) {
+		const emoteId = cleanVisibleString(emote?.emoteId) || '';
+		let tag = `<img class="sticker" src="${emoteUrl}"`;
+		if (emoteLabel) {
+			tag += ` alt="${emoteLabel}"`;
+		}
+		if (emoteId) {
+			tag += ` data-emote-id="${emoteId}"`;
+		}
+		tag += '>';
+		return tag;
+	}
+
+	return emoteLabel || '[sticker]';
+}
+
+function isLikelyEmotePlaceholderContent(rawContent, emoteLabel = null) {
+	const normalizedContent = normalizeEmoteLabelForMatching(rawContent);
+	if (!normalizedContent) return false;
+
+	if (emoteLabel) {
+		const normalizedLabel = normalizeEmoteLabelForMatching(emoteLabel);
+		if (normalizedLabel) {
+			if (normalizedContent === normalizedLabel) return true;
+			if (normalizedContent.includes(normalizedLabel) || normalizedLabel.includes(normalizedContent)) return true;
+		}
+	}
+
+	return LIKELY_EMOTE_PLACEHOLDER_HINTS.test(normalizedContent);
+}
+
+function extractLeadingEmotePlaceholder(text, emoteLabel = null) {
+	if (typeof text !== 'string' || !text) return null;
+	const match = text.match(/^\[([^\]]{1,80})\]/);
+	if (!match) return null;
+	if (!isLikelyEmotePlaceholderContent(match[1], emoteLabel)) return null;
+	return match[0];
+}
+
+function escapeRegex(value) {
+	return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function replaceLikelyEmotePlaceholders(chatmessage, emotes, usedIndexes = new Set()) {
+	let output = typeof chatmessage === 'string' ? chatmessage : '';
+	if (!output || !Array.isArray(emotes) || !emotes.length) {
+		return {
+			chatmessage: output,
+			usedIndexes
+		};
+	}
+
+	for (const emote of emotes) {
+		if (usedIndexes.has(emote.index)) continue;
+		const normalizedLabel = normalizeEmoteLabelForMatching(emote.emoteLabel);
+		if (!normalizedLabel) continue;
+
+		const pattern = escapeRegex(normalizedLabel).replace(/\s+/g, '\\s+');
+		const labelRegex = new RegExp(`\\[\\s*${pattern}\\s*\\]`, 'i');
+		if (!labelRegex.test(output)) continue;
+
+		output = output.replace(labelRegex, emote.token);
+		usedIndexes.add(emote.index);
+	}
+
+	const placeholderRegex = /\[([^\]]{1,80})\]/g;
+	let searchFrom = 0;
+	for (const emote of emotes) {
+		if (usedIndexes.has(emote.index)) continue;
+		placeholderRegex.lastIndex = searchFrom;
+
+		let match = null;
+		while ((match = placeholderRegex.exec(output)) !== null) {
+			if (isLikelyEmotePlaceholderContent(match[1], null)) {
+				break;
+			}
+		}
+		if (!match) break;
+
+		output = `${output.slice(0, match.index)}${emote.token}${output.slice(placeholderRegex.lastIndex)}`;
+		usedIndexes.add(emote.index);
+		searchFrom = match.index + emote.token.length;
+	}
+
+	return {
+		chatmessage: output,
+		usedIndexes
+	};
+}
+
+function removeResidualEmotePlaceholders(chatmessage) {
+	if (typeof chatmessage !== 'string' || !chatmessage) return chatmessage || '';
+	return chatmessage
+		.replace(/\[([^\]]{1,80})\]/g, (full, inner) => (isLikelyEmotePlaceholderContent(inner) ? '' : full))
+		.replace(/\s{2,}/g, ' ')
+		.trim();
+}
+
+function renderTikTokChatWithEmotes(chatmessage, normalizedEmotes = [], textOnly = false) {
+	let output = typeof chatmessage === 'string' ? chatmessage : '';
+	if (!Array.isArray(normalizedEmotes) || !normalizedEmotes.length) return output;
+
+	const emotes = normalizedEmotes
+		.map((emote, index) => ({
+			...emote,
+			index,
+			token: renderTikTokEmoteToken(emote, textOnly)
+		}))
+		.filter((emote) => typeof emote.token === 'string' && emote.token.length > 0);
+	if (!emotes.length) return output;
+
+	const usedIndexes = new Set();
+	const positioned = emotes
+		.filter((emote) => Number.isInteger(emote.placeInComment) && emote.placeInComment >= 0)
+		.sort((a, b) => (a.placeInComment - b.placeInComment) || (a.index - b.index));
+
+	if (positioned.length && output) {
+		const rawText = output;
+		const segments = [];
+		let cursor = 0;
+
+		positioned.forEach((emote) => {
+			let insertAt = emote.placeInComment;
+			if (insertAt > rawText.length) insertAt = rawText.length;
+			if (insertAt < cursor) insertAt = cursor;
+
+			segments.push(rawText.slice(cursor, insertAt));
+			segments.push(emote.token);
+			usedIndexes.add(emote.index);
+			cursor = insertAt;
+
+			const placeholder = extractLeadingEmotePlaceholder(rawText.slice(cursor), emote.emoteLabel);
+			if (placeholder) {
+				cursor += placeholder.length;
+			}
+		});
+
+		segments.push(rawText.slice(cursor));
+		output = segments.join('');
+	}
+
+	const placeholderReplacement = replaceLikelyEmotePlaceholders(output, emotes, usedIndexes);
+	output = placeholderReplacement.chatmessage;
+
+	const remainingTokens = emotes
+		.filter((emote) => !usedIndexes.has(emote.index))
+		.map((emote) => emote.token);
+	if (remainingTokens.length) {
+		const suffix = remainingTokens.join(' ');
+		output = output ? `${output} ${suffix}` : suffix;
+	}
+
+	return removeResidualEmotePlaceholders(output);
 }
 
 function composeTikTokChatMessage(data = {}, options = {}) {
-    const { includeTopGifterBadgeAlways = false } = options;
-    const explicitTextOnly = data && (data.textonly === true || data.textonlymode === true);
-    const textOnly = explicitTextOnly || isTextOnlyModeEnabled();
+	const { includeTopGifterBadgeAlways = false } = options;
+	const explicitTextOnly = data && (data.textonly === true || data.textonlymode === true);
+	const textOnly = explicitTextOnly || isTextOnlyModeEnabled();
 
-    let chatmessage = typeof data?.comment === 'string' ? data.comment : '';
-
-    if (Array.isArray(data?.emotes) && data.emotes.length > 0) {
-        const emoteParts = [];
-        data.emotes.forEach((emote) => {
-            if (!emote) return;
-
-            const emoteLabel = cleanVisibleString(emote.emoteName || emote.name || emote.title || emote.id);
-
-            if (textOnly) {
-                if (emoteLabel) {
-                    emoteParts.push(emoteLabel);
-                } else {
-                    emoteParts.push('[sticker]');
-                }
-                return;
-            }
-
-            const urlCandidate = emote.emoteImageUrl || emote.imageUrl || emote.url || emote.image?.url;
-            const resolvedUrl = normalizeTikTokImageUrl(urlCandidate);
-            if (!resolvedUrl) return;
-
-            const emoteId = emote.emoteId || emote.id || '';
-            let tag = `<img class="sticker" src="${resolvedUrl}"`;
-            if (emoteLabel) {
-                tag += ` alt="${emoteLabel}"`;
-            }
-            if (emoteId) {
-                tag += ` data-emote-id="${emoteId}"`;
-            }
-            tag += '>';
-            emoteParts.push(tag);
-        });
-
-        if (emoteParts.length) {
-            const emoteText = emoteParts.join(' ');
-            chatmessage = chatmessage ? `${chatmessage} ${emoteText}` : emoteText;
-        }
-    }
+	let chatmessage = typeof data?.comment === 'string' ? data.comment : '';
+	const normalizedEmotes = normalizeTikTokEmoteEntries(data);
+	if (normalizedEmotes.length) {
+		chatmessage = renderTikTokChatWithEmotes(chatmessage, normalizedEmotes, textOnly);
+	}
 
     const message = {
         chatmessage,
@@ -4596,21 +4810,21 @@ class ConnectionManager {
                 }
                 this.sendEventMessage(data, 'envelope', null, meta);
             },
-            emote: (data = {}) => {
-                this.recordActivity();
-                const emotes = Array.isArray(data.emotes) ? data.emotes : [];
-                const emoteIds = [];
-                const emoteLabels = [];
-                const emoteUrls = [];
-                emotes.forEach((emote) => {
-                    if (!emote) return;
-                    const id = emote.emoteId || emote.id || null;
-                    const label = cleanVisibleString(emote.emoteName || emote.name || emote.title || '') || null;
-                    const url = normalizeTikTokImageUrl(emote.emoteImageUrl || emote.imageUrl || emote.url || emote.image?.url) || null;
-                    if (id) emoteIds.push(id);
-                    if (label) emoteLabels.push(label);
-                    if (url) emoteUrls.push(url);
-                });
+			emote: (data = {}) => {
+				this.recordActivity();
+				const emotes = normalizeTikTokEmoteEntries(data);
+				const emoteIds = [];
+				const emoteLabels = [];
+				const emoteUrls = [];
+				emotes.forEach((emote) => {
+					if (!emote) return;
+					const id = cleanVisibleString(emote.emoteId || '') || null;
+					const label = cleanVisibleString(emote.emoteLabel || '') || null;
+					const url = normalizeTikTokImageUrl(emote.emoteUrl) || null;
+					if (id) emoteIds.push(id);
+					if (label) emoteLabels.push(label);
+					if (url) emoteUrls.push(url);
+				});
                 if (!emoteIds.length && !emoteLabels.length && !emoteUrls.length) {
                     return;
                 }
@@ -7017,12 +7231,15 @@ module.exports = {
     installTikTokSignServerFallback,
     createTikTokEnvironment,
     giftMapping,
-    __test: {
-        EulerWebsocketServerConnection,
-        isLikelySubscribeSignal,
-        resolveGiftMetricCount,
-        resolveGiftAggregatedCount,
-        resolveGiftId,
+	__test: {
+		EulerWebsocketServerConnection,
+		isLikelySubscribeSignal,
+		composeTikTokChatMessage,
+		normalizeTikTokEmoteEntries,
+		renderTikTokChatWithEmotes,
+		resolveGiftMetricCount,
+		resolveGiftAggregatedCount,
+		resolveGiftId,
         resolveGiftStreakIdentity,
         GiftProcessor
     }
