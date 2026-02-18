@@ -1613,7 +1613,8 @@ function normalizeTikTokEmoteEntries(payload = {}) {
 function renderTikTokEmoteToken(emote = {}, textOnly = false) {
 	const emoteLabel = cleanVisibleString(emote?.emoteLabel);
 	if (textOnly) {
-		return emoteLabel || '[sticker]';
+		// Text-only output should keep readable labels only; no synthetic sticker marker.
+		return emoteLabel || '';
 	}
 
 	const emoteUrl = normalizeTikTokImageUrl(emote?.emoteUrl);
@@ -1725,7 +1726,7 @@ function renderTikTokChatWithEmotes(chatmessage, normalizedEmotes = [], textOnly
 			index,
 			token: renderTikTokEmoteToken(emote, textOnly)
 		}))
-		.filter((emote) => typeof emote.token === 'string' && emote.token.length > 0);
+		.filter((emote) => typeof emote.token === 'string' && (textOnly || emote.token.length > 0));
 	if (!emotes.length) return output;
 
 	const usedIndexes = new Set();

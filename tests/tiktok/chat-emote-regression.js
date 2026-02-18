@@ -103,6 +103,20 @@ function run() {
     assert.ok(!message.chatmessage.includes('[smiley face]'), 'text-only mode should not leak bracket placeholder');
   }
 
+  {
+    const message = __test.composeTikTokChatMessage({
+      comment: 'before [smiley face] after',
+      textonly: true,
+      emotes: [
+        {
+          emoteImageUrl: 'https://cdn.example.com/no-label.webp'
+        }
+      ]
+    });
+    assert.strictEqual(message.chatmessage, 'before after', 'nameless text-only emotes should not inject fallback marker');
+    assert.ok(!message.chatmessage.includes('[sticker]'), 'text-only mode should not emit [sticker] fallback');
+  }
+
   console.log('chat-emote-regression: all checks passed');
 }
 
