@@ -5,7 +5,7 @@ const { WebcastEvent } = require('tiktok-live-connector/dist/types/events');
 const { __test } = require('../../tiktok/connection-manager.js');
 
 function createEventCapture(connection) {
-  const trackedEvents = [WebcastEvent.FOLLOW, WebcastEvent.SHARE, WebcastEvent.SOCIAL, 'subscribe'];
+  const trackedEvents = [WebcastEvent.FOLLOW, WebcastEvent.SHARE, WebcastEvent.SOCIAL, WebcastEvent.LIKE, 'subscribe'];
   const counts = Object.create(null);
   trackedEvents.forEach((eventName) => {
     counts[eventName] = 0;
@@ -16,12 +16,12 @@ function createEventCapture(connection) {
   return { trackedEvents, counts };
 }
 
-function runRoutingCase(data, expectedEvent, forbiddenEvents = []) {
+function runRoutingCase(data, expectedEvent, forbiddenEvents = [], messageType = 'WebcastSocialMessage') {
   const connection = new __test.EulerWebsocketServerConnection('unit-test');
   const { trackedEvents, counts } = createEventCapture(connection);
 
   connection.forwardDecodedData({
-    type: 'WebcastSocialMessage',
+    type: messageType,
     data
   });
 
@@ -71,6 +71,13 @@ function run() {
     { common: { displayText: { displayType: 'subtle wave', defaultPattern: 'subtle wave' } } },
     WebcastEvent.SOCIAL,
     ['subscribe']
+  );
+
+  runRoutingCase(
+    { count: 1, user: { uniqueId: 'tester' } },
+    WebcastEvent.LIKE,
+    ['subscribe', WebcastEvent.FOLLOW, WebcastEvent.SHARE],
+    'WebcastLikeMessage'
   );
 
   console.log('social-signal-regression: all checks passed');

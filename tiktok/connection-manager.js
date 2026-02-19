@@ -53,6 +53,7 @@ const env = {
     onStatus: () => { },
     isCaptureEventsEnabled: () => false,
     isCaptureJoinedEventEnabled: () => false,
+    isCaptureLikedEventEnabled: () => false,
     isViewerUpdateAllowed: () => false,
     isTextOnlyModeEnabled: () => false,
     getCachedSettings: () => ({}),
@@ -834,6 +835,14 @@ function isCaptureJoinedEventEnabled() {
     }
 }
 
+function isCaptureLikedEventEnabled() {
+    try {
+        return !!env.isCaptureLikedEventEnabled();
+    } catch (_) {
+        return false;
+    }
+}
+
 function isViewerUpdateAllowed() {
     try {
         return !!env.isViewerUpdateAllowed();
@@ -1049,6 +1058,7 @@ function installTikTokProtoFetchTap(connector) {
  * @param {function} [options.getCachedSettings] - Returns the current cached settings object.
  * @param {function} [options.isCaptureEventsEnabled] - Indicates whether non-gift events should be forwarded.
  * @param {function} [options.isCaptureJoinedEventEnabled]
+ * @param {function} [options.isCaptureLikedEventEnabled]
  * @param {function} [options.isViewerUpdateAllowed]
  * @param {function} [options.isTextOnlyModeEnabled]
  * @param {Map} [options.connectionStates] - Optional shared connection state map.
@@ -1068,6 +1078,7 @@ function createTikTokEnvironment(options = {}) {
         getCachedSettings: getCachedSettingsOverride = () => ({}),
         isCaptureEventsEnabled: captureEventsEnabledFn = () => false,
         isCaptureJoinedEventEnabled: captureJoinedFn = () => false,
+        isCaptureLikedEventEnabled: captureLikedFn = () => false,
         isViewerUpdateAllowed: viewerUpdateAllowedFn = () => false,
         isTextOnlyModeEnabled: textOnlyModeFn = () => false,
         connectionStates: sharedConnectionStates,
@@ -1139,6 +1150,7 @@ function createTikTokEnvironment(options = {}) {
     env.getCachedSettings = typeof getCachedSettingsOverride === 'function' ? getCachedSettingsOverride : () => ({});
     env.isCaptureEventsEnabled = typeof captureEventsEnabledFn === 'function' ? captureEventsEnabledFn : () => false;
     env.isCaptureJoinedEventEnabled = typeof captureJoinedFn === 'function' ? captureJoinedFn : () => false;
+    env.isCaptureLikedEventEnabled = typeof captureLikedFn === 'function' ? captureLikedFn : () => false;
     env.isViewerUpdateAllowed = typeof viewerUpdateAllowedFn === 'function' ? viewerUpdateAllowedFn : () => false;
     env.isTextOnlyModeEnabled = typeof textOnlyModeFn === 'function' ? textOnlyModeFn : () => false;
     env.log = typeof logFn === 'function' ? logFn : env.log;
@@ -1174,6 +1186,89 @@ function cleanGenericString(value) {
     if (value === undefined || value === null) return null;
     const str = String(value).trim();
     return str || null;
+}
+
+const TIKTOK_EVENT_TYPE_ALIASES = Object.freeze({
+    follow: 'followed',
+    share: 'shared',
+    like: 'liked'
+});
+
+const TIKTOK_EVENT_DEDUPE_WINDOWS_MS = Object.freeze({
+    followed: 3000,
+    shared: 3000
+});
+
+const TIKTOK_EVENT_DEDUPE_MAX_ENTRIES = 2000;
+const TIKTOK_EVENT_DEDUPE_TRIM_TO = 1500;
+
+function canonicalizeTikTokEventType(eventType) {
+    const cleaned = cleanGenericString(eventType);
+    if (!cleaned) return null;
+    const normalized = cleaned.toLowerCase();
+    return TIKTOK_EVENT_TYPE_ALIASES[normalized] || normalized;
+}
+
+function getTikTokEventDedupeWindowMs(eventType) {
+    if (!eventType) return 0;
+    return TIKTOK_EVENT_DEDUPE_WINDOWS_MS[eventType] || 0;
+}
+
+function buildTikTokEventDedupeKey(eventType, data = {}, message = null) {
+    if (!eventType || !data || typeof data !== 'object') {
+        return null;
+    }
+
+    const identity = extractTikTokIdentity(data);
+    const stableUserKey = firstNonEmptyVisibleString([
+        identity?.uniqueId,
+        data?.user?.uniqueId,
+        data?.user?.userId,
+        data?.userId,
+        data?.uid
+    ]) || '';
+
+    const weakUserKey = firstNonEmptyVisibleString([
+        identity?.nickname,
+        data?.nickname,
+        data?.user?.nickname,
+        data?.user?.displayName
+    ]) || '';
+
+    const stableDetailKey = firstNonEmptyVisibleString([
+        data?.eventId,
+        data?.messageId,
+        data?.msgId,
+        data?.idStr,
+        data?.id,
+        data?.timestamp,
+        data?.createTime,
+        data?.common?.createTime
+    ]) || '';
+
+    // Skip dedupe when payload lacks reliable identity and event identifiers.
+    if (!stableUserKey && !stableDetailKey) {
+        return null;
+    }
+
+    const weakDetailKey = firstNonEmptyVisibleString([
+        data?.common?.displayText?.displayType,
+        data?.common?.displayText?.defaultPattern,
+        data?.displayType,
+        data?.label,
+        data?.action,
+        data?.shareType,
+        data?.shareTarget
+    ]) || '';
+
+    const messageKey = (typeof message === 'string' && message.trim().length)
+        ? message.trim().toLowerCase()
+        : '';
+
+    const userKey = stableUserKey || weakUserKey || 'unknown';
+    const detailKey = stableDetailKey || weakDetailKey;
+
+    return `${eventType}|${String(userKey).toLowerCase()}|${String(detailKey).toLowerCase()}|${messageKey}`;
 }
 
 
@@ -3199,6 +3294,8 @@ class ConnectionManager {
         this.giftProcessor = new GiftProcessor(this);
         this.activityBuckets = new Map();
         this.recentShoppingEvents = new Map();
+        this.recentEventDedupes = new Map();
+        this.nextEventDedupePruneAt = 0;
         // Live shopping events rely on 2.x payloads; the Map sticks around harmlessly until we upgrade.
         this.reconnectAttempts = 0;
         this.isStopped = false;
@@ -4804,7 +4901,23 @@ class ConnectionManager {
                 const displayName = identity.nickname || identity.uniqueId || 'Viewer';
                 if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
                 if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
-                this.sendEventMessage(data, "follow", `${displayName} followed!`);
+                this.sendEventMessage(data, "followed", `${displayName} followed!`);
+            },
+            share: (data) => {
+                this.recordActivity();
+                const identity = extractTikTokIdentity(data);
+                const displayName = identity.nickname || identity.uniqueId || 'Viewer';
+                if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
+                if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
+                this.sendEventMessage(data, "shared", `${displayName} shared the live stream!`);
+            },
+            like: (data) => {
+                this.recordActivity();
+                const identity = extractTikTokIdentity(data);
+                const displayName = identity.nickname || identity.uniqueId || 'Viewer';
+                if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
+                if (identity.uniqueId && !data.uniqueId) data.uniqueId = identity.uniqueId;
+                this.sendEventMessage(data, "liked", `${displayName} liked the stream!`);
             },
             subscribe: (data) => {
                 this.recordActivity();
@@ -6134,6 +6247,10 @@ class ConnectionManager {
             }
             this.giftProcessor.streaks.clear();
         }
+        if (this.recentEventDedupes instanceof Map) {
+            this.recentEventDedupes.clear();
+        }
+        this.nextEventDedupePruneAt = 0;
         this.offlineRetry = false;
         this.offlineRetryCount = 0;
         this.offlineReason = null;
@@ -6517,6 +6634,64 @@ class ConnectionManager {
         }, backoffDelay);
     }
 
+    pruneRecentEventDedupes(now = Date.now(), force = false) {
+        if (!force && this.nextEventDedupePruneAt && now < this.nextEventDedupePruneAt && this.recentEventDedupes.size < TIKTOK_EVENT_DEDUPE_MAX_ENTRIES) {
+            return;
+        }
+
+        for (const [key, expiresAt] of this.recentEventDedupes.entries()) {
+            if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+                this.recentEventDedupes.delete(key);
+            }
+        }
+
+        if (this.recentEventDedupes.size > TIKTOK_EVENT_DEDUPE_MAX_ENTRIES) {
+            const trimCount = this.recentEventDedupes.size - TIKTOK_EVENT_DEDUPE_TRIM_TO;
+            if (trimCount > 0) {
+                const keys = this.recentEventDedupes.keys();
+                for (let i = 0; i < trimCount; i += 1) {
+                    const next = keys.next();
+                    if (next.done) break;
+                    this.recentEventDedupes.delete(next.value);
+                }
+            }
+        }
+
+        this.nextEventDedupePruneAt = now + 1000;
+    }
+
+    shouldSuppressDuplicateEvent(eventType, data = {}, message = null) {
+        const ttlMs = getTikTokEventDedupeWindowMs(eventType);
+        if (!ttlMs) {
+            return false;
+        }
+
+        const dedupeKey = buildTikTokEventDedupeKey(eventType, data, message);
+        if (!dedupeKey) {
+            return false;
+        }
+
+        const now = Date.now();
+        this.pruneRecentEventDedupes(now);
+
+        const expiresAt = this.recentEventDedupes.get(dedupeKey);
+        if (Number.isFinite(expiresAt) && expiresAt > now) {
+            this.logDebug('event.suppressed.duplicate', {
+                event: eventType,
+                key: dedupeKey,
+                ttlRemainingMs: Math.max(0, Math.round(expiresAt - now))
+            });
+            return true;
+        }
+
+        this.recentEventDedupes.set(dedupeKey, now + ttlMs);
+        if (this.recentEventDedupes.size > TIKTOK_EVENT_DEDUPE_MAX_ENTRIES) {
+            this.pruneRecentEventDedupes(now, true);
+        }
+
+        return false;
+    }
+
     sendEventMessage(data, eventType, message, extraMeta = {}) {
         // Per-connection reply-only guard
         if (this.replyOnly) {
@@ -6528,10 +6703,21 @@ class ConnectionManager {
             return; // drop non-gift events when events capture is disabled
         }
 
+        const canonicalEventType = canonicalizeTikTokEventType(eventType);
+        if (!canonicalEventType) {
+            return;
+        }
+        if (canonicalEventType === 'liked' && !isCaptureLikedEventEnabled()) {
+            return;
+        }
+        if (this.shouldSuppressDuplicateEvent(canonicalEventType, data, message)) {
+            return;
+        }
+
         const includeChatPayload = typeof message === 'string' && message.trim().length > 0;
         const payload = {
             type: "tiktok",
-            event: eventType,
+            event: canonicalEventType,
             tid: this.virtualTabId
         };
 
@@ -6565,7 +6751,7 @@ class ConnectionManager {
         }
 
         const metaPayload = sanitizeEventMeta({
-            eventType,
+            eventType: canonicalEventType,
             ...extraMeta
         });
         if (metaPayload) {

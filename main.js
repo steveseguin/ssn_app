@@ -1951,6 +1951,7 @@ try {
         getCachedSettings,
         isCaptureEventsEnabled,
         isCaptureJoinedEventEnabled,
+        isCaptureLikedEventEnabled,
         isViewerUpdateAllowed,
         isTextOnlyModeEnabled,
         connectionStates
@@ -2051,6 +2052,12 @@ function isCaptureJoinedEventEnabled() {
     const settings = cachedState && cachedState.settings;
     if (!settings || typeof settings !== 'object') return false;
     return Object.prototype.hasOwnProperty.call(settings, 'capturejoinedevent');
+}
+
+function isCaptureLikedEventEnabled() {
+    const settings = cachedState && cachedState.settings;
+    if (!settings || typeof settings !== 'object') return false;
+    return Object.prototype.hasOwnProperty.call(settings, 'capturelikeevent');
 }
 
 function isViewerUpdateAllowed() {
@@ -6059,20 +6066,32 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 	        const sanitized = {};
 	        let shouldClearPassword = false;
+	        let didAnyStateFieldChange = false;
 	        Object.entries(incoming).forEach(([key, val]) => {
 	            if (key === "password") {
 	                const normalizedPassword = normalizePasswordValue(val);
+	                const existingPassword = normalizePasswordValue(cachedState.password);
 	                if (normalizedPassword !== null) {
 	                    sanitized[key] = normalizedPassword;
+	                    if (existingPassword !== normalizedPassword) {
+	                        didAnyStateFieldChange = true;
+	                    }
 	                } else {
 	                    shouldClearPassword = true;
+	                    if (Object.prototype.hasOwnProperty.call(cachedState, "password")) {
+	                        didAnyStateFieldChange = true;
+	                    }
 	                }
 	                return;
 	            }
 	            if (key === "streamID") {
 	                const normalizedStreamID = normalizeStreamIdValue(val);
+	                const existingStreamID = normalizeStreamIdValue(cachedState.streamID);
 	                if (normalizedStreamID !== null) {
 	                    sanitized[key] = normalizedStreamID;
+	                    if (existingStreamID !== normalizedStreamID) {
+	                        didAnyStateFieldChange = true;
+	                    }
 	                }
 	                return;
 	            }
@@ -6097,6 +6116,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     log(`[storageSave] Blocking empty settings overwrite`);
                     return;
                 }
+	                if (!areSettingsSnapshotsEqual(cachedState.settings, val)) {
+	                    didAnyStateFieldChange = true;
+	                }
+	            } else if (!areStorageValuesEqual(cachedState[key], val)) {
+	                didAnyStateFieldChange = true;
 	            }
 	            sanitized[key] = val;
 	        });
@@ -6107,6 +6131,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         // Return merged state immediately (required for sendSync callers)
         eventRet.returnValue = cachedState;
+
+        if (!didAnyStateFieldChange) return;
 
         // Debounce the expensive I/O operations to batch rapid sequential saves
         storageSavePending = true;
@@ -6205,54 +6231,25 @@ async function createWindow(args, reuse = false, mainApp = false) {
     });
 
     ipcMain.on("fromBackgroundPopupResponse", function (eventRet, value) {
-        log("\nfromBackgroundPopupResponse:");
-        //log(value)
-
         // // state, password, streamID, settings
         if (!value) {
             return;
         }
-        if (value.settings && typeof value.settings === "object") {
-            const existingSettings = cachedState?.settings || {};
-            const existingCount = Object.keys(existingSettings).length;
-            const incomingCount = Object.keys(value.settings).length;
-            const hasEstablished = existingCount > SETTINGS_VALIDATION.MIN_EXISTING_KEYS;
-            const isPartial = incomingCount < existingCount * SETTINGS_VALIDATION.PARTIAL_THRESHOLD_RATIO;
+        const hasPersistedPayload = hasPersistedFieldPayload(value);
+        const didPersistedStateChange = hasPersistedPayload
+            ? applyPersistedStateFieldsFromResponse(value, "fromBackgroundPopupResponse")
+            : false;
 
-            if (hasEstablished && isPartial) {
-                log(`[fromBackgroundPopupResponse] Blocking settings downgrade (incoming: ${incomingCount}, existing: ${existingCount})`);
-            } else if (incomingCount === 0 && existingCount > 0) {
-                log(`[fromBackgroundPopupResponse] Blocking empty settings overwrite (existing: ${existingCount})`);
-            } else {
-                cachedState.settings = value.settings;
+        if (didPersistedStateChange) {
+            try {
+                const payload = buildLocalStorageMirrorPayload(cachedState);
+                updateLocalStorageBackup(payload);
+                if (mainWindow && mainWindow.webContents) {
+                    mirrorCachedStateToLocalStorage(mainWindow);
+                }
+            } catch (e) {
+                console.warn("Failed to mirror cachedState after popup response:", e?.message || e);
             }
-        }
-	        if ("password" in value) {
-	            const normalizedPassword = normalizePasswordValue(value.password);
-	            if (normalizedPassword !== null) {
-	                cachedState.password = normalizedPassword;
-	            } else {
-	                delete cachedState.password;
-	            }
-	        }
-	        if ("streamID" in value) {
-	            const normalizedStreamID = normalizeStreamIdValue(value.streamID);
-	            if (normalizedStreamID !== null) {
-	                cachedState.streamID = normalizedStreamID;
-	            }
-	        }
-        if ("state" in value) {
-            cachedState.state = value.state;
-        }
-
-        try {
-            const payload = buildLocalStorageMirrorPayload(cachedState);
-            updateLocalStorageBackup(payload);
-            if (mainWindow && mainWindow.webContents) {
-                mirrorCachedStateToLocalStorage(mainWindow);
-            }
-        } catch (e) {
-            console.warn("Failed to mirror cachedState after popup response:", e?.message || e);
         }
 
         // Forward response to popup frame
@@ -6275,55 +6272,27 @@ async function createWindow(args, reuse = false, mainApp = false) {
         if (!value) {
             return;
         }
-        if (value.settings && typeof value.settings === "object") {
-            const existingSettings = cachedState?.settings || {};
-            const existingCount = Object.keys(existingSettings).length;
-            const incomingCount = Object.keys(value.settings).length;
-            const hasEstablished = existingCount > SETTINGS_VALIDATION.MIN_EXISTING_KEYS;
-            const isPartial = incomingCount < existingCount * SETTINGS_VALIDATION.PARTIAL_THRESHOLD_RATIO;
-
-            if (hasEstablished && isPartial) {
-                log(`[fromBackgroundResponse] Blocking settings downgrade (incoming: ${incomingCount}, existing: ${existingCount})`);
-            } else if (incomingCount === 0 && existingCount > 0) {
-                log(`[fromBackgroundResponse] Blocking empty settings overwrite (existing: ${existingCount})`);
-            } else {
-                cachedState.settings = value.settings;
-            }
+        if (!hasPersistedFieldPayload(value)) {
+            eventRet.returnValue = value;
+            return;
         }
-	        if ("password" in value) {
-	            const normalizedPassword = normalizePasswordValue(value.password);
-	            if (normalizedPassword !== null) {
-	                cachedState.password = normalizedPassword;
-	            } else {
-	                delete cachedState.password;
-	            }
-	        }
-	        if ("streamID" in value) {
-	            const normalizedStreamID = normalizeStreamIdValue(value.streamID);
-	            if (normalizedStreamID !== null) {
-	                cachedState.streamID = normalizedStreamID;
-	            }
-	        }
-        if ("state" in value) {
-            cachedState.state = value.state;
-        }
+        const didPersistedStateChange = applyPersistedStateFieldsFromResponse(value, "fromBackgroundResponse");
 
-        try {
-            const payload = buildLocalStorageMirrorPayload(cachedState);
-            updateLocalStorageBackup(payload);
-            if (mainWindow && mainWindow.webContents) {
-                mirrorCachedStateToLocalStorage(mainWindow);
+        if (didPersistedStateChange) {
+            try {
+                const payload = buildLocalStorageMirrorPayload(cachedState);
+                updateLocalStorageBackup(payload);
+                if (mainWindow && mainWindow.webContents) {
+                    mirrorCachedStateToLocalStorage(mainWindow);
+                }
+            } catch (e) {
+                console.warn("Failed to mirror cachedState after background response:", e?.message || e);
             }
-        } catch (e) {
-            console.warn("Failed to mirror cachedState after background response:", e?.message || e);
         }
         eventRet.returnValue = value;
     });
 
     ipcMain.on("fromPopup", function (eventRet, value) {
-        log("\nfromPopup; will forward to background.js");
-        //log(value);
-
         // Check if this is an async message with callbackId
         const hasCallbackId = value && value.callbackId;
 
@@ -6353,11 +6322,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         try {
-            log("Forwarding to background now..");
             if (mainWindow && mainWindow.webContents) {
                 mainWindow.webContents.mainFrame.frames.forEach((frame) => {
                     if (frame.url.split("?")[0].endsWith("background.html")) {
-                        log(" - found background.html to forward to");
                         frame.postMessage("fromPopup", value); // pass it along to the actual background
                     }
                 });
@@ -6368,7 +6335,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
     });
 
     ipcMain.on("fromPopupResponse", function (eventRet, value) {
-        log("\nfromPopupResponse");
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
                 if (frame.url.split("?")[0].endsWith("background.html")) {
@@ -10043,7 +10009,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 });
             }
         });
-        log(tabs);
         eventRet.returnValue = tabs;
     });
 
@@ -11755,6 +11720,90 @@ function loadCachedStateWithBackupSource(options = {}) {
 function loadCachedStateWithBackup(options = {}) {
 	const result = loadCachedStateWithBackupSource(options);
 	return result && result.state ? result.state : null;
+}
+
+function areSettingsSnapshotsEqual(a, b) {
+	if (a === b) return true;
+	if (!a || typeof a !== "object" || Array.isArray(a)) return false;
+	if (!b || typeof b !== "object" || Array.isArray(b)) return false;
+	try {
+		return JSON.stringify(a) === JSON.stringify(b);
+	} catch (_) {
+		return false;
+	}
+}
+
+function areStorageValuesEqual(a, b) {
+	if (a === b) return true;
+	const aIsObject = a && typeof a === "object";
+	const bIsObject = b && typeof b === "object";
+	if (!aIsObject && !bIsObject) return false;
+	try {
+		return JSON.stringify(a) === JSON.stringify(b);
+	} catch (_) {
+		return false;
+	}
+}
+
+function hasPersistedFieldPayload(value) {
+	if (!value || typeof value !== "object") return false;
+	if (Object.prototype.hasOwnProperty.call(value, "settings")) return true;
+	if (Object.prototype.hasOwnProperty.call(value, "streamID")) return true;
+	if (Object.prototype.hasOwnProperty.call(value, "password")) return true;
+	if (Object.prototype.hasOwnProperty.call(value, "state")) return true;
+	return false;
+}
+
+function applyPersistedStateFieldsFromResponse(value, sourceTag = "fromBackgroundResponse") {
+	if (!value || typeof value !== "object") return false;
+	let changed = false;
+
+	if (value.settings && typeof value.settings === "object") {
+		const existingSettings = cachedState?.settings || {};
+		const existingCount = Object.keys(existingSettings).length;
+		const incomingCount = Object.keys(value.settings).length;
+		const hasEstablished = existingCount > SETTINGS_VALIDATION.MIN_EXISTING_KEYS;
+		const isPartial = incomingCount < existingCount * SETTINGS_VALIDATION.PARTIAL_THRESHOLD_RATIO;
+
+		if (hasEstablished && isPartial) {
+			log(`[${sourceTag}] Blocking settings downgrade (incoming: ${incomingCount}, existing: ${existingCount})`);
+		} else if (incomingCount === 0 && existingCount > 0) {
+			log(`[${sourceTag}] Blocking empty settings overwrite (existing: ${existingCount})`);
+		} else if (!areSettingsSnapshotsEqual(cachedState.settings, value.settings)) {
+			cachedState.settings = value.settings;
+			changed = true;
+		}
+	}
+
+	if ("password" in value) {
+		const normalizedPassword = normalizePasswordValue(value.password);
+		const existingPassword = normalizePasswordValue(cachedState.password);
+		if (normalizedPassword !== null) {
+			if (existingPassword !== normalizedPassword) {
+				cachedState.password = normalizedPassword;
+				changed = true;
+			}
+		} else if (Object.prototype.hasOwnProperty.call(cachedState, "password")) {
+			delete cachedState.password;
+			changed = true;
+		}
+	}
+
+	if ("streamID" in value) {
+		const normalizedStreamID = normalizeStreamIdValue(value.streamID);
+		const existingStreamID = normalizeStreamIdValue(cachedState.streamID);
+		if (normalizedStreamID !== null && existingStreamID !== normalizedStreamID) {
+			cachedState.streamID = normalizedStreamID;
+			changed = true;
+		}
+	}
+
+	if ("state" in value && cachedState.state !== value.state) {
+		cachedState.state = value.state;
+		changed = true;
+	}
+
+	return changed;
 }
 
 function saveCachedStateAtomic(state) {
