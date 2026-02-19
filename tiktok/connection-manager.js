@@ -2399,13 +2399,13 @@ function resolveGiftAssetMediaUrl(asset) {
     if (!hasExplicitStickerSignal) return null;
 
     const mediaCandidates = [
-        asset.videoResourceList?.map((entry) => entry?.videoUrl?.urlList || entry?.videoUrl || null),
-        asset.videoResourceList?.map((entry) => entry?.videoUrl?.uri || null),
         asset.resourceModel,
         asset.resourceModel?.urlList,
         asset.resourceByteVC1Model,
         asset.resourceByteVC1Model?.urlList,
-        asset.resourceUri
+        asset.resourceUri,
+        asset.videoResourceList?.map((entry) => entry?.videoUrl?.urlList || entry?.videoUrl || null),
+        asset.videoResourceList?.map((entry) => entry?.videoUrl?.uri || null)
     ];
     return resolveFirstRenderableImageUrl(mediaCandidates);
 }

@@ -58,6 +58,17 @@ function run() {
     __test.resolveTikTokGiftContentImage({
       asset: {
         stickerAssetVariant: 1,
+        videoResourceList: [{ videoUrl: { urlList: ['https://cdn.example.com/sticker-asset.mp4'] } }],
+        resourceModel: { urlList: ['https://cdn.example.com/sticker-asset.webp'] }
+      }
+    }),
+    'https://cdn.example.com/sticker-asset.webp',
+    'sticker-variant asset should prefer still image url over video url for content image'
+  );
+  assert.strictEqual(
+    __test.resolveTikTokGiftContentImage({
+      asset: {
+        stickerAssetVariant: 1,
         videoResourceList: [{ videoUrl: { uri: 'webcast://video_internal_only' } }],
         resourceModel: { urlList: ['https://cdn.example.com/sticker-asset.webp'] }
       }
