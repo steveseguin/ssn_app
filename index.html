@@ -2216,7 +2216,9 @@
 
                 // Set default connection mode based on platform
                 let defaultMode = 'classic';
-                if (target === 'tiktok') {
+                if (target === 'twitch' || target === 'kick') {
+                    defaultMode = 'websocket';
+                } else if (target === 'tiktok') {
                     if (preferTikTokClassic || cliForcesTikTokClassic) {
                         defaultMode = 'classic';
                     } else {

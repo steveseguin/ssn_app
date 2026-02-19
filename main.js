@@ -4055,12 +4055,14 @@ async function clearAllData() {
 
         // Reset cached state while preserving stream credentials
         cachedState = {};
-        if (preservedStreamID) {
-            cachedState.streamID = preservedStreamID;
-        }
-	        if (preservedPassword !== null && preservedPassword !== undefined) {
-	            cachedState.password = preservedPassword;
+	        if (preservedStreamID) {
+	            cachedState.streamID = preservedStreamID;
 	        }
+		        if (preservedPassword !== null && preservedPassword !== undefined) {
+		            cachedState.password = preservedPassword;
+		        } else {
+		            delete cachedState.password;
+		        }
 	        cachedState.state = false;
 	        // Explicit reset: replace any old quality baseline to prevent stale recovery.
 	        cachedStatePersistenceBaseline = null;
