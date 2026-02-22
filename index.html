@@ -2187,7 +2187,7 @@
                     else if (target === "beamstream") sourceUrl = `https://beamstream.gg/${username}/chat`;
                     else if (target === "vimm") sourceUrl = `https://www.vimm.tv/c/${username}`;
                     else if (target === "bilibili") sourceUrl = `https://live.bilibili.com/${username}`;
-                    else if (target === "facebook") sourceUrl = `https://www.facebook.com/${username}/videos`;
+                    else if (target === "facebook") sourceUrl = `https://www.facebook.com/live/producer/`;
                     else if (target === "arenasocial") sourceUrl = `https://arena.social/live/${username}`;
                     // Add other URL constructions as needed
                 }
@@ -5739,6 +5739,13 @@
             if (!ipcRenderer) return false;
             let urlToLoad = source.url;
 
+            if (source.target === "facebook") {
+                urlToLoad = "https://www.facebook.com/live/producer/";
+                if (source.url !== urlToLoad) {
+                    stateManager.updateSource(source.id, { url: urlToLoad });
+                }
+            }
+
             if (source.target?.startsWith("youtube") && source.videoId && (!urlToLoad || !urlToLoad.includes(source.videoId))) {
                 const isShort = source.target === "youtubeshorts";
                 if (source.videoId) {
@@ -6508,8 +6515,8 @@
                         </p>
                         <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbeafe; line-height: 1.5;">
                             <strong>Get your API key:</strong> 
-                            <a href="#" onclick="window.open('https://www.eulerstream.com/dashboard/api-keys', '_blank'); return false;" style="color: #63a4d8; text-decoration: underline;">
-                                eulerstream.com/dashboard/api-keys
+                            <a href="#" onclick="window.open('https://www.eulerstream.com/dashboard', '_blank'); return false;" style="color: #63a4d8; text-decoration: underline;">
+                                eulerstream.com/dashboard
                             </a>
                             <br><span style="color: #94a3b8; font-size: 12px;">Free tier available (Community plan)</span>
                         </p>
