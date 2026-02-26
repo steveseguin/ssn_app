@@ -3538,7 +3538,7 @@
             } else if (val === 'local') {
                 html = "<strong>Experimental:</strong> Signs using a local TikTok browser window. Supports replies. Keep the signer window open.";
             } else if (val === 'euler-ws') {
-                html = "<strong>Experimental:</strong> Connects through Euler's proxy server. Requires API key from <a href=\"#\" onclick=\"window.open('https://www.eulerstream.com/dashboard/api-keys', '_blank'); return false;\" style=\"color: #63a4d8; text-decoration: underline;\">eulerstream.com</a>. No replies.";
+                html = "<strong>Experimental:</strong> Connects through Euler's proxy server. Requires API key from <a href=\"#\" onclick=\"window.open('https://www.eulerstream.com/dashboard', '_blank'); return false;\" style=\"color: #63a4d8; text-decoration: underline;\">eulerstream.com</a>. No replies.";
             } else if (val === 'custom') {
                 html = "<strong>Experimental:</strong> Provide your own Euler API key or custom signing URL.";
             }
@@ -3697,7 +3697,7 @@
                                 <span style="font-size: 10px; background: rgba(251,191,36,0.2); color: #fcd34d; padding: 2px 6px; border-radius: 4px;">Experimental</span>
                             </div>
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
-                                Connects through Euler's hosted proxy server. Requires API key from <a href="#" onclick="window.open('https://www.eulerstream.com/dashboard/api-keys', '_blank'); return false;" style="color: #63a4d8;">eulerstream.com</a>. Free tier available. No replies.
+                                Connects through Euler's hosted proxy server. Requires API key from <a href="#" onclick="window.open('https://www.eulerstream.com/dashboard', '_blank'); return false;" style="color: #63a4d8;">eulerstream.com</a>. Free tier available. No replies.
                             </div>
                         </div>
 
@@ -6229,7 +6229,7 @@
                 // Suppress warning if using Local Signer explicitly
                 const isLocalSigner = signingProvider === 'local';
                 if (signingProvider === 'euler-ws' && (!signing || !signing.apiKey)) {
-                    Toast.warning('Euler Proxy (Experimental)', 'Enter your Euler API key to use the proxy. Get one at eulerstream.com/dashboard/api-keys');
+                    Toast.warning('Euler Proxy (Experimental)', 'Enter your Euler API key to use the proxy. Get one at eulerstream.com/dashboard');
                 }
 
                 if (strategy === 'websocket' && !signing && !isLocalSigner && !tiktokWebsocketSigningWarningShown) {
