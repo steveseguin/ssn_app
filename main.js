@@ -8959,12 +8959,149 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     log("did-navigate");
                     loaded = false;
                     scriptInjected = false; // Reset injection flag on navigation
+                    frameInjectionCode = null;
+                    injectedFrameKeys.clear();
                 });
 
             }
 
             // Move this declaration before it's used in event handlers
             let scriptInjected = false; // Track if script has been injected
+            const allFramesEnabled = args.allFrames === true;
+            const allFramePatternRegexes = (Array.isArray(args.allFramesMatchPatterns) ? args.allFramesMatchPatterns : [])
+                .filter((pattern) => typeof pattern === "string" && pattern.trim())
+                .map((pattern) => {
+                    try {
+                        const escaped = pattern.trim().replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+                        return new RegExp(`^${escaped}$`);
+                    } catch (_) {
+                        return null;
+                    }
+                })
+                .filter(Boolean);
+            let frameInjectionCode = null;
+            let frameInjectionWebContents = null;
+            let frameInjectionHandlersBound = false;
+            const injectedFrameKeys = new Set();
+
+            function frameMatchesAllFramePatterns(frame) {
+                if (!frame) return false;
+                if (!frame.parent) return false; // Skip top-level frame
+                const frameUrl = typeof frame.url === "string" ? frame.url.trim() : "";
+                if (!frameUrl || frameUrl === "about:blank") return false;
+                if (!allFramePatternRegexes.length) return true;
+                return allFramePatternRegexes.some((regex) => regex.test(frameUrl));
+            }
+
+            function getFrameInjectionKey(frame) {
+                if (!frame) return "";
+                const processId = Number.isFinite(frame.processId) ? frame.processId : "na";
+                const routingId = Number.isFinite(frame.routingId) ? frame.routingId : "na";
+                const frameUrl = typeof frame.url === "string" ? frame.url : "";
+                return `${processId}:${routingId}:${frameUrl}`;
+            }
+
+            function injectSourceIntoFrame(frame, reason = "frame") {
+                if (!allFramesEnabled || !frameInjectionCode || !frame) return;
+                if (typeof frame.isDestroyed === "function" && frame.isDestroyed()) return;
+                if (!frameMatchesAllFramePatterns(frame)) return;
+
+                const key = getFrameInjectionKey(frame);
+                if (!key || injectedFrameKeys.has(key)) return;
+                injectedFrameKeys.add(key);
+
+                frame.executeJavaScript(frameInjectionCode, true)
+                    .then(() => {
+                        log(`[all_frames] Injected source into frame (${reason}): ${frame.url || "unknown"}`);
+                    })
+                    .catch((error) => {
+                        injectedFrameKeys.delete(key);
+                        const message = error && error.message ? error.message : String(error);
+                        if (message.includes("Object has been destroyed")) return;
+                        log(`[all_frames] Failed frame injection (${reason}): ${message}`);
+                    });
+            }
+
+            function injectSourceIntoExistingFrames(reason = "scan") {
+                if (!allFramesEnabled || !frameInjectionCode || !frameInjectionWebContents) return;
+                let frames = [];
+                try {
+                    const rootFrame = frameInjectionWebContents.mainFrame;
+                    frames = rootFrame && Array.isArray(rootFrame.framesInSubtree) ? rootFrame.framesInSubtree : [];
+                } catch (_) {
+                    frames = [];
+                }
+                frames.forEach((frame) => {
+                    try {
+                        injectSourceIntoFrame(frame, reason);
+                    } catch (_) { }
+                });
+            }
+
+            function bindAllFrameInjectionHandlers(webContents) {
+                if (!allFramesEnabled || frameInjectionHandlersBound || !webContents) return;
+                frameInjectionWebContents = webContents;
+                frameInjectionHandlersBound = true;
+
+                const onDidFrameFinishLoad = (_event, isMainFrame, frameProcessId, frameRoutingId) => {
+                    if (isMainFrame || !frameInjectionCode) return;
+                    try {
+                        const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
+                        injectSourceIntoFrame(frame, "did-frame-finish-load");
+                    } catch (_) { }
+                };
+
+                const onDidFrameNavigate = (_event, _url, _httpResponseCode, _httpStatusText, isMainFrame, frameProcessId, frameRoutingId) => {
+                    if (isMainFrame || !frameInjectionCode) return;
+                    try {
+                        const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
+                        injectSourceIntoFrame(frame, "did-frame-navigate");
+                    } catch (_) { }
+                };
+
+                const onFrameCreated = (_event, details = {}) => {
+                    if (!frameInjectionCode || !details || !details.frame) return;
+                    setTimeout(() => {
+                        try {
+                            injectSourceIntoFrame(details.frame, "frame-created");
+                        } catch (_) { }
+                    }, 250);
+                };
+
+                webContents.on("did-frame-finish-load", onDidFrameFinishLoad);
+                webContents.on("did-frame-navigate", onDidFrameNavigate);
+                webContents.on("frame-created", onFrameCreated);
+
+                view.once("closed", () => {
+                    try { webContents.removeListener("did-frame-finish-load", onDidFrameFinishLoad); } catch (_) { }
+                    try { webContents.removeListener("did-frame-navigate", onDidFrameNavigate); } catch (_) { }
+                    try { webContents.removeListener("frame-created", onFrameCreated); } catch (_) { }
+                    injectedFrameKeys.clear();
+                    frameInjectionCode = null;
+                    frameInjectionWebContents = null;
+                    frameInjectionHandlersBound = false;
+                });
+            }
+
+            function setAllFrameInjectionCode(webContents, code) {
+                if (!allFramesEnabled || !webContents || !code) return;
+                frameInjectionCode = code;
+                injectedFrameKeys.clear();
+                bindAllFrameInjectionHandlers(webContents);
+                injectSourceIntoExistingFrames("main-injection");
+            }
+
+            function shouldSkipMainFrameInjection(webContents) {
+                if (!allFramesEnabled || !allFramePatternRegexes.length || !webContents) return false;
+                let currentUrl = "";
+                try {
+                    currentUrl = webContents.getURL() || "";
+                } catch (_) {
+                    currentUrl = "";
+                }
+                if (!currentUrl) return false;
+                return !allFramePatternRegexes.some((regex) => regex.test(currentUrl));
+            }
 
             function startRunning() {
                 // Prevent duplicate injection
@@ -9078,6 +9215,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
 								// Get the random flag from contextBridge if available
 								const injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 								window.__SSAPP_TAB_ID__ = ${view.tabID};
+								let __SSAPP_MESSAGE_TARGET__ = window;
+								try {
+									if (window.top && window.top !== window) {
+										__SSAPP_MESSAGE_TARGET__ = window.top;
+									}
+								} catch(_) {}
 								// Per-tab reply-only mode (disable capture forwarding)
 								const __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
 								
@@ -9159,7 +9302,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 										};
 										outgoingMessage[injectedScriptFlag] = true;
 										outgoingMessage.__tabID__ = window.__SSAPP_TAB_ID__;
-																				window.postMessage(outgoingMessage, '*');
+										__SSAPP_MESSAGE_TARGET__.postMessage(outgoingMessage, '*');
 										
 										if (c && !messageData.getSettings) {
 											setTimeout(() => c(null), 0);
@@ -9184,7 +9327,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                         } else {
                                           var data = Object.assign({}, payload);
                                           data.__tabID__ = window.__SSAPP_TAB_ID__;
-                                          window.postMessage(data, '*');
+                                          __SSAPP_MESSAGE_TARGET__.postMessage(data, '*');
                                         }
                                       } catch(e){}
                                     }
@@ -9251,6 +9394,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 }
                                 `;
 
+                            setAllFrameInjectionCode(wc, code);
+                            if (shouldSkipMainFrameInjection(wc)) {
+                                log("[all_frames] Skipping main-frame injection; waiting for matching child frames.");
+                                return;
+                            }
                             // Inject into main world (worldId: 0) to access contextBridge APIs
                             wc.executeJavaScriptInIsolatedWorld(0, [{ code }])
                                 .then(() => {
@@ -9299,6 +9447,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                             // Get the random flag from contextBridge if available
 										const injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 										window.__SSAPP_TAB_ID__ = ${view.tabID};
+										let __SSAPP_MESSAGE_TARGET__ = window;
+										try {
+											if (window.top && window.top !== window) {
+												__SSAPP_MESSAGE_TARGET__ = window.top;
+											}
+										} catch(_) {}
 										
 										chrome.runtime = {};
 										chrome.runtime.id = 1;
@@ -9363,7 +9517,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 												};
 												outgoingMessage[injectedScriptFlag] = true;
 												outgoingMessage.__tabID__ = window.__SSAPP_TAB_ID__;
-												window.postMessage(outgoingMessage, '*');
+												__SSAPP_MESSAGE_TARGET__.postMessage(outgoingMessage, '*');
 												
 												if (c && !messageData.getSettings) {
 													setTimeout(() => c(null), 0);
@@ -9395,7 +9549,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                                     } else {
                                                       var data = Object.assign({}, payload);
                                                       data.__tabID__ = window.__SSAPP_TAB_ID__;
-                                                      window.postMessage(data, '*');
+                                                      __SSAPP_MESSAGE_TARGET__.postMessage(data, '*');
                                                     }
                                                   } catch(e){}
                                                 }
@@ -9448,6 +9602,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                             })();
                                             `;
 
+                                    setAllFrameInjectionCode(wc, code);
+                                    if (shouldSkipMainFrameInjection(wc)) {
+                                        log("[all_frames] Skipping main-frame injection; waiting for matching child frames.");
+                                        return;
+                                    }
                                     // Inject into main world (worldId: 0) to access contextBridge APIs
                                     wc.executeJavaScriptInIsolatedWorld(0, [{ code }])
                                         .catch(whenDestroyedReject("Remote script injection"));
@@ -9481,6 +9640,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
 					// Get the random flag from contextBridge if available
 					const injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 					window.__SSAPP_TAB_ID__ = ${view.tabID};
+					let __SSAPP_MESSAGE_TARGET__ = window;
+					try {
+						if (window.top && window.top !== window) {
+							__SSAPP_MESSAGE_TARGET__ = window.top;
+						}
+					} catch(_) {}
 					// Per-tab reply-only mode
 					const __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
 					
@@ -9507,12 +9672,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
 								}
 							}
 						} catch(_){}
-												const outgoingMessage = {
+						const outgoingMessage = {
 							...messageData
 						};
 						outgoingMessage[injectedScriptFlag] = true;
 						outgoingMessage.__tabID__ = window.__SSAPP_TAB_ID__;
-						window.postMessage(outgoingMessage, '*');
+						__SSAPP_MESSAGE_TARGET__.postMessage(outgoingMessage, '*');
 						
 						// Handle callback if provided
 						if (typeof c === 'function') {
@@ -9520,8 +9685,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
 							setTimeout(() => c({}), 0);
 						}
 					};
-					`;
+                    `;
                     runWithWebContents("Default script injection", (wc) => {
+                        setAllFrameInjectionCode(wc, code);
+                        if (shouldSkipMainFrameInjection(wc)) {
+                            log("[all_frames] Skipping main-frame injection; waiting for matching child frames.");
+                            return;
+                        }
                         // Inject into main world (worldId: 0) to access contextBridge APIs
                         wc.executeJavaScriptInIsolatedWorld(0, [{ code }]);
                     });

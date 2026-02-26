@@ -5957,6 +5957,24 @@
 
             const targetSourceFile = source.target === "youtubeshorts" ? "youtube" : source.target;
             const scriptPath = source.sourceFile || `sources/${targetSourceFile}.js`; // Use sourceFile from state if available
+            const normalizeSourceScriptPath = (value) => {
+                if (!value || typeof value !== "string") return "";
+                return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
+            };
+            const normalizedScriptPath = normalizeSourceScriptPath(scriptPath);
+            const scriptManifestEntry = (Array.isArray(manifest?.content_scripts) ? manifest.content_scripts : []).find((entry) => {
+                if (!entry || !Array.isArray(entry.js)) return false;
+                return entry.js.some((candidatePath) => normalizeSourceScriptPath(candidatePath) === normalizedScriptPath);
+            });
+            const isVimeoSource = targetSourceFile === "vimeo";
+            const allFrames = !!(scriptManifestEntry && scriptManifestEntry.all_frames) || isVimeoSource;
+            const allFramesMatchPatterns = (Array.isArray(scriptManifestEntry?.matches) && scriptManifestEntry.matches.length)
+                ? scriptManifestEntry.matches.slice()
+                : (isVimeoSource ? [
+                    "https://www.vimeo.com/live*",
+                    "https://vimeo.com/live*",
+                    "https://vimeo.com/event/*"
+                ] : []);
 
             try {
                 console.log(`[CreateClassicWindow] Creating window for ${source.username || source.videoId}, visible: ${source.isVisible}, muted: ${source.isMuted}`);
@@ -5972,6 +5990,8 @@
                     sourceId: source.id,
                     customSession: source.customSession || 'AUTO',
                     replyOnly: !!source.replyOnly,
+                    allFrames: allFrames,
+                    allFramesMatchPatterns: allFramesMatchPatterns,
                     isBetaMode: isBetaMode,
                     domain: new URL(urlToLoad).hostname
                 });
