@@ -1256,10 +1256,19 @@ const spotifyOAuthMode = (() => {
     return 'auto';
 })();
 
-const spotifyOAuthAllowInterceptFallback = (
-    process.argv.includes('--spotify-oauth-allow-intercept-fallback') ||
-    (process.env.SSAPP_SPOTIFY_OAUTH_FALLBACK || '').trim().toLowerCase() === 'intercept'
-);
+const spotifyOAuthFallbackMode = (process.env.SSAPP_SPOTIFY_OAUTH_FALLBACK || '').trim().toLowerCase();
+const spotifyOAuthAllowInterceptFallback = (() => {
+    if (process.argv.includes('--spotify-oauth-disable-intercept-fallback')) {
+        return false;
+    }
+    if (spotifyOAuthFallbackMode === 'none' || spotifyOAuthFallbackMode === 'off' || spotifyOAuthFallbackMode === 'disabled' || spotifyOAuthFallbackMode === 'loopback') {
+        return false;
+    }
+    if (process.argv.includes('--spotify-oauth-allow-intercept-fallback') || spotifyOAuthFallbackMode === 'intercept') {
+        return true;
+    }
+    return undefined;
+})();
 
 function configureSpotifyOAuthHandlers() {
     if (spotifyOAuthMode === 'intercept') {
@@ -1268,9 +1277,13 @@ function configureSpotifyOAuthHandlers() {
     }
 
     try {
-        setupSpotifyOAuthWithLocalServer({
-            fallbackToIntercept: spotifyOAuthAllowInterceptFallback
-        });
+        const loopbackOptions = {};
+        if (spotifyOAuthMode === 'loopback') {
+            loopbackOptions.fallbackToIntercept = false;
+        } else if (typeof spotifyOAuthAllowInterceptFallback === 'boolean') {
+            loopbackOptions.fallbackToIntercept = spotifyOAuthAllowInterceptFallback;
+        }
+        setupSpotifyOAuthWithLocalServer(loopbackOptions);
     } catch (error) {
         console.error('[Spotify OAuth] Failed to initialize loopback handler:', error);
         if (spotifyOAuthMode !== 'loopback') {
@@ -3984,6 +3997,103 @@ function enableSessionElectronHeaderStripping(ses) {
     }
 }
 
+function deriveOriginFromReferer(referer) {
+    if (typeof referer !== 'string' || !referer.trim()) {
+        return null;
+    }
+    try {
+        return new URL(referer.trim()).origin;
+    } catch (_) {
+        return null;
+    }
+}
+
+function deriveHeaderDefaultsFromUrl(urlValue) {
+    if (typeof urlValue !== 'string' || !urlValue.trim()) {
+        return {
+            origin: null,
+            referer: null
+        };
+    }
+
+    const raw = urlValue.trim();
+    const candidates = [raw];
+    if (!/^https?:\/\//i.test(raw)) {
+        candidates.push(`https://${raw}`);
+    }
+
+    for (const candidate of candidates) {
+        try {
+            const parsed = new URL(candidate);
+            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+                continue;
+            }
+            return {
+                origin: parsed.origin,
+                referer: `${parsed.origin}/`
+            };
+        } catch (_) { }
+    }
+
+    return {
+        origin: null,
+        referer: null
+    };
+}
+
+function resolveHeaderOverridesFromConfig(config, baseUrl) {
+    const configuredOrigin =
+        (config && typeof config.Origin === 'string' && config.Origin.trim()) ? config.Origin.trim()
+            : (config && typeof config.origin === 'string' && config.origin.trim()) ? config.origin.trim()
+                : null;
+    const configuredReferer =
+        (config && typeof config.Referer === 'string' && config.Referer.trim()) ? config.Referer.trim()
+            : (config && typeof config.referer === 'string' && config.referer.trim()) ? config.referer.trim()
+                : (config && typeof config.referrer === 'string' && config.referrer.trim()) ? config.referrer.trim()
+                    : null;
+
+    const configuredOriginResolved = configuredOrigin || deriveOriginFromReferer(configuredReferer);
+
+    const referrerModeRaw =
+        (config && typeof config.referrerMode === 'string' && config.referrerMode.trim()) ? config.referrerMode.trim().toLowerCase()
+            : (config && typeof config.refererMode === 'string' && config.refererMode.trim()) ? config.refererMode.trim().toLowerCase()
+                : (config && typeof config.refMode === 'string' && config.refMode.trim()) ? config.refMode.trim().toLowerCase()
+                    : null;
+
+    const derived = deriveHeaderDefaultsFromUrl(baseUrl);
+
+    if (referrerModeRaw === 'off' || referrerModeRaw === 'none' || referrerModeRaw === 'disabled') {
+        return {
+            mode: 'off',
+            origin: null,
+            referer: null
+        };
+    }
+
+    if (referrerModeRaw === 'on' || referrerModeRaw === 'force') {
+        return {
+            mode: 'on',
+            origin: derived.origin || configuredOriginResolved || null,
+            referer: derived.referer || configuredReferer || null
+        };
+    }
+
+    if (referrerModeRaw === 'auto') {
+        return {
+            mode: 'auto',
+            origin: configuredOriginResolved || derived.origin || null,
+            referer: configuredReferer || derived.referer || null
+        };
+    }
+
+    // Backward-compatible mode: only use explicit config header overrides.
+    return {
+        mode: 'configured',
+        origin: configuredOriginResolved || null,
+        referer: configuredReferer || null
+    };
+}
+
 function registerActivatedWindowSessionHooks(view, args = {}) {
     if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
         return () => { };
@@ -4002,12 +4112,13 @@ function registerActivatedWindowSessionHooks(view, args = {}) {
     hooks.passkeyBlockWebContentsIds.add(webContentsId);
 
     const config = args && typeof args.config === 'object' ? args.config : null;
-    const needsOriginReferer = !!(config && ('Origin' in config || 'Referer' in config));
+    const headerOverrides = resolveHeaderOverridesFromConfig(config, args && typeof args.url === 'string' ? args.url : null);
+    const needsOriginReferer = !!(headerOverrides.origin || headerOverrides.referer);
     const needsUserAgentHeaders = !!(config && config.userAgent && config.mockUserAgentData);
     if (needsOriginReferer || needsUserAgentHeaders) {
         hooks.headerOverrideByWebContentsId.set(webContentsId, {
-            origin: needsOriginReferer && typeof config.Origin === 'string' ? config.Origin : null,
-            referer: needsOriginReferer && typeof config.Referer === 'string' ? config.Referer : null,
+            origin: needsOriginReferer ? headerOverrides.origin : null,
+            referer: needsOriginReferer ? headerOverrides.referer : null,
             stripElectron: needsUserAgentHeaders
         });
     }
@@ -7610,7 +7721,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 }
             }
 
+            const hasSignInPreload = Boolean(preloadScript);
             console.log(`Using preload: ${preloadScript || 'none'} for domain: ${domain}`);
+            if (!hasSignInPreload) {
+                log('Sign-in preload disabled via config; using clean sign-in window (no CSP or DOM injection overrides).');
+            }
 
             // Build webPreferences object - MATCH WORKING CODE EXACTLY
             const webPreferences = {
@@ -7728,8 +7843,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             const enforceSignInCSP = shouldEnforceSignInCSP(args);
 
-            // Set Content-Security-Policy once per session to avoid listener accumulation (skip for Kasada or when disabled)
-            if (enforceSignInCSP && preloadScript !== 'preload-kasada.js') {
+            // Set Content-Security-Policy once per session to avoid listener accumulation
+            // (skip when preload is disabled, for Kasada preload, or when disabled via config)
+            if (enforceSignInCSP && hasSignInPreload && preloadScript !== 'preload-kasada.js') {
                 const ses = view.webContents.session;
                 if (ses && !cspConfiguredSessions.has(ses)) {
                     ses.webRequest.onHeadersReceived((details, callback) => {
@@ -7752,6 +7868,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 }
             } else if (!enforceSignInCSP) {
                 log('Sign-in CSP override disabled via config');
+            } else if (!hasSignInPreload) {
+                log('Sign-in CSP override skipped because signin.preload is none');
             }
 
             // Store window configuration
@@ -7762,6 +7880,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             view.__ss_visible = true;
             try { view.setSkipTaskbar(false); } catch (_) { }
             browserViews[view.tabID] = view;
+            const releaseSignInWindowSessionHooks = registerActivatedWindowSessionHooks(view, args);
 
 
             // Skip header manipulation for kasada preload - let it work like the working code
@@ -7910,6 +8029,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 // Inject chrome.runtime mock for sign-in windows that need it
                 view.webContents.on('dom-ready', () => {
                     log('Sign-in window DOM ready, checking if chrome.runtime mock needed');
+
+                    // Skip all DOM injection when preload is explicitly disabled.
+                    if (!hasSignInPreload) {
+                        log('Skipping all DOM injections because signin.preload is none');
+                        return;
+                    }
 
                     // Skip ALL injection for kasada preload - let it work like the working code
                     if (preloadScript === 'preload-kasada.js') {
@@ -8227,6 +8352,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 view.on('closed', () => {
                     const tabID = view.tabID; // Store it immediately
                     log("Sign-in window closed, destroyed: " + view.isDestroyed());
+                    try {
+                        releaseSignInWindowSessionHooks();
+                    } catch (_) { }
 
                     // Clean up if possible
                     if (!view.isDestroyed()) {
