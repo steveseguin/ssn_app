@@ -9095,30 +9095,56 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Move this declaration before it's used in event handlers
             let scriptInjected = false; // Track if script has been injected
-            const allFramesEnabled = args.allFrames === true;
-            const allFramePatternRegexes = (Array.isArray(args.allFramesMatchPatterns) ? args.allFramesMatchPatterns : [])
-                .filter((pattern) => typeof pattern === "string" && pattern.trim())
-                .map((pattern) => {
-                    try {
-                        const escaped = pattern.trim().replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
-                        return new RegExp(`^${escaped}$`);
-                    } catch (_) {
-                        return null;
-                    }
+            const sourceManifestEntries = Array.isArray(args.sourceManifestEntries) ? args.sourceManifestEntries : [];
+            const compileManifestPattern = (pattern) => {
+                if (typeof pattern !== "string" || !pattern.trim()) return null;
+                try {
+                    const escaped = pattern.trim().replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+                    return new RegExp(`^${escaped}$`);
+                } catch (_) {
+                    return null;
+                }
+            };
+            const manifestInjectionRules = sourceManifestEntries
+                .map((entry) => {
+                    const regexes = (Array.isArray(entry?.matches) ? entry.matches : [])
+                        .map((pattern) => compileManifestPattern(pattern))
+                        .filter(Boolean);
+                    return {
+                        allFrames: entry?.allFrames === true,
+                        regexes
+                    };
                 })
-                .filter(Boolean);
+                .filter((entry) => entry.regexes.length > 0);
+            const hasManifestRules = manifestInjectionRules.length > 0;
+            const allFramesEnabled = manifestInjectionRules.some((entry) => entry.allFrames);
             let frameInjectionCode = null;
             let frameInjectionWebContents = null;
             let frameInjectionHandlersBound = false;
             const injectedFrameKeys = new Set();
 
-            function frameMatchesAllFramePatterns(frame) {
+            function urlMatchesManifestRules(urlValue, requireAllFrames = false) {
+                if (typeof urlValue !== "string") {
+                    return false;
+                }
+                const normalized = urlValue.trim();
+                if (!normalized) {
+                    return false;
+                }
+                return manifestInjectionRules.some((entry) => {
+                    if (requireAllFrames && !entry.allFrames) {
+                        return false;
+                    }
+                    return entry.regexes.some((regex) => regex.test(normalized));
+                });
+            }
+
+            function frameMatchesSourceManifest(frame) {
                 if (!frame) return false;
                 if (!frame.parent) return false; // Skip top-level frame
                 const frameUrl = typeof frame.url === "string" ? frame.url.trim() : "";
                 if (!frameUrl || frameUrl === "about:blank") return false;
-                if (!allFramePatternRegexes.length) return true;
-                return allFramePatternRegexes.some((regex) => regex.test(frameUrl));
+                return urlMatchesManifestRules(frameUrl, true);
             }
 
             function getFrameInjectionKey(frame) {
@@ -9132,7 +9158,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             function injectSourceIntoFrame(frame, reason = "frame") {
                 if (!allFramesEnabled || !frameInjectionCode || !frame) return;
                 if (typeof frame.isDestroyed === "function" && frame.isDestroyed()) return;
-                if (!frameMatchesAllFramePatterns(frame)) return;
+                if (!frameMatchesSourceManifest(frame)) return;
 
                 const key = getFrameInjectionKey(frame);
                 if (!key || injectedFrameKeys.has(key)) return;
@@ -9219,8 +9245,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 injectSourceIntoExistingFrames("main-injection");
             }
 
-            function shouldSkipMainFrameInjection(webContents) {
-                if (!allFramesEnabled || !allFramePatternRegexes.length || !webContents) return false;
+            function shouldInjectMainFrame(webContents) {
+                if (!hasManifestRules) {
+                    // If source isn't in manifest, preserve legacy behavior.
+                    return true;
+                }
+                if (!webContents) return false;
                 let currentUrl = "";
                 try {
                     currentUrl = webContents.getURL() || "";
@@ -9228,7 +9258,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     currentUrl = "";
                 }
                 if (!currentUrl) return false;
-                return !allFramePatternRegexes.some((regex) => regex.test(currentUrl));
+                return urlMatchesManifestRules(currentUrl, false);
             }
 
             function startRunning() {
@@ -9523,8 +9553,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 `;
 
                             setAllFrameInjectionCode(wc, code);
-                            if (shouldSkipMainFrameInjection(wc)) {
-                                log("[all_frames] Skipping main-frame injection; waiting for matching child frames.");
+                            if (!shouldInjectMainFrame(wc)) {
+                                log("[manifest] Skipping main-frame injection; current URL does not match source manifest.");
                                 return;
                             }
                             // Inject into main world (worldId: 0) to access contextBridge APIs
@@ -9731,8 +9761,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                             `;
 
                                     setAllFrameInjectionCode(wc, code);
-                                    if (shouldSkipMainFrameInjection(wc)) {
-                                        log("[all_frames] Skipping main-frame injection; waiting for matching child frames.");
+                                    if (!shouldInjectMainFrame(wc)) {
+                                        log("[manifest] Skipping main-frame injection; current URL does not match source manifest.");
                                         return;
                                     }
                                     // Inject into main world (worldId: 0) to access contextBridge APIs
@@ -9816,8 +9846,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     `;
                     runWithWebContents("Default script injection", (wc) => {
                         setAllFrameInjectionCode(wc, code);
-                        if (shouldSkipMainFrameInjection(wc)) {
-                            log("[all_frames] Skipping main-frame injection; waiting for matching child frames.");
+                        if (!shouldInjectMainFrame(wc)) {
+                            log("[manifest] Skipping main-frame injection; current URL does not match source manifest.");
                             return;
                         }
                         // Inject into main world (worldId: 0) to access contextBridge APIs

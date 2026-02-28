@@ -5955,19 +5955,16 @@
                 return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
             };
             const normalizedScriptPath = normalizeSourceScriptPath(scriptPath);
-            const scriptManifestEntry = (Array.isArray(manifest?.content_scripts) ? manifest.content_scripts : []).find((entry) => {
-                if (!entry || !Array.isArray(entry.js)) return false;
-                return entry.js.some((candidatePath) => normalizeSourceScriptPath(candidatePath) === normalizedScriptPath);
-            });
-            const isVimeoSource = targetSourceFile === "vimeo";
-            const allFrames = !!(scriptManifestEntry && scriptManifestEntry.all_frames) || isVimeoSource;
-            const allFramesMatchPatterns = (Array.isArray(scriptManifestEntry?.matches) && scriptManifestEntry.matches.length)
-                ? scriptManifestEntry.matches.slice()
-                : (isVimeoSource ? [
-                    "https://www.vimeo.com/live*",
-                    "https://vimeo.com/live*",
-                    "https://vimeo.com/event/*"
-                ] : []);
+            const sourceManifestEntries = (Array.isArray(manifest?.content_scripts) ? manifest.content_scripts : [])
+                .filter((entry) => {
+                    if (!entry || !Array.isArray(entry.js)) return false;
+                    return entry.js.some((candidatePath) => normalizeSourceScriptPath(candidatePath) === normalizedScriptPath);
+                })
+                .map((entry) => ({
+                    allFrames: !!entry.all_frames,
+                    matches: Array.isArray(entry.matches) ? entry.matches.slice() : []
+                }))
+                .filter((entry) => Array.isArray(entry.matches) && entry.matches.length > 0);
 
             try {
                 console.log(`[CreateClassicWindow] Creating window for ${source.username || source.videoId}, visible: ${source.isVisible}, muted: ${source.isMuted}`);
@@ -5983,8 +5980,7 @@
                     sourceId: source.id,
                     customSession: source.customSession || 'AUTO',
                     replyOnly: !!source.replyOnly,
-                    allFrames: allFrames,
-                    allFramesMatchPatterns: allFramesMatchPatterns,
+                    sourceManifestEntries: sourceManifestEntries,
                     isBetaMode: isBetaMode,
                     domain: new URL(urlToLoad).hostname
                 });
