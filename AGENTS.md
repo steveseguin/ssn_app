@@ -4,6 +4,11 @@
 
 Electron desktop application for aggregating social media live stream chat. CommonJS JavaScript codebase (no TypeScript).
 
+## Source Of Truth
+
+- Social Stream source edits must be made in `C:\Users\steve\Code\social_stream`.
+- Do not treat `C:\Users\steve\Code\ssapp\resources\social_stream_fallback\main` as the source repo; it is a fallback mirror/bundle target.
+
 ## Build/Run Commands
 
 | Command | Description |
