@@ -79,6 +79,20 @@ npm run build:rpi
 
 For detailed usage instructions, visit the [Social Stream Ninja documentation](https://socialstream.ninja/manual).
 
+## YouTube OAuth (SSAPP) Troubleshooting
+
+If YouTube sign-in loops or quota still appears to hit the default project in SSAPP, check the following:
+
+1. In SSAPP, use `External browser` sign-in for YouTube.
+2. In your Google OAuth Web Application client, add all four Authorized redirect URIs:
+   - `https://socialstream.ninja/sources/websocket/youtube.html`
+   - `https://socialstream.ninja/beta/sources/websocket/youtube.html`
+   - `http://localhost:8181/sources/websocket/youtube.html`
+   - `http://localhost:8080/sources/websocket/youtube.html`
+3. Add `socialstream.ninja` as an Authorized domain on the OAuth consent screen when needed; you do not need to add `youtube.com` there.
+4. The YouTube websocket flow uses OAuth access tokens; API key metrics are not the primary indicator for this flow. A "fresh 10,000" API key reading does not necessarily mean OAuth requests are using the default project.
+5. After changing credentials, sign out/in again in the YouTube source to apply them.
+
 ## Configuration
 
 The app stores configuration in:
