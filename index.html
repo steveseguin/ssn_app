@@ -1316,7 +1316,7 @@
                 if (roBadge) {
                     const enabled = !!source.replyOnly;
                     roBadge.style.display = enabled ? 'inline-block' : 'none';
-                    roBadge.textContent = '📨 Reply only';
+                    roBadge.textContent = translate('badge.replyonly');
                     roBadge.title = 'Reply-only: it will not capture messages, but will still let you send them.\nChange via ⚙️ → Bot reply-only (no capture).';
                 }
                 const sessionBadge = element.querySelector('[data-session-badge]');
@@ -1339,7 +1339,7 @@
                     effectiveMode === 'tiktok-legacy';
                 if (isTikTokLocalSigner && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy')) {
                     signinButton.classList.remove('hidden');
-                    signinButton.innerHTML = '🪟 Signing window';
+                    signinButton.innerHTML = translate('btn.signingwindow');
                     signinButton.title = 'Open the TikTok signing window (local signer)';
                     signinButton.onclick = () => tiktokShowSigningWindow(source.id);
                 } else {
@@ -1356,10 +1356,10 @@
                 const hide = (!isTikTokLocalSigner && isTikTokApiMode) || (!isTikTokApiMode && !showDuringConnect && !showWhenActive);
                 visibilityControl.classList.toggle('hidden', hide);
                 if (isTikTokLocalSigner && isTikTokApiMode) {
-                    visibilityControl.textContent = '👁️ Reveal capture page';
+                    visibilityControl.textContent = translate('btn.revealcapture');
                     visibilityControl.title = 'Show the TikTok signing window';
                 } else {
-                    visibilityControl.textContent = source.isVisible ? '👁️ Hide capture page' : '🙈 Reveal capture page';
+                    visibilityControl.textContent = source.isVisible ? translate('btn.hidecapture') : translate('btn.revealcapture');
                     visibilityControl.title = source.isVisible ? 'Hide the capture page for this source' : 'Reveal the hidden capture page for this source';
                 }
                 if (isTikTokLocalSigner && isTikTokApiMode) {
@@ -1500,7 +1500,7 @@
                 if (reloadButton) reloadButton.classList.add('hidden');
                 if (source.connectionMode === 'websocket' && source.vid) {
                     // Window exists but not connected: present a Close action
-                    activateButton.textContent = '⏹️ Close WebSocket';
+                    activateButton.textContent = translate('btn.closewebsocket');
                     activateButton.onclick = function () { stopThis(this); };
                 } else {
                     // Restore default activate label based on mode
@@ -1511,7 +1511,7 @@
                         } else if (mode === 'tiktok-legacy' && source.target === 'tiktok') {
                             activateButton.textContent = 'Connect TikTok Polling';
                         } else if (mode === 'websocket') {
-                            activateButton.textContent = 'Connect WebSocket';
+                            activateButton.textContent = translate('btn.connectwebsocket');
                         } else {
                             activateButton.textContent = translate('btn.activate');
                         }
@@ -3247,11 +3247,11 @@
                 } else if (displayMode === 'websocket') {
                     const s = srcForMode;
                     if (s && s.status === 'activating') {
-                        activateButton.innerText = '⏹️ Stop connecting';
+                        activateButton.innerText = translate('btn.stopconnecting');
                     } else if (s && s.vid) {
-                        activateButton.innerText = '⏹️ Close WebSocket';
+                        activateButton.innerText = translate('btn.closewebsocket');
                     } else {
-                        activateButton.innerText = 'Connect WebSocket';
+                        activateButton.innerText = translate('btn.connectwebsocket');
                     }
                 } else {
                     activateButton.innerText = translate('btn.activate');
@@ -3766,7 +3766,7 @@
 
                 const connectionHeader = document.createElement('div');
                 connectionHeader.className = 'settings-menu-header';
-                connectionHeader.textContent = 'Connection Modes';
+                connectionHeader.textContent = translate('header.connectionmodes');
                 connectionModesSection.appendChild(connectionHeader);
 
                 const createConnectionItem = (icon, label, dataset, handler) => {
@@ -4776,7 +4776,7 @@
             if (!activateButton) return;
             activateButton.classList.remove('hidden');
             activateButton.dataset.connecting = 'true';
-            activateButton.textContent = '⏹️ Stop connecting';
+            activateButton.textContent = translate('btn.stopconnecting');
             activateButton.onclick = function () { stopThis(this); };
         }
 
@@ -4801,7 +4801,7 @@
                     activateButton.textContent = translate('btn.activate');
                 }
             } else if (activeMode === 'websocket') {
-                activateButton.textContent = 'Connect WebSocket';
+                activateButton.textContent = translate('btn.connectwebsocket');
             } else {
                 activateButton.textContent = translate('btn.activate');
             }
@@ -9764,6 +9764,12 @@
                 'btn.hidden': '🙈 Hidden',
                 'btn.muted': '🔇 Muted',
                 'btn.unmuted': '🔊 Volume',
+                'btn.connectwebsocket': 'Connect WebSocket',
+                'btn.closewebsocket': '⏹️ Close WebSocket',
+                'btn.stopconnecting': '⏹️ Stop connecting',
+                'btn.revealcapture': '👁️ Reveal capture page',
+                'btn.hidecapture': '👁️ Hide capture page',
+                'btn.signingwindow': '🪟 Signing window',
 
                 // Settings menu
                 'settings.title': 'Additional settings for this source',
@@ -9783,6 +9789,8 @@
                 'sessions.active': 'Active',
 
                 // Global
+                'badge.replyonly': '📨 Reply only',
+                'header.connectionmodes': 'Connection Modes',
 
                 // Sources
                 'source.add': 'Add a new source:',
@@ -9824,13 +9832,18 @@
                 // Buttons
                 'btn.activate': '▶️ Ativar fonte',
                 'btn.signin': '🔑 Entrar',
-                'btn.help': '❓ Ajuda!',
+                'btn.help': '❓ Ajuda',
                 'btn.stop': '⏹️ Parar',
                 'btn.reload': '🔄 Recarregar',
                 'btn.visible': '👁️ Visível',
                 'btn.hidden': '🙈 Oculto',
                 'btn.muted': '🔇 Mudo',
                 'btn.unmuted': '🔊 Som',
+                'btn.connectwebsocket': 'Conectar WebSocket',
+                'btn.closewebsocket': '⏹️ Fechar WebSocket',
+                'btn.stopconnecting': '⏹️ Parar conexão',
+                'btn.revealcapture': '👁️ Revelar página de captura',
+                'btn.signingwindow': '🪟 Janela de assinatura',
 
                 // Settings menu
                 'settings.title': 'Configurações adicionais para esta fonte',
@@ -9844,10 +9857,14 @@
                 'sessions.current': 'Sessão Atual',
                 'sessions.available': 'Sessões Disponíveis',
                 'sessions.create': '➕ Criar Nova Sessão',
+                'sessions.export': '💾 Exportar Sessão Atual',
+                'sessions.import': '📂 Importar Sessão',
                 'sessions.switch': 'Alternar',
                 'sessions.active': 'Ativa',
 
                 // Global
+                'badge.replyonly': '📨 Apenas resposta',
+                'header.connectionmodes': 'Modos de Conexão',
 
                 // Sources
                 'source.add': 'Adicionar nova fonte:',
@@ -9889,13 +9906,18 @@
                 // Buttons
                 'btn.activate': '▶️ Activar fuente',
                 'btn.signin': '🔑 Iniciar sesión',
-                'btn.help': '❓ ¡Ayuda!',
+                'btn.help': '❓ Ayuda',
                 'btn.stop': '⏹️ Detener',
                 'btn.reload': '🔄 Recargar',
                 'btn.visible': '👁️ Visible',
                 'btn.hidden': '🙈 Oculto',
                 'btn.muted': '🔇 Silenciado',
                 'btn.unmuted': '🔊 Sonido',
+                'btn.connectwebsocket': 'Conectar WebSocket',
+                'btn.closewebsocket': '⏹️ Cerrar WebSocket',
+                'btn.stopconnecting': '⏹️ Detener conexión',
+                'btn.revealcapture': '👁️ Mostrar página de captura',
+                'btn.signingwindow': '🪟 Ventana de firma',
 
                 // Settings menu
                 'settings.title': 'Configuración adicional para esta fuente',
@@ -9909,13 +9931,17 @@
                 'sessions.current': 'Sesión Actual',
                 'sessions.available': 'Sesiones Disponibles',
                 'sessions.create': '➕ Crear Nueva Sesión',
+                'sessions.export': '💾 Exportar sesión actual',
+                'sessions.import': '📂 Importar sesión',
                 'sessions.switch': 'Cambiar',
                 'sessions.active': 'Activa',
 
                 // Global
+                'badge.replyonly': '📨 Solo respuesta',
+                'header.connectionmodes': 'Modos de conexión',
 
                 // Sources
-                'source.add': 'Añadir nueva fuente',
+                'source.add': 'Añadir nueva fuente:',
                 'source.mode.standard': '📄 Estándar',
                 'source.mode.websocket': '🌐 WebSocket',
                 'source.mode.legacy': '🕰️ Polling',
@@ -9954,7 +9980,7 @@
                 // Buttons
                 'btn.activate': '▶️ Aktivovat zdroj',
                 'btn.signin': '🔑 Přihlásit se',
-                'btn.help': '❓ Nápověda!',
+                'btn.help': '❓ Nápověda',
                 'btn.stop': '⏹️ Zastavit',
                 'btn.reload': '🔄 Znovu načíst',
                 'btn.visible': '👁️ Viditelné',
@@ -10021,7 +10047,7 @@
                 // Buttons
                 'btn.activate': '▶️ Activer la source',
                 'btn.signin': '🔑 Se connecter',
-                'btn.help': '❓ Aide!',
+                'btn.help': '❓ Aide',
                 'btn.stop': '⏹️ Arrêter',
                 'btn.reload': '🔄 Recharger',
                 'btn.visible': '👁️ Visible',
@@ -10041,13 +10067,15 @@
                 'sessions.current': 'Session Actuelle',
                 'sessions.available': 'Sessions Disponibles',
                 'sessions.create': '➕ Créer une Nouvelle Session',
+                'sessions.export': '💾 Exporter la session actuelle',
+                'sessions.import': '📂 Importer une session',
                 'sessions.switch': 'Changer',
                 'sessions.active': 'Active',
 
                 // Global
 
                 // Sources
-                'source.add': 'Ajouter une nouvelle source',
+                'source.add': 'Ajouter une nouvelle source:',
                 'source.mode.standard': '📄 Standard',
                 'source.mode.websocket': '🌐 WebSocket',
                 'source.mode.legacy': '🕰️ Polling',
@@ -10086,7 +10114,7 @@
                 // Buttons
                 'btn.activate': '▶️ Quelle aktivieren',
                 'btn.signin': '🔑 Anmelden',
-                'btn.help': '❓ Hilfe!',
+                'btn.help': '❓ Hilfe',
                 'btn.stop': '⏹️ Stoppen',
                 'btn.reload': '🔄 Neu laden',
                 'btn.visible': '👁️ Sichtbar',
@@ -10106,13 +10134,15 @@
                 'sessions.current': 'Aktuelle Sitzung',
                 'sessions.available': 'Verfügbare Sitzungen',
                 'sessions.create': '➕ Neue Sitzung erstellen',
+                'sessions.export': '💾 Aktuelle Sitzung exportieren',
+                'sessions.import': '📂 Sitzung importieren',
                 'sessions.switch': 'Wechseln',
                 'sessions.active': 'Aktiv',
 
                 // Global
 
                 // Sources
-                'source.add': 'Neue Quelle hinzufügen',
+                'source.add': 'Neue Quelle hinzufügen:',
                 'source.mode.standard': '📄 Standard',
                 'source.mode.websocket': '🌐 WebSocket',
                 'source.mode.legacy': '🕰️ Polling',
@@ -10151,7 +10181,7 @@
                 // Buttons
                 'btn.activate': '▶️ Attiva fonte',
                 'btn.signin': '🔑 Accedi',
-                'btn.help': '❓ Aiuto!',
+                'btn.help': '❓ Aiuto',
                 'btn.stop': '⏹️ Ferma',
                 'btn.reload': '🔄 Ricarica',
                 'btn.visible': '👁️ Visibile',
@@ -10171,13 +10201,15 @@
                 'sessions.current': 'Sessione Corrente',
                 'sessions.available': 'Sessioni Disponibili',
                 'sessions.create': '➕ Crea Nuova Sessione',
+                'sessions.export': '💾 Esporta sessione corrente',
+                'sessions.import': '📂 Importa sessione',
                 'sessions.switch': 'Cambia',
                 'sessions.active': 'Attiva',
 
                 // Global
 
                 // Sources
-                'source.add': 'Aggiungi nuova fonte',
+                'source.add': 'Aggiungi nuova fonte:',
                 'source.mode.standard': '📄 Standard',
                 'source.mode.websocket': '🌐 WebSocket',
                 'source.mode.legacy': '🕰️ Polling',
@@ -10216,7 +10248,7 @@
                 // Buttons
                 'btn.activate': '▶️ ソースを有効化',
                 'btn.signin': '🔑 サインイン',
-                'btn.help': '❓ ヘルプ！',
+                'btn.help': '❓ ヘルプ',
                 'btn.stop': '⏹️ 停止',
                 'btn.reload': '🔄 リロード',
                 'btn.visible': '👁️ 表示',
@@ -10236,13 +10268,15 @@
                 'sessions.current': '現在のセッション',
                 'sessions.available': '利用可能なセッション',
                 'sessions.create': '➕ 新しいセッションを作成',
+                'sessions.export': '💾 現在のセッションをエクスポート',
+                'sessions.import': '📂 セッションをインポート',
                 'sessions.switch': '切り替え',
                 'sessions.active': 'アクティブ',
 
                 // Global
 
                 // Sources
-                'source.add': '新しいソースを追加',
+                'source.add': '新しいソースを追加:',
                 'source.mode.standard': '📄 スタンダード',
                 'source.mode.websocket': '🌐 WebSocket',
                 'source.mode.legacy': '🕰️ Polling',
@@ -10281,7 +10315,7 @@
                 // Buttons
                 'btn.activate': '▶️ 启用来源',
                 'btn.signin': '🔑 登录',
-                'btn.help': '❓ 帮助！',
+                'btn.help': '❓ 帮助',
                 'btn.stop': '⏹️ 停止',
                 'btn.reload': '🔄 重新加载',
                 'btn.visible': '👁️ 可见',
@@ -10348,7 +10382,7 @@
                 // Buttons
                 'btn.activate': '▶️ 啟用來源',
                 'btn.signin': '🔑 登入',
-                'btn.help': '❓ 說明！',
+                'btn.help': '❓ 說明',
                 'btn.stop': '⏹️ 停止',
                 'btn.reload': '🔄 重新載入',
                 'btn.visible': '👁️ 可見',
@@ -10415,7 +10449,7 @@
                 // Buttons
                 'btn.activate': '▶️ 소스 활성화',
                 'btn.signin': '🔑 로그인',
-                'btn.help': '❓ 도움말!',
+                'btn.help': '❓ 도움말',
                 'btn.stop': '⏹️ 중지',
                 'btn.reload': '🔄 새로고침',
                 'btn.visible': '👁️ 보이기',
@@ -10435,13 +10469,15 @@
                 'sessions.current': '현재 세션',
                 'sessions.available': '사용 가능한 세션',
                 'sessions.create': '➕ 새 세션 만들기',
+                'sessions.export': '💾 현재 세션 내보내기',
+                'sessions.import': '📂 세션 가져오기',
                 'sessions.switch': '전환',
                 'sessions.active': '활성',
 
                 // Global
 
                 // Sources
-                'source.add': '새 소스 추가',
+                'source.add': '새 소스 추가:',
                 'source.mode.standard': '📄 표준',
                 'source.mode.websocket': '🌐 WebSocket',
                 'source.mode.legacy': '🕰️ Polling',
@@ -10480,7 +10516,7 @@
                 // Buttons
                 'btn.activate': '▶️ Активировать источник',
                 'btn.signin': '🔑 Войти',
-                'btn.help': '❓ Помощь!',
+                'btn.help': '❓ Помощь',
                 'btn.stop': '⏹️ Остановить',
                 'btn.reload': '🔄 Перезагрузить',
                 'btn.visible': '👁️ Видимый',
@@ -10500,13 +10536,15 @@
                 'sessions.current': 'Текущая сессия',
                 'sessions.available': 'Доступные сессии',
                 'sessions.create': '➕ Создать новую сессию',
+                'sessions.export': '💾 Экспортировать текущую сессию',
+                'sessions.import': '📂 Импортировать сессию',
                 'sessions.switch': 'Переключить',
                 'sessions.active': 'Активная',
 
                 // Global
 
                 // Sources
-                'source.add': 'Добавить новый источник',
+                'source.add': 'Добавить новый источник:',
                 'source.mode.standard': '📄 Стандартный',
                 'source.mode.websocket': '🌐 WebSocket',
                 'source.mode.legacy': '🕰️ Polling',
@@ -10545,7 +10583,7 @@
                 // Buttons
                 'btn.activate': '▶️ Kaynağı etkinleştir',
                 'btn.signin': '🔑 Giriş yap',
-                'btn.help': '❓ Yardım!',
+                'btn.help': '❓ Yardım',
                 'btn.stop': '⏹️ Durdur',
                 'btn.reload': '🔄 Yenile',
                 'btn.visible': '👁️ Görünür',
@@ -10598,6 +10636,81 @@
                 'group.stopall': 'Tüm Yayınları Durdur',
                 'group.reloadall': 'Tüm Yayınları Yenile',
                 'group.remove': '🗑️ Grubu ve kaynaklarını kaldır',
+            },
+
+            'uk': {
+                // Navigation
+                'nav.streams': '🎭 Джерела та налаштування',
+                'nav.linkoverlay': '🔗 Посилання та налаштування',
+                'nav.dashboard': '📰 Стан та журнали',
+                'nav.eventfloweditor': '🪤 Редактор потоку подій',
+                'nav.vdoninja': '🎦 Віддалена трансляція камери',
+                'nav.sessions': '🧑‍🤝‍🧑 Сесії',
+
+                // Buttons
+                'btn.activate': '▶️ Активувати джерело',
+                'btn.signin': '🔑 Увійти',
+                'btn.help': '❓ Допомога',
+                'btn.stop': '⏹️ Зупинити',
+                'btn.reload': '🔄 Перезавантажити',
+                'btn.visible': '👁️ Видимий',
+                'btn.hidden': '🙈 Прихований',
+                'btn.muted': '🔇 Без звуку',
+                'btn.unmuted': '🔊 Звук',
+                'btn.connectwebsocket': 'Підключити WebSocket',
+                'btn.closewebsocket': '⏹️ Закрити WebSocket',
+                'btn.stopconnecting': '⏹️ Зупинити підключення',
+                'btn.revealcapture': '👁️ Показати сторінку захоплення',
+                'btn.hidecapture': '👁️ Приховати сторінку захоплення',
+                'btn.signingwindow': '🪟 Вікно входу',
+
+                // Settings menu
+                'settings.title': 'Додаткові налаштування для цього джерела',
+                'settings.header': 'Додаткові елементи керування',
+                'settings.clear': '🧹 Очистити кеш та сховище',
+                'settings.remove': '🗑️ Видалити джерело',
+
+                // Sessions
+                'sessions.title': 'Сесії користувачів',
+                'sessions.info': 'Керуйте кількома профілями користувачів з окремими налаштуваннями та джерелами.',
+                'sessions.current': 'Поточна сесія',
+                'sessions.available': 'Доступні сесії',
+                'sessions.create': '➕ Створити нову сесію',
+                'sessions.export': '💾 Експортувати поточну сесію',
+                'sessions.import': '📂 Імпортувати сесію',
+                'sessions.switch': 'Переключити',
+                'sessions.active': 'Активна',
+
+                // Global
+                'badge.replyonly': '📨 Тільки відповідь',
+                'header.connectionmodes': 'Режими підключення',
+
+                // Sources
+                'source.add': 'Додати нове джерело:',
+                'source.mode.standard': '📄 Стандартний',
+                'source.mode.websocket': '🌐 WebSocket',
+                'source.mode.legacy': '🕰️ Polling',
+                'source.autoactivate': 'Автоактивація',
+                'source.youtube.username': 'Ім’я користувача YouTube',
+                'source.youtube.videoid': 'ID відео YouTube',
+                'source.twitch': 'Ім’я користувача Twitch',
+                'source.kick': 'Ім’я користувача Kick',
+                'source.instagram': 'Ім’я користувача Instagram',
+                'source.facebook': 'Ім’я користувача Facebook',
+                'source.tiktok': 'Ім’я користувача TikTok',
+                'source.other': 'Інші чат-сайти',
+
+                // App info
+                'app.title': 'Social Stream Ninja Автономний',
+                'app.newversion': 'ДОСТУПНА НОВА ВЕРСІЯ',
+                'app.download': 'Завантажте нову версію тут',
+
+                // Groups
+                'group.togglevisibility': 'Переключити видимість усіх потоків',
+                'group.togglemute': 'Переключити звук усіх потоків',
+                'group.stopall': 'Зупинити всі потоки',
+                'group.reloadall': 'Перезавантажити всі потоки',
+                'group.remove': '🗑️ Видалити групу та її джерела',
             }
         };
 
@@ -10608,6 +10721,18 @@
             const lower = trimmed.toLowerCase();
             if (lower === 'zh' || lower === 'zh-cn' || lower === 'zh-hans') return 'zh-CN';
             if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-hant') return 'zh-TW';
+            if (lower.startsWith('en')) return 'en';
+            if (lower.startsWith('pt')) return 'pt-BR';
+            if (lower.startsWith('es')) return 'es';
+            if (lower.startsWith('fr')) return 'fr';
+            if (lower.startsWith('de')) return 'de';
+            if (lower.startsWith('it')) return 'it';
+            if (lower.startsWith('cs')) return 'cs';
+            if (lower.startsWith('ja')) return 'ja';
+            if (lower.startsWith('ko')) return 'ko';
+            if (lower.startsWith('ru')) return 'ru';
+            if (lower.startsWith('tr')) return 'tr';
+            if (lower.startsWith('uk')) return 'uk';
             return trimmed;
         }
 
