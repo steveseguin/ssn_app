@@ -6,7 +6,7 @@ const fs = require("fs");
 const fsp = fs.promises;
 const path = require("path");
 const os = require("os");
-const { pathToFileURL } = require("url");
+const { pathToFileURL, fileURLToPath } = require("url");
 const {
     cleanVisibleString,
     firstNonEmptyVisibleString,
@@ -2965,13 +2965,30 @@ function queueInjectorToast(level, title, message) {
 }
 
 function flushInjectorToastQueue() {
-    if (!mainWindow || mainWindow.isDestroyed() || !mainWindowReadyForInjectorToasts) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+        return;
+    }
+    const wc = mainWindow.webContents;
+    if (!wc || (typeof wc.isDestroyed === 'function' && wc.isDestroyed())) {
+        return;
+    }
+    if (!mainWindowReadyForInjectorToasts) {
+        try {
+            const currentUrl = typeof wc.getURL === 'function' ? wc.getURL() : '';
+            const hasLoadedPage = !!currentUrl && currentUrl !== 'about:blank';
+            const mainFrameIdle = typeof wc.isLoadingMainFrame === 'function' ? !wc.isLoadingMainFrame() : true;
+            if (hasLoadedPage && mainFrameIdle) {
+                mainWindowReadyForInjectorToasts = true;
+            }
+        } catch (_) { }
+    }
+    if (!mainWindowReadyForInjectorToasts) {
         return;
     }
     while (pendingInjectorToasts.length) {
         const toast = pendingInjectorToasts.shift();
         try {
-            mainWindow.webContents.send('socialstream-injector-status', toast);
+            wc.send('socialstream-injector-status', toast);
         } catch (error) {
             console.warn('Failed to send injector toast:', error);
             pendingInjectorToasts.unshift(toast);
@@ -5590,7 +5607,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
         wc.on('will-navigate', () => {
             mainWindowReadyForInjectorToasts = false;
         });
-        wc.on('did-start-navigation', () => {
+        wc.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
+            if (isMainFrame === false) return;
             mainWindowReadyForInjectorToasts = false;
         });
         wc.on('destroyed', () => {
@@ -9331,34 +9349,90 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                 scriptInjected = true;
                 if (runningLocally && args.source && !args.source.startsWith("https://")) {
-                    var jsSource;
-                    // Check if args.source already contains the full path
-                    if (args.source.includes(runningLocally.replace(/\/$/, ''))) {
-                        jsSource = args.source;
-                    } else {
-                        jsSource = runningLocally + args.source;
+                    const normalizeRoot = (value) => {
+                        if (!value || typeof value !== "string") return "";
+                        return (value.endsWith("/") || value.endsWith("\\")) ? value : `${value}/`;
+                    };
+                    const toFsPath = (value) => {
+                        if (!value || typeof value !== "string") return "";
+                        if (value.startsWith("file://")) {
+                            try {
+                                return fileURLToPath(value);
+                            } catch (_) {
+                                if (process.platform === "win32") {
+                                    return value.replace("file:///", "").replace(/\//g, path.sep);
+                                }
+                                return value.replace("file://", "").replace(/\//g, path.sep);
+                            }
+                        }
+                        return value;
+                    };
+                    const candidateRoots = [];
+                    const addCandidateRoot = (value) => {
+                        const normalized = normalizeRoot(value);
+                        if (!normalized) return;
+                        if (!candidateRoots.includes(normalized)) {
+                            candidateRoots.push(normalized);
+                        }
+                    };
+
+                    addCandidateRoot(runningLocally);
+                    try {
+                        const storedLocalSource = store.get("localSourcePath");
+                        addCandidateRoot(storedLocalSource);
+                    } catch (_) { }
+
+                    const rawCandidates = [];
+                    const sourceValue = String(args.source || "");
+                    const pushRawCandidate = (raw) => {
+                        if (!raw || typeof raw !== "string") return;
+                        if (!rawCandidates.includes(raw)) {
+                            rawCandidates.push(raw);
+                        }
+                    };
+
+                    if (/^(file:\/\/|[A-Za-z]:[\\/]|\/)/.test(sourceValue)) {
+                        pushRawCandidate(sourceValue);
+                    }
+                    for (const root of candidateRoots) {
+                        const rootWithoutTrailing = root.replace(/[\\/]+$/, "");
+                        if (sourceValue.includes(rootWithoutTrailing)) {
+                            pushRawCandidate(sourceValue);
+                        } else {
+                            pushRawCandidate(root + sourceValue.replace(/^\.?\//, ""));
+                        }
+                    }
+                    if (!rawCandidates.length) {
+                        pushRawCandidate(sourceValue);
                     }
 
-                    // Convert file:// URL to regular file path if needed
-                    if (jsSource.startsWith('file://')) {
-                        if (process.platform === 'win32') {
-                            // Windows: file:///C:/path -> C:/path
-                            jsSource = jsSource.replace('file:///', '').replace(/\//g, path.sep);
-                        } else {
-                            // Unix: file:///home/... -> /home/... (keep leading /)
-                            jsSource = jsSource.replace('file://', '').replace(/\//g, path.sep);
+                    let jsSource = "";
+                    const attemptedPaths = [];
+                    for (const rawCandidate of rawCandidates) {
+                        const fsCandidate = toFsPath(rawCandidate);
+                        if (!fsCandidate) continue;
+                        attemptedPaths.push(fsCandidate);
+                        if (fs.existsSync(fsCandidate)) {
+                            jsSource = fsCandidate;
+                            break;
                         }
+                    }
+                    if (!jsSource && attemptedPaths.length) {
+                        jsSource = attemptedPaths[0];
                     }
 
                     log("jsSource: " + jsSource);
                     let text = null;
                     try {
-                        text = fs.readFileSync(jsSource, 'utf8');
+                        text = fs.readFileSync(jsSource, "utf8");
                     } catch (e) {
+                        const tried = attemptedPaths.length
+                            ? `\n\nTried:\n${attemptedPaths.join("\n")}`
+                            : "";
                         let options = {
                             title: "Site not supported or injection script not found",
                             buttons: ["OK"],
-                            message: args.source + " was not found.\n\njoin the Discord for support: \nhttps://discord.socialstream.ninja",
+                            message: `${args.source} was not found.${tried}\n\njoin the Discord for support: \nhttps://discord.socialstream.ninja`,
                         };
                         dialog.showMessageBoxSync(options);
                         console.error(e);
@@ -12715,6 +12789,32 @@ function findSocialStreamRoot(startDir) {
     return startDir;
 }
 
+function findPreferredGithubZipRoot(startDir, zipPath = '') {
+    try {
+        const zipBaseName = String(path.basename(zipPath || '')).toLowerCase();
+        const preferredByName = [];
+        if (zipBaseName.includes('social_stream-beta')) preferredByName.push('social_stream-beta');
+        if (zipBaseName.includes('social_stream-main')) preferredByName.push('social_stream-main');
+        if (zipBaseName.includes('social_stream')) preferredByName.push('social_stream');
+        preferredByName.push('social_stream-main', 'social_stream-beta', 'social_stream');
+        const preferredNames = Array.from(new Set(preferredByName));
+
+        const entries = fs.readdirSync(startDir, { withFileTypes: true });
+        const directories = entries.filter((entry) => entry && entry.isDirectory());
+        for (const preferredName of preferredNames) {
+            const match = directories.find((entry) => entry.name.toLowerCase() === preferredName);
+            if (!match) continue;
+            const candidateRoot = path.join(startDir, match.name);
+            if (fs.existsSync(path.join(candidateRoot, 'manifest.json'))) {
+                return candidateRoot;
+            }
+        }
+    } catch (error) {
+        console.warn('Failed to scan ZIP root for preferred social_stream-* folder:', error?.message || error);
+    }
+    return null;
+}
+
 function extractZipToTemp(zipPath) {
     return new Promise((resolve, reject) => {
         try {
@@ -12771,6 +12871,7 @@ async function handleLoadFromFolder() {
 }
 
 async function handleLoadFromZip() {
+    let zipLoadStarted = false;
     try {
         const result = await dialog.showOpenDialog({
             title: 'Select Social Stream Ninja ZIP',
@@ -12779,14 +12880,35 @@ async function handleLoadFromZip() {
         });
         if (result.canceled || !result.filePaths || result.filePaths.length === 0) return;
         const zip = result.filePaths[0];
+        const zipName = path.basename(zip);
+        const startedAt = Date.now();
+        zipLoadStarted = true;
+        queueInjectorToast(
+            'info',
+            'Loading Social Stream ZIP',
+            `Extracting ${zipName}... this can take up to a minute for large ZIP files.`
+        );
+        try {
+            if (mainWindow && !mainWindow.isDestroyed() && typeof mainWindow.setProgressBar === 'function') {
+                mainWindow.setProgressBar(2, { mode: 'indeterminate' });
+            }
+        } catch (_) { }
         const extractedDir = await extractZipToTemp(zip);
-        const root = findSocialStreamRoot(extractedDir);
+        const preferredGithubRoot = findPreferredGithubZipRoot(extractedDir, zip);
+        const root = preferredGithubRoot || findSocialStreamRoot(extractedDir);
         const finalPath = ensureTrailingSep(root);
         const fileUrl = pathToFileUrl(finalPath);
         store.set('localSourcePath', fileUrl);
         try { Argv.filesource = fileUrl; } catch (e) { }
         reloadWithLocalSource(fileUrl);
         createMenu();
+        const elapsedMs = Date.now() - startedAt;
+        const elapsedSeconds = Math.max(1, Math.round(elapsedMs / 1000));
+        queueInjectorToast(
+            'success',
+            'Social Stream ZIP Loaded',
+            `Loaded ${path.basename(root)} from ${zipName} (${elapsedSeconds}s).`
+        );
     } catch (e) {
         console.error('ZIP load failed:', e);
         let instructions = '';
@@ -12839,6 +12961,19 @@ async function handleLoadFromZip() {
             detail: `${e && e.message ? e.message : e}\n\n${instructions}`,
             buttons: ['OK']
         });
+        if (zipLoadStarted) {
+            queueInjectorToast(
+                'error',
+                'Social Stream ZIP Failed',
+                e && e.message ? e.message : 'Could not extract Social Stream ZIP.'
+            );
+        }
+    } finally {
+        try {
+            if (mainWindow && !mainWindow.isDestroyed() && typeof mainWindow.setProgressBar === 'function') {
+                mainWindow.setProgressBar(-1);
+            }
+        } catch (_) { }
     }
 }
 
