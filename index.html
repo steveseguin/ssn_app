@@ -2679,7 +2679,8 @@
                 if (source && source.vid && ipcRenderer) {
                     ipcRenderer.invoke('showWindow', {
                         vid: source.vid,
-                        state: stateToSendToMain
+                        state: stateToSendToMain,
+                        userInitiated: true
                     }).catch(err => {
                         console.error(`Failed to toggle visibility for source ${sourceId}:`, err);
                     });
@@ -4359,7 +4360,8 @@
 
             ipcRenderer.invoke('showWindow', {
                 vid: source.vid,
-                state: stateToSendToMain
+                state: stateToSendToMain,
+                userInitiated: true
             }).then(responseFromMain => {
                 // responseFromMain should be the *actual* new visibility state from main process
                 let actualNewState = desiredUiState; // Default to desired if main doesn't respond clearly
@@ -7185,6 +7187,7 @@
                 const response = ipcRenderer.sendSync('signIn', {
                     url: signinUrl.trim(),
                     muted: true, visible: true, source: false, tab: tabid,
+                    userInitiated: true,
                     customSession,
                     config: conf, configs: config
                 });
@@ -8735,7 +8738,7 @@
                                 updateConnectionStatus(entryElement, 'error', 'Please sign in');
                                 // Auto-reveal the WSS window for sign-in
                                 if (ipcRenderer && source.vid) {
-                                    ipcRenderer.invoke('showWindow', { vid: source.vid, state: false }).then((visible) => {
+                                    ipcRenderer.invoke('showWindow', { vid: source.vid, state: false, userInitiated: false }).then((visible) => {
                                         stateManager.updateSource(source.id, { isVisible: (typeof visible === 'boolean') ? visible : true });
                                     }).catch(() => stateManager.updateSource(source.id, { isVisible: true }));
                                 }

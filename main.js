@@ -4929,16 +4929,23 @@ function stealthHideView(view) {
 }
 
 // Restore from stealth-hide
-function stealthShowView(view) {
+function stealthShowView(view, options = {}) {
     try {
         if (!view || view.isDestroyed()) return true;
         view.__ss_visible = true;
+        const bringToFront = !!(options && options.bringToFront);
         // Restore size/position
         if (view.__prevBounds && typeof view.__prevBounds.x === 'number') {
             view.setBounds(view.__prevBounds);
         }
         try { view.setSkipTaskbar(false); } catch (_) { }
-        try { view.showInactive(); } catch (_) { }
+        try {
+            if (bringToFront) {
+                view.show();
+            } else {
+                view.showInactive();
+            }
+        } catch (_) { }
         return true;
     } catch (_) {
         return true;
@@ -4948,6 +4955,8 @@ function stealthShowView(view) {
 ipcMain.handle('showWindow', (event, args) => {
     const view = browserViews[args.vid];
     if (!view) return false;
+    const hasExplicitUserInitiated = !!(args && Object.prototype.hasOwnProperty.call(args, 'userInitiated'));
+    const userInitiatedReveal = hasExplicitUserInitiated ? !!args.userInitiated : true;
 
     // Initialize logical visibility if missing
     if (typeof view.__ss_visible !== 'boolean') {
@@ -4959,12 +4968,12 @@ ipcMain.handle('showWindow', (event, args) => {
         if (view.__ss_visible) {
             stealthHideView(view);
         } else {
-            stealthShowView(view);
+            stealthShowView(view, { bringToFront: userInitiatedReveal });
         }
     } else if (args.state) {
         stealthHideView(view);
     } else {
-        stealthShowView(view);
+        stealthShowView(view, { bringToFront: userInitiatedReveal });
     }
 
     return { newState: !!view.__ss_visible };
@@ -7472,6 +7481,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (existingView && existingView.webContents) {
                 log("Existing tab");
                 try {
+                    if (args.userInitiated) {
+                        try {
+                            if (existingView.__ss_visible === false) {
+                                stealthShowView(existingView, { bringToFront: true });
+                            } else {
+                                existingView.show();
+                                existingView.focus();
+                            }
+                        } catch (_) { }
+                    }
                     if (args?.config?.userAgent) {
                         existingView.webContents.loadURL(args.url, {
                             userAgent: args.config.userAgent
