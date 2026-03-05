@@ -4405,6 +4405,24 @@ class ConnectionManager {
         return true;
     }
 
+    async tryAutoFallbacksBeforePrompt(primaryError, stage = 'connect_auto') {
+        if (this.signingProvider !== 'auto') {
+            return false;
+        }
+
+        const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, `${stage}_local`);
+        if (localFallbackHandled) {
+            return true;
+        }
+
+        const pollingFallbackHandled = await this.tryFallbackToPolling(primaryError, `${stage}_polling`);
+        if (pollingFallbackHandled) {
+            return true;
+        }
+
+        return false;
+    }
+
     applySignRequestTimeout(timeoutMs) {
         if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
             return;
@@ -4957,7 +4975,9 @@ class ConnectionManager {
         });
         this.connection.on('error', (err) => {
             this.logDebug('control.error', err);
-            this.handleError(err);
+            this.handleError(err).catch((handleErrorErr) => {
+                console.warn('[TikTok] Failed to process connection error:', handleErrorErr?.message || handleErrorErr);
+            });
         });
         this.connection.on('streamEnd', () => {
             this.logDebug('control.streamEnd');
@@ -5786,6 +5806,12 @@ class ConnectionManager {
                         return this.connect();
                     }
                 }
+                if (isRateLimited) {
+                    const autoFallbackHandled = await this.tryAutoFallbacksBeforePrompt(primaryError, 'connect_rate_limit_auto');
+                    if (autoFallbackHandled) {
+                        return this.connect();
+                    }
+                }
 
                 // Increment Websocket failure count only when using websocket mode
                 const isWebsocketMode = !usingLegacyTikTokConnector && !this.pollingFallbackActivated && this.connectionStrategy !== 'legacy';
@@ -6097,6 +6123,21 @@ class ConnectionManager {
         return !!this.getNextSharedEulerApiKeyCandidate('proxy');
     }
 
+    hasPendingAutoFallbackOptions() {
+        if (this.signingProvider !== 'auto') {
+            return false;
+        }
+        const legacyActive = this.pollingFallbackActivated || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy';
+        if (legacyActive) {
+            return false;
+        }
+        const canTryLocalSigner = !this.autoLocalSignerFallbackAttempted &&
+            !!this.localSigner &&
+            typeof this.localSigner.sign === 'function';
+        const canTryPolling = !!this.pollingFallbackSupported && !this.pollingFallbackActivated;
+        return canTryLocalSigner || canTryPolling;
+    }
+
     buildSharedEulerRetryNotice(candidate, reason = 'rate_limit', scope = 'signing') {
         const label = candidate?.label || 'shared key';
         if (scope === 'proxy' && reason === 'auth') {
@@ -6109,7 +6150,10 @@ class ConnectionManager {
     }
 
     getEulerApiKeyPromptMessage() {
-        return `Euler rate limit reached. Add your own free API key in TikTok settings: ${EULER_DASHBOARD_URL} (limits: ${EULER_RATE_LIMITS_URL}).`;
+        if (this.signingProvider === EULER_WS_PROVIDER) {
+            return `Euler Proxy retries were exhausted. Options: add a free Euler API key (${EULER_DASHBOARD_URL}), switch to Polling, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
+        }
+        return `AUTO retries were exhausted. Options: add a free Euler API key (${EULER_DASHBOARD_URL}), switch to Local Signer, switch to Polling, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
     }
 
     shouldPromptForEulerApiKey(primaryError, rawMessage = '') {
@@ -6127,6 +6171,9 @@ class ConnectionManager {
             return false;
         }
         if (this.isLocalSignerRateLimit(primaryError)) {
+            return false;
+        }
+        if (this.signingProvider === 'auto' && this.hasPendingAutoFallbackOptions()) {
             return false;
         }
         const combined = `${rawMessage || ''} ${primaryError?.message || ''}`.toLowerCase();
@@ -6453,7 +6500,7 @@ class ConnectionManager {
         }
     }
 
-    handleError(err) {
+    async handleError(err) {
         if (this.isStopped) return;
 
         const infoText = typeof err?.info === 'string' ? err.info : '';
@@ -6515,19 +6562,20 @@ class ConnectionManager {
         const isOffline = this.isOfflineError(primaryError, offlineMessage);
         const canTrySharedEulerKey = this.shouldTrySharedEulerApiKeyForRateLimit(primaryError, combinedMessage);
         if (canTrySharedEulerKey) {
-            this.trySharedEulerApiKeyRetry('error_rate_limit', {
+            const sharedRetryHandled = await this.trySharedEulerApiKeyRetry('error_rate_limit', {
                 reason: 'rate_limit',
                 primaryError,
                 rawMessage: combinedMessage
-            })
-                .then((handled) => {
-                    if (handled) {
-                        return this.connect();
-                    }
-                    return null;
-                })
-                .catch(() => null);
-            return;
+            });
+            if (sharedRetryHandled) {
+                return this.connect();
+            }
+        }
+        if (isRateLimited) {
+            const autoFallbackHandled = await this.tryAutoFallbacksBeforePrompt(primaryError, 'error_rate_limit_auto');
+            if (autoFallbackHandled) {
+                return this.connect();
+            }
         }
 
         this.logDebug('control.error.processed', {
