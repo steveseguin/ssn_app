@@ -28,6 +28,7 @@ aur-repo/
 src/
 pkg/
 *.log
+.tmp_head_index.html
 
 # Build configuration
 build-config.env

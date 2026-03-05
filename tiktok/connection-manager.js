@@ -64,6 +64,14 @@ const env = {
 const SIGNING_SERVICE_HELP_URL = (process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL && process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL.trim())
     ? process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL.trim()
     : 'https://github.com/SocialStreamNinja/ssapp/wiki/TikTok-Signing';
+const EULER_DASHBOARD_URL = 'https://www.eulerstream.com/dashboard';
+const EULER_RATE_LIMITS_URL = 'https://www.eulerstream.com/docs/sign-server/rate-limits';
+const SHARED_EULER_SIGNING_FALLBACK_KEY = (process.env.SSAPP_TIKTOK_SHARED_EULER_SIGNING_KEY && process.env.SSAPP_TIKTOK_SHARED_EULER_SIGNING_KEY.trim())
+    ? process.env.SSAPP_TIKTOK_SHARED_EULER_SIGNING_KEY.trim()
+    : 'euler_OTlhOWRhNGRiZGYxM2U1MTQyY2EzNDA0ZTdlNDgyMjkxOGRkZjIzNmNhODIyOTExZjE4MDVk';
+const SHARED_EULER_PROXY_FALLBACK_KEY = (process.env.SSAPP_TIKTOK_SHARED_EULER_PROXY_KEY && process.env.SSAPP_TIKTOK_SHARED_EULER_PROXY_KEY.trim())
+    ? process.env.SSAPP_TIKTOK_SHARED_EULER_PROXY_KEY.trim()
+    : 'euler_ZjE0MTMwMWJiMGJkZmI3OTFjMWM0NDI2ZTk0MWEzZmQwODY5NGQwMTMyMWU1MWM3NzBjMzkz';
 
 const TIKTOK_LOG_SUBDIR = 'tiktok-logs';
 let cachedTikTokLogDir = null;
@@ -3312,6 +3320,9 @@ class ConnectionManager {
         this.warnedMissingTtTargetIdc = false;
         this.signingConfig = normalizeSigningConfig(signing);
         this.signingProvider = options.signingProvider || 'auto';
+        this.userProvidedSigningApiKey = this.signingConfig?.apiKey || null;
+        this.sharedEulerApiKeyPool = this.buildSharedEulerApiKeyPool();
+        this.sharedEulerApiKeyAttempts = new Set();
         this.autoLocalSignerFallbackAttempted = false;
         this.autoLocalSignerFallbackActive = false;
         this.localSigner = env.localSigner || null;
@@ -5760,9 +5771,21 @@ class ConnectionManager {
                 }
 
                 const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, errorMessage);
-                const isSignServerIssue = this.isSignServerError(primaryError, errorMessage);
+                const isRateLimited = this.isRateLimitError(primaryError, errorMessage);
+                const isSignServerIssue = !isRateLimited && this.isSignServerError(primaryError, errorMessage);
                 const offlineMessage = errorMessage || userFacingMessage || (primaryError && primaryError.reason) || '';
                 const isOffline = this.isOfflineError(primaryError, offlineMessage);
+                const canTrySharedEulerKey = this.shouldTrySharedEulerApiKeyForRateLimit(primaryError, errorMessage);
+                if (canTrySharedEulerKey) {
+                    const sharedRetryHandled = await this.trySharedEulerApiKeyRetry('connect_rate_limit', {
+                        reason: 'rate_limit',
+                        primaryError,
+                        rawMessage: errorMessage
+                    });
+                    if (sharedRetryHandled) {
+                        return this.connect();
+                    }
+                }
 
                 // Increment Websocket failure count only when using websocket mode
                 const isWebsocketMode = !usingLegacyTikTokConnector && !this.pollingFallbackActivated && this.connectionStrategy !== 'legacy';
@@ -5791,7 +5814,6 @@ class ConnectionManager {
 	                    errorMessage.includes("User doesn't exist") ||
 	                    errorMessage.includes('Failed to retrieve room_id')
 	                );
-	                const isRateLimited = this.isRateLimitError(primaryError, errorMessage);
 	                if (!isRateLimited && (this.tiktokRateLimitCount || 0) > 0) {
 	                    this.tiktokRateLimitCount = 0;
 	                    this.tiktokRateLimitLastAt = 0;
@@ -5958,6 +5980,211 @@ class ConnectionManager {
         return `${base}.`;
     }
 
+    hasUserProvidedSigningApiKey() {
+        return typeof this.userProvidedSigningApiKey === 'string' && this.userProvidedSigningApiKey.trim().length > 0;
+    }
+
+    buildSharedEulerApiKeyPool() {
+        const pool = [];
+        const seen = new Set();
+        const addCandidate = (rawKey, label) => {
+            if (typeof rawKey !== 'string') {
+                return;
+            }
+            const key = rawKey.trim();
+            if (!key || seen.has(key)) {
+                return;
+            }
+            seen.add(key);
+            pool.push({
+                key,
+                label
+            });
+        };
+        addCandidate(SHARED_EULER_SIGNING_FALLBACK_KEY, 'signer fallback key');
+        addCandidate(SHARED_EULER_PROXY_FALLBACK_KEY, 'proxy fallback key');
+        return pool;
+    }
+
+    getNextSharedEulerApiKeyCandidate() {
+        if (!Array.isArray(this.sharedEulerApiKeyPool) || !this.sharedEulerApiKeyPool.length) {
+            return null;
+        }
+        for (const candidate of this.sharedEulerApiKeyPool) {
+            if (!candidate || typeof candidate.key !== 'string') {
+                continue;
+            }
+            if (!this.sharedEulerApiKeyAttempts || !this.sharedEulerApiKeyAttempts.has(candidate.key)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    hasExhaustedSharedEulerApiKeys() {
+        if (this.hasUserProvidedSigningApiKey()) {
+            return false;
+        }
+        const poolSize = Array.isArray(this.sharedEulerApiKeyPool) ? this.sharedEulerApiKeyPool.length : 0;
+        if (!poolSize) {
+            return false;
+        }
+        const attempts = this.sharedEulerApiKeyAttempts ? this.sharedEulerApiKeyAttempts.size : 0;
+        return attempts >= poolSize;
+    }
+
+    isLocalSignerRateLimit(primaryError) {
+        const errorName = typeof primaryError?.name === 'string'
+            ? primaryError.name.toLowerCase()
+            : '';
+        if (errorName === 'tiktokratelimiterror') {
+            return true;
+        }
+        const source = typeof primaryError?.source === 'string'
+            ? primaryError.source.toLowerCase()
+            : '';
+        return source.includes('local_signer');
+    }
+
+    shouldTrySharedEulerApiKeyForRateLimit(primaryError, rawMessage = '') {
+        if (!(this.signingProvider === 'auto' || this.signingProvider === EULER_WS_PROVIDER)) {
+            return false;
+        }
+        if (this.hasUserProvidedSigningApiKey()) {
+            return false;
+        }
+        if (!this.isRateLimitError(primaryError, rawMessage)) {
+            return false;
+        }
+        if (this.isLocalSignerRateLimit(primaryError)) {
+            return false;
+        }
+        return !!this.getNextSharedEulerApiKeyCandidate();
+    }
+
+    shouldTrySharedEulerApiKeyForEulerWsClose(code) {
+        if (this.signingProvider !== EULER_WS_PROVIDER) {
+            return false;
+        }
+        if (this.hasUserProvidedSigningApiKey()) {
+            return false;
+        }
+        if (!(code === 4401 || code === 4429)) {
+            return false;
+        }
+        return !!this.getNextSharedEulerApiKeyCandidate();
+    }
+
+    buildSharedEulerRetryNotice(candidate, reason = 'rate_limit') {
+        const label = candidate?.label || 'shared key';
+        if (reason === 'auth') {
+            return `Euler proxy auth failed. Retrying once with ${label}. Add your own free key at ${EULER_DASHBOARD_URL}.`;
+        }
+        return `Euler signing rate-limited. Retrying once with ${label}. Add your own free key at ${EULER_DASHBOARD_URL}.`;
+    }
+
+    getEulerApiKeyPromptMessage() {
+        return `Euler rate limit reached. Add your own free API key in TikTok settings: ${EULER_DASHBOARD_URL} (limits: ${EULER_RATE_LIMITS_URL}).`;
+    }
+
+    shouldPromptForEulerApiKey(primaryError, rawMessage = '') {
+        if (this.hasUserProvidedSigningApiKey()) {
+            return false;
+        }
+        if (!(this.signingProvider === 'auto' || this.signingProvider === EULER_WS_PROVIDER)) {
+            return false;
+        }
+        if (!this.hasExhaustedSharedEulerApiKeys()) {
+            return false;
+        }
+        if (this.isLocalSignerRateLimit(primaryError)) {
+            return false;
+        }
+        const combined = `${rawMessage || ''} ${primaryError?.message || ''}`.toLowerCase();
+        if (this.isRateLimitError(primaryError, combined)) {
+            return true;
+        }
+        if (this.signingProvider === EULER_WS_PROVIDER) {
+            const statusCode = Number(
+                primaryError?.status
+                ?? primaryError?.statusCode
+                ?? primaryError?.response?.status
+                ?? primaryError?.response?.statusCode
+                ?? NaN
+            );
+            if ([401, 403].includes(statusCode)) {
+                return true;
+            }
+            if (combined.includes('4401') || combined.includes('invalid auth') || combined.includes('invalid api key')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    async trySharedEulerApiKeyRetry(stage = 'connect', options = {}) {
+        const {
+            reason = 'rate_limit',
+            primaryError = null,
+            rawMessage = '',
+            force = false
+        } = options || {};
+
+        if (!force && !this.shouldTrySharedEulerApiKeyForRateLimit(primaryError, rawMessage)) {
+            return false;
+        }
+
+        const candidate = this.getNextSharedEulerApiKeyCandidate();
+        if (!candidate) {
+            return false;
+        }
+
+        if (!this.sharedEulerApiKeyAttempts) {
+            this.sharedEulerApiKeyAttempts = new Set();
+        }
+        this.sharedEulerApiKeyAttempts.add(candidate.key);
+
+        const serviceUrl = this.signingConfig?.serviceUrl || null;
+        this.signingConfig = {
+            apiKey: candidate.key,
+            serviceUrl
+        };
+
+        const retryNotice = this.buildSharedEulerRetryNotice(candidate, reason);
+        this.logDebug('lifecycle.signing.sharedEulerRetry.begin', {
+            stage,
+            reason,
+            label: candidate.label || null,
+            attempt: this.sharedEulerApiKeyAttempts.size
+        });
+        console.warn(`[TikTok] ${retryNotice}`);
+        try {
+            emitStatus({
+                wssID: this.wssID,
+                status: 'reconnecting',
+                reason: retryNotice,
+                signServer: true,
+                sharedKeyRetry: true
+            });
+        } catch (_) { /* renderer may be gone */ }
+
+        try {
+            await this.teardownConnection({ silent: true });
+        } catch (error) {
+            this.logDebug('lifecycle.signing.sharedEulerRetry.teardownError', normalizeForLogging(error));
+        }
+
+        try {
+            this.initializeConnectionInstance({ forceLegacy: false, context: `shared_euler_key_${stage}` });
+        } catch (error) {
+            this.logDebug('lifecycle.signing.sharedEulerRetry.instantiateError', normalizeForLogging(error));
+            console.error('[TikTok] Failed to initialize connection for shared Euler key retry:', error);
+            return false;
+        }
+
+        return true;
+    }
+
     isSignServerError(primaryError, rawMessage = '') {
         const statusCode = Number(
             primaryError?.status
@@ -5966,7 +6193,7 @@ class ConnectionManager {
             ?? primaryError?.response?.statusCode
             ?? NaN
         );
-        if ([401, 402, 403, 429, 500, 502, 503, 504, 520, 521, 522, 524].includes(statusCode)) {
+        if ([401, 402, 403, 500, 502, 503, 504, 520, 521, 522, 524].includes(statusCode)) {
             return true;
         }
 
@@ -5977,7 +6204,6 @@ class ConnectionManager {
             reason.includes('sign') ||
             reason.includes('premium') ||
             reason.includes('authenticated') ||
-            reason.includes('rate') ||
             reason.includes('connect error') ||
             reason.includes('empty payload') ||
             reason.includes('empty cookies')
@@ -5991,7 +6217,6 @@ class ConnectionManager {
         if (name === 'signapierror' ||
             name === 'premiumfeatureerror' ||
             name === 'schemadecodeerror' ||
-            name === 'signatureratelimiterror' ||
             name === 'signaturemissingtokenserror' ||
             name === 'authenticatedwebsocketconnectionerror') {
             return true;
@@ -6010,9 +6235,6 @@ class ConnectionManager {
             || combined.includes('euler')
             || combined.includes('403')
             || combined.includes('401')
-            || combined.includes('rate limit')
-            || combined.includes('rate limited')
-            || combined.includes('too many connections started')
             || combined.includes('connect error')
             || combined.includes('empty payload')
             || combined.includes('empty cookies');
@@ -6041,6 +6263,10 @@ class ConnectionManager {
 
         if (this.sessionId && (isPremiumError || isSignRateLimited || mentionsPaywall)) {
             return this.getSigningServiceHelpMessage();
+        }
+
+        if (this.shouldPromptForEulerApiKey(primaryError, normalized)) {
+            return this.getEulerApiKeyPromptMessage();
         }
 
         if (normalized.includes('unexpected sign server status 524') || normalized.includes('524: a timeout occurred')) {
@@ -6143,6 +6369,29 @@ class ConnectionManager {
         if (this.viewerUpdateInterval) clearInterval(this.viewerUpdateInterval);
 
         if (!this.isStopped) {
+            const canTrySharedEulerWsKey = this.shouldTrySharedEulerApiKeyForEulerWsClose(code);
+            if (canTrySharedEulerWsKey) {
+                const retryReason = code === 4401 ? 'auth' : 'rate_limit';
+                const syntheticError = {
+                    status: code === 4429 ? 429 : 401,
+                    message: codeLabel || ''
+                };
+                this.trySharedEulerApiKeyRetry(`disconnect_${code}`, {
+                    reason: retryReason,
+                    primaryError: syntheticError,
+                    rawMessage: codeLabel || '',
+                    force: true
+                })
+                    .then((handled) => {
+                        if (handled) {
+                            return this.connect();
+                        }
+                        return null;
+                    })
+                    .catch(() => null);
+                return;
+            }
+
             // For certain codes, don't auto-reconnect (no point)
             const noReconnectCodes = [4401, 4403, 4404, 4005];
             const shouldSkipReconnect = isEulerWs && code && noReconnectCodes.includes(code);
@@ -6224,9 +6473,26 @@ class ConnectionManager {
 
         const combinedMessage = msg || infoText || '';
         const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, combinedMessage);
-        const isSignServerIssue = this.isSignServerError(primaryError, combinedMessage);
+        const isRateLimited = this.isRateLimitError(primaryError, combinedMessage);
+        const isSignServerIssue = !isRateLimited && this.isSignServerError(primaryError, combinedMessage);
         const offlineMessage = combinedMessage || userFacingMessage || (primaryError && primaryError.reason) || '';
         const isOffline = this.isOfflineError(primaryError, offlineMessage);
+        const canTrySharedEulerKey = this.shouldTrySharedEulerApiKeyForRateLimit(primaryError, combinedMessage);
+        if (canTrySharedEulerKey) {
+            this.trySharedEulerApiKeyRetry('error_rate_limit', {
+                reason: 'rate_limit',
+                primaryError,
+                rawMessage: combinedMessage
+            })
+                .then((handled) => {
+                    if (handled) {
+                        return this.connect();
+                    }
+                    return null;
+                })
+                .catch(() => null);
+            return;
+        }
 
         this.logDebug('control.error.processed', {
             info: infoText || null,
@@ -6244,7 +6510,6 @@ class ConnectionManager {
 	            msg.includes("User doesn't exist") ||
 	            msg.includes('Failed to retrieve room_id')
 	        );
-	        const isRateLimited = this.isRateLimitError(primaryError, combinedMessage);
 	        if (!isRateLimited && (this.tiktokRateLimitCount || 0) > 0) {
 	            this.tiktokRateLimitCount = 0;
 	            this.tiktokRateLimitLastAt = 0;
@@ -6427,7 +6692,10 @@ class ConnectionManager {
 	    }
 
 	    isRateLimitError(primaryError, rawMessage = '') {
-	        if (primaryError && primaryError.name === 'TikTokRateLimitError') {
+	        const errorName = typeof primaryError?.name === 'string'
+	            ? primaryError.name.toLowerCase()
+	            : '';
+	        if (errorName === 'tiktokratelimiterror' || errorName === 'signatureratelimiterror') {
 	            return true;
 	        }
 
@@ -6443,6 +6711,7 @@ class ConnectionManager {
 
 	        return combined.includes('429') ||
 	            combined.includes('too many requests') ||
+	            combined.includes('too many connections started') ||
 	            combined.includes('rate limit') ||
 	            combined.includes('rate limited');
 	    }

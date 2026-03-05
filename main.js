@@ -4956,7 +4956,7 @@ ipcMain.handle('showWindow', (event, args) => {
     const view = browserViews[args.vid];
     if (!view) return false;
     const hasExplicitUserInitiated = !!(args && Object.prototype.hasOwnProperty.call(args, 'userInitiated'));
-    const userInitiatedReveal = hasExplicitUserInitiated ? !!args.userInitiated : true;
+    const userInitiatedReveal = hasExplicitUserInitiated ? !!args.userInitiated : false;
 
     // Initialize logical visibility if missing
     if (typeof view.__ss_visible !== 'boolean') {
