@@ -5987,7 +5987,7 @@ class ConnectionManager {
     buildSharedEulerApiKeyPool() {
         const pool = [];
         const seen = new Set();
-        const addCandidate = (rawKey, label) => {
+        const addCandidate = (rawKey, label, scope) => {
             if (typeof rawKey !== 'string') {
                 return;
             }
@@ -5998,20 +5998,34 @@ class ConnectionManager {
             seen.add(key);
             pool.push({
                 key,
-                label
+                label,
+                scope
             });
         };
-        addCandidate(SHARED_EULER_SIGNING_FALLBACK_KEY, 'signer fallback key');
-        addCandidate(SHARED_EULER_PROXY_FALLBACK_KEY, 'proxy fallback key');
+        addCandidate(SHARED_EULER_SIGNING_FALLBACK_KEY, 'signer fallback key', 'signing');
+        addCandidate(SHARED_EULER_PROXY_FALLBACK_KEY, 'proxy fallback key', 'proxy');
         return pool;
     }
 
-    getNextSharedEulerApiKeyCandidate() {
+    resolveSharedEulerScope() {
+        if (this.signingProvider === EULER_WS_PROVIDER) {
+            return 'proxy';
+        }
+        if (this.signingProvider === 'auto') {
+            return 'signing';
+        }
+        return null;
+    }
+
+    getNextSharedEulerApiKeyCandidate(scope = null) {
         if (!Array.isArray(this.sharedEulerApiKeyPool) || !this.sharedEulerApiKeyPool.length) {
             return null;
         }
         for (const candidate of this.sharedEulerApiKeyPool) {
             if (!candidate || typeof candidate.key !== 'string') {
+                continue;
+            }
+            if (scope && candidate.scope !== scope) {
                 continue;
             }
             if (!this.sharedEulerApiKeyAttempts || !this.sharedEulerApiKeyAttempts.has(candidate.key)) {
@@ -6021,15 +6035,19 @@ class ConnectionManager {
         return null;
     }
 
-    hasExhaustedSharedEulerApiKeys() {
+    hasExhaustedSharedEulerApiKeys(scope = null) {
         if (this.hasUserProvidedSigningApiKey()) {
             return false;
         }
-        const poolSize = Array.isArray(this.sharedEulerApiKeyPool) ? this.sharedEulerApiKeyPool.length : 0;
+        const poolSize = Array.isArray(this.sharedEulerApiKeyPool)
+            ? this.sharedEulerApiKeyPool.filter(candidate => !scope || candidate.scope === scope).length
+            : 0;
         if (!poolSize) {
             return false;
         }
-        const attempts = this.sharedEulerApiKeyAttempts ? this.sharedEulerApiKeyAttempts.size : 0;
+        const attempts = Array.isArray(this.sharedEulerApiKeyPool) && this.sharedEulerApiKeyAttempts
+            ? this.sharedEulerApiKeyPool.filter(candidate => (!scope || candidate.scope === scope) && this.sharedEulerApiKeyAttempts.has(candidate.key)).length
+            : 0;
         return attempts >= poolSize;
     }
 
@@ -6059,7 +6077,11 @@ class ConnectionManager {
         if (this.isLocalSignerRateLimit(primaryError)) {
             return false;
         }
-        return !!this.getNextSharedEulerApiKeyCandidate();
+        const scope = this.resolveSharedEulerScope();
+        if (!scope) {
+            return false;
+        }
+        return !!this.getNextSharedEulerApiKeyCandidate(scope);
     }
 
     shouldTrySharedEulerApiKeyForEulerWsClose(code) {
@@ -6072,13 +6094,16 @@ class ConnectionManager {
         if (!(code === 4401 || code === 4429)) {
             return false;
         }
-        return !!this.getNextSharedEulerApiKeyCandidate();
+        return !!this.getNextSharedEulerApiKeyCandidate('proxy');
     }
 
-    buildSharedEulerRetryNotice(candidate, reason = 'rate_limit') {
+    buildSharedEulerRetryNotice(candidate, reason = 'rate_limit', scope = 'signing') {
         const label = candidate?.label || 'shared key';
-        if (reason === 'auth') {
+        if (scope === 'proxy' && reason === 'auth') {
             return `Euler proxy auth failed. Retrying once with ${label}. Add your own free key at ${EULER_DASHBOARD_URL}.`;
+        }
+        if (scope === 'proxy') {
+            return `Euler proxy rate-limited. Retrying once with ${label}. Add your own free key at ${EULER_DASHBOARD_URL}.`;
         }
         return `Euler signing rate-limited. Retrying once with ${label}. Add your own free key at ${EULER_DASHBOARD_URL}.`;
     }
@@ -6094,7 +6119,11 @@ class ConnectionManager {
         if (!(this.signingProvider === 'auto' || this.signingProvider === EULER_WS_PROVIDER)) {
             return false;
         }
-        if (!this.hasExhaustedSharedEulerApiKeys()) {
+        const scope = this.resolveSharedEulerScope();
+        if (!scope) {
+            return false;
+        }
+        if (!this.hasExhaustedSharedEulerApiKeys(scope)) {
             return false;
         }
         if (this.isLocalSignerRateLimit(primaryError)) {
@@ -6127,14 +6156,19 @@ class ConnectionManager {
             reason = 'rate_limit',
             primaryError = null,
             rawMessage = '',
-            force = false
+            force = false,
+            scope = this.resolveSharedEulerScope()
         } = options || {};
 
         if (!force && !this.shouldTrySharedEulerApiKeyForRateLimit(primaryError, rawMessage)) {
             return false;
         }
 
-        const candidate = this.getNextSharedEulerApiKeyCandidate();
+        if (!scope) {
+            return false;
+        }
+
+        const candidate = this.getNextSharedEulerApiKeyCandidate(scope);
         if (!candidate) {
             return false;
         }
@@ -6150,11 +6184,12 @@ class ConnectionManager {
             serviceUrl
         };
 
-        const retryNotice = this.buildSharedEulerRetryNotice(candidate, reason);
+        const retryNotice = this.buildSharedEulerRetryNotice(candidate, reason, scope);
         this.logDebug('lifecycle.signing.sharedEulerRetry.begin', {
             stage,
             reason,
             label: candidate.label || null,
+            scope,
             attempt: this.sharedEulerApiKeyAttempts.size
         });
         console.warn(`[TikTok] ${retryNotice}`);
@@ -6380,7 +6415,8 @@ class ConnectionManager {
                     reason: retryReason,
                     primaryError: syntheticError,
                     rawMessage: codeLabel || '',
-                    force: true
+                    force: true,
+                    scope: 'proxy'
                 })
                     .then((handled) => {
                         if (handled) {
