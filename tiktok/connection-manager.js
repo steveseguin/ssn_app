@@ -4509,25 +4509,36 @@ class ConnectionManager {
         return true;
     }
 
-    async tryAutoFallbacksBeforePrompt(primaryError, stage = 'connect_auto') {
+    async tryAutoFallbacksBeforePrompt(primaryError, stage = 'connect_auto', options = {}) {
+        const {
+            includeLocal = true,
+            includeProxy = true,
+            includePolling = true
+        } = options || {};
         const isAutoFlow = this.signingProvider === 'auto' || this.autoEulerProxyFallbackActive;
         if (!isAutoFlow) {
             return false;
         }
 
-        const proxyFallbackHandled = await this.tryFallbackToEulerProxy(primaryError, `${stage}_proxy`);
-        if (proxyFallbackHandled) {
-            return true;
+        if (includeLocal) {
+            const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, `${stage}_local`);
+            if (localFallbackHandled) {
+                return true;
+            }
         }
 
-        const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, `${stage}_local`);
-        if (localFallbackHandled) {
-            return true;
+        if (includeProxy) {
+            const proxyFallbackHandled = await this.tryFallbackToEulerProxy(primaryError, `${stage}_proxy`);
+            if (proxyFallbackHandled) {
+                return true;
+            }
         }
 
-        const pollingFallbackHandled = await this.tryFallbackToPolling(primaryError, `${stage}_polling`);
-        if (pollingFallbackHandled) {
-            return true;
+        if (includePolling) {
+            const pollingFallbackHandled = await this.tryFallbackToPolling(primaryError, `${stage}_polling`);
+            if (pollingFallbackHandled) {
+                return true;
+            }
         }
 
         return false;
@@ -5882,12 +5893,12 @@ class ConnectionManager {
                 const errorName = primaryError && primaryError.name;
                 const errorMessage = primaryError && primaryError.message ? primaryError.message : '';
                 if (primaryError?.ssappFallback) {
-                    const proxyFallbackHandled = await this.tryFallbackToEulerProxy(primaryError, 'connect_ssapp_proxy_fallback');
-                    if (proxyFallbackHandled) {
+                    const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, 'connect_ssapp_local_fallback');
+                    if (localFallbackHandled) {
                         return this.connect();
                     }
-                    const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, 'connect_ssapp_fallback');
-                    if (localFallbackHandled) {
+                    const proxyFallbackHandled = await this.tryFallbackToEulerProxy(primaryError, 'connect_ssapp_proxy_fallback');
+                    if (proxyFallbackHandled) {
                         return this.connect();
                     }
                     const fallbackHandled = await this.tryFallbackToPolling(primaryError, 'connect');
@@ -5909,6 +5920,16 @@ class ConnectionManager {
                 const isSignServerIssue = !isRateLimited && this.isSignServerError(primaryError, errorMessage);
                 const offlineMessage = errorMessage || userFacingMessage || (primaryError && primaryError.reason) || '';
                 const isOffline = this.isOfflineError(primaryError, offlineMessage);
+                if (isRateLimited) {
+                    const localFirstHandled = await this.tryAutoFallbacksBeforePrompt(primaryError, 'connect_rate_limit_local_first', {
+                        includeLocal: true,
+                        includeProxy: false,
+                        includePolling: false
+                    });
+                    if (localFirstHandled) {
+                        return this.connect();
+                    }
+                }
                 const canTrySharedEulerKey = this.shouldTrySharedEulerApiKeyForRateLimit(primaryError, errorMessage);
                 if (canTrySharedEulerKey) {
                     const sharedRetryHandled = await this.trySharedEulerApiKeyRetry('connect_rate_limit', {
@@ -5921,8 +5942,12 @@ class ConnectionManager {
                     }
                 }
                 if (isRateLimited) {
-                    const autoFallbackHandled = await this.tryAutoFallbacksBeforePrompt(primaryError, 'connect_rate_limit_auto');
-                    if (autoFallbackHandled) {
+                    const proxyThenPollingHandled = await this.tryAutoFallbacksBeforePrompt(primaryError, 'connect_rate_limit_after_shared', {
+                        includeLocal: false,
+                        includeProxy: true,
+                        includePolling: true
+                    });
+                    if (proxyThenPollingHandled) {
                         return this.connect();
                     }
                 }
@@ -5967,12 +5992,12 @@ class ConnectionManager {
 
                 if (isSignServerIssue) {
                     this.signServerFailureCount = (this.signServerFailureCount || 0) + 1;
-                    const proxyFallbackHandled = await this.tryFallbackToEulerProxy(primaryError, 'connect_sign_error_auto_proxy');
-                    if (proxyFallbackHandled) {
-                        return this.connect();
-                    }
                     const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, 'connect_sign_error_auto');
                     if (localFallbackHandled) {
+                        return this.connect();
+                    }
+                    const proxyFallbackHandled = await this.tryFallbackToEulerProxy(primaryError, 'connect_sign_error_auto_proxy');
+                    if (proxyFallbackHandled) {
                         return this.connect();
                     }
                     const fallbackThresholdReached = this.signServerFailureCount >= SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD;
@@ -6274,7 +6299,7 @@ class ConnectionManager {
         if (this.signingProvider === EULER_WS_PROVIDER) {
             return `Euler Proxy retries were exhausted. Options: add a free Euler API key (${EULER_DASHBOARD_URL}), switch to Polling, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
         }
-        return `AUTO retries were exhausted. Options: add a free Euler API key (${EULER_DASHBOARD_URL}), use Euler Proxy, switch to Local Signer, switch to Polling, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
+        return `AUTO retries were exhausted. Options: switch to Local Signer, add a free Euler API key (${EULER_DASHBOARD_URL}), use Euler Proxy, switch to Polling, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
     }
 
     shouldPromptForEulerApiKey(primaryError, rawMessage = '') {
@@ -6696,6 +6721,16 @@ class ConnectionManager {
         const isSignServerIssue = !isRateLimited && this.isSignServerError(primaryError, combinedMessage);
         const offlineMessage = combinedMessage || userFacingMessage || (primaryError && primaryError.reason) || '';
         const isOffline = this.isOfflineError(primaryError, offlineMessage);
+        if (isRateLimited) {
+            const localFirstHandled = await this.tryAutoFallbacksBeforePrompt(primaryError, 'error_rate_limit_local_first', {
+                includeLocal: true,
+                includeProxy: false,
+                includePolling: false
+            });
+            if (localFirstHandled) {
+                return this.connect();
+            }
+        }
         const canTrySharedEulerKey = this.shouldTrySharedEulerApiKeyForRateLimit(primaryError, combinedMessage);
         if (canTrySharedEulerKey) {
             const sharedRetryHandled = await this.trySharedEulerApiKeyRetry('error_rate_limit', {
@@ -6708,8 +6743,12 @@ class ConnectionManager {
             }
         }
         if (isRateLimited) {
-            const autoFallbackHandled = await this.tryAutoFallbacksBeforePrompt(primaryError, 'error_rate_limit_auto');
-            if (autoFallbackHandled) {
+            const proxyThenPollingHandled = await this.tryAutoFallbacksBeforePrompt(primaryError, 'error_rate_limit_after_shared', {
+                includeLocal: false,
+                includeProxy: true,
+                includePolling: true
+            });
+            if (proxyThenPollingHandled) {
                 return this.connect();
             }
         }
