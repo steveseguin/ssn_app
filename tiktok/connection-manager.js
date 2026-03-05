@@ -5959,6 +5959,17 @@ class ConnectionManager {
     }
 
     isSignServerError(primaryError, rawMessage = '') {
+        const statusCode = Number(
+            primaryError?.status
+            ?? primaryError?.statusCode
+            ?? primaryError?.response?.status
+            ?? primaryError?.response?.statusCode
+            ?? NaN
+        );
+        if ([401, 402, 403, 429, 500, 502, 503, 504, 520, 521, 522, 524].includes(statusCode)) {
+            return true;
+        }
+
         const reason = typeof primaryError?.reason === 'string'
             ? primaryError.reason.toLowerCase()
             : '';
@@ -5992,7 +6003,13 @@ class ConnectionManager {
             || combined.includes('proto messagefetchresult')
             || combined.includes('schema decode')
             || combined.includes('premature eof')
+            || combined.includes('forbidden')
             || combined.includes('not authorized')
+            || combined.includes('unauthorized')
+            || combined.includes('payment required')
+            || combined.includes('euler')
+            || combined.includes('403')
+            || combined.includes('401')
             || combined.includes('rate limit')
             || combined.includes('rate limited')
             || combined.includes('too many connections started')
@@ -6032,6 +6049,10 @@ class ConnectionManager {
 
         if (normalized.includes('failed to connect to sign server') || normalized.includes('connect error')) {
             return 'Unable to reach the Euler sign server. Please try again shortly.';
+        }
+
+        if (normalized.includes('403') || normalized.includes('forbidden') || normalized.includes('unauthorized')) {
+            return 'Euler signing was rejected (403). Try Local Signer, Polling, or Standard mode.';
         }
 
         if (normalized.includes('timeout') || primaryError?.code === 'ECONNABORTED') {

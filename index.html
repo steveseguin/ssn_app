@@ -554,7 +554,7 @@
         const envForcesTikTokClassic = typeof process !== 'undefined' && process?.env?.SSAPP_FORCE_TIKTOK_CLASSIC === '1';
         const cliForcesTikTokClassic = envForcesTikTokClassic;
         let preferTikTokClassic = cliForcesTikTokClassic;
-        let lastTikTokMode = 'tiktok-legacy';
+        let lastTikTokMode = 'tiktok-websocket';
         let tikTokClassicSilentUpdate = false;
         let tiktokWebsocketSigningWarningShown = false;
         const ssappSigningGuideEnv = (typeof process !== 'undefined' && process?.env?.SSAPP_TIKTOK_SIGNING_GUIDE_URL)
@@ -2222,7 +2222,7 @@
                     if (preferTikTokClassic || cliForcesTikTokClassic) {
                         defaultMode = 'classic';
                     } else {
-                        defaultMode = lastTikTokMode || 'tiktok-legacy';
+                        defaultMode = lastTikTokMode || 'tiktok-websocket';
                     }
                 }
 
@@ -2328,7 +2328,7 @@
                 if (preferTikTokClassic || cliForcesTikTokClassic) {
                     defaultMode = 'classic';
                 } else {
-                    defaultMode = lastTikTokMode || 'tiktok-legacy';
+                    defaultMode = lastTikTokMode || 'tiktok-websocket';
                 }
             }
 
@@ -2428,7 +2428,7 @@
                 if (preferTikTokClassic || cliForcesTikTokClassic) {
                     defaultMode = 'classic';
                 } else {
-                    defaultMode = lastTikTokMode || 'tiktok-legacy';
+                    defaultMode = lastTikTokMode || 'tiktok-websocket';
                 }
             }
 
@@ -3225,23 +3225,31 @@
             if (wssMenuItem) wssMenuItem.dataset.selected = "false";
             if (tiktokWssMenuItem) tiktokWssMenuItem.dataset.selected = "false";
             if (tiktokLegacyMenuItem) tiktokLegacyMenuItem.dataset.selected = "false";
+            const srcForMode = source || stateManager.getSource(sourceId);
+            const displayMode = getEffectiveConnectionMode(srcForMode) || mode;
 
             if (activateButton) {
                 // Ensure transient connecting flag is cleared if not truly connecting
-                const srcForMode = source || stateManager.getSource(sourceId);
                 if (srcForMode && srcForMode.status !== 'activating') {
                     delete activateButton.dataset.connecting;
                 }
 
-                const displayMode = getEffectiveConnectionMode(srcForMode) || mode;
-
                 if (target === 'tiktok') {
+                    const provider = srcForMode?.tiktokSigningProvider || 'auto';
                     if (srcForMode && srcForMode.status === 'activating') {
                         setActivateButtonConnecting(sourceElement);
                     } else if (displayMode === 'tiktok-legacy') {
                         activateButton.innerText = 'Connect TikTok Polling';
                     } else if (displayMode === 'tiktok-websocket') {
-                        activateButton.innerText = 'Connect TikTok WebSocket';
+                        if (provider === 'local') {
+                            activateButton.innerText = 'Connect TikTok Local Signer';
+                        } else if (provider === 'euler-ws') {
+                            activateButton.innerText = 'Connect TikTok Euler Proxy';
+                        } else if (provider === 'custom') {
+                            activateButton.innerText = 'Connect TikTok Euler Signing';
+                        } else {
+                            activateButton.innerText = 'Connect TikTok Auto';
+                        }
                     } else {
                         activateButton.innerText = translate('btn.activate');
                     }
@@ -3277,7 +3285,12 @@
                     if (classicMenuItem) classicMenuItem.dataset.selected = "true";
                     panelClassic?.classList.add('active');
                 }
-                // Don't hide mode selector
+                const presetSelect = controlPanel?.querySelector('.tiktok-connection-select');
+                if (presetSelect) {
+                    const sourceForPreset = source || stateManager.getSource(sourceId);
+                    presetSelect.value = resolveTikTokConnectionPreset(sourceForPreset, displayMode);
+                    updateSigningProviderHelpText(presetSelect);
+                }
             } else {
                 if (mode === 'websocket') {
                     wsModePanelButton?.classList.add('active');
@@ -3295,7 +3308,7 @@
                 const signinMode = source ? (getEffectiveConnectionMode(source) || mode) : mode;
                 const isWebsocketMode = signinMode === 'websocket' || signinMode === 'tiktok-websocket' || signinMode === 'tiktok-legacy';
 
-                if (target === 'tiktok' && (signinMode === 'tiktok-websocket' || signinMode === 'tiktok-legacy')) {
+                if (target === 'tiktok' && signinMode === 'tiktok-websocket') {
                     const resolvedSourceId = (source && source.id) || (sourceElement?.dataset?.sourceId || null);
                     let tikTokSource = source;
                     if (!tikTokSource && resolvedSourceId && window.stateManager) {
@@ -3482,12 +3495,13 @@
 
         function setSigningProviderLocked(entryElement, locked) {
             if (!entryElement) return;
-            const select = entryElement.querySelector('.signing-provider-selector select');
+            const select = entryElement.querySelector('.tiktok-connection-select')
+                || entryElement.querySelector('.signing-provider-selector select');
             if (!select) return;
             select.disabled = !!locked;
             select.classList.toggle('locked', !!locked);
             if (locked) {
-                select.title = 'Stop the connection to change signing provider.';
+                select.title = 'Stop the connection to change TikTok connection mode.';
             } else {
                 select.removeAttribute('title');
             }
@@ -3505,17 +3519,141 @@
             }
         }
 
+        function resolveTikTokConnectionPreset(source, mode) {
+            const normalizedMode = mode || source?.connectionMode || 'classic';
+            const provider = source?.tiktokSigningProvider || 'auto';
+            if (normalizedMode === 'classic') {
+                return 'standard';
+            }
+            if (normalizedMode === 'tiktok-legacy') {
+                return 'polling';
+            }
+            if (normalizedMode === 'tiktok-websocket') {
+                if (provider === 'local') return 'local';
+                if (provider === 'euler-ws') return 'euler-ws';
+                if (provider === 'custom') return 'custom';
+                return 'auto';
+            }
+            return 'auto';
+        }
+
+        function setTikTokConnectionPreset(sourceElement, preset) {
+            if (!sourceElement) return;
+            const sourceId = sourceElement.dataset.sourceId;
+            if (!sourceId || !stateManager) return;
+            const source = stateManager.getSource(sourceId);
+            if (!source || source.target !== 'tiktok') return;
+            if (hasConnectionHandles(source)) {
+                Toast.warning('Mode Locked', 'Stop the current connection before changing modes.');
+                const presetSelect = sourceElement.querySelector('.tiktok-connection-select');
+                if (presetSelect) {
+                    presetSelect.value = resolveTikTokConnectionPreset(source, source.connectionMode || 'classic');
+                    updateSigningProviderHelpText(presetSelect);
+                }
+                return;
+            }
+
+            const forcingClassic = preferTikTokClassic || cliForcesTikTokClassic;
+            let nextMode = source.connectionMode || 'classic';
+            let nextProvider = source.tiktokSigningProvider || 'auto';
+
+            switch (preset) {
+                case 'auto':
+                    nextMode = 'tiktok-websocket';
+                    nextProvider = 'auto';
+                    break;
+                case 'local':
+                    nextMode = 'tiktok-websocket';
+                    nextProvider = 'local';
+                    break;
+                case 'euler-ws':
+                    nextMode = 'tiktok-websocket';
+                    nextProvider = 'euler-ws';
+                    break;
+                case 'custom':
+                    nextMode = 'tiktok-websocket';
+                    nextProvider = 'custom';
+                    break;
+                case 'polling':
+                    nextMode = 'tiktok-legacy';
+                    nextProvider = source.tiktokSigningProvider || 'auto';
+                    break;
+                case 'standard':
+                default:
+                    nextMode = 'classic';
+                    nextProvider = source.tiktokSigningProvider || 'auto';
+                    break;
+            }
+
+            if (forcingClassic && (nextMode === 'tiktok-websocket' || nextMode === 'tiktok-legacy')) {
+                Toast.info(
+                    'TikTok Classic',
+                    cliForcesTikTokClassic
+                        ? 'Classic mode is locked by launch flag.'
+                        : 'Disable the global TikTok Classic preference to use TikTok API connectors.'
+                );
+                const presetSelect = sourceElement.querySelector('.tiktok-connection-select');
+                if (presetSelect) {
+                    presetSelect.value = resolveTikTokConnectionPreset(source, source.connectionMode || 'classic');
+                    updateSigningProviderHelpText(presetSelect);
+                }
+                return;
+            }
+
+            const updates = {
+                connectionMode: nextMode,
+                activeConnectionMode: null,
+                tiktokSigningProvider: nextProvider
+            };
+            if (nextProvider === 'custom' || nextProvider === 'local' || nextProvider === 'euler-ws') {
+                updates.showTikTokSigningTools = true;
+            }
+
+            stateManager.updateSource(sourceId, updates);
+            console.log(`[TikTok] Connection preset for ${sourceId} set to: ${preset} (${nextMode} / ${nextProvider})`);
+            updateSourceUIAfterModeChange(sourceElement, nextMode, false);
+            applyTikTokClassicPreferenceToEntry(sourceElement, preferTikTokClassic || cliForcesTikTokClassic);
+
+            if (nextMode !== 'classic') {
+                const allowedLastModes = new Set(['classic', 'tiktok-websocket', 'tiktok-legacy']);
+                if (allowedLastModes.has(nextMode) && nextMode !== lastTikTokMode) {
+                    lastTikTokMode = nextMode;
+                    if (stateManager.state?.global?.lastTikTokMode !== nextMode) {
+                        stateManager.updateGlobal({ lastTikTokMode: nextMode });
+                    }
+                }
+            }
+
+            if (nextProvider === 'custom' && typeof showTikTokSignInMenu === 'function') {
+                setTimeout(() => {
+                    try {
+                        showTikTokSignInMenu(sourceId);
+                    } catch (err) {
+                        console.error('Failed to present TikTok signing modal for custom provider:', err);
+                    }
+                }, 0);
+            }
+        }
+
         function setTikTokSigningProvider(entryElement, provider) {
             if (!entryElement) return;
             const sourceId = entryElement.dataset.sourceId;
-        if (sourceId && stateManager) {
-            const updates = { tiktokSigningProvider: provider };
-            if (provider === 'custom' || provider === 'local' || provider === 'euler-ws') {
-                updates.showTikTokSigningTools = true;
-            }
-            stateManager.updateSource(sourceId, updates);
-            console.log(`[TikTok] Signing provider for ${sourceId} set to: ${provider}`);
-            if (provider === 'custom' && typeof showTikTokSignInMenu === 'function') {
+            if (sourceId && stateManager) {
+                const updates = { tiktokSigningProvider: provider };
+                if (provider === 'custom' || provider === 'local' || provider === 'euler-ws') {
+                    updates.showTikTokSigningTools = true;
+                }
+                stateManager.updateSource(sourceId, updates);
+                const source = stateManager.getSource(sourceId);
+                if (source?.target === 'tiktok') {
+                    const presetSelect = entryElement.querySelector('.tiktok-connection-select');
+                    if (presetSelect) {
+                        presetSelect.value = resolveTikTokConnectionPreset(source, source.connectionMode || 'classic');
+                        updateSigningProviderHelpText(presetSelect);
+                    }
+                }
+                console.log(`[TikTok] Signing provider for ${sourceId} set to: ${provider}`);
+                if (provider === 'custom' && typeof showTikTokSignInMenu === 'function') {
                     setTimeout(() => {
                         try {
                             showTikTokSignInMenu(sourceId);
@@ -3535,13 +3673,17 @@
             const val = selectElement.value;
             let html = '';
             if (val === 'auto') {
-                html = `Tries Euler signing, falls back to Polling if it fails. No API key needed.`;
+                html = 'Recommended: WebSocket with automatic signing. If signing fails, fallback can switch to compatibility modes.';
             } else if (val === 'local') {
-                html = "<strong>Experimental:</strong> Signs using a local TikTok browser window. Supports replies. Keep the signer window open.";
+                html = '<strong>Local Signer:</strong> Uses a local TikTok window for signing. Supports replies. Keep signer window open.';
+            } else if (val === 'polling') {
+                html = '<strong>Polling:</strong> HTTP compatibility mode. No signing needed. No replies.';
+            } else if (val === 'standard') {
+                html = '<strong>Standard:</strong> Uses the capture browser window. Best for manual sign-in and troubleshooting.';
             } else if (val === 'euler-ws') {
-                html = "<strong>Experimental:</strong> Connects through Euler's proxy server. Requires API key from <a href=\"#\" onclick=\"window.open('https://www.eulerstream.com/dashboard', '_blank'); return false;\" style=\"color: #63a4d8; text-decoration: underline;\">eulerstream.com</a>. No replies.";
+                html = "<strong>Euler Proxy:</strong> Uses Euler relay. Requires API key from <a href=\"#\" onclick=\"window.open('https://www.eulerstream.com/dashboard', '_blank'); return false;\" style=\"color: #63a4d8; text-decoration: underline;\">eulerstream.com</a>. No replies.";
             } else if (val === 'custom') {
-                html = "<strong>Experimental:</strong> Provide your own Euler API key or custom signing URL.";
+                html = '<strong>Euler Signing:</strong> Bring your own API key/signing URL. Advanced use.';
             }
             helpText.innerHTML = html;
         }
@@ -3831,9 +3973,10 @@
             }
 
             if (isTikTok) {
+                classicMenuItem?.classList.add('hidden');
                 wssMenuItem?.classList.add('hidden');
-                tiktokWssMenuItem?.classList.remove('hidden');
-                tiktokLegacyMenuItem?.classList.remove('hidden');
+                tiktokWssMenuItem?.classList.add('hidden');
+                tiktokLegacyMenuItem?.classList.add('hidden');
 
                 // Add TikTok-specific mode selector
                 let modeSelector = controlPanel?.querySelector('.mode-selector');
@@ -3841,67 +3984,35 @@
                     modeSelector = document.createElement('div');
                     modeSelector.className = 'mode-selector';
                     modeSelector.innerHTML = `
-                <div class="mode-selector-label">Connection Mode:</div>
-                <div class="mode-options">
-                    <div class="mode-option" 
-                         data-mode="classic" 
-                         onclick="setSourceConnectionMode(this.closest('.entry'), 'classic', this); updateModeSelector(this); updateSigningProviderVisibility(this.closest('.entry'), 'classic')">
-                        📄 Standard
-                    </div>
-                    <div class="mode-option" 
-                         data-mode="tiktok-websocket" 
-                         onclick="setSourceConnectionMode(this.closest('.entry'), 'tiktok-websocket', this); updateModeSelector(this); updateSigningProviderVisibility(this.closest('.entry'), 'tiktok-websocket')">
-                        🌐 TikTok WS
-                    </div>
-                    <div class="mode-option" 
-                         data-mode="tiktok-legacy" 
-                         onclick="setSourceConnectionMode(this.closest('.entry'), 'tiktok-legacy', this); updateModeSelector(this); updateSigningProviderVisibility(this.closest('.entry'), 'tiktok-legacy')"
-                         title="Use HTTP polling without signing (default).">
-                        🕰️ Polling
-                    </div>
-                </div>
-	                <div class="signing-provider-selector hidden" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.1);">
-	    <div class="mode-selector-label" style="font-size: 11px; margin-bottom: 4px;">Signing Provider:</div>
-	    <select onchange="setTikTokSigningProvider(this.closest('.entry'), this.value); updateSigningProviderHelpText(this);" class="signing-provider-select">
-	        <option value="auto">Auto (Default)</option>
-	        <option value="local">Local Signer (Experimental)</option>
-	        <option value="euler-ws">Euler Proxy (Experimental)</option>
-	        <option value="custom">Euler Signing (Experimental)</option>
-	    </select>
-	    <div class="provider-help-text" style="font-size: 10px; color: #94a3b8; line-height: 1.3; font-style: italic; min-height: 2.6em;">
-	        Tries Euler signing, falls back to Polling if it fails. No API key needed.
-	    </div>
-	</div>
-	                <div class="mode-info">
-	                    <span class="info-icon" role="button" tabindex="0" aria-label="TikTok connection modes help" style="cursor: pointer;" title="Polling uses TikTok’s HTTP endpoints (no signing, default). WebSocket uses the v2 signer and requires a stable signing setup. Standard opens a browser window." onclick="showTikTokConnectionModesHelpModal(event)" onkeydown="if (event.key === 'Enter' || event.key === ' ') showTikTokConnectionModesHelpModal(event)">ℹ️</span>
-	                </div>`;
-	                    controlPanel.appendChild(modeSelector);
-	                }
-	                if (modeSelector) {
-	                    modeSelector.classList.remove('hidden');
-                    // Update the active state based on current connection mode
-                    const fallbackMode = (preferTikTokClassic || cliForcesTikTokClassic) ? 'classic' : (lastTikTokMode || 'tiktok-legacy');
+                <div class="mode-selector-label">TikTok Connection:</div>
+                <select onchange="setTikTokConnectionPreset(this.closest('.entry'), this.value); updateSigningProviderHelpText(this);" class="tiktok-connection-select" style="width: 100%; margin-top: 4px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.35); background: rgba(15,23,42,0.55); color: #e2e8f0;">
+                    <option value="auto">AUTO (Recommended)</option>
+                    <option value="local">Local Signer (Replies)</option>
+                    <option value="polling">Polling (Compatibility)</option>
+                    <option value="standard">Standard (Capture Window)</option>
+                    <option value="euler-ws">Euler Proxy (API Key)</option>
+                    <option value="custom">Euler Signing (Advanced)</option>
+                </select>
+                <div class="provider-help-text" style="font-size: 11px; color: #94a3b8; line-height: 1.35; margin-top: 8px; min-height: 2.8em;"></div>
+                <div class="mode-info">
+                    <span class="info-icon" role="button" tabindex="0" aria-label="TikTok connection modes help" style="cursor: pointer;" title="Open TikTok connection mode help" onclick="showTikTokConnectionModesHelpModal(event)" onkeydown="if (event.key === 'Enter' || event.key === ' ') showTikTokConnectionModesHelpModal(event)">i</span>
+                </div>`;
+                    controlPanel.appendChild(modeSelector);
+                }
+                if (modeSelector) {
+                    modeSelector.classList.remove('hidden');
+                    const fallbackMode = (preferTikTokClassic || cliForcesTikTokClassic) ? 'classic' : (lastTikTokMode || 'tiktok-websocket');
                     const currentMode = source?.connectionMode || fallbackMode;
-                    modeSelector.querySelectorAll('.mode-option').forEach(opt => {
-                        opt.classList.remove('active');
-                        if (opt.dataset.mode === currentMode) {
-                            opt.classList.add('active');
-                        }
-                    });
-
-                    // Initialize signing provider visibility and value
-                    updateSigningProviderVisibility(sourceElement, currentMode);
-                    const providerSelect = modeSelector.querySelector('select');
-                    if (providerSelect) {
-                        if (source?.tiktokSigningProvider) {
-                            providerSelect.value = source.tiktokSigningProvider;
-                        }
-                        updateSigningProviderHelpText(providerSelect);
+                    const presetSelect = modeSelector.querySelector('.tiktok-connection-select');
+                    if (presetSelect) {
+                        presetSelect.value = resolveTikTokConnectionPreset(source, currentMode);
+                        updateSigningProviderHelpText(presetSelect);
                         const shouldLockProvider = source?.status === 'active' || source?.status === 'activating';
                         setSigningProviderLocked(sourceElement, shouldLockProvider);
                     }
                 }
             } else {
+                classicMenuItem?.classList.remove('hidden');
                 tiktokWssMenuItem?.classList.add('hidden');
                 tiktokLegacyMenuItem?.classList.add('hidden');
                 if (isYouTube || genericWsSupported) {
@@ -7534,7 +7645,7 @@
             } else if (stateManager.state?.global?.preferTikTokLegacy) {
                 lastTikTokMode = 'tiktok-legacy';
             } else {
-                lastTikTokMode = 'tiktok-legacy';
+                lastTikTokMode = 'tiktok-websocket';
             }
 
             const classicChanged = options.forceApply || previousClassic !== newClassicValue;
@@ -7590,6 +7701,7 @@
         function applyTikTokClassicPreferenceToEntry(entry, forcedValue) {
             if (!entry || entry.dataset.target !== 'tiktok') return;
             entry.dataset.tiktokClassicForced = forcedValue ? 'true' : 'false';
+            const presetSelect = entry.querySelector('.tiktok-connection-select');
             const wsOption = entry.querySelector('.mode-option[data-mode="tiktok-websocket"]');
             const legacyOption = entry.querySelector('.mode-option[data-mode="tiktok-legacy"]');
             const wsMenuItem = entry.querySelector('.settings-menu-item[data-tiktokwss="true"]');
@@ -7597,6 +7709,30 @@
             const lockMessage = cliForcesTikTokClassic
                 ? 'TikTok API connectors are disabled by launch flag.'
                 : 'Disable the global TikTok Classic preference to use API connectors.';
+
+            if (presetSelect) {
+                const lockedPresets = new Set(['auto', 'local', 'polling', 'euler-ws', 'custom']);
+                Array.from(presetSelect.options || []).forEach((option) => {
+                    if (lockedPresets.has(option.value)) {
+                        option.disabled = !!forcedValue;
+                    } else {
+                        option.disabled = false;
+                    }
+                });
+                presetSelect.style.opacity = forcedValue ? '0.75' : '';
+                presetSelect.title = forcedValue ? lockMessage : '';
+                if (forcedValue && presetSelect.value !== 'standard') {
+                    presetSelect.value = 'standard';
+                    updateSigningProviderHelpText(presetSelect);
+                } else if (!forcedValue) {
+                    const sourceId = entry.dataset.sourceId;
+                    const source = sourceId ? stateManager.getSource(sourceId) : null;
+                    if (source) {
+                        presetSelect.value = resolveTikTokConnectionPreset(source, source.connectionMode || 'classic');
+                        updateSigningProviderHelpText(presetSelect);
+                    }
+                }
+            }
 
             if (wsOption) {
                 wsOption.classList.toggle('disabled', forcedValue);
@@ -7803,7 +7939,7 @@
                 if (source.target === 'tiktok' && !source.connectionMode) {
                     const defaultMode = (preferTikTokClassic || cliForcesTikTokClassic)
                         ? 'classic'
-                        : (lastTikTokMode || 'tiktok-legacy');
+                        : (lastTikTokMode || 'tiktok-websocket');
                     console.log(`Setting default ${defaultMode} mode for ${source.id} on startup`);
                     stateManager.updateSource(source.id, { connectionMode: defaultMode });
                 }
@@ -7940,7 +8076,7 @@
                         if (sourceElement) {
                             const fallbackMode = (preferTikTokClassic || cliForcesTikTokClassic)
                                 ? 'classic'
-                                : (lastTikTokMode || 'tiktok-legacy');
+                                : (lastTikTokMode || 'tiktok-websocket');
                             const mode = source.connectionMode || fallbackMode;
 
                             // Update button text
