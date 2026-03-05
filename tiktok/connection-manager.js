@@ -3310,9 +3310,11 @@ class ConnectionManager {
         this.tiktokLogWriter = createTikTokLogWriter(this.username, this.wssID);
         this.tiktokLogFilePath = this.tiktokLogWriter ? this.tiktokLogWriter.filePath : null;
         this.warnedMissingTtTargetIdc = false;
-	        this.signingConfig = normalizeSigningConfig(signing);
-	        this.signingProvider = options.signingProvider || 'auto';
-	        this.localSigner = env.localSigner || null;
+        this.signingConfig = normalizeSigningConfig(signing);
+        this.signingProvider = options.signingProvider || 'auto';
+        this.autoLocalSignerFallbackAttempted = false;
+        this.autoLocalSignerFallbackActive = false;
+        this.localSigner = env.localSigner || null;
 	        this.signServerFailureCount = 0;
 	        this.tiktokRateLimitCount = 0;
 	        this.tiktokRateLimitLastAt = 0;
@@ -4322,6 +4324,73 @@ class ConnectionManager {
         } catch (notifyErr) {
             console.warn('Failed to notify renderer about TikTok fallback:', notifyErr);
         }
+        return true;
+    }
+
+    async tryFallbackToLocalSigner(primaryError, stage = 'connect') {
+        if (this.signingProvider !== 'auto' ||
+            this.autoLocalSignerFallbackAttempted ||
+            !this.localSigner ||
+            typeof this.localSigner.sign !== 'function' ||
+            this.pollingFallbackActivated ||
+            this.preferredStrategy === 'legacy' ||
+            this.connectionStrategy === 'legacy') {
+            this.logDebug('lifecycle.fallback.localSigner.skipped', {
+                reason: this.signingProvider !== 'auto'
+                    ? 'provider_not_auto'
+                    : (this.autoLocalSignerFallbackAttempted
+                        ? 'already_activated'
+                        : (!this.localSigner || typeof this.localSigner.sign !== 'function'
+                            ? 'local_signer_unavailable'
+                            : (this.pollingFallbackActivated || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy'
+                                ? 'legacy_active'
+                                : 'unknown'))),
+                stage,
+                message: primaryError?.message || null
+            });
+            return false;
+        }
+
+        const fallbackMessage = this.getSanitizedFallbackMessage(
+            primaryError,
+            'TikTok signer unavailable. Switching to local signer.'
+        );
+        this.autoLocalSignerFallbackAttempted = true;
+        this.signServerFailureCount = 0;
+        this.logDebug('lifecycle.fallback.localSigner.begin', {
+            stage,
+            message: fallbackMessage
+        });
+        console.warn(`[TikTok] Local signer fallback activated (${stage}) for ${this.username}: ${fallbackMessage}`);
+        try {
+            emitStatus({
+                wssID: this.wssID,
+                status: 'reconnecting',
+                reason: 'Sign server unavailable. Trying local signer.',
+                signServer: true
+            });
+        } catch (_) { /* renderer may be gone */ }
+
+        const previousProvider = this.signingProvider;
+        this.signingProvider = 'local';
+        this.autoLocalSignerFallbackActive = true;
+
+        try {
+            await this.teardownConnection({ silent: true });
+        } catch (error) {
+            this.logDebug('lifecycle.fallback.localSigner.teardownError', normalizeForLogging(error));
+        }
+
+        try {
+            this.initializeConnectionInstance({ forceLegacy: false, context: 'local_signer_fallback' });
+        } catch (error) {
+            this.signingProvider = previousProvider;
+            this.autoLocalSignerFallbackActive = false;
+            this.logDebug('lifecycle.fallback.localSigner.instantiateError', normalizeForLogging(error));
+            console.error('[TikTok] Failed to instantiate local signer fallback connection:', error);
+            return false;
+        }
+
         return true;
     }
 
@@ -5672,6 +5741,10 @@ class ConnectionManager {
                 const errorName = primaryError && primaryError.name;
                 const errorMessage = primaryError && primaryError.message ? primaryError.message : '';
                 if (primaryError?.ssappFallback) {
+                    const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, 'connect_ssapp_fallback');
+                    if (localFallbackHandled) {
+                        return this.connect();
+                    }
                     const fallbackHandled = await this.tryFallbackToPolling(primaryError, 'connect');
                     if (fallbackHandled) {
                         return this.connect();
@@ -5693,10 +5766,12 @@ class ConnectionManager {
 
                 // Increment Websocket failure count only when using websocket mode
                 const isWebsocketMode = !usingLegacyTikTokConnector && !this.pollingFallbackActivated && this.connectionStrategy !== 'legacy';
-                if (!isOffline && isWebsocketMode && !this.connection.enableExtendedGiftInfo) {
-                    // Note: enableExtendedGiftInfo is a proxy for "is using V2 connector" in some contexts, 
-                    // but simpler is just to check if we are NOT using the fallback class.
-                    // However, here we just want to count failures that might be solved by polling.
+                const isLegacyConnectorInstance = !!(
+                    TikTokPollingFallbackClass &&
+                    this.connection &&
+                    this.connection.constructor === TikTokPollingFallbackClass
+                );
+                if (!isOffline && isWebsocketMode && !isLegacyConnectorInstance) {
                     this.websocketFailureCount++;
                     this.logDebug('lifecycle.connect.websocket_strike', {
                         count: this.websocketFailureCount,
@@ -5730,6 +5805,10 @@ class ConnectionManager {
 
                 if (isSignServerIssue) {
                     this.signServerFailureCount = (this.signServerFailureCount || 0) + 1;
+                    const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, 'connect_sign_error_auto');
+                    if (localFallbackHandled) {
+                        return this.connect();
+                    }
                     const fallbackThresholdReached = this.signServerFailureCount >= SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD;
 
                     if (this.sessionId || (fallbackThresholdReached && !this.pollingFallbackActivated)) {
@@ -5883,14 +5962,27 @@ class ConnectionManager {
         const reason = typeof primaryError?.reason === 'string'
             ? primaryError.reason.toLowerCase()
             : '';
-        if (reason && (reason.includes('sign') || reason.includes('premium') || reason.includes('authenticated'))) {
+        if (reason && (
+            reason.includes('sign') ||
+            reason.includes('premium') ||
+            reason.includes('authenticated') ||
+            reason.includes('rate') ||
+            reason.includes('connect error') ||
+            reason.includes('empty payload') ||
+            reason.includes('empty cookies')
+        )) {
             return true;
         }
 
         const name = typeof primaryError?.name === 'string'
             ? primaryError.name.toLowerCase()
             : '';
-        if (name === 'signapierror' || name === 'premiumfeatureerror' || name === 'schemadecodeerror') {
+        if (name === 'signapierror' ||
+            name === 'premiumfeatureerror' ||
+            name === 'schemadecodeerror' ||
+            name === 'signatureratelimiterror' ||
+            name === 'signaturemissingtokenserror' ||
+            name === 'authenticatedwebsocketconnectionerror') {
             return true;
         }
 
@@ -5900,7 +5992,13 @@ class ConnectionManager {
             || combined.includes('proto messagefetchresult')
             || combined.includes('schema decode')
             || combined.includes('premature eof')
-            || combined.includes('not authorized');
+            || combined.includes('not authorized')
+            || combined.includes('rate limit')
+            || combined.includes('rate limited')
+            || combined.includes('too many connections started')
+            || combined.includes('connect error')
+            || combined.includes('empty payload')
+            || combined.includes('empty cookies');
     }
 
     getUserFriendlyErrorMessage(primaryError, fallbackMessage = '') {
@@ -6411,13 +6509,20 @@ class ConnectionManager {
 	        if (!threshold) {
 	            return false;
 	        }
-	        if (!this.shouldUseLocalSigner()) {
+	        const supportsRateLimitFallback = this.shouldUseLocalSigner()
+	            || this.signingProvider === 'auto'
+	            || this.signingProvider === 'custom'
+	            || this.signingProvider === EULER_WS_PROVIDER;
+	        if (!supportsRateLimitFallback) {
 	            return false;
 	        }
 	        if ((this.tiktokRateLimitCount || 0) < threshold) {
 	            return false;
 	        }
-	        if (!this.pollingFallbackSupported || this.pollingFallbackActivated || this.preferredStrategy === 'legacy') {
+	        if (!this.pollingFallbackSupported ||
+	            this.pollingFallbackActivated ||
+	            this.preferredStrategy === 'legacy' ||
+	            this.connectionStrategy === 'legacy') {
 	            return false;
 	        }
 	        return true;

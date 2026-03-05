@@ -11271,17 +11271,30 @@ contextMenu({
             // Only show it when right-clicking text
             visible: true,
             click: () => {
-                var URI = browserWindow.webContents.getURL();
-                var onTop = browserWindow.isAlwaysOnTop();
+                const getScaleFactor = () => {
+                    try {
+                        const bounds = browserWindow.getBounds();
+                        const display = screen.getDisplayMatching(bounds);
+                        return display.scaleFactor || 1;
+                    } catch (error) {
+                        return 1;
+                    }
+                };
+
+                const onTop = browserWindow.isAlwaysOnTop();
                 if (onTop) {
                     browserWindow.setAlwaysOnTop(false);
                 }
+                const promptScaleFactor = getScaleFactor();
+                const size = browserWindow.getSize();
+                const currentWidthPx = Math.max(1, Math.round(size[0] * promptScaleFactor));
+                const currentHeightPx = Math.max(1, Math.round(size[1] * promptScaleFactor));
                 prompt({
                     title: "Custom window resolution",
                     label: "Enter a resolution:",
-                    value: browserWindow.getSize()[0] + "x" + browserWindow.getSize()[1],
+                    value: currentWidthPx + "x" + currentHeightPx,
                     inputAttrs: {
-                        type: "string",
+                        type: "text",
                         placeholder: "1280x720",
                     },
                     type: "input",
@@ -11298,20 +11311,42 @@ contextMenu({
                             if (onTop) {
                                 browserWindow.setAlwaysOnTop(true);
                             }
+                            const resolution = String(r || "").trim();
+                            const match = resolution.match(/^(\d+)\s*[xX×]\s*(\d+)$/);
+                            if (!match) {
+                                dialog.showMessageBox({
+                                    type: "warning",
+                                    title: "Invalid resolution",
+                                    message: 'Use format "WIDTHxHEIGHT", for example: 1280x720',
+                                });
+                                return;
+                            }
+
+                            const targetWidthPx = parseInt(match[1], 10);
+                            const targetHeightPx = parseInt(match[2], 10);
+                            if (!Number.isFinite(targetWidthPx) || !Number.isFinite(targetHeightPx) || targetWidthPx < 1 || targetHeightPx < 1) {
+                                dialog.showMessageBox({
+                                    type: "warning",
+                                    title: "Invalid resolution",
+                                    message: "Width and height must be positive numbers.",
+                                });
+                                return;
+                            }
+
                             if (process.platform !== "darwin") {
                                 if (browserWindow.isFullScreen()) {
                                     browserWindow.setFullScreen(false);
                                 }
-                            } else {
-                                if (browserWindow.isMaximized()) {
-                                    browserWindow.unmaximize();
-                                }
                             }
-                            let point = screen.getCursorScreenPoint();
-                            let factor = screen.getDisplayNearestPoint(point).scaleFactor || 1;
-                            log(r);
+                            if (browserWindow.isMaximized()) {
+                                browserWindow.unmaximize();
+                            }
+                            const factor = getScaleFactor();
+                            const dipWidth = Math.max(1, Math.round(targetWidthPx / factor));
+                            const dipHeight = Math.max(1, Math.round(targetHeightPx / factor));
+                            log(resolution);
                             log(factor);
-                            browserWindow.setSize(parseInt(r.split("x")[0] / factor), parseInt(r.split("x")[1] / factor));
+                            browserWindow.setSize(dipWidth, dipHeight);
                         }
                     })
                     .catch(console.error);
