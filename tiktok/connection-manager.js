@@ -3323,6 +3323,8 @@ class ConnectionManager {
         this.userProvidedSigningApiKey = this.signingConfig?.apiKey || null;
         this.sharedEulerApiKeyPool = this.buildSharedEulerApiKeyPool();
         this.sharedEulerApiKeyAttempts = new Set();
+        this.autoEulerProxyFallbackAttempted = false;
+        this.autoEulerProxyFallbackActive = false;
         this.autoLocalSignerFallbackAttempted = false;
         this.autoLocalSignerFallbackActive = false;
         this.localSigner = env.localSigner || null;
@@ -4301,6 +4303,8 @@ class ConnectionManager {
         }
         const fallbackMessage = this.getSanitizedFallbackMessage(primaryError, 'TikTok signer unavailable. Switching to legacy connector.');
         this.pollingFallbackActivated = true;
+        this.autoEulerProxyFallbackActive = false;
+        this.autoLocalSignerFallbackActive = false;
         this.signServerFailureCount = 0;
         this.logDebug('lifecycle.fallback.polling.begin', {
             stage,
@@ -4338,8 +4342,105 @@ class ConnectionManager {
         return true;
     }
 
+    getAutoEulerProxyFallbackKey() {
+        if (this.hasUserProvidedSigningApiKey()) {
+            return this.userProvidedSigningApiKey.trim();
+        }
+        const proxyKey = typeof SHARED_EULER_PROXY_FALLBACK_KEY === 'string'
+            ? SHARED_EULER_PROXY_FALLBACK_KEY.trim()
+            : '';
+        return proxyKey || null;
+    }
+
+    async tryFallbackToEulerProxy(primaryError, stage = 'connect') {
+        const isAutoFlow = this.signingProvider === 'auto' || this.autoEulerProxyFallbackActive;
+        const proxyKey = this.getAutoEulerProxyFallbackKey();
+        if (!isAutoFlow ||
+            this.autoEulerProxyFallbackAttempted ||
+            !proxyKey ||
+            this.pollingFallbackActivated ||
+            this.preferredStrategy === 'legacy' ||
+            this.connectionStrategy === 'legacy') {
+            this.logDebug('lifecycle.fallback.eulerProxy.skipped', {
+                reason: !isAutoFlow
+                    ? 'provider_not_auto_flow'
+                    : (this.autoEulerProxyFallbackAttempted
+                        ? 'already_activated'
+                        : (!proxyKey
+                            ? 'proxy_key_unavailable'
+                            : (this.pollingFallbackActivated || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy'
+                                ? 'legacy_active'
+                                : 'unknown'))),
+                stage,
+                message: primaryError?.message || null
+            });
+            return false;
+        }
+
+        const fallbackMessage = this.getSanitizedFallbackMessage(
+            primaryError,
+            'TikTok signer unavailable. Switching to Euler Proxy.'
+        );
+        this.autoEulerProxyFallbackAttempted = true;
+        this.autoEulerProxyFallbackActive = true;
+        this.autoLocalSignerFallbackActive = false;
+        this.signServerFailureCount = 0;
+
+        const sharedProxyKey = typeof SHARED_EULER_PROXY_FALLBACK_KEY === 'string'
+            ? SHARED_EULER_PROXY_FALLBACK_KEY.trim()
+            : '';
+        const usingSharedKey = !!(sharedProxyKey && proxyKey === sharedProxyKey && !this.hasUserProvidedSigningApiKey());
+        if (usingSharedKey && this.sharedEulerApiKeyAttempts) {
+            this.sharedEulerApiKeyAttempts.add(sharedProxyKey);
+        }
+
+        this.logDebug('lifecycle.fallback.eulerProxy.begin', {
+            stage,
+            message: fallbackMessage,
+            usingSharedKey
+        });
+        console.warn(`[TikTok] Euler Proxy fallback activated (${stage}) for ${this.username}: ${fallbackMessage}`);
+        try {
+            emitStatus({
+                wssID: this.wssID,
+                status: 'reconnecting',
+                reason: 'Sign server unavailable. Trying Euler Proxy.',
+                signServer: true,
+                proxyFallback: true
+            });
+        } catch (_) { /* renderer may be gone */ }
+
+        const previousProvider = this.signingProvider;
+        const previousSigningConfig = this.signingConfig ? { ...this.signingConfig } : null;
+        this.signingProvider = EULER_WS_PROVIDER;
+        this.signingConfig = {
+            apiKey: proxyKey,
+            serviceUrl: null
+        };
+
+        try {
+            await this.teardownConnection({ silent: true });
+        } catch (error) {
+            this.logDebug('lifecycle.fallback.eulerProxy.teardownError', normalizeForLogging(error));
+        }
+
+        try {
+            this.initializeConnectionInstance({ forceLegacy: false, context: 'euler_proxy_fallback' });
+        } catch (error) {
+            this.signingProvider = previousProvider;
+            this.signingConfig = previousSigningConfig;
+            this.autoEulerProxyFallbackActive = false;
+            this.logDebug('lifecycle.fallback.eulerProxy.instantiateError', normalizeForLogging(error));
+            console.error('[TikTok] Failed to instantiate Euler Proxy fallback connection:', error);
+            return false;
+        }
+
+        return true;
+    }
+
     async tryFallbackToLocalSigner(primaryError, stage = 'connect') {
-        if (this.signingProvider !== 'auto' ||
+        const isAutoFlow = this.signingProvider === 'auto' || this.autoEulerProxyFallbackActive;
+        if (!isAutoFlow ||
             this.autoLocalSignerFallbackAttempted ||
             !this.localSigner ||
             typeof this.localSigner.sign !== 'function' ||
@@ -4347,8 +4448,8 @@ class ConnectionManager {
             this.preferredStrategy === 'legacy' ||
             this.connectionStrategy === 'legacy') {
             this.logDebug('lifecycle.fallback.localSigner.skipped', {
-                reason: this.signingProvider !== 'auto'
-                    ? 'provider_not_auto'
+                reason: !isAutoFlow
+                    ? 'provider_not_auto_flow'
                     : (this.autoLocalSignerFallbackAttempted
                         ? 'already_activated'
                         : (!this.localSigner || typeof this.localSigner.sign !== 'function'
@@ -4383,8 +4484,10 @@ class ConnectionManager {
         } catch (_) { /* renderer may be gone */ }
 
         const previousProvider = this.signingProvider;
+        const previousAutoEulerProxyFallbackActive = this.autoEulerProxyFallbackActive;
         this.signingProvider = 'local';
         this.autoLocalSignerFallbackActive = true;
+        this.autoEulerProxyFallbackActive = false;
 
         try {
             await this.teardownConnection({ silent: true });
@@ -4396,6 +4499,7 @@ class ConnectionManager {
             this.initializeConnectionInstance({ forceLegacy: false, context: 'local_signer_fallback' });
         } catch (error) {
             this.signingProvider = previousProvider;
+            this.autoEulerProxyFallbackActive = previousAutoEulerProxyFallbackActive;
             this.autoLocalSignerFallbackActive = false;
             this.logDebug('lifecycle.fallback.localSigner.instantiateError', normalizeForLogging(error));
             console.error('[TikTok] Failed to instantiate local signer fallback connection:', error);
@@ -4406,8 +4510,14 @@ class ConnectionManager {
     }
 
     async tryAutoFallbacksBeforePrompt(primaryError, stage = 'connect_auto') {
-        if (this.signingProvider !== 'auto') {
+        const isAutoFlow = this.signingProvider === 'auto' || this.autoEulerProxyFallbackActive;
+        if (!isAutoFlow) {
             return false;
+        }
+
+        const proxyFallbackHandled = await this.tryFallbackToEulerProxy(primaryError, `${stage}_proxy`);
+        if (proxyFallbackHandled) {
+            return true;
         }
 
         const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, `${stage}_local`);
@@ -5772,6 +5882,10 @@ class ConnectionManager {
                 const errorName = primaryError && primaryError.name;
                 const errorMessage = primaryError && primaryError.message ? primaryError.message : '';
                 if (primaryError?.ssappFallback) {
+                    const proxyFallbackHandled = await this.tryFallbackToEulerProxy(primaryError, 'connect_ssapp_proxy_fallback');
+                    if (proxyFallbackHandled) {
+                        return this.connect();
+                    }
                     const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, 'connect_ssapp_fallback');
                     if (localFallbackHandled) {
                         return this.connect();
@@ -5853,6 +5967,10 @@ class ConnectionManager {
 
                 if (isSignServerIssue) {
                     this.signServerFailureCount = (this.signServerFailureCount || 0) + 1;
+                    const proxyFallbackHandled = await this.tryFallbackToEulerProxy(primaryError, 'connect_sign_error_auto_proxy');
+                    if (proxyFallbackHandled) {
+                        return this.connect();
+                    }
                     const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, 'connect_sign_error_auto');
                     if (localFallbackHandled) {
                         return this.connect();
@@ -6124,18 +6242,21 @@ class ConnectionManager {
     }
 
     hasPendingAutoFallbackOptions() {
-        if (this.signingProvider !== 'auto') {
+        const isAutoFlow = this.signingProvider === 'auto' || this.autoEulerProxyFallbackActive;
+        if (!isAutoFlow) {
             return false;
         }
         const legacyActive = this.pollingFallbackActivated || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy';
         if (legacyActive) {
             return false;
         }
+        const canTryEulerProxy = !this.autoEulerProxyFallbackAttempted &&
+            !!this.getAutoEulerProxyFallbackKey();
         const canTryLocalSigner = !this.autoLocalSignerFallbackAttempted &&
             !!this.localSigner &&
             typeof this.localSigner.sign === 'function';
         const canTryPolling = !!this.pollingFallbackSupported && !this.pollingFallbackActivated;
-        return canTryLocalSigner || canTryPolling;
+        return canTryEulerProxy || canTryLocalSigner || canTryPolling;
     }
 
     buildSharedEulerRetryNotice(candidate, reason = 'rate_limit', scope = 'signing') {
@@ -6153,7 +6274,7 @@ class ConnectionManager {
         if (this.signingProvider === EULER_WS_PROVIDER) {
             return `Euler Proxy retries were exhausted. Options: add a free Euler API key (${EULER_DASHBOARD_URL}), switch to Polling, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
         }
-        return `AUTO retries were exhausted. Options: add a free Euler API key (${EULER_DASHBOARD_URL}), switch to Local Signer, switch to Polling, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
+        return `AUTO retries were exhausted. Options: add a free Euler API key (${EULER_DASHBOARD_URL}), use Euler Proxy, switch to Local Signer, switch to Polling, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
     }
 
     shouldPromptForEulerApiKey(primaryError, rawMessage = '') {
@@ -6173,7 +6294,7 @@ class ConnectionManager {
         if (this.isLocalSignerRateLimit(primaryError)) {
             return false;
         }
-        if (this.signingProvider === 'auto' && this.hasPendingAutoFallbackOptions()) {
+        if (this.hasPendingAutoFallbackOptions()) {
             return false;
         }
         const combined = `${rawMessage || ''} ${primaryError?.message || ''}`.toLowerCase();
@@ -6465,6 +6586,21 @@ class ConnectionManager {
                     force: true,
                     scope: 'proxy'
                 })
+                    .then((handled) => {
+                        if (handled) {
+                            return this.connect();
+                        }
+                        return null;
+                    })
+                    .catch(() => null);
+                return;
+            }
+            const shouldTryAutoFallback = this.autoEulerProxyFallbackActive && (code === 4401 || code === 4429);
+            if (shouldTryAutoFallback) {
+                this.tryAutoFallbacksBeforePrompt(
+                    { message: codeLabel || reason || 'Euler proxy connection failed.' },
+                    `disconnect_${code}_auto`
+                )
                     .then((handled) => {
                         if (handled) {
                             return this.connect();
