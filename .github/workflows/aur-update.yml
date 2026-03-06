@@ -78,7 +78,7 @@ jobs:
           mkdir -p "$AUR_SSH_DIR"
           chmod 700 "$AUR_SSH_DIR"
           # Support both real multiline secrets and single-line secrets with literal "\n" escapes.
-          printf '%b' "$AUR_SSH_KEY" | tr -d '\r' > "$AUR_SSH_DIR/aur"
+          printf '%b' "$AUR_SSH_KEY" | sed 's/\r$//' > "$AUR_SSH_DIR/aur"
           chmod 600 "$AUR_SSH_DIR/aur"
           if ! ssh-keygen -yf "$AUR_SSH_DIR/aur" >/dev/null 2>&1; then
             echo "AUR_SSH_KEY is not a valid private key (or is passphrase-protected)."
