@@ -77,8 +77,10 @@ jobs:
           AUR_SSH_DIR="$(pwd)/.aur-ssh"
           mkdir -p "$AUR_SSH_DIR"
           chmod 700 "$AUR_SSH_DIR"
+          echo "AUR_SSH_KEY: bytes=$(printf '%s' "$AUR_SSH_KEY" | wc -c), lines=$(printf '%s' "$AUR_SSH_KEY" | wc -l)"
           # Support both real multiline secrets and single-line secrets with literal "\n" escapes.
           printf '%b' "$AUR_SSH_KEY" | sed 's/\r$//' > "$AUR_SSH_DIR/aur"
+          echo "AUR key file: bytes=$(wc -c < "$AUR_SSH_DIR/aur"), lines=$(wc -l < "$AUR_SSH_DIR/aur")"
           chmod 600 "$AUR_SSH_DIR/aur"
           if ! ssh-keygen -yf "$AUR_SSH_DIR/aur" >/dev/null 2>&1; then
             echo "AUR_SSH_KEY is not a valid private key (or is passphrase-protected)."
