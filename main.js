@@ -4618,21 +4618,32 @@ async function importAllSessionData(sessionData) {
 }
 
 
-function createCustomDialog(htmlFile, width, height) {
+function createCustomDialog(htmlFile, width, height, options = {}) {
     try {
+        const parentWindow = options.parent && !options.parent.isDestroyed() ? options.parent : null;
         let win = new BrowserWindow({
             width: width,
             height: height,
             frame: false,
-            transparent: true,
-            resizable: !shouldUseWin10TransparencyCompat(false, true),
-            alwaysOnTop: true,
+            transparent: false,
+            backgroundColor: "#11161c",
+            resizable: false,
+            minimizable: false,
+            maximizable: false,
+            fullscreenable: false,
+            alwaysOnTop: !!options.alwaysOnTop,
+            modal: !!parentWindow,
+            parent: parentWindow || undefined,
+            show: false,
+            skipTaskbar: !!parentWindow,
+            autoHideMenuBar: true,
             webPreferences: {
                 nodeIntegration: true,
                 contextIsolation: false,
                 additionalPermissions: ['clipboard-write']
             }
         });
+        try { win.removeMenu(); } catch (_) { }
         // Workaround for Electron 36 frameless window titlebar issue
         if (APPLY_WIN_FRAMELESS_WORKAROUND) {
             // Apply initial fix after window is created
@@ -5341,7 +5352,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     ipcMain.on("prompt", (event, arg) => {
         try {
-            let promptWindow = createCustomDialog('prompt.html', 1000, 600);
+            let promptWindow = createCustomDialog('prompt.html', 1000, 600, {
+                parent: mainWindow
+            });
 
             if (!promptWindow) {
                 console.error('Failed to create prompt window');
@@ -5367,39 +5380,61 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 promptWindow.center();
             }
 
-            // Focus the prompt window
-            promptWindow.show();
-            promptWindow.focus();
-
-            promptWindow.webContents.on('did-finish-load', () => {
-                promptWindow.webContents.send('prompt-data', arg);
-            });
-
-            // Use once to ensure this listener is only triggered once
-            ipcMain.once('prompt-response', (responseEvent, response) => {
+            let settled = false;
+            let promptTimeout = null;
+            const cleanupPrompt = () => {
+                if (promptTimeout) {
+                    clearTimeout(promptTimeout);
+                    promptTimeout = null;
+                }
+                try {
+                    ipcMain.removeListener('prompt-response', onPromptResponse);
+                } catch (_) { }
+            };
+            const settlePrompt = (response, shouldCloseWindow = true) => {
+                if (settled) return;
+                settled = true;
+                cleanupPrompt();
                 event.returnValue = response;
-                if (!promptWindow.isDestroyed()) {
+                if (shouldCloseWindow && promptWindow && !promptWindow.isDestroyed()) {
                     promptWindow.close();
                 }
+            };
+            const onPromptResponse = (responseEvent, response) => {
+                if (!promptWindow || promptWindow.isDestroyed()) return;
+                if (responseEvent.sender !== promptWindow.webContents) return;
+                settlePrompt(response);
+            };
+
+            promptWindow.once('ready-to-show', () => {
+                if (!promptWindow || promptWindow.isDestroyed()) return;
+                promptWindow.show();
+                promptWindow.focus();
             });
 
-            // Handle window close event
+            promptWindow.webContents.once('did-finish-load', () => {
+                if (!promptWindow || promptWindow.isDestroyed()) return;
+                promptWindow.webContents.send('prompt-data', arg || {});
+                if (!promptWindow.isVisible()) {
+                    promptWindow.show();
+                }
+                promptWindow.focus();
+            });
+
+            ipcMain.on('prompt-response', onPromptResponse);
+
             promptWindow.on('closed', () => {
-                if (!event.returnValue) {
-                    event.returnValue = null;
-                }
+                settlePrompt(null, false);
             });
 
-            // Set a timeout to close the window if no response is received
-            setTimeout(() => {
-                if (!promptWindow.isDestroyed()) {
+            const parsedTimeoutMs = Number(arg && arg.timeoutMs);
+            const timeoutMs = Number.isFinite(parsedTimeoutMs) && parsedTimeoutMs > 0 ? parsedTimeoutMs : 0;
+            if (timeoutMs > 0) {
+                promptTimeout = setTimeout(() => {
                     log('Prompt timed out');
-                    promptWindow.close();
-                    if (!event.returnValue) {
-                        event.returnValue = null;
-                    }
-                }
-            }, 60000); // 60 second timeout
+                    settlePrompt(null, true);
+                }, timeoutMs);
+            }
 
         } catch (e) {
             console.error('Error handling prompt:', e);

@@ -762,8 +762,96 @@ function getDefaultConfig() {
 	return baseConfig;
 }
 
+const WELCOME_GUIDE_URL = "https://www.youtube.com/watch?v=VpD2pnZVYF0";
+const WELCOME_GUIDE_THUMBNAIL_URL = "https://i.ytimg.com/vi/VpD2pnZVYF0/hqdefault.jpg";
+
+function normalizeWelcomeFrameUrl(url) {
+	if (typeof url !== "string") return "";
+	if (/^[a-zA-Z]:[\\/]/.test(url)) {
+		try {
+			const { pathToFileURL } = require("url");
+			return pathToFileURL(url).href;
+		} catch (_) {
+			return `file:///${url.replace(/\\/g, "/")}`;
+		}
+	}
+	return url;
+}
+
+function addWelcomeFrameBaseHref(html, resolvedUrl) {
+	if (!html || !resolvedUrl) return html;
+	if (/<base\s/i.test(html)) return html;
+	const baseHref = resolvedUrl.href.replace(/[^/?#]*([?#].*)?$/, "");
+	return html.replace(/<head([^>]*)>/i, `<head$1><base href="${baseHref}">`);
+}
+
+function patchWelcomeFrameHtml(html, options = {}) {
+	if (!html || typeof html !== "string") return html;
+	let patchedHtml = html.replace(/allow="([^"]*)"/gi, (match, value) => {
+		const filteredTokens = value
+			.split(";")
+			.map((token) => token.trim())
+			.filter(Boolean)
+			.filter((token) => token.toLowerCase() !== "web-share");
+		return `allow="${filteredTokens.join("; ")}"`;
+	});
+	if (options.useVideoFallback) {
+		if (!patchedHtml.includes(".video-fallback-link")) {
+			const fallbackStyles = `
+        .video-fallback-link {
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            border-radius: 8px;
+            text-decoration: none;
+            background: #000;
+        }
+        .video-fallback-link img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0.78;
+        }
+        .video-fallback-label {
+            position: absolute;
+            padding: 12px 18px;
+            border-radius: 999px;
+            background: rgba(0, 0, 0, 0.72);
+            color: #fff;
+            font-weight: bold;
+            letter-spacing: 0.01em;
+        }
+        `;
+			patchedHtml = patchedHtml.replace(/<\/style>/i, `${fallbackStyles}</style>`);
+		}
+		const fallbackMarkup = `
+        <div class="video-container">
+            <a class="video-fallback-link" href="${WELCOME_GUIDE_URL}" target="_blank" rel="noopener noreferrer">
+                <img src="${WELCOME_GUIDE_THUMBNAIL_URL}" alt="Social Stream Ninja walkthrough video thumbnail">
+                <span class="video-fallback-label">Watch the walkthrough on YouTube</span>
+            </a>
+        </div>`;
+		patchedHtml = patchedHtml.replace(
+			/<div class="video-container">\s*<iframe[\s\S]*?src="https:\/\/www\.youtube\.com\/embed\/VpD2pnZVYF0"[\s\S]*?<\/iframe>\s*<\/div>/i,
+			fallbackMarkup
+		);
+	}
+	return patchedHtml;
+}
+
+async function readWelcomeFrameFileContent(fileUrl) {
+	const fs = require("fs").promises;
+	const { fileURLToPath } = require("url");
+	return fs.readFile(fileURLToPath(fileUrl), "utf8");
+}
+
 async function loadWelcomeFrameContent(frame, url) {
 	if (!frame) return;
+	const normalizedUrl = normalizeWelcomeFrameUrl(url);
 	const resetToSrc = (targetUrl) => {
 		try {
 			frame.removeAttribute('srcdoc');
@@ -772,11 +860,25 @@ async function loadWelcomeFrameContent(frame, url) {
 		}
 		frame.src = targetUrl || '';
 	};
-	if (!url || url.startsWith('file://')) {
-		resetToSrc(url || '');
+	if (!normalizedUrl) {
+		resetToSrc('');
 		return;
 	}
 	const currentOrigin = typeof window !== 'undefined' && window.location ? window.location.origin : null;
+	if (normalizedUrl.startsWith('file://')) {
+		try {
+			const resolvedUrl = new URL(normalizedUrl, window.location ? window.location.href : undefined);
+			let html = await readWelcomeFrameFileContent(normalizedUrl);
+			html = patchWelcomeFrameHtml(html, { useVideoFallback: true });
+			html = addWelcomeFrameBaseHref(html, resolvedUrl);
+			frame.srcdoc = html;
+			return;
+		} catch (err) {
+			console.warn('Failed to inline local welcome frame content; falling back to iframe src.', err);
+			resetToSrc(normalizedUrl);
+			return;
+		}
+	}
 	const shouldInlineResponse = (response, resolvedUrl) => {
 		const normalized = (value) => (value || '').trim().toLowerCase();
 		const xFrameOptions = normalized(response.headers.get('x-frame-options'));
@@ -818,34 +920,29 @@ async function loadWelcomeFrameContent(frame, url) {
 		return false;
 	};
 	try {
-		const response = await fetch(url, { credentials: 'omit' });
+		const response = await fetch(normalizedUrl, { credentials: 'omit' });
 		if (!response.ok) {
 			throw new Error(`Unexpected status ${response.status}`);
 		}
 		const resolvedUrl = (() => {
 			try {
-				return new URL(response.url || url, window.location ? window.location.href : undefined);
+				return new URL(response.url || normalizedUrl, window.location ? window.location.href : undefined);
 			} catch (_) {
 				return null;
 			}
 		})();
 		const forceInline = shouldInlineResponse(response, resolvedUrl);
 		if (!forceInline) {
-			resetToSrc((resolvedUrl && resolvedUrl.href) || url);
+			resetToSrc((resolvedUrl && resolvedUrl.href) || normalizedUrl);
 			return;
 		}
 		let html = await response.text();
-		html = html.replace(/allow="[^"]*"/gi, '');
-		if (resolvedUrl) {
-			const baseHref = `${resolvedUrl.origin}${resolvedUrl.pathname.replace(/[^/]*$/, '')}`;
-			if (!/<base\s/i.test(html)) {
-				html = html.replace(/<head([^>]*)>/i, `<head$1><base href="${baseHref}">`);
-			}
-		}
+		html = patchWelcomeFrameHtml(html, { useVideoFallback: false });
+		html = addWelcomeFrameBaseHref(html, resolvedUrl);
 		frame.srcdoc = html;
 	} catch (err) {
 		console.warn('Failed to fetch welcome frame content; falling back to iframe src.', err);
-		resetToSrc(url);
+		resetToSrc(normalizedUrl);
 	}
 }
 

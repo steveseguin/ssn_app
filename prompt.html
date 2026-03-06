@@ -3,54 +3,53 @@
 <head>
     <style>
         body {
-            font-family: Arial, sans-serif;
-            background-color: transparent;
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #11161c;
             display: flex;
             justify-content: center;
             align-items: center;
             height: 100vh;
             margin: 0;
             overflow: hidden;
+            padding: 18px;
+            box-sizing: border-box;
         }
         .dialog-container {
-            position: relative;
-            width: 90vw;
-            height: 80vh;
-        }
-        .dialog-background {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: rgba(0,0,0,0.5);
-            filter: blur(20px);
-            border-radius: 20px;
+            width: 100%;
+            height: 100%;
         }
         .dialog {
-            position: relative;
-            background-color: rgba(20, 20, 20, 0.85);
+            background-color: #18202a;
             color: #f4f4f4;
-            padding: 30px;
+            padding: 24px;
             border-radius: 12px;
             border: 1px solid rgba(255, 255, 255, 0.15);
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-            backdrop-filter: blur(6px);
             width: 100%;
             height: 100%;
             box-sizing: border-box;
-            overflow: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        h2 {
+            margin: 0;
+            font-size: 24px;
+            line-height: 1.3;
+        }
+        p {
+            margin: 0;
+            line-height: 1.5;
         }
         input {
             width: 100%;
             padding: 10px;
-            margin: 10px 0;
             border: 1px solid #ccc;
             border-radius: 5px;
             font-size: 16px;
             background: rgba(0, 0, 0, 0.45);
             color: #f4f4f4;
             border-color: rgba(255, 255, 255, 0.25);
+            box-sizing: border-box;
         }
         input:focus {
             outline: none;
@@ -63,7 +62,6 @@
         }
         button {
             padding: 10px 20px;
-            margin-right: 10px;
             border: none;
             border-radius: 5px;
             background-color: #007bff;
@@ -75,25 +73,31 @@
         button:hover {
             background-color: #0056b3;
         }
-        button:last-child {
+        button.secondary {
             background-color: rgba(255, 255, 255, 0.15);
             color: #f4f4f4;
         }
-        button:last-child:hover {
+        button.secondary:hover {
             background-color: rgba(255, 255, 255, 0.25);
         }
         .checkbox-container {
             display: none;
-            margin: 15px 0;
+            align-items: center;
+            gap: 10px;
             font-size: 16px;
         }
         .checkbox-container input[type="checkbox"] {
             width: auto;
-            margin-right: 10px;
-            vertical-align: middle;
+            margin: 0;
         }
         .checkbox-container label {
             vertical-align: middle;
+        }
+        .button-row {
+            margin-top: auto;
+            display: flex;
+            gap: 10px;
+            padding-top: 12px;
         }
         .error-message {
             display: none;
@@ -105,7 +109,6 @@
 </head>
 <body>
     <div class="dialog-container">
-        <div class="dialog-background"></div>
         <div class="dialog">
             <h2 id="title"></h2>
             <p id="message"></p>
@@ -120,8 +123,10 @@
                 <input type="checkbox" id="isChannelName">
                 <label for="isChannelName">This is a channel name (not a username)</label>
             </div>
-            <button onclick="submit()">OK</button>
-            <button onclick="cancel()">Cancel</button>
+            <div class="button-row">
+                <button onclick="submit()">OK</button>
+                <button class="secondary" onclick="cancel()">Cancel</button>
+            </div>
         </div>
     </div>
     <script>
@@ -251,14 +256,12 @@
             ipcRenderer.send('prompt-response', null);
             window.close();
         }
-
-        window.onbeforeunload = () => {
-            ipcRenderer.send('prompt-response', null);
-        };
         
-        document.getElementById('input').addEventListener('keypress', function(event) {
+        document.getElementById('input').addEventListener('keydown', function(event) {
             if (event.key === 'Enter') {
                 submit();
+            } else if (event.key === 'Escape') {
+                cancel();
             }
         });
     </script>
