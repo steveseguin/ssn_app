@@ -74,35 +74,25 @@ jobs:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         run: |
           # Setup SSH for AUR
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$AUR_SSH_KEY" | tr -d '\r' > ~/.ssh/aur
-          chmod 600 ~/.ssh/aur
-          touch ~/.ssh/known_hosts
+          AUR_SSH_DIR="$(pwd)/.aur-ssh"
+          mkdir -p "$AUR_SSH_DIR"
+          chmod 700 "$AUR_SSH_DIR"
+          printf '%s\n' "$AUR_SSH_KEY" | tr -d '\r' > "$AUR_SSH_DIR/aur"
+          chmod 600 "$AUR_SSH_DIR/aur"
+          touch "$AUR_SSH_DIR/known_hosts"
           for attempt in 1 2 3 4 5; do
-            if ssh-keyscan -t ed25519 aur.archlinux.org > ~/.ssh/known_hosts 2>/dev/null; then
+            if ssh-keyscan -t ed25519 aur.archlinux.org > "$AUR_SSH_DIR/known_hosts" 2>/dev/null; then
               break
             fi
             echo "ssh-keyscan attempt $attempt failed; retrying..."
             sleep 2
           done
-          if ! grep -q '^aur\.archlinux\.org[[:space:]]\+ssh-ed25519[[:space:]]' ~/.ssh/known_hosts; then
+          if ! grep -q '^aur\.archlinux\.org[[:space:]]\+ssh-ed25519[[:space:]]' "$AUR_SSH_DIR/known_hosts"; then
             echo "Failed to fetch aur.archlinux.org ED25519 host key"
             exit 1
           fi
-          chmod 644 ~/.ssh/known_hosts
-          cat > ~/.ssh/config << 'EOF'
-          Host aur.archlinux.org
-            HostName aur.archlinux.org
-            IdentityFile ~/.ssh/aur
-            User aur
-            IdentitiesOnly yes
-            HostKeyAlgorithms ssh-ed25519
-            StrictHostKeyChecking yes
-            UserKnownHostsFile ~/.ssh/known_hosts
-          EOF
-          chmod 600 ~/.ssh/config
-          export GIT_SSH_COMMAND="ssh -F ~/.ssh/config"
+          chmod 600 "$AUR_SSH_DIR/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $AUR_SSH_DIR/aur -o IdentitiesOnly=yes -o HostKeyAlgorithms=ssh-ed25519 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$AUR_SSH_DIR/known_hosts"
           
           # Configure git
           git config --global user.email "steve@seguin.email"
