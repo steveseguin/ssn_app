@@ -77,8 +77,13 @@ jobs:
           AUR_SSH_DIR="$(pwd)/.aur-ssh"
           mkdir -p "$AUR_SSH_DIR"
           chmod 700 "$AUR_SSH_DIR"
-          printf '%s\n' "$AUR_SSH_KEY" | tr -d '\r' > "$AUR_SSH_DIR/aur"
+          # Support both real multiline secrets and single-line secrets with literal "\n" escapes.
+          printf '%b' "$AUR_SSH_KEY" | tr -d '\r' > "$AUR_SSH_DIR/aur"
           chmod 600 "$AUR_SSH_DIR/aur"
+          if ! ssh-keygen -yf "$AUR_SSH_DIR/aur" >/dev/null 2>&1; then
+            echo "AUR_SSH_KEY is not a valid private key (or is passphrase-protected)."
+            exit 1
+          fi
           touch "$AUR_SSH_DIR/known_hosts"
           for attempt in 1 2 3 4 5; do
             if ssh-keyscan -t ed25519 aur.archlinux.org > "$AUR_SSH_DIR/known_hosts" 2>/dev/null; then
