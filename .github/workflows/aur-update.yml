@@ -75,14 +75,22 @@ jobs:
         run: |
           # Setup SSH for AUR
           mkdir -p ~/.ssh
-          echo "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" | tr -d '\r' > ~/.ssh/aur
           chmod 600 ~/.ssh/aur
-          cat >> ~/.ssh/config << 'EOF'
+          ssh-keyscan -t rsa,ed25519 aur.archlinux.org > ~/.ssh/known_hosts 2>/dev/null
+          chmod 644 ~/.ssh/known_hosts
+          cat > ~/.ssh/config << 'EOF'
           Host aur.archlinux.org
+            HostName aur.archlinux.org
             IdentityFile ~/.ssh/aur
             User aur
-            StrictHostKeyChecking accept-new
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
           EOF
+          chmod 600 ~/.ssh/config
+          export GIT_SSH_COMMAND="ssh -F ~/.ssh/config"
           
           # Configure git
           git config --global user.email "steve@seguin.email"
