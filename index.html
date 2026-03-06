@@ -7158,6 +7158,50 @@
             return null;
         }
 
+        function getConnectingStatusContent(sourceCtx, message = null) {
+            const explicitMessage = typeof message === 'string' ? message.trim() : '';
+            if (explicitMessage) {
+                return {
+                    label: explicitMessage,
+                    tip: ''
+                };
+            }
+
+            try {
+                const target = typeof sourceCtx?.target === 'string' ? sourceCtx.target.toLowerCase() : '';
+                const mode = getEffectiveConnectionMode(sourceCtx);
+                const provider = typeof sourceCtx?.tiktokSigningProvider === 'string'
+                    ? sourceCtx.tiktokSigningProvider.toLowerCase()
+                    : 'auto';
+
+                if (target === 'tiktok' && mode === 'tiktok-websocket' && provider === 'local') {
+                    return {
+                        label: 'Preparing TikTok local signer...',
+                        tip: 'This usually takes 10-15 seconds while TikTok loads in the background.'
+                    };
+                }
+
+                if (target === 'tiktok' && mode === 'tiktok-websocket') {
+                    return {
+                        label: 'Connecting to TikTok...',
+                        tip: 'Signing is being prepared in the background.'
+                    };
+                }
+
+                if (mode === 'websocket') {
+                    return {
+                        label: 'Connecting...',
+                        tip: 'If a window opens, sign in and ensure the chat is visible.'
+                    };
+                }
+            } catch (_) { }
+
+            return {
+                label: 'Connecting...',
+                tip: ''
+            };
+        }
+
         function updateConnectionStatus(element, status, message = null) {
             if (!element) return;
             let statusElement = element.querySelector('.ws-status');
@@ -7190,15 +7234,11 @@
                     lockProvider(true);
                     statusElement.classList.add('connecting');
                     {
-                        let tipHtml = '';
-                        try {
-                            const isWss = sourceCtx && (sourceCtx.connectionMode === 'websocket' || sourceCtx.connectionMode === 'tiktok-websocket' || sourceCtx.connectionMode === 'tiktok-legacy');
-                            const isTikTok = sourceCtx && sourceCtx.target === 'tiktok';
-                            if (isWss && !isTikTok) {
-                                tipHtml = ' <span class="ws-tip">If a window opens, sign in and ensure the chat is visible.</span>';
-                            }
-                        } catch (_) { }
-                        statusElement.innerHTML = '<i class="las la-sync fa-spin"></i> Connecting...' + tipHtml;
+                        const connectingContent = getConnectingStatusContent(sourceCtx, message);
+                        const tipHtml = connectingContent.tip
+                            ? ` <span class="ws-tip">${connectingContent.tip}</span>`
+                            : '';
+                        statusElement.innerHTML = `<i class="las la-sync fa-spin"></i> ${connectingContent.label}${tipHtml}`;
                     }
                     break;
                 case 'connected':
@@ -8969,7 +9009,7 @@
                                 entryElement._tiktokRetryEndAt = null;
                                 entryElement._tiktokRetryAttempt = null;
                                 entryElement._tiktokRetryMax = null;
-                                updateConnectionStatus(entryElement, 'connecting');
+                                updateConnectionStatus(entryElement, 'connecting', data.message || null);
                                 setConnectingStopUI();
                             }
                             break;

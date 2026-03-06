@@ -5822,6 +5822,7 @@ class ConnectionManager {
         const runConnect = async () => {
             try {
                 this.logDebug('lifecycle.connect.start');
+                const usingLocalSigner = this.shouldUseLocalSigner();
 
                 // Mark connection attempt in progress to prevent cleanup during slow operations
                 // (e.g., local signer window navigation and fetch)
@@ -5835,7 +5836,10 @@ class ConnectionManager {
                 try {
                     emitStatus({
                         wssID: this.wssID,
-                        status: 'connecting'
+                        status: 'connecting',
+                        message: usingLocalSigner
+                            ? 'Preparing TikTok local signer. This usually takes 10-15 seconds.'
+                            : null
                     });
                 } catch (_) { /* renderer may be gone */ }
 
@@ -5844,7 +5848,7 @@ class ConnectionManager {
                 const isAuto = this.signingProvider === 'auto';
                 const isCustom = this.signingProvider === 'custom';
 
-                if (this.shouldUseLocalSigner()) {
+                if (usingLocalSigner) {
                     this.logDebug('lifecycle.connect.setup_signer', { provider: 'local' });
                 } else if (isCustom || (isAuto && this.signingConfig)) {
                     if (isCustom && this.connection.signedWebSocketProvider) {
