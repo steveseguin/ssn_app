@@ -78,7 +78,18 @@ jobs:
           chmod 700 ~/.ssh
           printf '%s\n' "$AUR_SSH_KEY" | tr -d '\r' > ~/.ssh/aur
           chmod 600 ~/.ssh/aur
-          ssh-keyscan -t rsa,ed25519 aur.archlinux.org > ~/.ssh/known_hosts 2>/dev/null
+          touch ~/.ssh/known_hosts
+          for attempt in 1 2 3 4 5; do
+            if ssh-keyscan -t ed25519 aur.archlinux.org > ~/.ssh/known_hosts 2>/dev/null; then
+              break
+            fi
+            echo "ssh-keyscan attempt $attempt failed; retrying..."
+            sleep 2
+          done
+          if ! grep -q '^aur\.archlinux\.org[[:space:]]\+ssh-ed25519[[:space:]]' ~/.ssh/known_hosts; then
+            echo "Failed to fetch aur.archlinux.org ED25519 host key"
+            exit 1
+          fi
           chmod 644 ~/.ssh/known_hosts
           cat > ~/.ssh/config << 'EOF'
           Host aur.archlinux.org
@@ -86,6 +97,7 @@ jobs:
             IdentityFile ~/.ssh/aur
             User aur
             IdentitiesOnly yes
+            HostKeyAlgorithms ssh-ed25519
             StrictHostKeyChecking yes
             UserKnownHostsFile ~/.ssh/known_hosts
           EOF
