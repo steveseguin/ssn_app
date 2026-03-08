@@ -8,10 +8,11 @@
     "ws": "node run.js --mode=websocket",
     "legacy": "node run.js --mode=legacy",
     "both": "node run.js --mode=both",
+    "auto": "node auto-mode-regression.js",
     "gift": "node gift-count-regression.js",
     "social": "node social-signal-regression.js",
     "events": "node event-capture-regression.js",
     "emote": "node chat-emote-regression.js",
-    "regression": "node gift-count-regression.js && node social-signal-regression.js && node event-capture-regression.js && node chat-emote-regression.js"
+    "regression": "node auto-mode-regression.js && node gift-count-regression.js && node social-signal-regression.js && node event-capture-regression.js && node chat-emote-regression.js"
   }
 }

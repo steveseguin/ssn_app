@@ -4221,6 +4221,27 @@ class ConnectionManager {
         this.setupEventHandlers();
     }
 
+    ensureConnectionInstance(context = 'connect') {
+        if (this.connection && typeof this.connection.connect === 'function') {
+            return true;
+        }
+        const forceLegacy = !!(
+            this.pollingFallbackActivated
+            || this.preferredStrategy === 'legacy'
+            || this.connectionStrategy === 'legacy'
+            || usingLegacyTikTokConnector
+        );
+        this.logDebug('lifecycle.initialize.ensureConnection', {
+            context,
+            forceLegacy,
+            signingProvider: this.signingProvider || null,
+            preferredStrategy: this.preferredStrategy || null,
+            connectionStrategy: this.connectionStrategy || null
+        });
+        this.initializeConnectionInstance({ forceLegacy, context });
+        return !!(this.connection && typeof this.connection.connect === 'function');
+    }
+
     applyResumeCursorToConnection() {
         const state = this.resumeCursorState;
         if (!state || !state.cursor || !this.connection) {
@@ -4284,12 +4305,59 @@ class ConnectionManager {
             ? primaryError.ssappFallbackMessage.trim()
             : (typeof primaryError?.message === 'string' ? primaryError.message : '');
         const sanitized = rawMessage.replace(/^SSAPP_TIKTOK_FALLBACK:\s*/i, '').trim();
-        const finalMessage = sanitized || defaultMessage;
-        primaryError.code = primaryError.code || 'SSAPP_TIKTOK_FALLBACK';
-        primaryError.ssappFallback = true;
-        primaryError.ssappFallbackMode = 'polling';
-        primaryError.ssappFallbackMessage = finalMessage;
-        return finalMessage;
+        return sanitized || defaultMessage;
+    }
+
+    hasFallbackTransitionStarted(primaryError) {
+        return !!(primaryError && typeof primaryError === 'object' && primaryError.__ssappTikTokFallbackTransitionStarted);
+    }
+
+    markFallbackTransitionStarted(primaryError, transition = 'fallback') {
+        if (!primaryError || typeof primaryError !== 'object') {
+            return;
+        }
+        primaryError.__ssappTikTokFallbackTransitionStarted = transition;
+    }
+
+    clearFallbackTransitionStarted(primaryError, transition = null) {
+        if (!primaryError || typeof primaryError !== 'object') {
+            return;
+        }
+        if (transition && primaryError.__ssappTikTokFallbackTransitionStarted !== transition) {
+            return;
+        }
+        primaryError.__ssappTikTokFallbackTransitionStarted = null;
+        primaryError.__ssappTikTokFallbackReconnectPromise = null;
+    }
+
+    getFallbackReconnectPromise(primaryError) {
+        if (!primaryError || typeof primaryError !== 'object') {
+            return null;
+        }
+        const reconnectPromise = primaryError.__ssappTikTokFallbackReconnectPromise;
+        return reconnectPromise && typeof reconnectPromise.then === 'function'
+            ? reconnectPromise
+            : null;
+    }
+
+    restartConnectionAttempt(primaryError = null, context = 'fallback_restart') {
+        const reconnectPromise = (async () => {
+            try {
+                this.ensureConnectionInstance(context);
+            } catch (error) {
+                this.logDebug('lifecycle.connect.restart.ensureConnectionFailed', {
+                    context,
+                    error: error?.message || String(error)
+                });
+                console.error('[TikTok] Failed to prepare connection before restart:', error);
+                return false;
+            }
+            return this.connect({ bypassActivePromise: !!this.activeConnectPromise });
+        })();
+        if (primaryError && typeof primaryError === 'object') {
+            primaryError.__ssappTikTokFallbackReconnectPromise = reconnectPromise;
+        }
+        return reconnectPromise;
     }
 
     async tryFallbackToPolling(primaryError, stage = 'connect') {
@@ -4306,6 +4374,7 @@ class ConnectionManager {
         this.autoEulerProxyFallbackActive = false;
         this.autoLocalSignerFallbackActive = false;
         this.signServerFailureCount = 0;
+        this.markFallbackTransitionStarted(primaryError, 'polling');
         this.logDebug('lifecycle.fallback.polling.begin', {
             stage,
             message: fallbackMessage,
@@ -4324,6 +4393,7 @@ class ConnectionManager {
             this.pollingFallbackActivated = false;
             this.connectionStrategy = 'websocket';
             this.preferredStrategy = 'websocket';
+            this.clearFallbackTransitionStarted(primaryError, 'polling');
             this.logDebug('lifecycle.fallback.polling.instantiateError', normalizeForLogging(error));
             console.error('[TikTok] Failed to instantiate legacy fallback connection:', error);
             return false;
@@ -4352,8 +4422,20 @@ class ConnectionManager {
         return proxyKey || null;
     }
 
+    getEulerApiKeyLabel(scope = 'signing') {
+        if (this.hasUserProvidedSigningApiKey()) {
+            return 'configured Euler API key';
+        }
+        if (scope === 'proxy') {
+            return 'shared Euler proxy key';
+        }
+        return 'shared Euler signing key';
+    }
+
     async tryFallbackToEulerProxy(primaryError, stage = 'connect') {
-        const isAutoFlow = this.signingProvider === 'auto' || this.autoEulerProxyFallbackActive;
+        const isAutoFlow = this.signingProvider === 'auto'
+            || this.autoEulerProxyFallbackActive
+            || this.autoLocalSignerFallbackActive;
         const proxyKey = this.getAutoEulerProxyFallbackKey();
         if (!isAutoFlow ||
             this.autoEulerProxyFallbackAttempted ||
@@ -4385,6 +4467,8 @@ class ConnectionManager {
         this.autoEulerProxyFallbackActive = true;
         this.autoLocalSignerFallbackActive = false;
         this.signServerFailureCount = 0;
+        this.markFallbackTransitionStarted(primaryError, 'proxy');
+        const proxyKeyLabel = this.getEulerApiKeyLabel('proxy');
 
         const sharedProxyKey = typeof SHARED_EULER_PROXY_FALLBACK_KEY === 'string'
             ? SHARED_EULER_PROXY_FALLBACK_KEY.trim()
@@ -4397,14 +4481,15 @@ class ConnectionManager {
         this.logDebug('lifecycle.fallback.eulerProxy.begin', {
             stage,
             message: fallbackMessage,
-            usingSharedKey
+            usingSharedKey,
+            keyLabel: proxyKeyLabel
         });
-        console.warn(`[TikTok] Euler Proxy fallback activated (${stage}) for ${this.username}: ${fallbackMessage}`);
+        console.warn(`[TikTok] Euler Proxy fallback activated (${stage}) for ${this.username} using ${proxyKeyLabel}: ${fallbackMessage}`);
         try {
             emitStatus({
                 wssID: this.wssID,
                 status: 'reconnecting',
-                reason: 'Sign server unavailable. Trying Euler Proxy.',
+                reason: `Sign server unavailable. Trying Euler Proxy with ${proxyKeyLabel}.`,
                 signServer: true,
                 proxyFallback: true
             });
@@ -4430,6 +4515,7 @@ class ConnectionManager {
             this.signingProvider = previousProvider;
             this.signingConfig = previousSigningConfig;
             this.autoEulerProxyFallbackActive = false;
+            this.clearFallbackTransitionStarted(primaryError, 'proxy');
             this.logDebug('lifecycle.fallback.eulerProxy.instantiateError', normalizeForLogging(error));
             console.error('[TikTok] Failed to instantiate Euler Proxy fallback connection:', error);
             return false;
@@ -4439,7 +4525,9 @@ class ConnectionManager {
     }
 
     async tryFallbackToLocalSigner(primaryError, stage = 'connect') {
-        const isAutoFlow = this.signingProvider === 'auto' || this.autoEulerProxyFallbackActive;
+        const isAutoFlow = this.signingProvider === 'auto'
+            || this.autoEulerProxyFallbackActive
+            || this.autoLocalSignerFallbackActive;
         if (!isAutoFlow ||
             this.autoLocalSignerFallbackAttempted ||
             !this.localSigner ||
@@ -4469,6 +4557,7 @@ class ConnectionManager {
         );
         this.autoLocalSignerFallbackAttempted = true;
         this.signServerFailureCount = 0;
+        this.markFallbackTransitionStarted(primaryError, 'local');
         this.logDebug('lifecycle.fallback.localSigner.begin', {
             stage,
             message: fallbackMessage
@@ -4501,6 +4590,7 @@ class ConnectionManager {
             this.signingProvider = previousProvider;
             this.autoEulerProxyFallbackActive = previousAutoEulerProxyFallbackActive;
             this.autoLocalSignerFallbackActive = false;
+            this.clearFallbackTransitionStarted(primaryError, 'local');
             this.logDebug('lifecycle.fallback.localSigner.instantiateError', normalizeForLogging(error));
             console.error('[TikTok] Failed to instantiate local signer fallback connection:', error);
             return false;
@@ -4515,7 +4605,9 @@ class ConnectionManager {
             includeProxy = true,
             includePolling = true
         } = options || {};
-        const isAutoFlow = this.signingProvider === 'auto' || this.autoEulerProxyFallbackActive;
+        const isAutoFlow = this.signingProvider === 'auto'
+            || this.autoEulerProxyFallbackActive
+            || this.autoLocalSignerFallbackActive;
         if (!isAutoFlow) {
             return false;
         }
@@ -5766,7 +5858,8 @@ class ConnectionManager {
         }, 30000); // 30 seconds
     }
 
-    async connect() {
+    async connect(options = {}) {
+        const { bypassActivePromise = false } = options || {};
         if (this.isStopped) return false;
 
         if (this.connection && this.connection.isConnected) {
@@ -5774,7 +5867,7 @@ class ConnectionManager {
             return true;
         }
 
-        if (this.activeConnectPromise) {
+        if (!bypassActivePromise && this.activeConnectPromise) {
             this.logDebug('lifecycle.connect.pending', { reason: 'promise_in_flight' });
             return this.activeConnectPromise;
         }
@@ -5851,12 +5944,20 @@ class ConnectionManager {
                 if (usingLocalSigner) {
                     this.logDebug('lifecycle.connect.setup_signer', { provider: 'local' });
                 } else if (isCustom || (isAuto && this.signingConfig)) {
-                    if (isCustom && this.connection.signedWebSocketProvider) {
+                    if (isCustom && this.connection?.signedWebSocketProvider) {
                         this.connection.signedWebSocketProvider = null;
                     }
                 }
 
-                await this.connection.connect();
+                this.ensureConnectionInstance('connect');
+                const activeConnection = this.connection;
+                if (!activeConnection || typeof activeConnection.connect !== 'function') {
+                    const unavailableError = new Error('TikTok connection instance unavailable after fallback transition.');
+                    unavailableError.code = 'SSAPP_TIKTOK_CONNECTION_UNAVAILABLE';
+                    throw unavailableError;
+                }
+
+                await activeConnection.connect();
 
                 const modeDetails = this.getConnectionModeDetails();
                 const effectiveMode = modeDetails.effectiveMode;
@@ -5896,18 +5997,26 @@ class ConnectionManager {
                 const primaryError = err instanceof Error ? err : (err && err.exception instanceof Error ? err.exception : err);
                 const errorName = primaryError && primaryError.name;
                 const errorMessage = primaryError && primaryError.message ? primaryError.message : '';
+                const handledReconnectPromise = this.getFallbackReconnectPromise(primaryError);
+                if (this.hasFallbackTransitionStarted(primaryError)) {
+                    this.logDebug('lifecycle.connect.fallbackTransitionHandled', {
+                        transition: primaryError?.__ssappTikTokFallbackTransitionStarted || null,
+                        message: errorMessage || null
+                    });
+                    return handledReconnectPromise || false;
+                }
                 if (primaryError?.ssappFallback) {
                     const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, 'connect_ssapp_local_fallback');
                     if (localFallbackHandled) {
-                        return this.connect();
+                        return this.restartConnectionAttempt(primaryError);
                     }
                     const proxyFallbackHandled = await this.tryFallbackToEulerProxy(primaryError, 'connect_ssapp_proxy_fallback');
                     if (proxyFallbackHandled) {
-                        return this.connect();
+                        return this.restartConnectionAttempt(primaryError);
                     }
                     const fallbackHandled = await this.tryFallbackToPolling(primaryError, 'connect');
                     if (fallbackHandled) {
-                        return this.connect();
+                        return this.restartConnectionAttempt(primaryError);
                     }
                 }
 
@@ -5931,7 +6040,7 @@ class ConnectionManager {
                         includePolling: false
                     });
                     if (localFirstHandled) {
-                        return this.connect();
+                        return this.restartConnectionAttempt(primaryError);
                     }
                 }
                 const canTrySharedEulerKey = this.shouldTrySharedEulerApiKeyForRateLimit(primaryError, errorMessage);
@@ -5942,7 +6051,7 @@ class ConnectionManager {
                         rawMessage: errorMessage
                     });
                     if (sharedRetryHandled) {
-                        return this.connect();
+                        return this.restartConnectionAttempt(primaryError);
                     }
                 }
                 if (isRateLimited) {
@@ -5952,7 +6061,7 @@ class ConnectionManager {
                         includePolling: true
                     });
                     if (proxyThenPollingHandled) {
-                        return this.connect();
+                        return this.restartConnectionAttempt(primaryError);
                     }
                 }
 
@@ -5998,11 +6107,11 @@ class ConnectionManager {
                     this.signServerFailureCount = (this.signServerFailureCount || 0) + 1;
                     const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, 'connect_sign_error_auto');
                     if (localFallbackHandled) {
-                        return this.connect();
+                        return this.restartConnectionAttempt(primaryError);
                     }
                     const proxyFallbackHandled = await this.tryFallbackToEulerProxy(primaryError, 'connect_sign_error_auto_proxy');
                     if (proxyFallbackHandled) {
-                        return this.connect();
+                        return this.restartConnectionAttempt(primaryError);
                     }
                     const fallbackThresholdReached = this.signServerFailureCount >= SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD;
 
@@ -6010,7 +6119,7 @@ class ConnectionManager {
                         const fallbackStage = this.sessionId ? 'connect_sign_error_session' : 'connect_sign_error_threshold';
                         const fallbackHandled = await this.tryFallbackToPolling(primaryError, fallbackStage);
                         if (fallbackHandled) {
-                            return this.connect();
+                            return this.restartConnectionAttempt(primaryError);
                         }
                         if (this.sessionId) {
                             this.handleSignServerRejection(primaryError instanceof Error ? primaryError : err);
@@ -6030,7 +6139,7 @@ class ConnectionManager {
                             await ConnectionManager.delay(retryDelay);
                         }
 
-                        return this.connect();
+                        return this.restartConnectionAttempt(primaryError);
                     }
 
                     this.handleSignServerFailure(primaryError instanceof Error ? primaryError : err, errorMessage, userFacingMessage);
@@ -6075,7 +6184,7 @@ class ConnectionManager {
 	                            fallbackError.ssappFallbackMessage = 'TikTok rate limited. Switching to legacy connector.';
 	                            const fallbackHandled = await this.tryFallbackToPolling(fallbackError, 'rate_limit');
 	                            if (fallbackHandled) {
-	                                return this.connect();
+	                                return this.restartConnectionAttempt(fallbackError);
 	                            }
 	                        }
 
@@ -6102,12 +6211,14 @@ class ConnectionManager {
         };
 
         const connectPromise = runConnect();
-        this.activeConnectPromise = connectPromise;
-        connectPromise.finally(() => {
-            if (this.activeConnectPromise === connectPromise) {
-                this.activeConnectPromise = null;
-            }
-        }).catch(() => { });
+        if (!bypassActivePromise) {
+            this.activeConnectPromise = connectPromise;
+            connectPromise.finally(() => {
+                if (this.activeConnectPromise === connectPromise) {
+                    this.activeConnectPromise = null;
+                }
+            }).catch(() => { });
+        }
         return connectPromise;
     }
 
@@ -6175,16 +6286,16 @@ class ConnectionManager {
                 scope
             });
         };
-        addCandidate(SHARED_EULER_SIGNING_FALLBACK_KEY, 'signer fallback key', 'signing');
-        addCandidate(SHARED_EULER_PROXY_FALLBACK_KEY, 'proxy fallback key', 'proxy');
+        addCandidate(SHARED_EULER_SIGNING_FALLBACK_KEY, 'shared Euler signing key', 'signing');
+        addCandidate(SHARED_EULER_PROXY_FALLBACK_KEY, 'shared Euler proxy key', 'proxy');
         return pool;
     }
 
     resolveSharedEulerScope() {
-        if (this.signingProvider === EULER_WS_PROVIDER) {
+        if (this.signingProvider === EULER_WS_PROVIDER || this.autoEulerProxyFallbackActive) {
             return 'proxy';
         }
-        if (this.signingProvider === 'auto') {
+        if (this.signingProvider === 'auto' || this.autoLocalSignerFallbackActive) {
             return 'signing';
         }
         return null;
@@ -6271,7 +6382,9 @@ class ConnectionManager {
     }
 
     hasPendingAutoFallbackOptions() {
-        const isAutoFlow = this.signingProvider === 'auto' || this.autoEulerProxyFallbackActive;
+        const isAutoFlow = this.signingProvider === 'auto'
+            || this.autoEulerProxyFallbackActive
+            || this.autoLocalSignerFallbackActive;
         if (!isAutoFlow) {
             return false;
         }
@@ -6529,6 +6642,13 @@ class ConnectionManager {
     }
 
     handleConnect() {
+        const existingState = connectionStates.get(this.wssID);
+        if (existingState?.isConnected && !existingState?.attemptInProgress) {
+            this.logDebug('control.connected.duplicateIgnored', {
+                connectionMethod: this.getConnectionModeDetails().method
+            });
+            return;
+        }
         const modeDetails = this.getConnectionModeDetails();
         const connectionLabel = modeDetails.label || 'Websocket connected';
         console.info(`${connectionLabel}, starting health check`);
@@ -6617,7 +6737,7 @@ class ConnectionManager {
                 })
                     .then((handled) => {
                         if (handled) {
-                            return this.connect();
+                            return this.restartConnectionAttempt(syntheticError);
                         }
                         return null;
                     })
@@ -6632,7 +6752,7 @@ class ConnectionManager {
                 )
                     .then((handled) => {
                         if (handled) {
-                            return this.connect();
+                            return this.restartConnectionAttempt();
                         }
                         return null;
                     })
@@ -6672,6 +6792,24 @@ class ConnectionManager {
         const primaryError = err instanceof Error ? err : (err?.exception instanceof Error ? err.exception : err);
         const errorName = primaryError && primaryError.name;
         const msg = primaryError && primaryError.message ? primaryError.message : '';
+        const connectionState = connectionStates.get(this.wssID);
+        const connectAttemptInProgress = !!connectionState?.attemptInProgress;
+        if (connectAttemptInProgress && !connectionState?.isConnected) {
+            this.logDebug('control.error.deferredToConnect', {
+                errorName: primaryError?.name || null,
+                message: msg || null,
+                info: infoText || null
+            });
+            return null;
+        }
+        const handledReconnectPromise = this.getFallbackReconnectPromise(primaryError);
+        if (this.hasFallbackTransitionStarted(primaryError)) {
+            this.logDebug('control.error.fallbackTransitionHandled', {
+                transition: primaryError?.__ssappTikTokFallbackTransitionStarted || null,
+                message: msg || null
+            });
+            return handledReconnectPromise || null;
+        }
         const errorMessageCandidates = [
             msg,
             infoText,
@@ -6732,7 +6870,7 @@ class ConnectionManager {
                 includePolling: false
             });
             if (localFirstHandled) {
-                return this.connect();
+                return this.restartConnectionAttempt(primaryError);
             }
         }
         const canTrySharedEulerKey = this.shouldTrySharedEulerApiKeyForRateLimit(primaryError, combinedMessage);
@@ -6743,7 +6881,7 @@ class ConnectionManager {
                 rawMessage: combinedMessage
             });
             if (sharedRetryHandled) {
-                return this.connect();
+                return this.restartConnectionAttempt(primaryError);
             }
         }
         if (isRateLimited) {
@@ -6753,7 +6891,7 @@ class ConnectionManager {
                 includePolling: true
             });
             if (proxyThenPollingHandled) {
-                return this.connect();
+                return this.restartConnectionAttempt(primaryError);
             }
         }
 
@@ -6815,7 +6953,7 @@ class ConnectionManager {
 	                    this.tryFallbackToPolling(fallbackError, 'rate_limit')
 	                        .then((handled) => {
 	                            if (handled) {
-	                                return this.connect();
+	                                return this.restartConnectionAttempt(fallbackError);
 	                            }
 	                            return null;
 	                        })

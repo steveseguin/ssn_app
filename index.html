@@ -5219,7 +5219,7 @@
             if (fallbackStateNeedsReset) {
                 const baseSequence = fallbackLockedToClassic
                     ? ['classic']
-                    : buildTikTokFallbackSequence(initialMode, preferredMode);
+                    : buildTikTokFallbackSequence(initialMode, preferredMode, source);
                 sequence = [...baseSequence];
                 fallbackState = {
                     sequence,
@@ -5248,7 +5248,7 @@
                     ? fallbackState.sequence
                     : (fallbackLockedToClassic
                         ? ['classic']
-                        : buildTikTokFallbackSequence(initialMode, preferredMode));
+                        : buildTikTokFallbackSequence(initialMode, preferredMode, source));
                 fallbackState.sequence = sequence;
                 fallbackState.fallbackDisabled = fallbackDisabled;
                 fallbackState.forceClassic = fallbackLockedToClassic;
@@ -5317,7 +5317,7 @@
                     break;
                 }
 
-                const allowClassicFallback = preferTikTokClassic || cliForcesTikTokClassic;
+                const allowClassicFallback = shouldIncludeTikTokClassicFallback(source, preferredMode);
                 if (allowClassicFallback && fallbackInfo && fallbackInfo.mode === 'classic' && !sequence.includes('classic')) {
                     sequence.push('classic');
                 }
@@ -5342,10 +5342,23 @@
             return false;
         }
 
-        function buildTikTokFallbackSequence(initialMode, preferredMode) {
+        function shouldIncludeTikTokClassicFallback(source, preferredMode = null) {
+            if (preferTikTokClassic || cliForcesTikTokClassic) {
+                return true;
+            }
+            if (!source || source.target !== 'tiktok') {
+                return false;
+            }
+            const preset = resolveTikTokConnectionPreset(
+                source,
+                preferredMode || source.connectionMode || 'classic'
+            );
+            return preset === 'auto';
+        }
+
+        function buildTikTokFallbackSequence(initialMode, preferredMode, source = null) {
             const order = [];
             const seen = new Set();
-            const allowClassicFallback = preferTikTokClassic || cliForcesTikTokClassic;
             const pushMode = (mode) => {
                 const normalized = normalizeTikTokMode(mode);
                 if (!normalized || seen.has(normalized)) return;
@@ -5353,11 +5366,47 @@
                 order.push(normalized);
             };
 
-            pushMode(initialMode);
-            pushMode(preferredMode);
-            ['tiktok-websocket', 'tiktok-legacy'].forEach(pushMode);
-            if (allowClassicFallback) {
+            if (preferTikTokClassic || cliForcesTikTokClassic) {
                 pushMode('classic');
+                return order;
+            }
+
+            const preset = source && source.target === 'tiktok'
+                ? resolveTikTokConnectionPreset(source, preferredMode || initialMode || source.connectionMode || 'classic')
+                : null;
+
+            switch (preset) {
+                case 'auto':
+                    pushMode(initialMode || 'tiktok-websocket');
+                    pushMode(preferredMode || 'tiktok-websocket');
+                    pushMode('tiktok-websocket');
+                    pushMode('tiktok-legacy');
+                    pushMode('classic');
+                    break;
+                case 'polling':
+                    pushMode(initialMode || 'tiktok-legacy');
+                    pushMode(preferredMode || 'tiktok-legacy');
+                    pushMode('tiktok-legacy');
+                    break;
+                case 'standard':
+                    pushMode('classic');
+                    break;
+                case 'local':
+                case 'euler-ws':
+                case 'custom':
+                    pushMode(initialMode || 'tiktok-websocket');
+                    pushMode(preferredMode || 'tiktok-websocket');
+                    pushMode('tiktok-websocket');
+                    break;
+                default:
+                    pushMode(initialMode);
+                    pushMode(preferredMode);
+                    if (shouldIncludeTikTokClassicFallback(source, preferredMode)) {
+                        pushMode('tiktok-websocket');
+                        pushMode('tiktok-legacy');
+                        pushMode('classic');
+                    }
+                    break;
             }
             return order;
         }
@@ -5398,7 +5447,7 @@
             let fallbackState = entry._tiktokFallback;
             const preferredMode = normalizeTikTokMode(source.connectionMode || 'classic');
             if (!fallbackState) {
-                const sequence = buildTikTokFallbackSequence(preferredMode, preferredMode);
+                const sequence = buildTikTokFallbackSequence(preferredMode, preferredMode, source);
                 fallbackState = {
                     sequence,
                     attempted: new Set(),
@@ -5429,7 +5478,7 @@
             fallbackState.attempted = attempted;
             const sequence = Array.isArray(fallbackState.sequence) && fallbackState.sequence.length
                 ? fallbackState.sequence
-                : buildTikTokFallbackSequence(preferredMode, preferredMode);
+                : buildTikTokFallbackSequence(preferredMode, preferredMode, source);
             fallbackState.sequence = sequence;
 
             const lastKnownMode = normalizeTikTokMode(
@@ -5582,7 +5631,9 @@
                         ? 'activating'
                         : 'active';
 
-                    const resolvedActiveMode = normalizedMode === 'websocket' ? 'websocket' : 'classic';
+                    const resolvedActiveMode = resolvedTarget === 'tiktok'
+                        ? normalizedMode
+                        : (normalizedMode === 'websocket' ? 'websocket' : 'classic');
 
                     stateManager.updateSource(sourceId, {
                         vid: windowId,
@@ -9085,6 +9136,19 @@
                             {
                                 const isSigningIssue = data.sessionRejected === true;
                                 const offlineExhausted = data.offline === true;
+                                const hasRetryScheduled = !!(entryElement && entryElement._tiktokRetryEndAt);
+                                const currentMode = normalizeTikTokMode(
+                                    currentState.activeConnectionMode
+                                    || currentState.connectionMode
+                                    || 'classic'
+                                );
+                                const fallbackSequence = buildTikTokFallbackSequence(
+                                    currentMode,
+                                    currentState.connectionMode || currentMode || 'classic',
+                                    currentState
+                                );
+                                const hasAlternateMode = fallbackSequence.some((candidate) => normalizeTikTokMode(candidate) !== currentMode);
+                                const shouldAdvanceToNextMode = !offlineExhausted && !hasRetryScheduled && hasAlternateMode;
                                 if ((isSigningIssue || offlineExhausted) && entryElement) {
                                     if (entryElement._tiktokRetryTimer) {
                                         clearInterval(entryElement._tiktokRetryTimer);
@@ -9112,10 +9176,18 @@
                                         restoreActivateUI();
                                     }
                                 }
-                                if (isSigningIssue) {
+                                if (isSigningIssue && !shouldAdvanceToNextMode) {
                                     const guide = typeof window.SSAPP_SIGNING_HELP_URL === 'string' ? window.SSAPP_SIGNING_HELP_URL : '';
                                     const toastMessage = guide ? `${errorMessage} Visit ${guide} for setup steps.` : errorMessage;
                                     Toast.warning('TikTok Signing', toastMessage);
+                                }
+                                if (shouldAdvanceToNextMode) {
+                                    if (entryElement && entryElement._tiktokFallback) {
+                                        entryElement._tiktokFallback.pendingAutoRetry = false;
+                                        entryElement._tiktokFallback.lastFailureStatus = 'failed';
+                                        entryElement._tiktokFallback.lastFailureMessage = errorMessage || null;
+                                    }
+                                    autoFallbackToNextTikTokMode(sourceId, 'failed', errorMessage || null);
                                 }
                             }
                             break;
@@ -9129,7 +9201,23 @@
                                 entryElement._tiktokRetryAttempt = null;
                                 entryElement._tiktokRetryMax = null;
                             }
-                            stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection failed', vid: null, wssId: null, tiktokWssId: null, tiktokFallbackMode: null, tiktokConnectionMethod: null });
+                            if (!data.wssID && currentState.vid && ipcRenderer) {
+                                try {
+                                    ipcRenderer.sendSync('closeWindow', { vid: currentState.vid });
+                                } catch (closeError) {
+                                    console.warn('Failed to close TikTok classic window after fatal error:', closeError);
+                                }
+                            }
+                            stateManager.updateSource(sourceId, {
+                                status: 'error',
+                                error: data.error || 'Connection failed',
+                                vid: null,
+                                wssId: null,
+                                tiktokWssId: null,
+                                activeConnectionMode: null,
+                                tiktokFallbackMode: null,
+                                tiktokConnectionMethod: null
+                            });
                             if (entryElement) {
                                 updateConnectionStatus(entryElement, 'error', data.error || 'Connection failed');
                                 if (entryElement._tiktokFallback) {
@@ -9145,10 +9233,15 @@
                             stateManager.updateSource(sourceId, {
                                 status: 'activating',
                                 error: null,
+                                activeConnectionMode: 'tiktok-legacy',
                                 tiktokFallbackMode: 'polling',
                                 tiktokConnectionMethod: null
                             });
                             if (entryElement) {
+                                if (entryElement._tiktokFallback) {
+                                    entryElement._tiktokFallback.lastMode = 'tiktok-legacy';
+                                    entryElement._tiktokFallback.pendingAutoRetry = false;
+                                }
                                 updateConnectionStatus(entryElement, 'info', data.error || 'TikTok signer unavailable. Switching to legacy connector...');
                                 setConnectingStopUI();
                             }
@@ -9247,6 +9340,13 @@
                             });
                             return;
                         }
+                    } else if (typeof data.tabID === 'number' && typeof source.vid === 'number' && source.vid !== data.tabID) {
+                        console.warn('Ignoring TikTok status for stale classic window', {
+                            sourceId: source.id,
+                            incoming: data.tabID,
+                            current: source.vid
+                        });
+                        return;
                     }
 
                     const drainKey = hasWssId ? data.wssID : getTikTokWssId(source);
