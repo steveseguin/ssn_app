@@ -7148,6 +7148,28 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
         } catch (_) { }
 
+        try {
+            if (args[0] && args[0].tiktokStatus) {
+                const statusPayload = args[0].tiktokStatus || {};
+                let sourceId = statusPayload.sourceId || null;
+                if (!sourceId && Number.isFinite(tabID)) {
+                    try {
+                        const sourceView = getActiveBrowserView(tabID) || browserViews[tabID];
+                        sourceId = sourceView?.args?.sourceId || null;
+                    } catch (_) { }
+                }
+                if (mainWindow && mainWindow.webContents) {
+                    mainWindow.webContents.send('tiktokConnectionStatus', {
+                        tabID,
+                        sourceId,
+                        ...statusPayload
+                    });
+                }
+                eventRet.returnValue = { ok: true };
+                return;
+            }
+        } catch (_) { }
+
         if (args[0] && args[0].getSettings) {
             if (!cachedStateReady) {
                 // This should not happen - state loads before createWindow registers these handlers
@@ -8899,14 +8921,24 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 // Load URL
                 log(`Loading regular window URL: ${args.url}`);
                 log(`User agent config: ${args.config?.userAgent}`);
-                // Apply custom UA only for websocket windows (classic windows continue to use session UA)
-                if (view.args?.wss && view.args?.config?.userAgent) {
-                    log(`Setting custom user agent for WSS window loadURL: ${view.args.config.userAgent}`);
-                    view.webContents.loadURL(args.url, {
-                        userAgent: view.args.config.userAgent
-                    });
+                const navigationOptions = {};
+                const initialHeaderOverrides = resolveHeaderOverridesFromConfig(args.config, args.url);
+                if (view.args?.config?.userAgent) {
+                    navigationOptions.userAgent = view.args.config.userAgent;
+                    try { view.webContents.setUserAgent(view.args.config.userAgent); } catch (_) { }
+                    log(`Setting custom user agent for source window loadURL: ${view.args.config.userAgent}`);
                 } else {
                     log(`Using default user agent for loadURL`);
+                }
+                if (initialHeaderOverrides.referer) {
+                    navigationOptions.httpReferrer = {
+                        url: initialHeaderOverrides.referer,
+                        policy: 'strict-origin-when-cross-origin'
+                    };
+                }
+                if (Object.keys(navigationOptions).length) {
+                    view.webContents.loadURL(args.url, navigationOptions);
+                } else {
                     view.webContents.loadURL(args.url);
                 }
             }

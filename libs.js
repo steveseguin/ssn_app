@@ -45,6 +45,113 @@ function compareVersions(version1, version2) {
 
 	return 0;
 }
+function extractRumbleIdentifiersFromHtml(html) {
+    if (!html || typeof html !== 'string') {
+        return {
+            chatId: null,
+            videoId: null,
+            fullPath: null
+        };
+    }
+
+    const buildVideoInfoFromCandidate = (candidate) => {
+        if (!candidate || typeof candidate !== 'string') {
+            return {
+                videoId: null,
+                fullPath: null
+            };
+        }
+
+        try {
+            const parsed = candidate.startsWith('http')
+                ? new URL(candidate)
+                : new URL(candidate, 'https://rumble.com');
+            const pathname = (parsed.pathname || '').trim();
+            const match = pathname.match(/\/((?:v|p)[a-zA-Z0-9]+[^\/]*\.html)/i);
+            if (!match || !match[1]) {
+                return {
+                    videoId: null,
+                    fullPath: null
+                };
+            }
+            const fullPath = match[1];
+            const idMatch = fullPath.match(/^((?:v|p)[a-zA-Z0-9]+)/i);
+            return {
+                videoId: idMatch && idMatch[1] ? idMatch[1] : null,
+                fullPath
+            };
+        } catch (_) {
+            return {
+                videoId: null,
+                fullPath: null
+            };
+        }
+    };
+
+    const directChatPatterns = [
+        /chat\/popup\/(\d+)/i,
+        /(?:^|[^a-z])video_id\s*[:=]\s*["']?(\d+)/i,
+        /["']video_id["']\s*[:=]\s*["']?(\d+)/i,
+        /["']chatId["']\s*[:=]\s*["']?(\d+)/i
+    ];
+
+    let chatId = null;
+    for (const regex of directChatPatterns) {
+        const match = html.match(regex);
+        if (match && match[1] && /^\d+$/.test(match[1])) {
+            chatId = match[1];
+            break;
+        }
+    }
+
+    const pageUrlPatterns = [
+        /<link[^>]+rel=["']?canonical["']?[^>]*href=["']?([^"' >]+)/i,
+        /<meta[^>]+property=["']?og:url["']?[^>]*content=["']?([^"' >]+)/i,
+        /<meta[^>]+name=["']?twitter:url["']?[^>]*content=["']?([^"' >]+)/i,
+        /<meta[^>]+itemprop=["']?url["']?[^>]*content=["']?([^"' >]+)/i
+    ];
+
+    for (const regex of pageUrlPatterns) {
+        const match = html.match(regex);
+        if (match && match[1]) {
+            const info = buildVideoInfoFromCandidate(match[1]);
+            if (info.videoId || info.fullPath) {
+                return {
+                    chatId,
+                    videoId: info.videoId,
+                    fullPath: info.fullPath
+                };
+            }
+        }
+    }
+
+    const liveTilePatterns = [
+        /<div[^>]+data-video-id=["'](\d+)["'][\s\S]{0,1800}?(?:thumbnail__thumb--live|videostream__footer--live)[\s\S]{0,1200}?href=["']\/([^"']+\.html)/i,
+        /<div[^>]+data-video-id=["'](\d+)["'][\s\S]{0,1800}?(?:thumbnail__thumb--live|videostream__status--live|videostream__footer--live)/i
+    ];
+
+    for (const regex of liveTilePatterns) {
+        const match = html.match(regex);
+        if (!match || !match[1] || !/^\d+$/.test(match[1])) {
+            continue;
+        }
+
+        const info = match[2]
+            ? buildVideoInfoFromCandidate(match[2])
+            : { videoId: null, fullPath: null };
+        return {
+            chatId: match[1],
+            videoId: info.videoId,
+            fullPath: info.fullPath
+        };
+    }
+
+    return {
+        chatId,
+        videoId: null,
+        fullPath: null
+    };
+}
 async function getRumbleVideoId(url) {
     // Returns numeric chat ID extracted from the Rumble video page
     const headers = {
@@ -64,8 +171,8 @@ async function getRumbleVideoId(url) {
             });
             const html = response?.data || '';
             if (html) {
-                const match = html.match(/video_id:\s*(\d+)/);
-                if (match && match[1]) return match[1];
+                const identifiers = extractRumbleIdentifiersFromHtml(html);
+                if (identifiers.chatId) return identifiers.chatId;
             }
         }
     } catch (e) {
@@ -74,8 +181,8 @@ async function getRumbleVideoId(url) {
     try {
         const res = await fetch(url, { headers, credentials: 'omit', cache: 'no-store' });
         const html = await res.text();
-        const match = html.match(/video_id:\s*(\d+)/);
-        if (match && match[1]) return match[1];
+        const identifiers = extractRumbleIdentifiersFromHtml(html);
+        if (identifiers.chatId) return identifiers.chatId;
     } catch (e) {
         console.error('Error fetching Rumble video page:', e);
     }
@@ -142,10 +249,10 @@ async function getRumbleChatId(videoId) {
                 timeout: 15000
             });
             const html = response?.data || '';
-            const match = html.match(/video_id:\s*(\d+)/);
-            if (match && match[1]) {
-                console.log(`Found Rumble chat ID: ${match[1]} for video: ${videoId}`);
-                return match[1];
+            const identifiers = extractRumbleIdentifiersFromHtml(html);
+            if (identifiers.chatId) {
+                console.log(`Found Rumble chat ID: ${identifiers.chatId} for video: ${videoId}`);
+                return identifiers.chatId;
             }
         }
     } catch (e) {
@@ -158,10 +265,10 @@ async function getRumbleChatId(videoId) {
             cache: 'no-store'
         });
         const html = await res.text();
-        const match = html.match(/video_id:\s*(\d+)/);
-        if (match && match[1]) {
-            console.log(`Found Rumble chat ID: ${match[1]} for video: ${videoId}`);
-            return match[1];
+        const identifiers = extractRumbleIdentifiersFromHtml(html);
+        if (identifiers.chatId) {
+            console.log(`Found Rumble chat ID: ${identifiers.chatId} for video: ${videoId}`);
+            return identifiers.chatId;
         }
     } catch (e) {
         console.error('Error fetching Rumble chat ID:', e);

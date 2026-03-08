@@ -1044,6 +1044,38 @@ async function fetchRumble(username, alt = false, diagnostics = null) {
                     return info;
                 };
 
+                const findLiveTileInfo = () => {
+                    const liveTilePatterns = [
+                        /<div[^>]+data-video-id=["'](\d+)["'][\s\S]{0,1800}?(?:thumbnail__thumb--live|videostream__footer--live)[\s\S]{0,1200}?href=["']\/([^"']+\.html)/i,
+                        /<div[^>]+data-video-id=["'](\d+)["'][\s\S]{0,1800}?(?:thumbnail__thumb--live|videostream__status--live|videostream__footer--live)/i
+                    ];
+
+                    for (const regex of liveTilePatterns) {
+                        const match = htmlDataResolved.match(regex);
+                        if (!match || !match[1] || !/^\d+$/.test(match[1])) {
+                            continue;
+                        }
+
+                        const info = match[2]
+                            ? buildVideoInfoFromUrl(match[2])
+                            : null;
+
+                        return {
+                            videoId: info?.videoId || null,
+                            fullPath: info?.fullPath || null,
+                            chatId: match[1]
+                        };
+                    }
+
+                    return null;
+                };
+
+                const liveTileInfo = findLiveTileInfo();
+                if (!hasChatMarkup && liveTileInfo) {
+                    console.log("Found Rumble live video (listing tile):", liveTileInfo);
+                    return liveTileInfo;
+                }
+
                 const canonicalRegex = /<link[^>]+rel=["']?canonical["']?[^>]*href=["']?([^"' >]+)/i;
                 const canonicalMatch = htmlDataResolved.match(canonicalRegex);
                 if (canonicalMatch && canonicalMatch[1]) {
