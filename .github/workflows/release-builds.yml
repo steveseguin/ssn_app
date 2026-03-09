@@ -115,14 +115,14 @@ jobs:
         include:
           - id: windows
             os: windows-latest
-            build_command: npm run build:win32
+            build_command: npm run build:win32 -- --publish never
             artifact_name: release-windows
             artifact_path: |
               dist/*.exe
               dist/*.zip
           - id: linux
             os: ubuntu-latest
-            build_command: npm run build:linux
+            build_command: npm run build:linux -- --publish never
             artifact_name: release-linux
             artifact_path: dist/*.AppImage
     env:
