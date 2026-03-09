@@ -105,8 +105,8 @@ function run() {
 
 	checks.push({
 		id: 'popup_streamid_gate_exists',
-		pass: lineContains(fallbackPopupPath, /if\s*\(\s*\(response\s*==\s*undefined\)\s*\|\|\s*\(!response\.streamID\)\s*\)\s*\{/),
-		note: 'Popup ignores settings until streamID exists'
+		pass: lineContains(fallbackPopupPath, /if\s*\(\s*(?:\(\s*response\s*==\s*undefined\s*\)\s*\|\|\s*\(!response\.streamID\)|['"]settings['"]\s+in\s+response\s*&&\s*\(response\.streamID\s*\|\|\s*ssapp\))\s*\)\s*\{/),
+		note: 'Popup gates settings hydration on stream readiness or ssapp fallback'
 	});
 	checks.push({
 		id: 'popup_callback_timeout_500ms_exists',

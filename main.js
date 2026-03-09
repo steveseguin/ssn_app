@@ -2664,6 +2664,24 @@ async function fetchWithTimeout(url, timeoutMs = SOCIAL_STREAM_REMOTE_TIMEOUT_MS
     }
 }
 
+function isLikelyHtmlText(text) {
+    const preview = String(text || '').trimStart().slice(0, 256).toLowerCase();
+    return preview.startsWith('<!doctype html')
+        || preview.startsWith('<html')
+        || preview.startsWith('<head')
+        || preview.startsWith('<body');
+}
+
+function validateSocialStreamSourceText(text, relativePath = '', remoteUrl = '') {
+    if (typeof text !== 'string' || !text.trim()) {
+        throw new Error(`Empty Social Stream source response for ${relativePath || remoteUrl || 'remote asset'}`);
+    }
+    if (isLikelyHtmlText(text)) {
+        throw new Error(`Invalid Social Stream source for ${relativePath || remoteUrl || 'remote asset'}: received HTML instead of JavaScript`);
+    }
+    return text;
+}
+
 async function loadSocialStreamSource(remoteUrl, options = {}) {
     const branch = options.branch || 'main';
     const relativePath = normalizeSocialStreamRelativePath(options.relativePath || '');
@@ -2680,6 +2698,7 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
         if (remoteUrl) {
             try {
                 const { text } = await fetchWithTimeout(remoteUrl, options.timeoutMs || SOCIAL_STREAM_REMOTE_TIMEOUT_MS);
+                validateSocialStreamSourceText(text, relativePath, remoteUrl);
                 if (relativePath) {
                     try {
                         cachePath = getSocialStreamCachePath(branch, relativePath);
@@ -2772,7 +2791,12 @@ function notifySocialStreamFallback(relativePath, fromBranch, toBranch) {
     }
     socialStreamFallbackNotified.add(key);
 
-    const message = `Using ${toBranch} assets for ${relativePath.replace(/\\/g, '/')} (fallback from ${fromBranch}).`;
+    const readablePath = relativePath.replace(/\\/g, '/');
+    const sourceBranch = fromBranch || 'remote';
+    const bundledBranch = toBranch || 'main';
+    const message = sourceBranch === bundledBranch
+        ? `Using packaged ${bundledBranch} assets for ${readablePath}.`
+        : `Using packaged ${bundledBranch} assets for ${readablePath} after ${sourceBranch} assets were unavailable.`;
     try {
         queueInjectorToast('warning', 'Fallback Assets Active', message);
     } catch (error) {

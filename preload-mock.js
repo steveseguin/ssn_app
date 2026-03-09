@@ -718,6 +718,12 @@ if (contextIsolated) {
     startYouTubeOAuth: async (payload) => {
       return await ipcRenderer.invoke('youtube-oauth', payload);
     },
+    exchangeYouTubeOAuthCode: async (payload) => {
+      return await ipcRenderer.invoke('youtube-oauth-exchange', payload);
+    },
+    refreshYouTubeOAuthToken: async (payload) => {
+      return await ipcRenderer.invoke('youtube-oauth-refresh', payload);
+    },
     startTwitchOAuth: async (payload) => {
       return await ipcRenderer.invoke('twitch-oauth', payload);
     },
@@ -764,6 +770,12 @@ if (contextIsolated) {
   window.__ssapp = {
     startYouTubeOAuth: async (payload) => {
       return await ipcRenderer.invoke('youtube-oauth', payload);
+    },
+    exchangeYouTubeOAuthCode: async (payload) => {
+      return await ipcRenderer.invoke('youtube-oauth-exchange', payload);
+    },
+    refreshYouTubeOAuthToken: async (payload) => {
+      return await ipcRenderer.invoke('youtube-oauth-refresh', payload);
     },
     startTwitchOAuth: async (payload) => {
       return await ipcRenderer.invoke('twitch-oauth', payload);

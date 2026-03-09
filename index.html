@@ -607,12 +607,14 @@
             if (!activeFallbackAssets.size) {
                 indicator.classList.add('hidden');
                 indicator.textContent = '';
+                indicator.title = '';
                 return;
             }
             const entries = Array.from(activeFallbackAssets.values());
-            const summary = entries.slice(0, 3).join(', ');
+            const summary = entries.slice(0, 3).map((entry) => entry.summary).join(', ');
             const remaining = entries.length > 3 ? ` +${entries.length - 3} more` : '';
-            indicator.textContent = `Fallback assets active (${entries.length}): ${summary}${remaining}`;
+            indicator.textContent = `Using packaged assets (${entries.length}): ${summary}${remaining}`;
+            indicator.title = entries.map((entry) => entry.detail).join('\n');
             indicator.classList.remove('hidden');
         }
         function recordFallbackAsset(relativePath, fromBranch, toBranch) {
@@ -620,7 +622,15 @@
             const key = `${fromBranch || 'remote'}->${toBranch || 'main'}::${relativePath}`;
             if (activeFallbackAssets.has(key)) return;
             const readablePath = relativePath.replace(/\\/g, '/');
-            activeFallbackAssets.set(key, `${readablePath} (${fromBranch || 'remote'}->${toBranch || 'main'})`);
+            const requestedBranch = fromBranch || 'remote';
+            const packagedBranch = toBranch || 'main';
+            const detail = requestedBranch === packagedBranch
+                ? `${readablePath} (using packaged ${packagedBranch})`
+                : `${readablePath} (${requestedBranch} -> packaged ${packagedBranch})`;
+            activeFallbackAssets.set(key, {
+                summary: readablePath,
+                detail
+            });
             updateFallbackIndicator();
         }
 
@@ -772,6 +782,8 @@
                         if (!response || !response.ok) {
                             continue;
                         }
+                        const text = await response.text();
+                        validateRemoteHtmlPage(pageName, text);
                         return {
                             url: appendFrameParams(rawUrl),
                             origin: remoteBranch === branch ? 'remote' : 'remote-main',
@@ -883,6 +895,8 @@
                 try {
                     const response = await fetchWithDeadline(remoteUrl, { timeoutMs: options.timeoutMs || 5000 });
                     if (response && response.ok) {
+                        const text = await response.text();
+                        validateRemoteHtmlPage(relativePath, text);
                         return {
                             url: remoteUrl,
                             origin: remoteBranch === branch ? 'remote' : 'remote-main',
@@ -7884,128 +7898,129 @@
             const env = await ensureSsappEnvironment();
             const hasFallbackBundle = !!(env && env.hasFallbackBundle);
             const branchName = currentBetaMode ? 'beta' : 'main';
+            const candidateUrls = [];
+            const normalizeBase = (base) => {
+                if (!base) return base;
+                const needsSlash = !base.endsWith('/') && !base.endsWith('\\');
+                return needsSlash ? `${base}/` : base;
+            };
 
-            try {
-
-                const candidateUrls = [];
-                const normalizeBase = (base) => {
-                    if (!base) return base;
-                    const needsSlash = !base.endsWith('/') && !base.endsWith('\\');
-                    return needsSlash ? `${base}/` : base;
-                };
-
-                if (sourcemode) {
-                    candidateUrls.push({
-                        url: `${normalizeBase(sourcemode)}settings/${configFileName}`,
-                        branch: branchName,
-                        origin: 'sourcemode'
-                    });
-                }
-
-                if (devmode) {
-                    candidateUrls.push({
-                        url: `file:///C:/Users/steve/Code/social_stream/settings/${configFileName}`,
-                        branch: branchName,
-                        origin: 'dev'
-                    });
-                }
-
-                const resolveRemoteUrl = (branch) => branch === 'beta'
-                    ? `https://socialstream.ninja/beta/settings/${configFileName}`
-                    : `https://socialstream.ninja/settings/${configFileName}`;
-
+            if (sourcemode) {
                 candidateUrls.push({
-                    url: resolveRemoteUrl(branchName),
+                    url: `${normalizeBase(sourcemode)}settings/${configFileName}`,
                     branch: branchName,
-                    origin: 'remote'
+                    origin: 'sourcemode'
                 });
+            }
 
-                if (branchName === 'beta') {
-                    candidateUrls.push({
-                        url: resolveRemoteUrl('main'),
-                        branch: 'main',
-                        origin: 'remote-main'
-                    });
+            if (devmode) {
+                candidateUrls.push({
+                    url: `file:///C:/Users/steve/Code/social_stream/settings/${configFileName}`,
+                    branch: branchName,
+                    origin: 'dev'
+                });
+            }
+
+            const resolveRemoteUrl = (branch) => branch === 'beta'
+                ? `https://socialstream.ninja/beta/settings/${configFileName}`
+                : `https://socialstream.ninja/settings/${configFileName}`;
+
+            candidateUrls.push({
+                url: resolveRemoteUrl(branchName),
+                branch: branchName,
+                origin: 'remote'
+            });
+
+            if (branchName === 'beta') {
+                candidateUrls.push({
+                    url: resolveRemoteUrl('main'),
+                    branch: 'main',
+                    origin: 'remote-main'
+                });
+            }
+
+            let lastRemoteError = null;
+            for (const candidate of candidateUrls) {
+                if (!candidate || !candidate.url) continue;
+                try {
+                    const data = await fetchJsonResource(candidate.url, { timeoutMs: 5000 });
+                    if (data) {
+                        config = data;
+                        tagConfigSource(candidate.origin || 'remote', {
+                            url: candidate.url,
+                            branch: candidate.branch || null
+                        });
+                        localStorage.setItem('config', JSON.stringify(data));
+                        if (branchName === 'beta' && candidate.branch === 'main') {
+                            Toast.warning("Beta Config Fallback", "Beta configuration unavailable; using main branch config.");
+                            recordFallbackAsset(`settings/${configFileName}`, 'beta', 'main');
+                        }
+                        configReady = true;
+                        return config;
+                    }
+                } catch (remoteError) {
+                    lastRemoteError = remoteError;
+                    console.warn(`[Config] Failed to load ${candidate.origin || 'remote'} config from ${candidate.url}: ${formatFetchFailure(remoteError)}`);
                 }
+            }
 
-                let lastRemoteError = null;
-                for (const candidate of candidateUrls) {
-                    if (!candidate || !candidate.url) continue;
+            let fallbackApplied = false;
+            if (hasFallbackBundle && window.ssappFallback && typeof window.ssappFallback.readJson === 'function') {
+                const fallbackBranches = branchName === 'beta' ? ['beta', 'main'] : ['main'];
+                for (const fbBranch of fallbackBranches) {
                     try {
-                        const response = await fetch(candidate.url.trim());
-                        if (!response.ok) {
-                            throw new Error(`HTTP ${response.status}`);
-                        }
-                        const data = await response.json();
-                        if (data) {
-                            config = data;
-                            tagConfigSource(candidate.origin || 'remote', {
-                                url: candidate.url,
-                                branch: candidate.branch || null
+                        const bundledConfig = await window.ssappFallback.readJson(`settings/${configFileName}`, { branch: fbBranch });
+                        if (bundledConfig) {
+                            config = bundledConfig;
+                            tagConfigSource('bundled', {
+                                branch: fbBranch,
+                                path: `settings/${configFileName}`
                             });
-                            localStorage.setItem('config', JSON.stringify(data));
-                            if (branchName === 'beta' && candidate.branch === 'main') {
-                                Toast.warning("Beta Config Fallback", "Beta configuration unavailable; using main branch config.");
-                                recordFallbackAsset(`settings/${configFileName}`, 'beta', 'main');
-                            }
-                            configReady = true;
-                            return config;
-                        }
-                    } catch (remoteError) {
-                        lastRemoteError = remoteError;
-                        console.error(`Failed to load config from ${candidate.url}:`, remoteError);
-                    }
-                }
-
-                if (lastRemoteError) {
-                    throw lastRemoteError;
-                }
-            } catch (e) {
-                console.error('Failed to load remote config:', e);
-                let fallbackApplied = false;
-                if (hasFallbackBundle && window.ssappFallback && typeof window.ssappFallback.readJson === 'function') {
-                    const fallbackBranches = branchName === 'beta' ? ['beta', 'main'] : ['main'];
-                    for (const fbBranch of fallbackBranches) {
-                        try {
-                            const bundledConfig = await window.ssappFallback.readJson(`settings/${configFileName}`, { branch: fbBranch });
-                            if (bundledConfig) {
-                                config = bundledConfig;
-                                localStorage.setItem('config', JSON.stringify(bundledConfig));
-                                fallbackApplied = true;
-                                if (fbBranch !== branchName) {
-                                    Toast.warning("Beta Config Fallback", "Falling back to packaged main branch configuration.");
-                                    recordFallbackAsset(`settings/${configFileName}`, branchName, fbBranch);
-                                } else {
-                                    Toast.warning("Offline Mode", "Using bundled user-agent configuration.");
-                                    recordFallbackAsset(`settings/${configFileName}`, branchName, fbBranch);
-                                }
-                                break;
-                            }
-                        } catch (fallbackError) {
-                            console.error('Failed to apply bundled user-agent config:', fallbackError);
-                        }
-                    }
-                }
-
-                if (!fallbackApplied) {
-                    Toast.error("Error", 'Failed to load the user-agent config file.');
-                    const storedConfigTemp = localStorage.getItem('config');
-                    if (storedConfigTemp) {
-                        try {
-                            const parsedConfig = JSON.parse(storedConfigTemp);
-                            if (!parsedConfig || Object.keys(parsedConfig).length === 0) {
-                                console.error('Parsed stored config is empty, using default.');
-                                config = getDefaultConfig();
+                            localStorage.setItem('config', JSON.stringify(bundledConfig));
+                            fallbackApplied = true;
+                            if (fbBranch !== branchName) {
+                                Toast.warning("Beta Config Fallback", "Falling back to packaged main branch configuration.");
+                                recordFallbackAsset(`settings/${configFileName}`, branchName, fbBranch);
                             } else {
-                                config = parsedConfig;
+                                Toast.warning("Offline Mode", "Using bundled user-agent configuration.");
+                                recordFallbackAsset(`settings/${configFileName}`, branchName, fbBranch);
                             }
-                        } catch (parseError) {
-                            console.error('Failed to parse stored config, using default:', parseError);
-                            config = getDefaultConfig();
+                            if (lastRemoteError) {
+                                console.warn(`[Config] Remote config unavailable; using bundled ${fbBranch} config: ${formatFetchFailure(lastRemoteError)}`);
+                            }
+                            break;
                         }
-                    } else {
-                        config = getDefaultConfig();
+                    } catch (fallbackError) {
+                        console.warn(`[Config] Failed to load bundled config from ${fbBranch}: ${formatFetchFailure(fallbackError)}`);
                     }
+                }
+            }
+
+            if (!fallbackApplied) {
+                if (lastRemoteError) {
+                    console.error('Failed to load remote config:', lastRemoteError);
+                }
+                Toast.error("Error", 'Failed to load the user-agent config file.');
+                const storedConfigTemp = localStorage.getItem('config');
+                if (storedConfigTemp) {
+                    try {
+                        const parsedConfig = JSON.parse(storedConfigTemp);
+                        if (!parsedConfig || Object.keys(parsedConfig).length === 0) {
+                            console.error('Parsed stored config is empty, using default.');
+                            config = getDefaultConfig();
+                            tagConfigSource('default', { reason: 'empty_local_storage_config' });
+                        } else {
+                            config = parsedConfig;
+                            tagConfigSource('localStorage', { reason: 'remote_and_bundled_config_unavailable' });
+                        }
+                    } catch (parseError) {
+                        console.error('Failed to parse stored config, using default:', parseError);
+                        config = getDefaultConfig();
+                        tagConfigSource('default', { reason: 'stored_config_parse_failed' });
+                    }
+                } else {
+                    config = getDefaultConfig();
+                    tagConfigSource('default', { reason: 'no_remote_bundled_or_cached_config' });
                 }
             }
             configReady = true;
@@ -8566,40 +8581,7 @@
             if ((pageId === 'dashboard' || pageId === 'event-flow-editor') && frame2 && (!frame2.src || frame2.src === "about:blank")) {
                 await setupIframeSource();
             } else if (pageId === 'link-overlay' && frame1 && (!frame1.src || frame1.src === "about:blank")) {
-                try {
-                    const resolved = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2' });
-                    if (resolved && resolved.url) {
-                        frame1.src = resolved.url;
-                        frame1.dataset.ssappOrigin = resolved.origin;
-                        frame1.classList.add('loading');
-                    } else {
-                        const fallback = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2', forceLocal: true });
-                        if (fallback && fallback.url) {
-                            frame1.src = fallback.url;
-                            frame1.dataset.ssappOrigin = fallback.origin;
-                            frame1.classList.add('loading');
-                            Toast.warning('Popup Fallback', 'Loaded local popup panel.');
-                        } else {
-                            Toast.error('Popup Error', 'Could not load popup panel.');
-                        }
-                    }
-                } catch (error) {
-                    console.error('Failed to resolve popup frame source:', error);
-                    try {
-                        const fallback = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2', forceLocal: true });
-                        if (fallback && fallback.url) {
-                            frame1.src = fallback.url;
-                            frame1.dataset.ssappOrigin = fallback.origin;
-                            frame1.classList.add('loading');
-                            Toast.warning('Popup Fallback', 'Loaded local popup panel.');
-                        } else {
-                            Toast.error('Popup Error', 'Could not load popup panel.');
-                        }
-                    } catch (fallbackError) {
-                        console.error('Failed to resolve popup frame fallback:', fallbackError);
-                        Toast.error('Popup Error', 'Could not load popup panel.');
-                    }
-                }
+                await ensurePopupPanelLoaded();
             } else if (pageId === 'vdo-ninja' && frame3 && (!frame3.src || frame3.src === "about:blank")) {
                 try {
                     const resolved = await resolveSocialStreamPage('vdo.html', { versionParam: 'v=2' });
@@ -8627,38 +8609,8 @@
             const initialPage = stateManager.state.global.currentPage || 'streams';
             switchToPage(initialPage).catch(err => console.error('Failed to switch to initial page:', err));
 
-            (async function ensurePopupPanelLoaded() {
-                if (!frame1) return;
-                if (frame1.src && frame1.src !== 'about:blank') return;
-                try {
-                    const resolved = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2' });
-                    if (resolved && resolved.url) {
-                        frame1.src = resolved.url;
-                        frame1.dataset.ssappOrigin = resolved.origin;
-                        frame1.classList.add('loading');
-                    } else {
-                        const fallback = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2', forceLocal: true });
-                        if (fallback && fallback.url) {
-                            frame1.src = fallback.url;
-                            frame1.dataset.ssappOrigin = fallback.origin;
-                            frame1.classList.add('loading');
-                            Toast.warning('Popup Fallback', 'Loaded local popup panel.');
-                        }
-                    }
-                } catch (error) {
-                    console.error('Failed to resolve popup frame on boot:', error);
-                    try {
-                        const fallback = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2', forceLocal: true });
-                        if (fallback && fallback.url) {
-                            frame1.src = fallback.url;
-                            frame1.dataset.ssappOrigin = fallback.origin;
-                            frame1.classList.add('loading');
-                            Toast.warning('Popup Fallback', 'Loaded local popup panel.');
-                        }
-                    } catch (fallbackError) {
-                        console.error('Failed to resolve popup fallback on boot:', fallbackError);
-                    }
-                }
+            (async function preloadPopupPanel() {
+                await ensurePopupPanelLoaded();
             })();
 
             // Popup sidebar show/hide toggle setup (subtle edge handle)
@@ -9445,6 +9397,85 @@
             }
         }
 
+        function formatFetchFailure(error) {
+            if (!error) return 'Unknown fetch error';
+            if (error.name === 'AbortError') {
+                return 'request timed out';
+            }
+            return error.message || String(error);
+        }
+
+        function isLikelyHtmlDocument(text) {
+            const preview = String(text || '').trimStart().slice(0, 256).toLowerCase();
+            return preview.startsWith('<!doctype html')
+                || preview.startsWith('<html')
+                || preview.startsWith('<head')
+                || preview.startsWith('<body');
+        }
+
+        function getExpectedHtmlMarkers(pageName) {
+            const normalized = String(pageName || '').trim().toLowerCase();
+            if (!normalized) return [];
+            if (normalized === 'popup.html') {
+                return ['popup.js'];
+            }
+            if (normalized === 'background.html') {
+                return ['background service', 'editorstyle'];
+            }
+            if (normalized === 'vdo.html') {
+                return ['vdo', 'vdoninja'];
+            }
+            const websocketMatch = normalized.match(/sources\/websocket\/([^/]+)\.html$/);
+            if (websocketMatch) {
+                const target = websocketMatch[1];
+                return [`${target}.css`, `${target}.js`, `social stream - ${target}`, `social stream for ${target}`];
+            }
+            return [];
+        }
+
+        function validateRemoteHtmlPage(pageName, text) {
+            if (typeof text !== 'string' || !text.trim()) {
+                throw new Error(`empty HTML response for ${pageName}`);
+            }
+            if (!isLikelyHtmlDocument(text)) {
+                throw new Error(`invalid HTML response for ${pageName}`);
+            }
+            const titleMatch = text.match(/<title[^>]*>\s*([^<]{1,160})\s*<\/title>/i);
+            const titleText = titleMatch && titleMatch[1] ? titleMatch[1].trim() : '';
+            if (titleText && /\b(404|error|not found|forbidden|bad gateway|service unavailable)\b/i.test(titleText)) {
+                throw new Error(`invalid ${pageName} response: ${titleText}`);
+            }
+            const normalizedText = text.toLowerCase();
+            const expectedMarkers = getExpectedHtmlMarkers(pageName);
+            if (expectedMarkers.length && !expectedMarkers.some((marker) => normalizedText.includes(marker))) {
+                throw new Error(`invalid ${pageName} response: missing expected page markers`);
+            }
+            return true;
+        }
+
+        async function fetchJsonResource(resource, options = {}) {
+            const url = (typeof resource === 'string') ? resource.trim() : resource;
+            const useDeadline = typeof url === 'string' && /^https?:\/\//i.test(url);
+            const response = useDeadline
+                ? await fetchWithDeadline(url, options)
+                : await fetch(url, { cache: 'no-store' });
+            if (!response || !response.ok) {
+                const statusLabel = response
+                    ? `${response.status}${response.statusText ? ` ${response.statusText}` : ''}`.trim()
+                    : 'no response';
+                throw new Error(`fetch failed: ${statusLabel}`);
+            }
+            const text = await response.text();
+            if (isLikelyHtmlDocument(text)) {
+                throw new Error('fetch failed: received HTML instead of JSON');
+            }
+            try {
+                return JSON.parse(text);
+            } catch (error) {
+                throw new Error(`invalid JSON response: ${error && error.message ? error.message : error}`);
+            }
+        }
+
         async function loadManifest() {
             const env = await ensureSsappEnvironment();
             const hasFallbackBundle = !!(env && env.hasFallbackBundle);
@@ -9494,11 +9525,7 @@
             for (const candidate of candidateUrls) {
                 if (!candidate || !candidate.url) continue;
                 try {
-                    const response = await fetch(candidate.url);
-                    if (!response.ok) {
-                        throw new Error(`Manifest fetch failed: ${response.status} ${response.statusText}`);
-                    }
-                    const data = await response.json();
+                    const data = await fetchJsonResource(candidate.url, { timeoutMs: 5000 });
                     if (data) {
                         cachedManifest[candidate.url] = data;
                         data.url = candidate.url;
@@ -9512,7 +9539,7 @@
                     }
                 } catch (error) {
                     lastError = error;
-                    console.error(`Error loading manifest from ${candidate.url}:`, error);
+                    console.warn(`[Manifest] Failed to load ${candidate.origin || 'remote'} manifest from ${candidate.url}: ${formatFetchFailure(error)}`);
                 }
             }
 
@@ -9532,10 +9559,13 @@
                                 Toast.warning("Offline Mode", "Using packaged manifest.");
                                 recordFallbackAsset('manifest.json', branchName, fbBranch);
                             }
+                            if (lastError) {
+                                console.warn(`[Manifest] Remote manifest unavailable; using packaged ${fbBranch} manifest: ${formatFetchFailure(lastError)}`);
+                            }
                             return bundledManifest;
                         }
                     } catch (fallbackError) {
-                        console.error('Failed to load packaged manifest:', fallbackError);
+                        console.warn(`[Manifest] Failed to load packaged manifest from ${fbBranch}: ${formatFetchFailure(fallbackError)}`);
                     }
                 }
             }
@@ -9545,6 +9575,9 @@
                 try {
                     const parsedManifest = JSON.parse(storedManifest);
                     log("Using cached manifest from local storage.", parsedManifest.version || '');
+                    if (lastError) {
+                        console.warn(`[Manifest] Remote manifest unavailable; using cached manifest: ${formatFetchFailure(lastError)}`);
+                    }
                     return parsedManifest;
                 } catch (parseError) {
                     console.error('Error parsing cached manifest:', parseError);
@@ -9570,7 +9603,11 @@
                 return false;
             }
             config = newconfig;
-            await setupIframeSource();
+            const backgroundReady = await setupIframeSource();
+            if (!backgroundReady) {
+                console.error("Failed to initialize background service.");
+                return false;
+            }
 
             let loadedManifest = await loadManifest();
             if (!loadedManifest) {
@@ -9590,7 +9627,7 @@
         }
         async function setupIframeSource() {
             const frame2 = document.getElementById("frame2");
-            if (!frame2) return;
+            if (!frame2) return false;
 
             // Get the language code for the URL
             const langCode = currentLanguage === 'pt-BR' ? 'pt' : currentLanguage;
@@ -9614,6 +9651,7 @@
                         frame2.dataset.ssappOrigin = resolved.origin;
                         frame2.classList.add('loading');
                     }
+                    return true;
                 } else {
                     const fallback = await resolveSocialStreamPage('background.html', {
                         versionParam: 'v=2',
@@ -9625,8 +9663,10 @@
                         frame2.dataset.ssappOrigin = fallback.origin;
                         frame2.classList.add('loading');
                         Toast.warning('Background Fallback', 'Loaded local background service.');
+                        return true;
                     } else {
                         Toast.error('Background Error', 'Could not load background service.');
+                        return false;
                     }
                 }
             } catch (error) {
@@ -9642,19 +9682,75 @@
                         frame2.dataset.ssappOrigin = fallback.origin;
                         frame2.classList.add('loading');
                         Toast.warning('Background Fallback', 'Loaded local background service.');
+                        return true;
                     } else {
                         Toast.error('Background Error', 'Could not load background service.');
+                        return false;
                     }
                 } catch (fallbackError) {
                     console.error('Failed to resolve background fallback:', fallbackError);
                     Toast.error('Background Error', 'Could not load background service.');
+                    return false;
+                }
+            }
+        }
+        async function ensurePopupPanelLoaded(forceReload = false) {
+            const frame1 = document.getElementById('frame1');
+            if (!frame1) return false;
+            if (!forceReload && frame1.src && frame1.src !== 'about:blank') return true;
+            try {
+                const resolved = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2' });
+                if (resolved && resolved.url) {
+                    frame1.src = resolved.url;
+                    frame1.dataset.ssappOrigin = resolved.origin;
+                    frame1.classList.add('loading');
+                    return true;
+                }
+                const fallback = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2', forceLocal: true });
+                if (fallback && fallback.url) {
+                    frame1.src = fallback.url;
+                    frame1.dataset.ssappOrigin = fallback.origin;
+                    frame1.classList.add('loading');
+                    Toast.warning('Popup Fallback', 'Loaded local popup panel.');
+                    return true;
+                }
+                Toast.error('Popup Error', 'Could not load popup panel.');
+                return false;
+            } catch (error) {
+                console.error('Failed to resolve popup frame source:', error);
+                try {
+                    const fallback = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2', forceLocal: true });
+                    if (fallback && fallback.url) {
+                        frame1.src = fallback.url;
+                        frame1.dataset.ssappOrigin = fallback.origin;
+                        frame1.classList.add('loading');
+                        Toast.warning('Popup Fallback', 'Loaded local popup panel.');
+                        return true;
+                    }
+                    Toast.error('Popup Error', 'Could not load popup panel.');
+                    return false;
+                } catch (fallbackError) {
+                    console.error('Failed to resolve popup frame fallback:', fallbackError);
+                    Toast.error('Popup Error', 'Could not load popup panel.');
+                    return false;
                 }
             }
         }
         async function checkForUpdates() {
             try {
-                const response = await fetch('https://api.github.com/repos/steveseguin/social_stream/releases');
+                const response = await fetchWithDeadline('https://api.github.com/repos/steveseguin/social_stream/releases', {
+                    timeoutMs: 5000,
+                    headers: {
+                        'Accept': 'application/vnd.github+json'
+                    }
+                });
+                if (!response || !response.ok) {
+                    throw new Error(`update check failed: ${response ? response.status : 'no response'}`);
+                }
                 const data = await response.json();
+                if (!Array.isArray(data)) {
+                    throw new Error('update check returned an unexpected payload');
+                }
                 // Find the latest non-prerelease version
                 const latestRelease = data.find(release => !release.prerelease);
                 if (latestRelease?.tag_name && ipcRenderer) {
@@ -9669,7 +9765,7 @@
                     }
                 }
             } catch (e) {
-                console.error('Error checking for updates:', e);
+                console.warn(`[Updates] Skipping GitHub release check: ${formatFetchFailure(e)}`);
             }
         }
 

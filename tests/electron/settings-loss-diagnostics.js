@@ -75,7 +75,7 @@ function runCodePathChecks() {
   const backgroundSource = readText(backgroundPath);
   const mainSource = readText(mainPath);
 
-  const streamIdGatePattern = /if\s*\(\s*\(response\s*==\s*undefined\)\s*\|\|\s*\(!response\.streamID\)\s*\)\s*\{/;
+  const streamIdGatePattern = /if\s*\(\s*(?:\(\s*response\s*==\s*undefined\s*\)\s*\|\|\s*\(!response\.streamID\)|['"]settings['"]\s+in\s+response\s*&&\s*\(response\.streamID\s*\|\|\s*ssapp\))\s*\)\s*\{/;
   const popupTimeoutPattern = /setTimeout\(\(\)\s*=>\s*\{[\s\S]*?ipcRenderer\.sendSync\('fromPopup',\s*data\);[\s\S]*?\},\s*500\);/;
   const mainImmediateGetSettingsPattern = /if\s*\(value\.cmd\s*==\s*"getSettings"\)\s*\{\s*eventRet\.returnValue\s*=\s*cachedState;/;
   const backgroundTryAgainPattern = /if\s*\(!loadedFirst\)\s*\{[\s\S]*?sendResponse\(\{"tryAgain":true\}\);/;
@@ -85,7 +85,7 @@ function runCodePathChecks() {
     {
       id: "popup_streamid_gate",
       ok: streamIdGatePattern.test(popupSource),
-      detail: getRegexResult(popupSource, streamIdGatePattern)
+      detail: "popup waits for stream readiness or ssapp settings payload before hydrating"
     },
     {
       id: "popup_500ms_timeout_fallback",

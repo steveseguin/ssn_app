@@ -1,21 +1,26 @@
-const { ipcMain, shell } = require('electron');
-const http = require('http');
-const url = require('url');
+'use strict';
+
+const crypto = require("crypto");
+const http = require("http");
+const url = require("url");
+const { dialog, ipcMain, shell } = require("electron");
 
 function escapeHtml(str) {
-    if (typeof str !== 'string') return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    if (typeof str !== "string") return "";
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
-const LOOPBACK_HOST = '127.0.0.1';
+const LOOPBACK_HOST = "127.0.0.1";
 const LOOPBACK_PORTS = [8181, 8080];
-const CALLBACK_PATH = '/sources/websocket/youtube.html';
-const DEFAULT_AUTH_BASE = 'https://ytauth.socialstream.ninja';
+const CALLBACK_PATH = "/sources/websocket/youtube.html";
+const DEFAULT_AUTH_BASE = "https://ytauth.socialstream.ninja";
+const GOOGLE_AUTH_BASE = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 let activeSession = null;
 
-function buildAuthUrl({ authBase, clientId, scopes, redirectUri, state }) {
+function buildHostedAuthUrl({ authBase, clientId, scopes, redirectUri, state }) {
     const base = authBase || DEFAULT_AUTH_BASE;
     const scopeString = Array.isArray(scopes) ? scopes.join(' ') : String(scopes || '');
     return `${base}/auth` +
@@ -23,6 +28,25 @@ function buildAuthUrl({ authBase, clientId, scopes, redirectUri, state }) {
         `&redirect_uri=${encodeURIComponent(redirectUri || '')}` +
         `&scope=${encodeURIComponent(scopeString)}` +
         `&state=${encodeURIComponent(state || '')}`;
+}
+
+function buildGoogleAuthUrl({ clientId, scopes, redirectUri, state }) {
+    const scopeString = Array.isArray(scopes) ? scopes.join(" ") : String(scopes || "");
+    return `${GOOGLE_AUTH_BASE}` +
+        `?client_id=${encodeURIComponent(clientId || "")}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri || "")}` +
+        `&response_type=code` +
+        `&access_type=offline` +
+        `&prompt=consent` +
+        `&scope=${encodeURIComponent(scopeString)}` +
+        `&state=${encodeURIComponent(state || "")}`;
+}
+
+function buildAuthUrl(payload = {}) {
+    if (payload.authMode === "custom_google") {
+        return buildGoogleAuthUrl(payload);
+    }
+    return buildHostedAuthUrl(payload);
 }
 
 function tryListenOnPort(server, port) {
@@ -66,7 +90,7 @@ function runLoopbackOAuthSession(payload = {}) {
         let settled = false;
         let server = null;
         let session = null;
-        const stateParam = payload.state || require('crypto').randomBytes(16).toString('hex');
+        const stateParam = payload.state || crypto.randomBytes(16).toString("hex");
 
         const cleanup = () => {
             if (timeoutId) {
@@ -184,7 +208,6 @@ function runLoopbackOAuthSession(payload = {}) {
                 }
             } catch (err) {
                 if (err.code === 'PORTS_UNAVAILABLE') {
-                    const { dialog } = require('electron');
                     dialog.showMessageBox({
                         type: 'error',
                         title: 'Unable to Sign In',
@@ -211,17 +234,94 @@ function runLoopbackOAuthSession(payload = {}) {
     });
 }
 
-function setupYouTubeOAuthHandler() {
-    if (ipcMain.listenerCount('youtube-oauth') > 0) {
-        return;
+async function readJsonResponse(response) {
+    const text = await response.text();
+    if (!text) return {};
+    try {
+        return JSON.parse(text);
+    } catch (_) {
+        return { raw: text };
     }
-    ipcMain.handle('youtube-oauth', async (_event, payload = {}) => {
-        if (activeSession && typeof activeSession.fail === 'function') {
-            console.warn('[YouTube OAuth] Aborting previous pending session in favor of the new request.');
-            activeSession.fail(new Error('Previous YouTube authentication was interrupted by a new request.'));
-        }
-        return runLoopbackOAuthSession(payload);
+}
+
+function createTokenExchangeError(prefix, response, payload) {
+    const message = payload?.error_description || payload?.error || `${prefix}: HTTP ${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.payload = payload || null;
+    return error;
+}
+
+async function postGoogleTokenRequest(params) {
+    const response = await fetch(GOOGLE_TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(params).toString()
     });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) {
+        throw createTokenExchangeError("Google token request failed", response, payload);
+    }
+    return payload;
+}
+
+async function exchangeYouTubeOAuthCode(payload = {}) {
+    const code = String(payload.code || "").trim();
+    const clientId = String(payload.clientId || "").trim();
+    const clientSecret = String(payload.clientSecret || "").trim();
+    const redirectUri = String(payload.redirectUri || "").trim();
+
+    if (!code) throw new Error("Missing YouTube OAuth authorization code.");
+    if (!clientId) throw new Error("Missing YouTube OAuth client ID.");
+    if (!clientSecret) throw new Error("Missing YouTube OAuth client secret.");
+    if (!redirectUri) throw new Error("Missing YouTube OAuth redirect URI.");
+
+    return postGoogleTokenRequest({
+        code: code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: "authorization_code"
+    });
+}
+
+async function refreshYouTubeOAuthToken(payload = {}) {
+    const refreshToken = String(payload.refreshToken || payload.refresh_token || "").trim();
+    const clientId = String(payload.clientId || "").trim();
+    const clientSecret = String(payload.clientSecret || "").trim();
+
+    if (!refreshToken) throw new Error("Missing YouTube OAuth refresh token.");
+    if (!clientId) throw new Error("Missing YouTube OAuth client ID.");
+    if (!clientSecret) throw new Error("Missing YouTube OAuth client secret.");
+
+    return postGoogleTokenRequest({
+        refresh_token: refreshToken,
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: "refresh_token"
+    });
+}
+
+function setupYouTubeOAuthHandler() {
+    if (ipcMain.listenerCount("youtube-oauth") === 0) {
+        ipcMain.handle('youtube-oauth', async (_event, payload = {}) => {
+            if (activeSession && typeof activeSession.fail === 'function') {
+                console.warn('[YouTube OAuth] Aborting previous pending session in favor of the new request.');
+                activeSession.fail(new Error('Previous YouTube authentication was interrupted by a new request.'));
+            }
+            return runLoopbackOAuthSession(payload);
+        });
+    }
+    if (ipcMain.listenerCount("youtube-oauth-exchange") === 0) {
+        ipcMain.handle("youtube-oauth-exchange", async (_event, payload = {}) => {
+            return exchangeYouTubeOAuthCode(payload);
+        });
+    }
+    if (ipcMain.listenerCount("youtube-oauth-refresh") === 0) {
+        ipcMain.handle("youtube-oauth-refresh", async (_event, payload = {}) => {
+            return refreshYouTubeOAuthToken(payload);
+        });
+    }
 }
 
 module.exports = {
