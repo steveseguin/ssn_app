@@ -210,7 +210,7 @@
   "devDependencies": {
     "electron": "^40.0.0-beta.8",
     "electron-builder": "^26.5.0",
-    "electron-notarize": "git://github.com/electron/notarize.git",
+    "electron-notarize": "git+https://github.com/electron/notarize.git",
     "fs-extra": "11.3.0",
     "jsonfile": "^6.1.0",
     "npm-force-resolutions": "^0.0.10",
