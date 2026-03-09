@@ -149,7 +149,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Restore Windows signing certificate
         if: matrix.id == 'windows' && env.WIN_CSC_PFX_BASE64 != ''
