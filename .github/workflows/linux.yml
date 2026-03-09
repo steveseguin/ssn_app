@@ -9,7 +9,32 @@ on:
   workflow_dispatch:
 
 jobs:
+  should-run:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.guard.outputs.build }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Decide whether Linux CI should run
+        id: guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          SHOULD_BUILD=true
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_NAME}" == "main" && "$VERSION" == "0.0.0" ]]; then
+            SHOULD_BUILD=false
+            echo "Skipping Linux CI because release-builds.yml handles rolling 0.0.0 dev publishes on main."
+          fi
+
+          echo "build=$SHOULD_BUILD" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: should-run
+    if: needs.should-run.outputs.build == 'true'
     env:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
       

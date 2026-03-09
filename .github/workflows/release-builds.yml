@@ -1,0 +1,238 @@
+name: Publish Desktop Builds
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "*.*.*"
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      publish_dev:
+        description: Publish or refresh the rolling developer prerelease
+        required: false
+        type: boolean
+        default: false
+      ref:
+        description: Optional branch, tag, or SHA to build
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-builds-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.meta.outputs.publish }}
+      channel: ${{ steps.meta.outputs.channel }}
+      version: ${{ steps.meta.outputs.version }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      release_name: ${{ steps.meta.outputs.release_name }}
+      checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
+      commit_sha: ${{ steps.meta.outputs.commit_sha }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 0
+          submodules: recursive
+          ssh-key: ${{ secrets.SUBMODULE_SSH_KEY }}
+        continue-on-error: true
+
+      - name: Checkout code (fallback without submodules)
+        if: failure()
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve publish metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$(node -p "require('./package.json').version")"
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          REF_NAME="${GITHUB_REF_NAME}"
+          REF_TYPE="${GITHUB_REF_TYPE}"
+          EVENT_NAME="${GITHUB_EVENT_NAME}"
+          PUBLISH=false
+          CHANNEL=""
+          RELEASE_TAG=""
+          RELEASE_NAME=""
+
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            if [[ "$REF_NAME" != "$VERSION" && "$REF_NAME" != "v$VERSION" ]]; then
+              echo "::error::Git tag '$REF_NAME' does not match package.json version '$VERSION'"
+              exit 1
+            fi
+            PUBLISH=true
+            CHANNEL="stable"
+            RELEASE_TAG="$REF_NAME"
+            RELEASE_NAME="Social Stream Ninja $REF_NAME"
+          elif [[ "$EVENT_NAME" == "push" && "$REF_NAME" == "main" && "$VERSION" == "0.0.0" ]]; then
+            PUBLISH=true
+            CHANNEL="dev"
+            RELEASE_TAG="dev-build"
+            RELEASE_NAME="Social Stream Ninja developer build"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" && "${{ github.event.inputs.publish_dev }}" == "true" ]]; then
+            if [[ "$VERSION" != "0.0.0" ]]; then
+              echo "::error::Developer publish only runs when package.json version is 0.0.0"
+              exit 1
+            fi
+            PUBLISH=true
+            CHANNEL="dev"
+            RELEASE_TAG="dev-build"
+            RELEASE_NAME="Social Stream Ninja developer build"
+          else
+            echo "No publish lane matched for this ref; downstream jobs will skip."
+          fi
+
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_name=$RELEASE_NAME" >> "$GITHUB_OUTPUT"
+          echo "checkout_ref=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: windows
+            os: windows-latest
+            build_command: npm run build:win32
+            artifact_name: release-windows
+            artifact_path: |
+              dist/*.exe
+              dist/*.zip
+          - id: linux
+            os: ubuntu-latest
+            build_command: npm run build:linux
+            artifact_name: release-linux
+            artifact_path: dist/*.AppImage
+    env:
+      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      WIN_CSC_PFX_BASE64: ${{ secrets.WIN_CSC_PFX_BASE64 }}
+      VT_API_KEY: ${{ secrets.VT_API_KEY }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.checkout_ref }}
+          fetch-depth: 0
+          submodules: recursive
+          ssh-key: ${{ secrets.SUBMODULE_SSH_KEY }}
+        continue-on-error: true
+
+      - name: Checkout code (fallback without submodules)
+        if: failure()
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.checkout_ref }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Restore Windows signing certificate
+        if: matrix.id == 'windows' && env.WIN_CSC_PFX_BASE64 != ''
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path certs | Out-Null
+          [System.IO.File]::WriteAllBytes(
+            "certs/socialstream.pfx",
+            [System.Convert]::FromBase64String($env:WIN_CSC_PFX_BASE64)
+          )
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build desktop app
+        run: ${{ matrix.build_command }}
+
+      - name: Submit Windows executables to VirusTotal
+        if: matrix.id == 'windows'
+        run: node scripts/submit-virustotal.js --dir dist
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs:
+      - prepare
+      - build
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+      RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
+      CHANNEL: ${{ needs.prepare.outputs.channel }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Publish GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -d '' files < <(find release-artifacts -type f -print0 | sort -z)
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "::error::No artifacts found to publish"
+            exit 1
+          fi
+
+          notes_file="$(mktemp)"
+          if [[ "$CHANNEL" == "stable" ]]; then
+            printf 'Automated stable build for %s.\n\nVersion: %s\nCommit: %s\n' \
+              "$RELEASE_TAG" \
+              "$VERSION" \
+              "$COMMIT_SHA" > "$notes_file"
+
+            if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+              gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_NAME" --notes-file "$notes_file"
+            fi
+          else
+            printf 'Rolling developer build from main.\n\nSource version: %s\nCommit: %s\n' \
+              "$VERSION" \
+              "$COMMIT_SHA" > "$notes_file"
+
+            if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+              gh release delete "$RELEASE_TAG" --yes --cleanup-tag
+            fi
+
+            gh release create "$RELEASE_TAG" \
+              --target "$COMMIT_SHA" \
+              --title "$RELEASE_NAME" \
+              --notes-file "$notes_file" \
+              --prerelease
+          fi
+
+          gh release upload "$RELEASE_TAG" "${files[@]}" --clobber

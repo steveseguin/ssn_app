@@ -18,6 +18,7 @@
     "test:tiktok-gift-regression": "node tests/tiktok/gift-count-regression.js",
     "test:tiktok-social-signals": "node tests/tiktok/social-signal-regression.js",
     "test:recent-changes": "node tests/electron/stability-recovery-diagnostics.js && node tests/tiktok/auto-mode-regression.js && node tests/tiktok/gift-count-regression.js && node tests/tiktok/social-signal-regression.js",
+    "submit:virustotal": "node scripts/submit-virustotal.js --dir dist",
     "test": "electron .",
     "build": "run-os",
     "check:submodules": "node scripts/check-submodules.js",
