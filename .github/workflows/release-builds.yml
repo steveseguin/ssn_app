@@ -187,6 +187,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
       RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
       CHANNEL: ${{ needs.prepare.outputs.channel }}
