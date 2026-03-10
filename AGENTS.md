@@ -4,6 +4,11 @@
 
 Electron desktop application for aggregating social media live stream chat. CommonJS JavaScript codebase (no TypeScript).
 
+## Communication
+
+- When replying to Steve, prefer plain, everyday language over jargon.
+- Keep explanations direct and practical; explain technical terms briefly when they matter.
+
 ## Source Of Truth
 
 - Social Stream source edits must be made in `C:\Users\steve\Code\social_stream`.
