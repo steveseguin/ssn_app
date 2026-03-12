@@ -9458,7 +9458,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 };
 
                 scriptInjected = true;
-                if (runningLocally && args.source && !args.source.startsWith("https://")) {
+                const normalizeSelectedSourcePath = (value) => {
+                    if (!value || typeof value !== "string") return "";
+                    return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
+                };
+                let explicitSourceFiles = Array.isArray(args.sourceFiles)
+                    ? args.sourceFiles.map((value) => normalizeSelectedSourcePath(value)).filter(Boolean)
+                    : [];
+                explicitSourceFiles = [...new Set(explicitSourceFiles)];
+                const selectedSourceFiles = explicitSourceFiles.length
+                    ? explicitSourceFiles
+                    : (args.source ? [normalizeSelectedSourcePath(args.source)] : []);
+
+                if (runningLocally && selectedSourceFiles.length && selectedSourceFiles.every((value) => value && !value.startsWith("https://"))) {
                     const normalizeRoot = (value) => {
                         if (!value || typeof value !== "string") return "";
                         return (value.endsWith("/") || value.endsWith("\\")) ? value : `${value}/`;
@@ -9492,63 +9504,71 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         addCandidateRoot(storedLocalSource);
                     } catch (_) { }
 
-                    const rawCandidates = [];
-                    const sourceValue = String(args.source || "");
-                    const pushRawCandidate = (raw) => {
-                        if (!raw || typeof raw !== "string") return;
-                        if (!rawCandidates.includes(raw)) {
-                            rawCandidates.push(raw);
-                        }
-                    };
+                    const loadedSourceTexts = [];
+                    const sourceLoadFailures = [];
 
-                    if (/^(file:\/\/|[A-Za-z]:[\\/]|\/)/.test(sourceValue)) {
-                        pushRawCandidate(sourceValue);
-                    }
-                    for (const root of candidateRoots) {
-                        const rootWithoutTrailing = root.replace(/[\\/]+$/, "");
-                        if (sourceValue.includes(rootWithoutTrailing)) {
-                            pushRawCandidate(sourceValue);
-                        } else {
-                            pushRawCandidate(root + sourceValue.replace(/^\.?\//, ""));
-                        }
-                    }
-                    if (!rawCandidates.length) {
-                        pushRawCandidate(sourceValue);
-                    }
-
-                    let jsSource = "";
-                    const attemptedPaths = [];
-                    for (const rawCandidate of rawCandidates) {
-                        const fsCandidate = toFsPath(rawCandidate);
-                        if (!fsCandidate) continue;
-                        attemptedPaths.push(fsCandidate);
-                        if (fs.existsSync(fsCandidate)) {
-                            jsSource = fsCandidate;
-                            break;
-                        }
-                    }
-                    if (!jsSource && attemptedPaths.length) {
-                        jsSource = attemptedPaths[0];
-                    }
-
-                    log("jsSource: " + jsSource);
-                    let text = null;
-                    try {
-                        text = fs.readFileSync(jsSource, "utf8");
-                    } catch (e) {
-                        const tried = attemptedPaths.length
-                            ? `\n\nTried:\n${attemptedPaths.join("\n")}`
-                            : "";
-                        let options = {
-                            title: "Site not supported or injection script not found",
-                            buttons: ["OK"],
-                            message: `${args.source} was not found.${tried}\n\njoin the Discord for support: \nhttps://discord.socialstream.ninja`,
+                    for (const sourceValue of selectedSourceFiles) {
+                        const rawCandidates = [];
+                        const pushRawCandidate = (raw) => {
+                            if (!raw || typeof raw !== "string") return;
+                            if (!rawCandidates.includes(raw)) {
+                                rawCandidates.push(raw);
+                            }
                         };
-                        dialog.showMessageBoxSync(options);
-                        console.error(e);
+
+                        if (/^(file:\/\/|[A-Za-z]:[\\/]|\/)/.test(sourceValue)) {
+                            pushRawCandidate(sourceValue);
+                        }
+                        for (const root of candidateRoots) {
+                            const rootWithoutTrailing = root.replace(/[\\/]+$/, "");
+                            if (sourceValue.includes(rootWithoutTrailing)) {
+                                pushRawCandidate(sourceValue);
+                            } else {
+                                pushRawCandidate(root + sourceValue.replace(/^\.?\//, ""));
+                            }
+                        }
+                        if (!rawCandidates.length) {
+                            pushRawCandidate(sourceValue);
+                        }
+
+                        let jsSource = "";
+                        const attemptedPaths = [];
+                        for (const rawCandidate of rawCandidates) {
+                            const fsCandidate = toFsPath(rawCandidate);
+                            if (!fsCandidate) continue;
+                            attemptedPaths.push(fsCandidate);
+                            if (fs.existsSync(fsCandidate)) {
+                                jsSource = fsCandidate;
+                                break;
+                            }
+                        }
+                        if (!jsSource && attemptedPaths.length) {
+                            jsSource = attemptedPaths[0];
+                        }
+
+                        log("jsSource: " + jsSource);
+                        try {
+                            const text = fs.readFileSync(jsSource, "utf8");
+                            if (text) {
+                                loadedSourceTexts.push({ path: sourceValue, text });
+                            } else {
+                                sourceLoadFailures.push({ path: sourceValue, message: "Empty script file", attemptedPaths });
+                            }
+                        } catch (e) {
+                            sourceLoadFailures.push({
+                                path: sourceValue,
+                                message: e && e.message ? e.message : String(e),
+                                attemptedPaths
+                            });
+                            console.error(`[Injection] Failed to load local source ${sourceValue}:`, e);
+                        }
                     }
 
-                    if (text) {
+                    if (loadedSourceTexts.length) {
+                        const text = loadedSourceTexts.map((entry) => entry.text).join("\n\n");
+                        if (sourceLoadFailures.length) {
+                            console.warn("[Injection] Continuing after local source load failures:", sourceLoadFailures);
+                        }
                         runWithWebContents("Script injection", (wc) => {
                             // Removed empty console-message handler to allow console logs to flow through
 
@@ -9748,35 +9768,71 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 })
                                 .catch(whenDestroyedReject("Script injection"));
                         });
+                    } else if (sourceLoadFailures.length) {
+                        const failureDetails = sourceLoadFailures.map((entry) => {
+                            const tried = Array.isArray(entry.attemptedPaths) && entry.attemptedPaths.length
+                                ? `\nTried:\n${entry.attemptedPaths.join("\n")}`
+                                : "";
+                            return `${entry.path}: ${entry.message}${tried}`;
+                        }).join("\n\n");
+                        let options = {
+                            title: "Site not supported or injection script not found",
+                            buttons: ["OK"],
+                            message: `${failureDetails}\n\njoin the Discord for support: \nhttps://discord.socialstream.ninja`,
+                        };
+                        dialog.showMessageBoxSync(options);
                     }
-                } else if (args.source) {
+                } else if (selectedSourceFiles.length) {
                     (async () => {
                         try {
                             const branch = (typeof args.assetBranch === 'string' && args.assetBranch.trim())
                                 ? args.assetBranch.trim()
                                 : (isBetaMode ? 'beta' : 'main');
-                            const jsSource = args.source.startsWith("https://") ? args.source : `https://raw.githubusercontent.com/steveseguin/social_stream/${branch}/${args.source}`;
-                            const relativeSource = args.source.startsWith("https://") ? '' : args.source;
+                            const loadedSourceTexts = [];
+                            const sourceLoadFailures = [];
 
-                            log(jsSource);
+                            for (const sourceValue of selectedSourceFiles) {
+                                try {
+                                    const jsSource = sourceValue.startsWith("https://") ? sourceValue : `https://raw.githubusercontent.com/steveseguin/social_stream/${branch}/${sourceValue}`;
+                                    const relativeSource = sourceValue.startsWith("https://") ? '' : sourceValue;
 
-                            const { text, origin, meta } = await loadSocialStreamSource(jsSource, {
-                                branch,
-                                relativePath: relativeSource,
-                                timeoutMs: SOCIAL_STREAM_REMOTE_TIMEOUT_MS
-                            });
+                                    log(jsSource);
 
-                            if (origin === 'cache') {
-                                const reason = meta && meta.reason ? meta.reason : 'remote fetch unavailable';
-                                console.warn(`Using cached Social Stream scripts for ${relativeSource || jsSource}: ${reason}`);
-                                queueInjectorToast('warning', 'Classic Mode Fallback', `Using cached Social Stream scripts (${reason}).`);
-                            } else if (origin === 'fallback') {
-                                const reason = meta && meta.reason ? meta.reason : 'remote fetch unavailable';
-                                console.warn(`Using bundled Social Stream scripts for ${relativeSource || jsSource}: ${reason}`);
-                                queueInjectorToast('warning', 'Classic Mode Fallback', `Using bundled Social Stream scripts (${reason}).`);
+                                    const { text, origin, meta } = await loadSocialStreamSource(jsSource, {
+                                        branch,
+                                        relativePath: relativeSource,
+                                        timeoutMs: SOCIAL_STREAM_REMOTE_TIMEOUT_MS
+                                    });
+
+                                    if (origin === 'cache') {
+                                        const reason = meta && meta.reason ? meta.reason : 'remote fetch unavailable';
+                                        console.warn(`Using cached Social Stream scripts for ${relativeSource || jsSource}: ${reason}`);
+                                        queueInjectorToast('warning', 'Classic Mode Fallback', `Using cached Social Stream scripts (${reason}).`);
+                                    } else if (origin === 'fallback') {
+                                        const reason = meta && meta.reason ? meta.reason : 'remote fetch unavailable';
+                                        console.warn(`Using bundled Social Stream scripts for ${relativeSource || jsSource}: ${reason}`);
+                                        queueInjectorToast('warning', 'Classic Mode Fallback', `Using bundled Social Stream scripts (${reason}).`);
+                                    }
+
+                                    loadedSourceTexts.push({ path: sourceValue, text });
+                                } catch (loadError) {
+                                    sourceLoadFailures.push({
+                                        path: sourceValue,
+                                        message: loadError && loadError.message ? loadError.message : String(loadError)
+                                    });
+                                    console.error(`[Injection] Failed to load remote source ${sourceValue}:`, loadError);
+                                }
+                            }
+
+                            if (!loadedSourceTexts.length) {
+                                throw new Error(sourceLoadFailures.map((entry) => `${entry.path}: ${entry.message}`).join("\n"));
                             }
 
                             try {
+                                const text = loadedSourceTexts.map((entry) => entry.text).join("\n\n");
+                                if (sourceLoadFailures.length) {
+                                    console.warn("[Injection] Continuing after remote source load failures:", sourceLoadFailures);
+                                }
                                 runWithWebContents("Remote script injection", (wc) => {
                                     // Removed empty console-message handler to allow console logs to flow through
 
@@ -9969,7 +10025,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 dialog.showMessageBoxSync({
                                     title: "Site not supported or injection script not found",
                                     buttons: ["OK"],
-                                    message: args.source + " was not found.\n\njoin the Discord for support: \nhttps://discord.socialstream.ninja",
+                                    message: `${selectedSourceFiles.join("\n")}\n\n${e && e.message ? e.message : "Unable to load Social Stream scripts"}\n\njoin the Discord for support: \nhttps://discord.socialstream.ninja`,
                                 });
                             } catch (dialogError) {
                                 console.error('Failed to show injector error dialog:', dialogError);

@@ -2043,32 +2043,46 @@
                 }
                 URL = (await cleanUpURL(URL)).trim();
                 let typeGuess = target;
-                if (!typeGuess) {
-                    const guessedArr = checkSupported(URL);
-                    if (guessedArr.length) {
-                        if (guessedArr.length === 1) {
-                            typeGuess = guessedArr[0].split(".js")[0].split("/").pop();
-                        } else {
-                            try {
-                                const chosenScript = await customPrompt(guessedArr.map(g => `sources/${g}`));
-                                typeGuess = chosenScript.split(".js")[0].split("/").pop();
-                            } catch (e) { Toast.error("Cancelled adding source."); return; }
-                        }
-                    } else {
-                        const allSources = manifest.content_scripts.map(dom => dom.js[0].split(".js")[0].split("/").pop()).filter(Boolean);
-                        try {
-                            const chosenScript = await customPrompt(allSources.map(s => `sources/${s}.js`));
-                            typeGuess = chosenScript.split(".js")[0].split("/").pop();
-                        } catch (e) {
-                            Toast.error("Cancelled adding source.");
-                            return;
-                        }
+                const initialState = {};
+                const normalizeSourceScriptPath = (value) => {
+                    if (!value || typeof value !== "string") return "";
+                    return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
+                };
+                const deriveTargetFromScriptPath = (value) => {
+                    const normalized = normalizeSourceScriptPath(value);
+                    if (!normalized) return "";
+                    return normalized.split(".js")[0].split("/").pop();
+                };
+                const matchedScripts = checkSupported(URL)
+                    .map((value) => normalizeSourceScriptPath(value))
+                    .filter(Boolean);
+                const uniqueMatchedScripts = [...new Set(matchedScripts)];
+
+                if (uniqueMatchedScripts.length) {
+                    initialState.sourceFiles = uniqueMatchedScripts;
+                    if (!typeGuess) {
+                        typeGuess = deriveTargetFromScriptPath(uniqueMatchedScripts[0]);
+                    }
+                } else if (!typeGuess) {
+                    const allSources = [...new Set(
+                        (Array.isArray(manifest?.content_scripts) ? manifest.content_scripts : [])
+                            .flatMap((entry) => Array.isArray(entry?.js) ? entry.js : [])
+                            .map((value) => normalizeSourceScriptPath(value))
+                            .filter(Boolean)
+                    )];
+                    try {
+                        const chosenScript = await customPrompt(allSources);
+                        initialState.sourceFile = normalizeSourceScriptPath(chosenScript);
+                        typeGuess = deriveTargetFromScriptPath(chosenScript);
+                    } catch (e) {
+                        Toast.error("Cancelled adding source.");
+                        return;
                     }
                 }
                 if (typeGuess === "youtube" && (URL.includes("&shorts") || URL.includes("?shorts"))) {
                     typeGuess = "youtubeshorts";
                 }
-                await newOtherSource(typeGuess, URL, false, {});
+                await newOtherSource(typeGuess, URL, false, initialState);
             }
         }
 
@@ -2411,9 +2425,18 @@
                 }
             }
 
+            const normalizeSourceScriptPath = (value) => {
+                if (!value || typeof value !== "string") return "";
+                return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
+            };
+
             // Determine sourceFile based on target, similar to how newSource handles it
-            let sourceFile = initialState.sourceFile || null;
-            if (!sourceFile && target) {
+            let sourceFiles = Array.isArray(initialState.sourceFiles)
+                ? initialState.sourceFiles.map((value) => normalizeSourceScriptPath(value)).filter(Boolean)
+                : [];
+            sourceFiles = [...new Set(sourceFiles)];
+            let sourceFile = normalizeSourceScriptPath(initialState.sourceFile || "");
+            if (!sourceFiles.length && !sourceFile && target) {
                 // Example: if target is 'instagramlive', sourceFile should be 'sources/instagram.js'
                 // This logic needs to be robust based on your platform-to-script mapping
                 if (target === "instagramlive") {
@@ -2476,6 +2499,9 @@
                 // Keep the URL but clear fields that would trigger fetching
                 sourceData.videoId = '';
                 // Keep username for display but it won't be used for fetching
+            }
+            if (sourceFiles.length) {
+                sourceData.sourceFiles = sourceFiles;
             }
             if (sourceFile) {
                 sourceData.sourceFile = sourceFile;
@@ -6127,16 +6153,20 @@
             }
 
             const targetSourceFile = source.target === "youtubeshorts" ? "youtube" : source.target;
-            const scriptPath = source.sourceFile || `sources/${targetSourceFile}.js`; // Use sourceFile from state if available
             const normalizeSourceScriptPath = (value) => {
                 if (!value || typeof value !== "string") return "";
                 return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
             };
-            const normalizedScriptPath = normalizeSourceScriptPath(scriptPath);
+            let sourceFiles = Array.isArray(source.sourceFiles)
+                ? source.sourceFiles.map((value) => normalizeSourceScriptPath(value)).filter(Boolean)
+                : [];
+            sourceFiles = [...new Set(sourceFiles)];
+            const scriptPath = normalizeSourceScriptPath(source.sourceFile || "") || `sources/${targetSourceFile}.js`;
+            const selectedScriptPaths = sourceFiles.length ? sourceFiles : [scriptPath];
             const sourceManifestEntries = (Array.isArray(manifest?.content_scripts) ? manifest.content_scripts : [])
                 .filter((entry) => {
                     if (!entry || !Array.isArray(entry.js)) return false;
-                    return entry.js.some((candidatePath) => normalizeSourceScriptPath(candidatePath) === normalizedScriptPath);
+                    return entry.js.some((candidatePath) => selectedScriptPaths.includes(normalizeSourceScriptPath(candidatePath)));
                 })
                 .map((entry) => ({
                     allFrames: !!entry.all_frames,
@@ -6154,6 +6184,7 @@
                     visible: source.isVisible,
                     muted: source.isMuted,
                     source: scriptPath,
+                    sourceFiles: sourceFiles.length ? sourceFiles : undefined,
                     filesource: sourcemode || undefined,
                     tab: tabid,
                     sourceId: source.id,
