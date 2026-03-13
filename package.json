@@ -230,11 +230,11 @@
     "color": "^5.0.0",
     "color-convert": "^3.0.1",
     "color-name": "^2.0.0",
-    "electron-context-menu": "^4.1.1",
+    "electron-context-menu": "^3.6.1",
     "electron-fetch": "^1.9.1",
     "electron-is-dev": "^3.0.1",
     "electron-prompt": "^1.7.0",
-    "electron-store": "^11.0.2",
+    "electron-store": "^8.2.0",
     "es5-ext": "git+https://github.com/steveseguin/es5-ext.git#main",
     "idb": "^8.0.2",
     "kokoro-js": "^1.2.0",
@@ -247,7 +247,7 @@
     "unzipper": "^0.12.3",
     "utf-8-validate": "^6.0.5",
     "ws": "^8.18.1",
-    "yargs": "^18.0.0"
+    "yargs": "^17.7.2"
   },
   "engines": {
     "node": ">=18.0.0",
