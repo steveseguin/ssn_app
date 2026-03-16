@@ -2043,7 +2043,10 @@ const CONFIG = {
         // Do not exceed this timeout when boosting sign server calls
         SIGN_REQUEST_TIMEOUT_MAX_MS: 45000,
         // Small pause before immediately retrying after a boosted timeout
-        SIGN_REQUEST_IMMEDIATE_RETRY_DELAY_MS: 750
+        SIGN_REQUEST_IMMEDIATE_RETRY_DELAY_MS: 750,
+        // Detect connections that are accepted then immediately killed by TikTok
+        RAPID_DISCONNECT_THRESHOLD_MS: 60000, // Connection lasting < 60s counts as rapid
+        RAPID_DISCONNECT_STRIKE_LIMIT: 3      // After 3 rapid disconnects, try fallback
     },
     CHAT: {
         PROCESSING_INTERVAL: 100,
@@ -3374,6 +3377,8 @@ class ConnectionManager {
         this.signerHelper = env.signerHelper || null;
         this.websocketFailureCount = 0;
         this.WEBSOCKET_FAILURE_THRESHOLD = 3;
+        this.lastConnectTimestamp = 0;
+        this.rapidDisconnectCount = 0;
     }
 
     getLogContext() {
@@ -6661,6 +6666,7 @@ class ConnectionManager {
         this.startHealthCheck();
         this.startViewerUpdateInterval();
         this.reconnectAttempts = 0;
+        this.lastConnectTimestamp = Date.now();
         this.offlineRetry = false;
         this.offlineRetryCount = 0;
         this.offlineReason = null;
@@ -6780,6 +6786,45 @@ class ConnectionManager {
                     error: `Euler WS: ${codeLabel}${code === 4404 ? ' - streamer is offline' : ''}`
                 });
             } else {
+                // Detect rapid connect/disconnect cycles (TikTok accepting then killing connection)
+                const rapidThreshold = CONFIG.CONNECTION.RAPID_DISCONNECT_THRESHOLD_MS || 60000;
+                const rapidLimit = CONFIG.CONNECTION.RAPID_DISCONNECT_STRIKE_LIMIT || 3;
+                const connectionDuration = this.lastConnectTimestamp ? (Date.now() - this.lastConnectTimestamp) : Infinity;
+
+                if (connectionDuration < rapidThreshold) {
+                    this.rapidDisconnectCount = (this.rapidDisconnectCount || 0) + 1;
+                } else {
+                    this.rapidDisconnectCount = 0;
+                }
+
+                if (this.rapidDisconnectCount >= rapidLimit) {
+                    console.warn(`[TikTok] Connection dropped ${this.rapidDisconnectCount} times within ${Math.round(rapidThreshold / 1000)}s each. Trying alternative mode.`);
+                    this.rapidDisconnectCount = 0;
+                    const syntheticError = { message: 'Connection repeatedly dropped. Trying alternative mode.' };
+                    this.tryAutoFallbacksBeforePrompt(syntheticError, 'disconnect_rapid_cycle')
+                        .then((handled) => {
+                            if (handled) {
+                                return this.restartConnectionAttempt();
+                            }
+                            if (!this.pollingFallbackActivated) {
+                                return this.tryFallbackToPolling(syntheticError, 'disconnect_rapid_cycle_polling')
+                                    .then((pollingHandled) => {
+                                        if (pollingHandled) {
+                                            return this.restartConnectionAttempt();
+                                        }
+                                        this.attemptReconnect();
+                                        return null;
+                                    });
+                            }
+                            this.attemptReconnect();
+                            return null;
+                        })
+                        .catch(() => {
+                            this.attemptReconnect();
+                        });
+                    return;
+                }
+
                 this.attemptReconnect();
             }
         }
@@ -6892,6 +6937,27 @@ class ConnectionManager {
             });
             if (proxyThenPollingHandled) {
                 return this.restartConnectionAttempt(primaryError);
+            }
+        }
+
+        // Sign server errors (403, unauthorized, etc.) - try auto fallback chain
+        // Mirrors the fallback logic in connect() for mid-session sign server failures
+        if (isSignServerIssue) {
+            this.signServerFailureCount = (this.signServerFailureCount || 0) + 1;
+            const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, 'error_sign_server_local');
+            if (localFallbackHandled) {
+                return this.restartConnectionAttempt(primaryError);
+            }
+            const proxyFallbackHandled = await this.tryFallbackToEulerProxy(primaryError, 'error_sign_server_proxy');
+            if (proxyFallbackHandled) {
+                return this.restartConnectionAttempt(primaryError);
+            }
+            const fallbackThresholdReached = this.signServerFailureCount >= SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD;
+            if (fallbackThresholdReached && !this.pollingFallbackActivated) {
+                const pollingHandled = await this.tryFallbackToPolling(primaryError, 'error_sign_server_threshold');
+                if (pollingHandled) {
+                    return this.restartConnectionAttempt(primaryError);
+                }
             }
         }
 

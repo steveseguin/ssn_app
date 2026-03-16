@@ -7556,6 +7556,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
             args.url = "https://google.com";
         }
 
+        const signInHeaderOverrides = resolveHeaderOverridesFromConfig(args.config, args.url);
+
         // Handle existing tab case
         if (args.tab) {
             const existingView = getActiveBrowserView(args.tab);
@@ -7572,10 +7574,18 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             }
                         } catch (_) { }
                     }
+                    const existingLoadOptions = {};
                     if (args?.config?.userAgent) {
-                        existingView.webContents.loadURL(args.url, {
-                            userAgent: args.config.userAgent
-                        });
+                        existingLoadOptions.userAgent = args.config.userAgent;
+                    }
+                    if (signInHeaderOverrides.referer) {
+                        existingLoadOptions.httpReferrer = {
+                            url: signInHeaderOverrides.referer,
+                            policy: 'strict-origin-when-cross-origin'
+                        };
+                    }
+                    if (Object.keys(existingLoadOptions).length) {
+                        existingView.webContents.loadURL(args.url, existingLoadOptions);
                     } else {
                         existingView.webContents.loadURL(args.url);
                     }
@@ -7632,6 +7642,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
         try {
             const domain = getPrimaryDomain(args.url);
             const platform = resolveSessionPlatform(args, domain);
+
+            const signInHeaderOverrides = resolveHeaderOverridesFromConfig(args.config, args.url);
 
             // Always use in-app sign-in (never system browser)
 
@@ -8415,15 +8427,27 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         view.webContents.loadURL(args.url, {
                             userAgent: userAgent,
                             httpReferrer: {
-                                url: '',
-                                policy: 'strict-origin-when-cross-origin' // Chrome's default
+                                url: signInHeaderOverrides.referer || '',
+                                policy: 'strict-origin-when-cross-origin'
                             }
                         });
                     } else if (args.config?.userAgent) {
                         log(`Using configured user agent: ${args.config.userAgent}`);
+                        const loadOptions = { userAgent: args.config.userAgent };
+                        if (signInHeaderOverrides.referer) {
+                            loadOptions.httpReferrer = {
+                                url: signInHeaderOverrides.referer,
+                                policy: 'strict-origin-when-cross-origin'
+                            };
+                        }
                         try { view.webContents.setUserAgent(args.config.userAgent); } catch (_) { }
+                        view.webContents.loadURL(args.url, loadOptions);
+                    } else if (signInHeaderOverrides.referer) {
                         view.webContents.loadURL(args.url, {
-                            userAgent: args.config.userAgent
+                            httpReferrer: {
+                                url: signInHeaderOverrides.referer,
+                                policy: 'strict-origin-when-cross-origin'
+                            }
                         });
                     } else {
                         view.webContents.loadURL(args.url);
@@ -15090,3 +15114,4 @@ ipcMain.handle('kick-ws-disconnect', async (event, args = {}) => {
     kickWsConnections.delete(deleteKey);
     return { ok: true };
 });
+
