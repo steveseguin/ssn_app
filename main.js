@@ -9275,19 +9275,57 @@ async function createWindow(args, reuse = false, mainApp = false) {
             let frameInjectionHandlersBound = false;
             const injectedFrameKeys = new Set();
 
-            function urlMatchesManifestRules(urlValue, requireAllFrames = false) {
+            function getManifestUrlCandidates(urlValue) {
                 if (typeof urlValue !== "string") {
-                    return false;
+                    return [];
                 }
-                const normalized = urlValue.trim();
-                if (!normalized) {
+                const trimmed = urlValue.trim();
+                if (!trimmed) {
+                    return [];
+                }
+                const candidates = new Set();
+                const addCandidate = (value) => {
+                    if (typeof value !== "string") {
+                        return;
+                    }
+                    const normalized = value.trim();
+                    if (!normalized) {
+                        return;
+                    }
+                    candidates.add(normalized);
+                    if ((normalized.length > 1) && normalized.endsWith("/")) {
+                        const withoutTrailingSlash = normalized.replace(/\/+$/, "");
+                        if (withoutTrailingSlash) {
+                            candidates.add(withoutTrailingSlash);
+                        }
+                    }
+                };
+
+                addCandidate(trimmed);
+                try {
+                    const withoutHash = new URL(trimmed);
+                    withoutHash.hash = "";
+                    addCandidate(withoutHash.toString());
+
+                    const withoutSearchOrHash = new URL(trimmed);
+                    withoutSearchOrHash.search = "";
+                    withoutSearchOrHash.hash = "";
+                    addCandidate(withoutSearchOrHash.toString());
+                } catch (_) { }
+
+                return [...candidates];
+            }
+
+            function urlMatchesManifestRules(urlValue, requireAllFrames = false) {
+                const candidates = getManifestUrlCandidates(urlValue);
+                if (!candidates.length) {
                     return false;
                 }
                 return manifestInjectionRules.some((entry) => {
                     if (requireAllFrames && !entry.allFrames) {
                         return false;
                     }
-                    return entry.regexes.some((regex) => regex.test(normalized));
+                    return entry.regexes.some((regex) => candidates.some((candidate) => regex.test(candidate)));
                 });
             }
 
@@ -9411,6 +9449,24 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 }
                 if (!currentUrl) return false;
                 return urlMatchesManifestRules(currentUrl, false);
+            }
+
+            function logManifestMainFrameSkip(webContents) {
+                if (!hasManifestRules) {
+                    log("[manifest] Skipping main-frame injection; no manifest rules available.");
+                    return;
+                }
+                let currentUrl = "";
+                try {
+                    currentUrl = webContents && typeof webContents.getURL === "function" ? (webContents.getURL() || "") : "";
+                } catch (_) {
+                    currentUrl = "";
+                }
+                const rulePatterns = sourceManifestEntries
+                    .map((entry) => Array.isArray(entry?.matches) ? entry.matches : [])
+                    .flat()
+                    .filter(Boolean);
+                log(`[manifest] Skipping main-frame injection; current URL does not match source manifest. URL: ${currentUrl || "unknown"} Rules: ${rulePatterns.join(", ") || "none"}`);
             }
 
             function startRunning() {
@@ -9782,7 +9838,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                             setAllFrameInjectionCode(wc, code);
                             if (!shouldInjectMainFrame(wc)) {
-                                log("[manifest] Skipping main-frame injection; current URL does not match source manifest.");
+                                logManifestMainFrameSkip(wc);
                                 return;
                             }
                             // Inject into main world (worldId: 0) to access contextBridge APIs
@@ -10026,7 +10082,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                                     setAllFrameInjectionCode(wc, code);
                                     if (!shouldInjectMainFrame(wc)) {
-                                        log("[manifest] Skipping main-frame injection; current URL does not match source manifest.");
+                                        logManifestMainFrameSkip(wc);
                                         return;
                                     }
                                     // Inject into main world (worldId: 0) to access contextBridge APIs
@@ -10111,7 +10167,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     runWithWebContents("Default script injection", (wc) => {
                         setAllFrameInjectionCode(wc, code);
                         if (!shouldInjectMainFrame(wc)) {
-                            log("[manifest] Skipping main-frame injection; current URL does not match source manifest.");
+                            logManifestMainFrameSkip(wc);
                             return;
                         }
                         // Inject into main world (worldId: 0) to access contextBridge APIs
@@ -15114,4 +15170,3 @@ ipcMain.handle('kick-ws-disconnect', async (event, args = {}) => {
     kickWsConnections.delete(deleteKey);
     return { ok: true };
 });
-

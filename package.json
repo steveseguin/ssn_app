@@ -23,8 +23,8 @@
     "build": "run-os",
     "check:submodules": "node scripts/check-submodules.js",
     "prebuild": "npm run check:submodules && npm run update:fallback",
-    "prebuild:win32": "npm run clean && npm run check:submodules && npm run update:fallback && node scripts/verify-custom-electron.js && node -e \"setTimeout(() => {}, 5000)\"",
-    "build:win32": "npm run prebuild:win32 && electron-builder --win --config.electronVersion=39.2.16-qp20 --config.electronDownload.mirror=https://github.com/steveseguin/electron/releases/download/ --config.electronDownload.customDir=v39.2.16-qp20",
+    "prebuild:win32": "npm run clean && npm run check:submodules && npm run update:fallback && node -e \"setTimeout(() => {}, 5000)\"",
+    "build:win32": "electron-builder --win",
     "prebuild:darwin": "npm run clean && npm run check:submodules && npm run update:fallback",
     "build:darwin": "electron-builder --mac --x64 && electron-builder --mac --arm64",
     "prebuild:linux": "npm run clean && npm run check:submodules && npm run update:fallback",
@@ -33,7 +33,7 @@
     "clean": "rimraf ./dist",
     "release": "electron-builder --publish always",
     "preinstall": "npx npm-force-resolutions",
-    "postinstall": "node scripts/install-custom-electron.js"
+    "postinstall": "node -e \"console.log('[custom-electron] Skipping legacy custom Electron install; using standard Electron package.')\""
   },
   "repository": {
     "type": "git",
