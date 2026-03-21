@@ -5492,6 +5492,34 @@
             return false;
         }
 
+        function shouldKeepTikTokClassicWindowOpenOnFatal(source, statusPayload = null) {
+            if (!source || source.target !== 'tiktok') {
+                return false;
+            }
+
+            const isClassicStatus = !statusPayload?.wssID && !!source.vid;
+            if (!isClassicStatus) {
+                return false;
+            }
+
+            const preferredMode = normalizeTikTokMode(source.connectionMode || 'classic');
+            const activeMode = normalizeTikTokMode(source.activeConnectionMode || preferredMode || 'classic');
+
+            return preferredMode === 'classic'
+                && activeMode === 'classic'
+                && source.autoActivate !== true;
+        }
+
+        function shouldReleaseTikTokClassicHandles(source, statusPayload = null, hasRetryScheduled = false) {
+            if (!source || source.target !== 'tiktok') {
+                return false;
+            }
+            if (hasRetryScheduled) {
+                return false;
+            }
+            return !statusPayload?.wssID && !!source.vid;
+        }
+
         function autoFallbackToNextTikTokMode(sourceId, failureStatus, errorMessage = null) {
             if (!sourceId) return;
             const source = stateManager.getSource(sourceId);
@@ -9102,7 +9130,24 @@
                             restoreActivateUI();
                             break;
                         case 'disconnected':
-                            stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection lost.', vid: null, tiktokFallbackMode: null, tiktokConnectionMethod: null });
+                            {
+                                const hasRetryScheduled = !!(entryElement && entryElement._tiktokRetryEndAt);
+                                const updatePayload = {
+                                    status: 'error',
+                                    error: data.error || 'Connection lost.',
+                                    tiktokFallbackMode: null,
+                                    tiktokConnectionMethod: null
+                                };
+                                if (shouldReleaseTikTokClassicHandles(currentState, data, hasRetryScheduled)) {
+                                    updatePayload.vid = null;
+                                    updatePayload.wssId = null;
+                                    updatePayload.tiktokWssId = null;
+                                    updatePayload.activeConnectionMode = null;
+                                } else {
+                                    updatePayload.vid = null;
+                                }
+                                stateManager.updateSource(sourceId, updatePayload);
+                            }
                             if (entryElement) {
                                 if (entryElement._tiktokRetryEndAt) {
                                     const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
@@ -9118,7 +9163,22 @@
                             }
                             break;
                         case 'error':
-                            stateManager.updateSource(sourceId, { status: 'error', error: data.error || 'Connection error', tiktokFallbackMode: null, tiktokConnectionMethod: null });
+                            {
+                                const hasRetryScheduled = !!(entryElement && entryElement._tiktokRetryEndAt);
+                                const updatePayload = {
+                                    status: 'error',
+                                    error: data.error || 'Connection error',
+                                    tiktokFallbackMode: null,
+                                    tiktokConnectionMethod: null
+                                };
+                                if (shouldReleaseTikTokClassicHandles(currentState, data, hasRetryScheduled)) {
+                                    updatePayload.vid = null;
+                                    updatePayload.wssId = null;
+                                    updatePayload.tiktokWssId = null;
+                                    updatePayload.activeConnectionMode = null;
+                                }
+                                stateManager.updateSource(sourceId, updatePayload);
+                            }
                             if (entryElement) {
                                 if (entryElement._tiktokRetryEndAt) {
                                     const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
@@ -9163,7 +9223,21 @@
                                     ? 'TikTok sign-in failed. Provide your Euler API key.'
                                     : 'Connection failed';
                                 const errorMessage = data.error || defaultMessage;
-                                stateManager.updateSource(sourceId, { status: 'error', error: errorMessage, vid: null, tiktokFallbackMode: null, tiktokConnectionMethod: null });
+                                {
+                                    const updatePayload = {
+                                        status: 'error',
+                                        error: errorMessage,
+                                        vid: null,
+                                        tiktokFallbackMode: null,
+                                        tiktokConnectionMethod: null
+                                    };
+                                    if (shouldReleaseTikTokClassicHandles(currentState, data, hasRetryScheduled)) {
+                                        updatePayload.wssId = null;
+                                        updatePayload.tiktokWssId = null;
+                                        updatePayload.activeConnectionMode = null;
+                                    }
+                                    stateManager.updateSource(sourceId, updatePayload);
+                                }
                                 if (entryElement) {
                                     if (!isSigningIssue && !offlineExhausted && entryElement._tiktokRetryEndAt) {
                                         const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
@@ -9193,6 +9267,16 @@
                             }
                             break;
                         case 'fatal_error':
+                            {
+                                const keepClassicWindowOpen = shouldKeepTikTokClassicWindowOpenOnFatal(currentState, data);
+                                if (!keepClassicWindowOpen && !data.wssID && currentState.vid && ipcRenderer) {
+                                    try {
+                                        ipcRenderer.sendSync('closeWindow', { vid: currentState.vid });
+                                    } catch (closeError) {
+                                        console.warn('Failed to close TikTok classic window after fatal error:', closeError);
+                                    }
+                                }
+                            }
                             if (entryElement) {
                                 if (entryElement._tiktokRetryTimer) {
                                     clearInterval(entryElement._tiktokRetryTimer);
@@ -9201,13 +9285,6 @@
                                 entryElement._tiktokRetryEndAt = null;
                                 entryElement._tiktokRetryAttempt = null;
                                 entryElement._tiktokRetryMax = null;
-                            }
-                            if (!data.wssID && currentState.vid && ipcRenderer) {
-                                try {
-                                    ipcRenderer.sendSync('closeWindow', { vid: currentState.vid });
-                                } catch (closeError) {
-                                    console.warn('Failed to close TikTok classic window after fatal error:', closeError);
-                                }
                             }
                             stateManager.updateSource(sourceId, {
                                 status: 'error',

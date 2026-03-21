@@ -421,6 +421,46 @@ async function testUiDoesNotAutoFallbackAfterFatalUserNotFound() {
 	);
 }
 
+async function testManualStandardFatalDoesNotAutoCloseClassicWindow() {
+	const indexPath = path.join(__dirname, '..', '..', 'index.html');
+	const src = fs.readFileSync(indexPath, 'utf8');
+
+	assert.ok(
+		src.includes('function shouldKeepTikTokClassicWindowOpenOnFatal'),
+		'expected manual-standard classic-window guard helper'
+	);
+	assert.ok(
+		src.includes("return preferredMode === 'classic'"),
+		'expected helper to key off explicit Standard mode'
+	);
+	assert.ok(
+		src.includes('source.autoActivate !== true'),
+		'expected helper to keep auto-activate behavior separate from manual standard mode'
+	);
+	assert.ok(
+		src.includes("if (!keepClassicWindowOpen && !data.wssID && currentState.vid && ipcRenderer)"),
+		'expected fatal_error closeWindow call to be skipped for manual classic mode'
+	);
+}
+
+async function testClassicTerminalStatusesReleaseStaleHandles() {
+	const indexPath = path.join(__dirname, '..', '..', 'index.html');
+	const src = fs.readFileSync(indexPath, 'utf8');
+
+	assert.ok(
+		src.includes('function shouldReleaseTikTokClassicHandles'),
+		'expected helper for clearing stale classic handles'
+	);
+	assert.ok(
+		src.includes("if (shouldReleaseTikTokClassicHandles(currentState, data, hasRetryScheduled))"),
+		'expected terminal status handlers to clear stale classic handles'
+	);
+	assert.ok(
+		src.includes('updatePayload.tiktokWssId = null;'),
+		'expected stale TikTok websocket IDs to be cleared when releasing handles'
+	);
+}
+
 async function testConnectRehydratesMissingConnectionInstance() {
 	const { manager, plan } = createHarness({
 		auto: [{ ok: true }]
@@ -506,6 +546,14 @@ async function run() {
 		{
 			name: 'ui does not auto fallback after fatal user not found',
 			fn: testUiDoesNotAutoFallbackAfterFatalUserNotFound
+		},
+		{
+			name: 'manual standard fatal does not auto close classic window',
+			fn: testManualStandardFatalDoesNotAutoCloseClassicWindow
+		},
+		{
+			name: 'classic terminal statuses release stale handles',
+			fn: testClassicTerminalStatusesReleaseStaleHandles
 		},
 		{
 			name: 'connect rehydrates a missing connection instance',
