@@ -1205,7 +1205,7 @@ const TIKTOK_EVENT_TYPE_ALIASES = Object.freeze({
 const TIKTOK_EVENT_DEDUPE_WINDOWS_MS = Object.freeze({
     followed: 3000,
     shared: 3000,
-    room_pin: 60 * 1000,
+    room_pin: 10 * 60 * 1000,
     chat: 60 * 60 * 1000,
     gift: 60 * 60 * 1000
 });

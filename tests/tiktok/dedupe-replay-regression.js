@@ -148,22 +148,40 @@ test('room pin dedupe: same pinId is suppressed, new pinId passes', () => {
         shouldSuppressDuplicateEvent: ConnectionManager.prototype.shouldSuppressDuplicateEvent
     };
 
-    const first = manager.shouldSuppressDuplicateEvent('room_pin', {
-        pinId: 'pin-1',
-        nickname: 'Host'
-    }, 'Pin updated by Host: hello');
-    const second = manager.shouldSuppressDuplicateEvent('room_pin', {
-        pinId: 'pin-1',
-        nickname: 'Host'
-    }, 'Pin updated by Host: hello');
-    const third = manager.shouldSuppressDuplicateEvent('room_pin', {
-        pinId: 'pin-2',
-        nickname: 'Host'
-    }, 'Pin updated by Host: different');
+    const originalNow = Date.now;
+    try {
+        const baseNow = 1700000000000;
+        Date.now = () => baseNow;
 
-    assert.strictEqual(first, false, 'first pin event should pass');
-    assert.strictEqual(second, true, 'same pinId/message should be suppressed');
-    assert.strictEqual(third, false, 'different pinId should pass');
+        const first = manager.shouldSuppressDuplicateEvent('room_pin', {
+            pinId: 'pin-1',
+            nickname: 'Host'
+        }, 'Pin updated by Host: hello');
+
+        Date.now = () => baseNow + (2 * 60 * 1000);
+        const second = manager.shouldSuppressDuplicateEvent('room_pin', {
+            pinId: 'pin-1',
+            nickname: 'Host'
+        }, 'Pin updated by Host: hello');
+
+        const third = manager.shouldSuppressDuplicateEvent('room_pin', {
+            pinId: 'pin-2',
+            nickname: 'Host'
+        }, 'Pin updated by Host: different');
+
+        Date.now = () => baseNow + (11 * 60 * 1000);
+        const fourth = manager.shouldSuppressDuplicateEvent('room_pin', {
+            pinId: 'pin-1',
+            nickname: 'Host'
+        }, 'Pin updated by Host: hello');
+
+        assert.strictEqual(first, false, 'first pin event should pass');
+        assert.strictEqual(second, true, 'same pinId/message should still be suppressed after 2 minutes');
+        assert.strictEqual(third, false, 'different pinId should pass');
+        assert.strictEqual(fourth, false, 'same pinId should pass again after the dedupe window expires');
+    } finally {
+        Date.now = originalNow;
+    }
 });
 
 // ---------------------------------------------------------------------------
