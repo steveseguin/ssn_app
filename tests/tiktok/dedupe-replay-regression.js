@@ -139,6 +139,33 @@ test('gift dedupe: user + giftId (no createTime) is valid', () => {
     assert.ok(key, 'user + giftId should produce a key even without createTime');
 });
 
+test('room pin dedupe: same pinId is suppressed, new pinId passes', () => {
+    const manager = {
+        recentEventDedupes: new Map(),
+        nextEventDedupePruneAt: 0,
+        logDebug() {},
+        pruneRecentEventDedupes: ConnectionManager.prototype.pruneRecentEventDedupes,
+        shouldSuppressDuplicateEvent: ConnectionManager.prototype.shouldSuppressDuplicateEvent
+    };
+
+    const first = manager.shouldSuppressDuplicateEvent('room_pin', {
+        pinId: 'pin-1',
+        nickname: 'Host'
+    }, 'Pin updated by Host: hello');
+    const second = manager.shouldSuppressDuplicateEvent('room_pin', {
+        pinId: 'pin-1',
+        nickname: 'Host'
+    }, 'Pin updated by Host: hello');
+    const third = manager.shouldSuppressDuplicateEvent('room_pin', {
+        pinId: 'pin-2',
+        nickname: 'Host'
+    }, 'Pin updated by Host: different');
+
+    assert.strictEqual(first, false, 'first pin event should pass');
+    assert.strictEqual(second, true, 'same pinId/message should be suppressed');
+    assert.strictEqual(third, false, 'different pinId should pass');
+});
+
 // ---------------------------------------------------------------------------
 // Replay seeding regression
 // ---------------------------------------------------------------------------
@@ -218,26 +245,111 @@ test('replay seeding: expired entry is refreshed by seeding logic', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Polling fallback handoff regression
+// ---------------------------------------------------------------------------
+
+test('polling fallback reset clears connector bootstrap state and saved cursor', () => {
+    const manager = {
+        connection: {
+            clientParams: { cursor: 'c1', internal_ext: 'ie1', room_id: 'r1' },
+            webClient: {
+                clientParams: { cursor: 'c2', internal_ext: 'ie2', room_id: 'r2' },
+                roomId: 'r2'
+            },
+            options: {
+                clientParams: { cursor: 'c3', internal_ext: 'ie3', room_id: 'r3' },
+                webClientParams: { cursor: 'c4', internal_ext: 'ie4', room_id: 'r4' },
+                wsClientParams: { cursor: 'c5', internal_ext: 'ie5', room_id: 'r5' }
+            },
+            roomId: 'r6'
+        },
+        resumeCursorState: { cursor: 'saved', internalExt: 'saved', roomId: 'r6' },
+        previousRoomId: 'r6'
+    };
+
+    ConnectionManager.prototype.resetConnectionBootstrapState.call(manager, {
+        clearRoomId: true,
+        clearResumeCursor: true
+    });
+
+    assert.strictEqual(manager.connection.clientParams.cursor, '');
+    assert.strictEqual(manager.connection.clientParams.internal_ext, '');
+    assert.strictEqual(manager.connection.clientParams.room_id, '');
+    assert.strictEqual(manager.connection.webClient.clientParams.cursor, '');
+    assert.strictEqual(manager.connection.webClient.clientParams.internal_ext, '');
+    assert.strictEqual(manager.connection.webClient.clientParams.room_id, '');
+    assert.strictEqual(manager.connection.webClient.roomId, '');
+    assert.strictEqual(manager.connection.options.clientParams.cursor, '');
+    assert.strictEqual(manager.connection.options.clientParams.internal_ext, '');
+    assert.strictEqual(manager.connection.options.clientParams.room_id, '');
+    assert.strictEqual(manager.connection.options.webClientParams.cursor, '');
+    assert.strictEqual(manager.connection.options.webClientParams.internal_ext, '');
+    assert.strictEqual(manager.connection.options.webClientParams.room_id, '');
+    assert.strictEqual(manager.connection.options.wsClientParams.cursor, '');
+    assert.strictEqual(manager.connection.options.wsClientParams.internal_ext, '');
+    assert.strictEqual(manager.connection.options.wsClientParams.room_id, '');
+    assert.strictEqual(manager.connection.roomId, '');
+    assert.strictEqual(manager.resumeCursorState, null);
+    assert.strictEqual(manager.previousRoomId, null);
+});
+
+test('polling fallback handoff uses cooldown before legacy init', () => {
+    const fs = require('fs');
+    const src = fs.readFileSync(
+        require.resolve('../../tiktok/connection-manager.js'),
+        'utf8'
+    );
+
+    assert.ok(
+        src.includes('POLLING_FALLBACK_HANDOFF_DELAY_MS'),
+        'connection config should define a polling fallback handoff delay'
+    );
+    assert.ok(
+        /await this\.waitForPollingFallbackHandoff\(stage\);[\s\S]{0,300}this\.initializeConnectionInstance\(\{ forceLegacy: true, context: 'legacy_fallback' \}\);/.test(src),
+        'polling fallback should wait briefly before initializing the legacy connector'
+    );
+    assert.ok(
+        /await this\.waitForPollingFallbackHandoff\('websocket_strike'\);/.test(src),
+        'websocket strike fallback should also wait before legacy init'
+    );
+});
+
+test('legacy-mode connect clears transient connector cursor before connect', () => {
+    const fs = require('fs');
+    const src = fs.readFileSync(
+        require.resolve('../../tiktok/connection-manager.js'),
+        'utf8'
+    );
+    assert.ok(
+        /if \(this\.pollingFallbackActivated \|\| this\.preferredStrategy === 'legacy' \|\| this\.connectionStrategy === 'legacy'\) \{\s*this\.resetConnectionBootstrapState\(\);\s*\}[\s\S]{0,120}await activeConnection\.connect\(\);/.test(src),
+        'legacy-mode connect should clear transient cursor/internal_ext before connecting'
+    );
+});
+
+// ---------------------------------------------------------------------------
 // Quiet-room liveness regression
 // ---------------------------------------------------------------------------
 
 test('quiet-room: websocketData handler updates lastMessageTime', () => {
     // We verify the code pattern rather than the full wiring, because
     // instantiating a real ConnectionManager requires a live TikTok session.
-    // The actual handler at connection-manager.js:5163 is:
-    //   this.connection.on('websocketData', (buffer) => {
-    //       this.lastMessageTime = Date.now();
-    //       ...
-    // This test confirms the source file contains that line.
+    // The websocketData handler now routes through noteConnectionActivity(),
+    // which updates lastMessageTime and also cancels any pending false-positive
+    // stream-end timer.
     const fs = require('fs');
     const src = fs.readFileSync(
         require.resolve('../../tiktok/connection-manager.js'),
         'utf8'
     );
     const wsDataHandler = src.match(
-        /\.on\('websocketData'[\s\S]{0,400}this\.lastMessageTime\s*=\s*Date\.now\(\)/
+        /\.on\('websocketData'[\s\S]{0,400}this\.noteConnectionActivity\('websocketData'\)/
     );
-    assert.ok(wsDataHandler, 'websocketData handler should update lastMessageTime');
+    assert.ok(wsDataHandler, 'websocketData handler should note connection activity');
+
+    const noteActivityMethod = src.match(
+        /noteConnectionActivity\(source = 'activity'\)\s*\{[\s\S]{0,220}this\.lastMessageTime\s*=\s*Date\.now\(\)/
+    );
+    assert.ok(noteActivityMethod, 'noteConnectionActivity should update lastMessageTime');
 
     // Also verify handleConnect sets lastMessageTime before startHealthCheck.
     // The method body is ~600 chars to the assignment, so we search in two steps.

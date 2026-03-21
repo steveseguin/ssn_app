@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { EventEmitter } = require('events');
 const { createTikTokEnvironment, __test } = require('../../tiktok/connection-manager.js');
 
@@ -30,6 +32,15 @@ function createRateLimitError(options = {}) {
 	if (source) {
 		error.source = source;
 	}
+	return error;
+}
+
+function createUserNotFoundLookupError() {
+	const error = new Error();
+	error.errors = [
+		new TypeError("Cannot read properties of undefined (reading 'liveRoomUserInfo')"),
+		Object.assign(new Error('API Error 19881007 (user_not_found)'), { name: 'InvalidResponseError' })
+	];
 	return error;
 }
 
@@ -356,6 +367,60 @@ async function testAutoExhaustionSurfacesFailureMessage() {
 	assert.strictEqual(plan.reconnects[0].immediate, true);
 }
 
+async function testBlankRoomLookupErrorsBecomeUsefulMessages() {
+	const { manager } = createHarness({}, {
+		allowProxy: false,
+		localSignerEnabled: false
+	});
+
+	const lookupError = createUserNotFoundLookupError();
+
+	const message = manager.getUserFriendlyErrorMessage(lookupError, '');
+	assert.strictEqual(message, 'TikTok user not found. Check the username and try again.');
+}
+
+async function testUserNotFoundStopsWithoutReconnectSpam() {
+	const { manager, plan } = createHarness({
+		auto: [{ error: createUserNotFoundLookupError() }]
+	}, {
+		allowProxy: false,
+		localSignerEnabled: false
+	});
+
+	const result = await manager.initialize();
+
+	assert.strictEqual(result, false);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto']);
+	assert.strictEqual(plan.reconnects.length, 0);
+	assert.strictEqual(countStatuses(plan, entry => entry.status === 'failed'), 0);
+
+	const fatal = getLastStatus(plan, 'fatal_error');
+	assert(fatal, 'expected a fatal_error status');
+	assert.strictEqual(fatal.error, 'TikTok user not found. Check the username and try again.');
+}
+
+async function testUiDoesNotAutoFallbackAfterFatalUserNotFound() {
+	const indexPath = path.join(__dirname, '..', '..', 'index.html');
+	const src = fs.readFileSync(indexPath, 'utf8');
+
+	assert.ok(
+		src.includes('function shouldSuppressTikTokUiAutoFallback'),
+		'expected renderer-side fatal fallback guard helper'
+	);
+	assert.ok(
+		src.includes("failureStatus === 'fatal_error'"),
+		'expected fatal_error-specific suppression logic'
+	);
+	assert.ok(
+		src.includes('normalizedMessage.includes(\'tiktok user not found\')'),
+		'expected fatal user-not-found suppression rule'
+	);
+	assert.ok(
+		src.includes("if (!shouldSuppressTikTokUiAutoFallback('fatal_error', data.error || null))"),
+		'expected fatal_error auto fallback call to be guarded'
+	);
+}
+
 async function testConnectRehydratesMissingConnectionInstance() {
 	const { manager, plan } = createHarness({
 		auto: [{ ok: true }]
@@ -429,6 +494,18 @@ async function run() {
 		{
 			name: 'auto exhaustion surfaces a failed status message',
 			fn: testAutoExhaustionSurfacesFailureMessage
+		},
+		{
+			name: 'blank room lookup errors become useful messages',
+			fn: testBlankRoomLookupErrorsBecomeUsefulMessages
+		},
+		{
+			name: 'user not found stops without reconnect spam',
+			fn: testUserNotFoundStopsWithoutReconnectSpam
+		},
+		{
+			name: 'ui does not auto fallback after fatal user not found',
+			fn: testUiDoesNotAutoFallbackAfterFatalUserNotFound
 		},
 		{
 			name: 'connect rehydrates a missing connection instance',

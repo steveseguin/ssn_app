@@ -5474,6 +5474,24 @@
 
         const TIKTOK_AUTO_FALLBACK_DELAY_MS = 2000;
 
+        function shouldSuppressTikTokUiAutoFallback(failureStatus, errorMessage = null) {
+            const normalizedMessage = typeof errorMessage === 'string'
+                ? errorMessage.toLowerCase()
+                : '';
+
+            if (!normalizedMessage) {
+                return false;
+            }
+
+            if (failureStatus === 'fatal_error') {
+                return normalizedMessage.includes('tiktok user not found')
+                    || normalizedMessage.includes("user doesn't exist")
+                    || normalizedMessage.includes('check the username');
+            }
+
+            return false;
+        }
+
         function autoFallbackToNextTikTokMode(sourceId, failureStatus, errorMessage = null) {
             if (!sourceId) return;
             const source = stateManager.getSource(sourceId);
@@ -9164,7 +9182,7 @@
                                     const toastMessage = guide ? `${errorMessage} Visit ${guide} for setup steps.` : errorMessage;
                                     Toast.warning('TikTok Signing', toastMessage);
                                 }
-                                if (shouldAdvanceToNextMode) {
+                                if (shouldAdvanceToNextMode && !shouldSuppressTikTokUiAutoFallback('failed', errorMessage || null)) {
                                     if (entryElement && entryElement._tiktokFallback) {
                                         entryElement._tiktokFallback.pendingAutoRetry = false;
                                         entryElement._tiktokFallback.lastFailureStatus = 'failed';
@@ -9210,7 +9228,9 @@
                                 }
                             }
                             restoreActivateUI();
-                            autoFallbackToNextTikTokMode(sourceId, 'fatal_error', data.error || null);
+                            if (!shouldSuppressTikTokUiAutoFallback('fatal_error', data.error || null)) {
+                                autoFallbackToNextTikTokMode(sourceId, 'fatal_error', data.error || null);
+                            }
                             break;
                         case 'fallback_polling':
                             stateManager.updateSource(sourceId, {

@@ -1205,6 +1205,7 @@ const TIKTOK_EVENT_TYPE_ALIASES = Object.freeze({
 const TIKTOK_EVENT_DEDUPE_WINDOWS_MS = Object.freeze({
     followed: 3000,
     shared: 3000,
+    room_pin: 60 * 1000,
     chat: 60 * 60 * 1000,
     gift: 60 * 60 * 1000
 });
@@ -1249,6 +1250,7 @@ function buildTikTokEventDedupeKey(eventType, data = {}, message = null) {
         data?.eventId,
         data?.messageId,
         data?.msgId,
+        data?.pinId,
         data?.idStr,
         data?.id,
         data?.timestamp,
@@ -2124,6 +2126,13 @@ const CONFIG = {
         SIGN_REQUEST_TIMEOUT_MAX_MS: 45000,
         // Small pause before immediately retrying after a boosted timeout
         SIGN_REQUEST_IMMEDIATE_RETRY_DELAY_MS: 750,
+        // Give TikTok/Euler a brief cooldown before switching a live websocket
+        // session into compatibility mode on the same manager.
+        POLLING_FALLBACK_HANDOFF_DELAY_MS: 5000,
+        // A few rooms emit a transient stream-end control message before
+        // the final disconnect. Delay confirmation so AUTO does not bail out
+        // while chat traffic is still flowing.
+        STREAM_END_CONFIRM_DELAY_MS: 5000,
         // Detect connections that are accepted then immediately killed by TikTok
         RAPID_DISCONNECT_THRESHOLD_MS: 60000, // Connection lasting < 60s counts as rapid
         RAPID_DISCONNECT_STRIKE_LIMIT: 3      // After 3 rapid disconnects, try fallback
@@ -2205,6 +2214,9 @@ function cleanupConnection(wssID) {
             if (manager.reconnectTimer) {
                 clearTimeout(manager.reconnectTimer);
                 manager.reconnectTimer = null;
+            }
+            if (typeof manager.clearPendingStreamEndConfirmation === 'function') {
+                manager.clearPendingStreamEndConfirmation('cleanupConnection');
             }
             if (manager.activityBuckets instanceof Map) {
                 manager.activityBuckets.clear();
@@ -3476,6 +3488,12 @@ class ConnectionManager {
         this.previousRoomId = null;
         this.replayActive = false;
         this.replayActive = false;
+        this.pendingStreamEndTimer = null;
+        this.pendingStreamEndReason = null;
+        this.streamEndConfirmDelayMs = Number(CONFIG.CONNECTION.STREAM_END_CONFIRM_DELAY_MS) || 5000;
+        if (!Number.isFinite(this.streamEndConfirmDelayMs) || this.streamEndConfirmDelayMs < 0) {
+            this.streamEndConfirmDelayMs = 5000;
+        }
         this.signerHelper = env.signerHelper || null;
         this.websocketFailureCount = 0;
         this.WEBSOCKET_FAILURE_THRESHOLD = 3;
@@ -4376,10 +4394,128 @@ class ConnectionManager {
         });
     }
 
+    resetConnectionBootstrapState({ clearRoomId = false, clearResumeCursor = false } = {}) {
+        const clearParams = (params) => {
+            if (!params || typeof params !== 'object') {
+                return;
+            }
+            params.cursor = '';
+            params.internal_ext = '';
+            if (clearRoomId) {
+                params.room_id = '';
+            }
+        };
+
+        if (clearResumeCursor) {
+            this.resumeCursorState = null;
+            if (clearRoomId) {
+                this.previousRoomId = null;
+            }
+        }
+
+        const connection = this.connection;
+        if (!connection) {
+            return;
+        }
+
+        try {
+            clearParams(connection.clientParams);
+        } catch (_) { /* noop */ }
+
+        try {
+            if (connection.webClient) {
+                clearParams(connection.webClient.clientParams);
+                if (clearRoomId) {
+                    connection.webClient.roomId = '';
+                }
+            }
+        } catch (_) { /* noop */ }
+
+        try {
+            if (connection.options && typeof connection.options === 'object') {
+                clearParams(connection.options.clientParams);
+                clearParams(connection.options.webClientParams);
+                clearParams(connection.options.wsClientParams);
+            }
+        } catch (_) { /* noop */ }
+
+        try {
+            if (clearRoomId && Object.prototype.hasOwnProperty.call(connection, 'roomId')) {
+                connection.roomId = '';
+            }
+        } catch (_) { /* noop */ }
+    }
+
+    async waitForPollingFallbackHandoff(stage = 'connect') {
+        const delayMs = Number(CONFIG.CONNECTION.POLLING_FALLBACK_HANDOFF_DELAY_MS) || 0;
+        if (!Number.isFinite(delayMs) || delayMs <= 0) {
+            return;
+        }
+        this.logDebug('lifecycle.fallback.polling.cooldown', {
+            stage,
+            delayMs
+        });
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    clearPendingStreamEndConfirmation(reason = null) {
+        if (this.pendingStreamEndTimer) {
+            clearTimeout(this.pendingStreamEndTimer);
+            this.pendingStreamEndTimer = null;
+            this.logDebug('control.streamEnd.cancelled', {
+                reason: reason || this.pendingStreamEndReason || null
+            });
+        }
+        this.pendingStreamEndReason = null;
+    }
+
+    noteConnectionActivity(source = 'activity') {
+        this.lastMessageTime = Date.now();
+        if (this.pendingStreamEndTimer) {
+            this.clearPendingStreamEndConfirmation(`activity:${source}`);
+        }
+    }
+
+    scheduleStreamEndConfirmation(reason = 'stream_end_signal') {
+        if (this.isStopped) {
+            return;
+        }
+
+        this.clearPendingStreamEndConfirmation('reschedule');
+        const delayMs = Number(this.streamEndConfirmDelayMs) || 0;
+        if (!Number.isFinite(delayMs) || delayMs <= 0) {
+            this.handleStreamEnd();
+            return;
+        }
+
+        this.pendingStreamEndReason = reason;
+        this.logDebug('control.streamEnd.pending', {
+            reason,
+            delayMs
+        });
+
+        this.pendingStreamEndTimer = setTimeout(() => {
+            this.pendingStreamEndTimer = null;
+            this.pendingStreamEndReason = null;
+            if (this.isStopped) {
+                return;
+            }
+            this.handleStreamEnd();
+        }, delayMs);
+    }
+
+    enterOfflineRetryMode(reason = 'Live stream has ended') {
+        this.offlineRetryCount = 0;
+        this.offlineRetry = true;
+        this.offlineReason = this.buildOfflineReason(reason);
+        this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
+    }
+
     async teardownConnection({ silent = false } = {}) {
         this.directChatRoute = null;
         this.directChatRouteClient = null;
         this.pendingRoomIdPromise = null;
+        this.clearPendingStreamEndConfirmation('teardown');
         if (!this.connection) {
             return;
         }
@@ -4489,8 +4625,11 @@ class ConnectionManager {
         });
         console.warn(`[TikTok] Legacy fallback activated (${stage}) for ${this.username}: ${fallbackMessage}`);
         this.preferredStrategy = 'legacy';
+        this.connectionStrategy = 'legacy';
         try {
+            this.resetConnectionBootstrapState({ clearRoomId: true, clearResumeCursor: true });
             await this.teardownConnection({ silent: true });
+            await this.waitForPollingFallbackHandoff(stage);
         } catch (error) {
             this.logDebug('lifecycle.fallback.polling.teardownError', normalizeForLogging(error));
         }
@@ -5199,7 +5338,10 @@ class ConnectionManager {
         console.error('Fatal connection error:', error);
         this.isStopped = true;
 
-        let errorMessage = 'Connection failed';
+        let errorMessage = this.getUserFriendlyErrorMessage(
+            error,
+            error instanceof Error ? error.message : (error && error.message ? error.message : '')
+        );
 
         // Handle specific error types
         if (error instanceof Error) {
@@ -5207,7 +5349,7 @@ class ConnectionManager {
                 errorMessage = 'Live stream has ended';
             } else if (error.name === 'AlreadyConnectingError') {
                 errorMessage = 'Connection already in progress';
-            } else {
+            } else if (!errorMessage || errorMessage === 'Connection failed') {
                 errorMessage = error.message;
             }
         }
@@ -5236,7 +5378,7 @@ class ConnectionManager {
             // Any raw websocket traffic proves the connection is alive.
             // Without this, quiet rooms with only heartbeat traffic look
             // "stale" to the health check and trigger unnecessary reconnects.
-            this.lastMessageTime = Date.now();
+            this.noteConnectionActivity('websocketData');
             let preview = null;
             let length = null;
             try {
@@ -5265,7 +5407,7 @@ class ConnectionManager {
             });
         });
         this.connection.on('decodedData', (messageType, decodedData, rawPayload) => {
-            this.lastMessageTime = Date.now();
+            this.noteConnectionActivity(`decodedData:${messageType}`);
             const suppressed = suppressedDecodedLogTypes.has(messageType);
             const logEntry = {
                 messageType
@@ -5305,7 +5447,7 @@ class ConnectionManager {
         });
         this.connection.on('streamEnd', () => {
             this.logDebug('control.streamEnd');
-            this.handleStreamEnd();
+            this.scheduleStreamEndConfirmation('stream_end_signal');
         });
         this.connection.on('chat', (data) => {
             this.logDebug('event.chat', data);
@@ -6031,6 +6173,7 @@ class ConnectionManager {
             console.warn(`[TikTok] Websocket failure threshold reached (${this.websocketFailureCount}), forcing Polling Fallback.`);
             this.pollingFallbackActivated = true;
             this.preferredStrategy = 'legacy';
+            this.connectionStrategy = 'legacy';
             this.websocketFailureCount = 0;
 
             // Notify UI of the fallback
@@ -6044,7 +6187,9 @@ class ConnectionManager {
 
             // Tear down websocket connector and reinitialize with legacy
             try {
+                this.resetConnectionBootstrapState({ clearRoomId: true, clearResumeCursor: true });
                 await this.teardownConnection({ silent: true });
+                await this.waitForPollingFallbackHandoff('websocket_strike');
             } catch (teardownErr) {
                 console.warn('Failed to teardown websocket before fallback:', teardownErr);
             }
@@ -6098,6 +6243,10 @@ class ConnectionManager {
                     const unavailableError = new Error('TikTok connection instance unavailable after fallback transition.');
                     unavailableError.code = 'SSAPP_TIKTOK_CONNECTION_UNAVAILABLE';
                     throw unavailableError;
+                }
+
+                if (this.pollingFallbackActivated || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy') {
+                    this.resetConnectionBootstrapState();
                 }
 
                 await activeConnection.connect();
@@ -6231,10 +6380,7 @@ class ConnectionManager {
                     offline: isOffline
                 });
 
-	                const isLikelyFatal = errorMessage && (
-	                    errorMessage.includes("User doesn't exist") ||
-	                    errorMessage.includes('Failed to retrieve room_id')
-	                );
+	                const isLikelyFatal = this.isFatalLookupError(primaryError, errorMessage, userFacingMessage);
 	                if (!isRateLimited && (this.tiktokRateLimitCount || 0) > 0) {
 	                    this.tiktokRateLimitCount = 0;
 	                    this.tiktokRateLimitLastAt = 0;
@@ -6728,8 +6874,58 @@ class ConnectionManager {
             || combined.includes('empty cookies');
     }
 
+    collectNestedErrorMessages(primaryError, depth = 0, seen = new Set(), messages = []) {
+        if (!primaryError || typeof primaryError !== 'object' || depth > 3 || seen.has(primaryError)) {
+            return messages;
+        }
+        seen.add(primaryError);
+
+        for (const candidate of [primaryError.message, primaryError.info, primaryError.reason]) {
+            if (typeof candidate === 'string' && candidate.trim().length) {
+                messages.push(candidate.trim());
+            }
+        }
+
+        if (Array.isArray(primaryError.errors)) {
+            for (const nestedError of primaryError.errors) {
+                this.collectNestedErrorMessages(nestedError, depth + 1, seen, messages);
+            }
+        }
+
+        return messages;
+    }
+
+    deriveNestedUserFriendlyErrorMessage(primaryError) {
+        const nestedMessages = this.collectNestedErrorMessages(primaryError);
+        if (!nestedMessages.length) {
+            return '';
+        }
+
+        const combined = nestedMessages.join('\n').toLowerCase();
+        if (combined.includes('user_not_found') || combined.includes("user doesn't exist")) {
+            return 'TikTok user not found. Check the username and try again.';
+        }
+
+        if (combined.includes("isn't online") || combined.includes('not currently live') || combined.includes('stream ended')) {
+            return 'The requested user is not live right now.';
+        }
+
+        if (combined.includes('failed to retrieve room id') ||
+            combined.includes('failed to extract room id') ||
+            combined.includes('liveroomuserinfo')) {
+            return 'Unable to resolve the TikTok room. The username may be wrong, the stream may be offline, or TikTok blocked the lookup.';
+        }
+
+        return nestedMessages[0];
+    }
+
     getUserFriendlyErrorMessage(primaryError, fallbackMessage = '') {
-        const candidates = [fallbackMessage, primaryError?.message, primaryError?.info];
+        const candidates = [
+            fallbackMessage,
+            primaryError?.message,
+            primaryError?.info,
+            this.deriveNestedUserFriendlyErrorMessage(primaryError)
+        ];
         let message = '';
         for (const candidate of candidates) {
             if (typeof candidate === 'string' && candidate.trim().length) {
@@ -6784,6 +6980,30 @@ class ConnectionManager {
         return firstLine;
     }
 
+    isFatalLookupError(primaryError, rawMessage = '', userFacingMessage = '') {
+        const combined = [
+            rawMessage,
+            userFacingMessage,
+            primaryError?.message,
+            primaryError?.info,
+            primaryError?.reason,
+            this.deriveNestedUserFriendlyErrorMessage(primaryError)
+        ]
+            .filter(value => typeof value === 'string' && value.trim().length)
+            .join('\n')
+            .toLowerCase();
+
+        if (!combined) {
+            return false;
+        }
+
+        return combined.includes('user_not_found')
+            || combined.includes("user doesn't exist")
+            || combined.includes('tiktok user not found')
+            || combined.includes('failed to retrieve room_id')
+            || combined.includes('failed to retrieve room id');
+    }
+
     handleConnect() {
         const existingState = connectionStates.get(this.wssID);
         if (existingState?.isConnected && !existingState?.attemptInProgress) {
@@ -6801,6 +7021,7 @@ class ConnectionManager {
             isReconnecting: false,
             attemptInProgress: false
         });
+        this.clearPendingStreamEndConfirmation('connected');
         this.lastMessageTime = Date.now();
         this.startHealthCheck();
         this.startViewerUpdateInterval();
@@ -6906,8 +7127,9 @@ class ConnectionManager {
             }
 
             // For certain codes, don't auto-reconnect (no point)
-            const noReconnectCodes = [4401, 4403, 4404, 4005];
+            const noReconnectCodes = [4401, 4403];
             const shouldSkipReconnect = isEulerWs && code && noReconnectCodes.includes(code);
+            const shouldRetryAsOffline = isEulerWs && (code === 4404 || code === 4005);
             
             emitStatus({
                 wssID: this.wssID,
@@ -6916,7 +7138,13 @@ class ConnectionManager {
                 disconnectReason: codeLabel || null
             });
 
-            if (shouldSkipReconnect) {
+            if (shouldRetryAsOffline) {
+                const offlineMessage = code === 4404
+                    ? 'The requested user is not live right now.'
+                    : 'Live stream has ended';
+                console.info(`[EulerWS] ${offlineMessage} Scheduling offline retry.`);
+                this.enterOfflineRetryMode(offlineMessage);
+            } else if (shouldSkipReconnect) {
                 console.warn(`[EulerWS] Skipping auto-reconnect due to terminal close code ${code} (${codeLabel})`);
                 // Emit error so UI shows the issue
                 emitStatus({
@@ -7188,6 +7416,7 @@ class ConnectionManager {
 
     handleStreamEnd() {
         console.info('Stream ended');
+        this.clearPendingStreamEndConfirmation('confirmed');
         this.replayActive = false;
         this.resumeCursorState = null;
         this.previousRoomId = null;
@@ -7207,15 +7436,13 @@ class ConnectionManager {
         }
         // Treat stream end as offline and keep retrying periodically
         if (!this.isStopped) {
-            this.offlineRetryCount = 0;
-            this.offlineRetry = true;
-            this.offlineReason = this.buildOfflineReason('Live stream has ended');
-            this.attemptReconnect(CONFIG.CONNECTION.OFFLINE_RETRY_INTERVAL_MS, { fixed: true, offline: true });
+            this.enterOfflineRetryMode('Live stream has ended');
         }
     }
 
     disconnect() {
         this.isStopped = true;
+        this.clearPendingStreamEndConfirmation('disconnect');
         if (this.connection) {
             this.connection.disconnect();
             this.connection.removeAllListeners();

@@ -292,6 +292,57 @@ async function run() {
             'Counter should reset after triggering fallback');
     });
 
+    await test('Euler NOT_LIVE close enters offline retry instead of stopping AUTO', async function() {
+        var harness = createHarness({ auto: [{ ok: true }] }, { allowProxy: false, localSignerEnabled: false });
+        harness.manager.signingProvider = 'euler-ws';
+        harness.manager.buildOfflineReason = function(message) { return message; };
+
+        harness.manager.handleDisconnect({ code: 4404, codeLabel: 'NOT_LIVE' });
+
+        assert.strictEqual(harness.plan.reconnects.length, 1,
+            'expected one offline retry to be scheduled');
+        assert.strictEqual(harness.plan.reconnects[0].offline, true,
+            'offline retry should be flagged');
+        assert.strictEqual(harness.manager.offlineRetry, true,
+            'manager should enter offline retry mode');
+        assert.strictEqual(harness.manager.offlineReason, 'The requested user is not live right now.');
+    });
+
+    await test('pending streamEnd is cancelled by later traffic', async function() {
+        var harness = createHarness({ auto: [{ ok: true }] }, { allowProxy: false, localSignerEnabled: false });
+        harness.manager.buildOfflineReason = function(message) { return message; };
+        harness.manager.streamEndConfirmDelayMs = 15;
+        harness.manager.lastMessageTime = Date.now();
+
+        harness.manager.scheduleStreamEndConfirmation('unit_test');
+        setTimeout(function() {
+            harness.manager.noteConnectionActivity('unit_test_message');
+        }, 5);
+
+        await new Promise(function(resolve) { setTimeout(resolve, 40); });
+
+        assert.strictEqual(harness.plan.reconnects.length, 0,
+            'streamEnd should not trigger offline retry after traffic');
+        assert.strictEqual(harness.manager.offlineRetry, false,
+            'manager should remain active after cancelling streamEnd');
+    });
+
+    await test('streamEnd confirms after quiet period and enters offline retry', async function() {
+        var harness = createHarness({ auto: [{ ok: true }] }, { allowProxy: false, localSignerEnabled: false });
+        harness.manager.buildOfflineReason = function(message) { return message; };
+        harness.manager.streamEndConfirmDelayMs = 10;
+        harness.manager.lastMessageTime = Date.now();
+
+        harness.manager.scheduleStreamEndConfirmation('unit_test');
+        await new Promise(function(resolve) { setTimeout(resolve, 30); });
+
+        assert.strictEqual(harness.plan.reconnects.length, 1,
+            'quiet streamEnd should trigger offline retry');
+        assert.strictEqual(harness.plan.reconnects[0].offline, true,
+            'retry should be marked offline');
+        assert.strictEqual(harness.manager.offlineReason, 'Live stream has ended');
+    });
+
     await test('handleConnect sets lastConnectTimestamp', async function() {
         var harness = createHarness({}, { allowProxy: false, localSignerEnabled: false });
 
