@@ -34,13 +34,62 @@ function run() {
   assert.strictEqual(__test.resolveGiftMetricCount({ extendedGiftInfo: { repeat_count: 9 } }, 'repeat'), 9);
   assert.strictEqual(__test.resolveGiftAggregatedCount({ combo_count: 12 }), 12);
 
-  // contentimg should be reserved for explicit sticker/media payloads, not generic gift icons.
+  // resolveTikTokGiftContentImage is sticker/media only — generic icons are excluded.
   assert.strictEqual(
     __test.resolveTikTokGiftContentImage({
       giftDetails: { giftImage: { urlList: ['https://cdn.example.com/gift-icon.webp'] } }
     }),
     null,
-    'generic gift icon should not be treated as content image'
+    'generic gift icon should not be treated as sticker content image'
+  );
+
+  // resolveTikTokGiftDisplayImage falls back to generic icons when no sticker is present.
+  assert.strictEqual(
+    __test.resolveTikTokGiftDisplayImage(
+      {},
+      { iconUrl: 'https://cdn.example.com/gift-icon.webp' },
+      {},
+      {}
+    ),
+    'https://cdn.example.com/gift-icon.webp',
+    'display image should fall back to generic gift icon'
+  );
+  assert.strictEqual(
+    __test.resolveTikTokGiftDisplayImage(
+      { mTrayInfo: { mDynamicImg: { urlList: ['https://cdn.example.com/sticker.webp'] } } },
+      { iconUrl: 'https://cdn.example.com/gift-icon.webp' },
+      {},
+      {}
+    ),
+    'https://cdn.example.com/sticker.webp',
+    'display image should prefer sticker over generic icon when both present'
+  );
+  assert.strictEqual(
+    __test.resolveTikTokGiftDisplayImage({}, {}, {}, {}),
+    null,
+    'display image should return null when no images available'
+  );
+  // Object-shaped icon with internal uri must resolve to the public urlList entry,
+  // not the non-renderable webcast:// uri.
+  assert.strictEqual(
+    __test.resolveTikTokGiftDisplayImage(
+      {},
+      { giftPictureUrl: { uri: 'webcast://internal_only', urlList: ['https://cdn.example.com/gift-icon.webp'] } },
+      {},
+      {}
+    ),
+    'https://cdn.example.com/gift-icon.webp',
+    'display image should skip internal uri and use public urlList entry'
+  );
+  assert.strictEqual(
+    __test.resolveTikTokGiftDisplayImage(
+      {},
+      {},
+      { giftImage: { uri: 'webcast://internal_only', urlList: ['https://cdn.example.com/gift-icon.webp'] } },
+      {}
+    ),
+    'https://cdn.example.com/gift-icon.webp',
+    'giftImage with internal uri should still resolve to public URL'
   );
   assert.strictEqual(
     __test.resolveTikTokGiftContentImage({

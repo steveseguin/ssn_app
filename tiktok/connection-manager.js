@@ -1204,11 +1204,13 @@ const TIKTOK_EVENT_TYPE_ALIASES = Object.freeze({
 
 const TIKTOK_EVENT_DEDUPE_WINDOWS_MS = Object.freeze({
     followed: 3000,
-    shared: 3000
+    shared: 3000,
+    chat: 60 * 60 * 1000,
+    gift: 60 * 60 * 1000
 });
 
-const TIKTOK_EVENT_DEDUPE_MAX_ENTRIES = 2000;
-const TIKTOK_EVENT_DEDUPE_TRIM_TO = 1500;
+const TIKTOK_EVENT_DEDUPE_MAX_ENTRIES = 10000;
+const TIKTOK_EVENT_DEDUPE_TRIM_TO = 8000;
 
 function canonicalizeTikTokEventType(eventType) {
     const cleaned = cleanGenericString(eventType);
@@ -1277,6 +1279,78 @@ function buildTikTokEventDedupeKey(eventType, data = {}, message = null) {
     const detailKey = stableDetailKey || weakDetailKey;
 
     return `${eventType}|${String(userKey).toLowerCase()}|${String(detailKey).toLowerCase()}|${messageKey}`;
+}
+
+/**
+ * Chat-specific dedupe key.  Prefers the upstream msgId (unique per message),
+ * falls back to user + createTime + comment text.  Never dedupes on user alone.
+ */
+function buildChatDedupeKey(data) {
+    if (!data || typeof data !== 'object') return null;
+
+    const msgId = firstNonEmptyVisibleString([
+        data?.common?.msgId,
+        data?.msgId,
+        data?.msg_id,
+        data?.idStr
+    ]);
+    if (msgId) return `chat|${msgId}`;
+
+    const identity = extractTikTokIdentity(data);
+    const userId = firstNonEmptyVisibleString([
+        identity?.uniqueId,
+        data?.user?.uniqueId,
+        data?.user?.userId,
+        data?.userId
+    ]) || '';
+    const createTime = firstNonEmptyVisibleString([
+        data?.common?.createTime,
+        data?.createTime
+    ]) || '';
+    const comment = typeof data?.comment === 'string' ? data.comment.trim().toLowerCase() : '';
+
+    // Require userId AND at least one distinguishing detail to avoid
+    // collapsing different messages from the same user.
+    if (!userId || (!createTime && !comment)) return null;
+    return `chat|${userId}|${createTime}|${comment}`;
+}
+
+/**
+ * Gift-specific dedupe key.  Prefers the upstream msgId (unique per message),
+ * falls back to user + createTime + giftId + repeat/combo/group counts.
+ * Never dedupes on user alone.
+ */
+function buildGiftDedupeKey(data) {
+    if (!data || typeof data !== 'object') return null;
+
+    const msgId = firstNonEmptyVisibleString([
+        data?.common?.msgId,
+        data?.msgId,
+        data?.msg_id,
+        data?.idStr
+    ]);
+    if (msgId) return `gift|${msgId}`;
+
+    const identity = extractTikTokIdentity(data);
+    const userId = firstNonEmptyVisibleString([
+        identity?.uniqueId,
+        data?.user?.uniqueId,
+        data?.user?.userId,
+        data?.userId
+    ]) || '';
+    const createTime = firstNonEmptyVisibleString([
+        data?.common?.createTime,
+        data?.createTime
+    ]) || '';
+    const giftId = resolveGiftId(data) || '';
+    const repeatCount = resolveGiftMetricCount(data, 'repeat') || 0;
+    const comboCount = resolveGiftMetricCount(data, 'combo') || 0;
+    const groupCount = resolveGiftMetricCount(data, 'group') || 0;
+
+    // Require userId AND at least one distinguishing detail to avoid
+    // collapsing different gifts from the same user.
+    if (!userId || (!createTime && !giftId)) return null;
+    return `gift|${userId}|${createTime}|${giftId}|${repeatCount}|${comboCount}|${groupCount}`;
 }
 
 
@@ -1893,6 +1967,12 @@ function composeTikTokChatMessage(data = {}, options = {}) {
         textonlymode: textOnly
     };
 
+    // Preserve upstream ids/timestamps for downstream dedupe and debugging
+    const upstreamMsgId = data?.common?.msgId || data?.msgId || data?.msg_id;
+    if (upstreamMsgId) message.msgId = String(upstreamMsgId);
+    const upstreamCreateTime = data?.common?.createTime || data?.createTime;
+    if (upstreamCreateTime) message.createTime = String(upstreamCreateTime);
+
     const badgeSources = collectTikTokBadges(data);
     if (badgeSources.length) {
         const badges = [];
@@ -2488,6 +2568,36 @@ function resolveTikTokGiftContentImage(data = {}, giftData = {}, giftDetails = {
     return null;
 }
 
+/**
+ * Resolve a display image for a gift.  Prefers sticker/media-style images
+ * (the existing resolveTikTokGiftContentImage path), then falls back to the
+ * generic gift icon fields (giftPictureUrl, iconUrl, pictureUrl, etc.) that
+ * were previously commented out.
+ */
+function resolveTikTokGiftDisplayImage(data = {}, giftData = {}, giftDetails = {}, extendedGiftInfo = {}) {
+    // 1. Sticker / media / asset images (preferred for rich gifts)
+    const stickerImage = resolveTikTokGiftContentImage(data, giftData, giftDetails, extendedGiftInfo);
+    if (stickerImage) return stickerImage;
+
+    // 2. Generic gift icon fields
+    const iconCandidates = [
+        data.giftPictureUrl,
+        giftData.giftPictureUrl,
+        giftData.iconUrl,
+        giftData.icon_url,
+        giftData.pictureUrl,
+        giftData.picture_url,
+        giftData.imageUrl,
+        giftData.image_url,
+        giftData.image,
+        giftDetails.icon,
+        giftDetails.giftImage,
+        extendedGiftInfo.icon,
+        extendedGiftInfo.image
+    ];
+    return resolveFirstRenderableImageUrl(iconCandidates);
+}
+
 function resolveGiftMetricCount(data = {}, metric = 'repeat') {
     const camel = `${metric}Count`;
     const snake = `${metric}_count`;
@@ -2703,7 +2813,10 @@ class MessageProcessor {
 
     addToQueue(data) {
 
-        if (this.manager?.isReplayActive && this.manager.isReplayActive()) {
+        // Dedupe: drop chat messages already seen (replay history is seeded
+        // upstream in handleProtoFetch so reconnect overlaps are caught here
+        // without blanket-dropping live traffic during the replay window).
+        if (this.manager?.shouldSuppressDuplicateEvent && this.manager.shouldSuppressDuplicateEvent('chat', data)) {
             return;
         }
 
@@ -3018,7 +3131,10 @@ class GiftProcessor {
             return;
         }
 
-        if (this.manager?.isReplayActive && this.manager.isReplayActive()) {
+        // Dedupe: drop gifts already seen (replay history is seeded upstream
+        // in handleProtoFetch so reconnect overlaps are caught here without
+        // blanket-dropping live traffic during the replay window).
+        if (this.manager?.shouldSuppressDuplicateEvent && this.manager.shouldSuppressDuplicateEvent('gift', data)) {
             return;
         }
 
@@ -3187,22 +3303,6 @@ class GiftProcessor {
         const hiddenFromTray = isGiftHiddenFromTray(data, interactiveGiftIgnoreConfig);
         const outgoingEventType = hiddenFromTray ? 'reaction' : 'gift';
 
-        // const giftPictureUrl = resolveFirstImageUrl([
-        //     data.giftPictureUrl,
-        //     giftData.giftPictureUrl,
-        //     giftData.iconUrl,
-        //     giftData.icon_url,
-        //     giftData.pictureUrl,
-        //     giftData.picture_url,
-        //     giftData.imageUrl,
-        //     giftData.image_url,
-        //     giftData.image,
-        //     giftDetails.icon,
-        //     giftDetails.giftImage,
-        //     extendedGiftInfo.icon,
-        //     extendedGiftInfo.image
-        // ]);
-
         const identity = extractTikTokIdentity(data);
         const resolvedUserId = resolveTikTokUserId(data, identity);
         const resolvedChatname = resolveTikTokDisplayName(data, identity, resolvedUserId);
@@ -3210,7 +3310,7 @@ class GiftProcessor {
         const textOnly = explicitTextOnly || isTextOnlyModeEnabled();
         const contentImage = textOnly
             ? null
-            : resolveTikTokGiftContentImage(data, giftData, giftDetails, extendedGiftInfo);
+            : resolveTikTokGiftDisplayImage(data, giftData, giftDetails, extendedGiftInfo);
 
         let chatmessage = `Sent ${giftName} x${count}`;
 
@@ -3233,6 +3333,12 @@ class GiftProcessor {
             title: giftName
         };
 
+        // Preserve upstream ids/timestamps for downstream dedupe and debugging
+        const upstreamMsgId = data?.common?.msgId || data?.msgId || data?.msg_id;
+        if (upstreamMsgId) msg.msgId = String(upstreamMsgId);
+        const upstreamCreateTime = data?.common?.createTime || data?.createTime;
+        if (upstreamCreateTime) msg.createTime = String(upstreamCreateTime);
+
         if (resolvedUserId) {
             msg.userid = resolvedUserId;
         }
@@ -3244,10 +3350,6 @@ class GiftProcessor {
             msg.subtitle = donationDisplay;
             msg.donoValue = totalDiamonds * 0.005;
         }
-        // Suppress large art for standard gift notifications; legacy overlays already
-        // render the gift name/diamond value via text. If TikTok surfaces paid sticker
-        // gifts distinctly in the future, we can re-enable artwork selectively.
-
         const fanTicketCount = pickFirstPositiveNumber([
             data.fanTicketCount,
             giftDetails.fanTicketCount,
@@ -5131,6 +5233,10 @@ class ConnectionManager {
             this.connection.on('ssappProtoFetch', (result) => this.handleProtoFetch(result));
         }
         this.connection.on('websocketData', (buffer) => {
+            // Any raw websocket traffic proves the connection is alive.
+            // Without this, quiet rooms with only heartbeat traffic look
+            // "stale" to the health check and trigger unnecessary reconnects.
+            this.lastMessageTime = Date.now();
             let preview = null;
             let length = null;
             try {
@@ -5792,11 +5898,43 @@ class ConnectionManager {
             const isFirst = fetchResult.isFirst === true;
             const historyNoMore = fetchResult.historyNoMore === true;
 
-            if (isFirst) {
-                this.replayActive = true;
-            }
-            if (!isFirst || historyNoMore) {
-                this.replayActive = false;
+            // Seed the dedupe cache with chat/gift IDs from the initial history
+            // batch so that when the library emits these as individual events
+            // they are caught by normal dedupe instead of being forwarded twice.
+            // This replaces the old blanket-drop approach that also killed live
+            // traffic arriving during the replay window.
+            if (isFirst && Array.isArray(fetchResult.messages)) {
+                const now = Date.now();
+                const chatTtl = TIKTOK_EVENT_DEDUPE_WINDOWS_MS.chat || (60 * 60 * 1000);
+                const giftTtl = TIKTOK_EVENT_DEDUPE_WINDOWS_MS.gift || (60 * 60 * 1000);
+                let seeded = 0;
+                for (const msg of fetchResult.messages) {
+                    const decoded = msg?.decodedData?.data;
+                    if (!decoded) continue;
+                    const msgType = msg?.decodedData?.type || msg?.type;
+                    let key = null;
+                    let ttl = 0;
+                    if (msgType === 'WebcastChatMessage') {
+                        key = buildChatDedupeKey(decoded);
+                        ttl = chatTtl;
+                    } else if (msgType === 'WebcastGiftMessage') {
+                        key = buildGiftDedupeKey(decoded);
+                        ttl = giftTtl;
+                    }
+                    if (key) {
+                        const existing = this.recentEventDedupes.get(key);
+                        if (!existing || existing <= now) {
+                            this.recentEventDedupes.set(key, now + ttl);
+                            seeded++;
+                        }
+                    }
+                }
+                if (seeded > 0) {
+                    this.logDebug('replay.dedupe.seeded', { count: seeded });
+                }
+                if (this.recentEventDedupes.size > TIKTOK_EVENT_DEDUPE_MAX_ENTRIES) {
+                    this.pruneRecentEventDedupes(now, true);
+                }
             }
 
             if ((!isFirst || historyNoMore) && fetchResult.cursor && roomId) {
@@ -6663,6 +6801,7 @@ class ConnectionManager {
             isReconnecting: false,
             attemptInProgress: false
         });
+        this.lastMessageTime = Date.now();
         this.startHealthCheck();
         this.startViewerUpdateInterval();
         this.reconnectAttempts = 0;
@@ -6753,7 +6892,7 @@ class ConnectionManager {
             const shouldTryAutoFallback = this.autoEulerProxyFallbackActive && (code === 4401 || code === 4429);
             if (shouldTryAutoFallback) {
                 this.tryAutoFallbacksBeforePrompt(
-                    { message: codeLabel || reason || 'Euler proxy connection failed.' },
+                    { message: codeLabel || disconnectInfo?.reason || 'Euler proxy connection failed.' },
                     `disconnect_${code}_auto`
                 )
                     .then((handled) => {
@@ -7528,7 +7667,15 @@ class ConnectionManager {
             return false;
         }
 
-        const dedupeKey = buildTikTokEventDedupeKey(eventType, data, message);
+        // Use specialized key builders for chat/gift; generic for everything else
+        let dedupeKey;
+        if (eventType === 'chat') {
+            dedupeKey = buildChatDedupeKey(data);
+        } else if (eventType === 'gift') {
+            dedupeKey = buildGiftDedupeKey(data);
+        } else {
+            dedupeKey = buildTikTokEventDedupeKey(eventType, data, message);
+        }
         if (!dedupeKey) {
             return false;
         }
@@ -8465,10 +8612,15 @@ module.exports = {
 		normalizeTikTokEmoteEntries,
 		renderTikTokChatWithEmotes,
 		resolveTikTokGiftContentImage,
+		resolveTikTokGiftDisplayImage,
 		resolveGiftMetricCount,
 		resolveGiftAggregatedCount,
 		resolveGiftId,
         resolveGiftStreakIdentity,
-        GiftProcessor
+        GiftProcessor,
+        MessageProcessor,
+        ConnectionManager,
+        buildChatDedupeKey,
+        buildGiftDedupeKey
     }
 };
