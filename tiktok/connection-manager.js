@@ -14,6 +14,7 @@ const {
     getBadgeImageUrl
 } = require('../tiktok-badges');
 const giftMapping = require('./gift-mapping.json');
+const reporter = require('../error-reporter');
 
 let connectorDeserializeMessage = null;
 try {
@@ -7124,6 +7125,16 @@ class ConnectionManager {
             };
             if (guidance[code]) {
                 console.warn(`[EulerWS] ${guidance[code]}`);
+            }
+            // Report actionable/unexpected close codes (skip normal terminations)
+            const SKIP_CODES = new Set([1000, 4005, 4006, 4404, 4555]);
+            if (code && !SKIP_CODES.has(code)) {
+                reporter.report('tiktok_ws_close', `TikTok WebSocket closed: ${code} (${codeLabel})`, {
+                    code,
+                    codeLabel,
+                    reason: disconnectInfo?.reason || '',
+                    signingProvider: this.signingProvider,
+                });
             }
         }
 

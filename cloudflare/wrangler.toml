@@ -1,0 +1,11 @@
+name             = "ssapp-error-logger"
+main             = "src/index.js"
+compatibility_date = "2025-01-01"
+
+[triggers]
+crons = ["0 3 * * *"]   # runs daily at 03:00 UTC
+
+[[d1_databases]]
+binding       = "DB"
+database_name = "ssapp-logs"
+database_id   = "b912fd82-f198-401f-86bc-97f1bf9a6d8c"

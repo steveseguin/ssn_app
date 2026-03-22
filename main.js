@@ -77,6 +77,8 @@ const {
 
 const Store = require("electron-store");
 const store = new Store();
+const reporter = require('./error-reporter');
+reporter.init(store);
 const POPUP_UNCLICKABLE_ALL_KEY = 'popupUnclickableAll';
 let popupUnclickableEnabled = false;
 try {
@@ -2336,6 +2338,7 @@ if (!sessions[currentSessionName]) {
 
 process.on("uncaughtException", function (error) {
     console.error("Uncaught Exception:", error);
+    reporter.report('uncaught_exception', error);
     if (!isDevMode) {
         dialog.showErrorBox('Application Error',
             `An error occurred: ${error.message}\nPlease report this to support.`);
@@ -2344,6 +2347,7 @@ process.on("uncaughtException", function (error) {
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    reporter.report('unhandled_rejection', reason instanceof Error ? reason : new Error(String(reason)));
 });
 
 app.on('render-process-gone', (_event, webContents, details) => {
@@ -2715,6 +2719,7 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
                 };
             } catch (error) {
                 remoteError = error;
+                reporter.report('remote_load_error', error, { url: remoteUrl, branch, relativePath });
             }
         }
 
@@ -2771,6 +2776,7 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
         } else {
             reasons.push('No cached or bundled Social Stream script available.');
         }
+        reporter.report('remote_load_failed', reasons.join(' | '), { url: remoteUrl, branch, relativePath });
         throw new Error(reasons.join(' | '));
     })()
         .finally(() => {
@@ -14134,6 +14140,42 @@ function createMenu() {
             {
                 label: 'Command Line Arguments',
                 click: () => showCommandLineArguments()
+            },
+            { type: 'separator' },
+            {
+                label: 'Send error reports to developer',
+                type: 'checkbox',
+                checked: store.get('errorReportingEnabled', false),
+                async click(item) {
+                    if (!item.checked) {
+                        reporter.disable();
+                        return;
+                    }
+                    const { response } = await dialog.showMessageBox({
+                        type: 'info',
+                        buttons: ['Enable', 'Cancel'],
+                        defaultId: 0,
+                        cancelId: 1,
+                        title: 'Error Reporting',
+                        message: 'What will be sent to the developer?',
+                        detail:
+                            'When an error occurs, the following is sent automatically:\n\n' +
+                            '  • Error message and stack trace\n' +
+                            '  • App settings (startup flags, window state, language, etc.)\n' +
+                            '  • App version and a random install ID\n\n' +
+                            'OAuth tokens, session data, and backup credentials are never sent.\n\n' +
+                            'Where does it go?\n' +
+                            '  Cloudflare (ssapp-error-logger.vdo.workers.dev) — only the developer can access it.\n\n' +
+                            'How long is it kept?\n' +
+                            '  Reports are automatically deleted after 30 days.\n\n' +
+                            'You can turn this off at any time from the Help menu.'
+                    });
+                    if (response !== 0) {
+                        item.checked = false;
+                        return;
+                    }
+                    reporter.enable();
+                }
             },
             ],
         },
