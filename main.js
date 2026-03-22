@@ -7062,32 +7062,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 const text = typeof overlay.response === 'string' ? overlay.response.trim() : '';
                 if (!text) return false;
 
-                let handled = false;
-
-                const websocketTargets = Object.values(browserViews)
-                    .filter((view) => view && view.webContents)
-                    .filter((view) => {
-                        try {
-                            const url = view.args?.url || view.webContents.getURL();
-                            return typeof url === 'string' && url.includes('/sources/websocket/');
-                        } catch (_) {
-                            return false;
-                        }
-                    });
-
-                if (websocketTargets.length) {
-                    handled = true;
-                    for (const view of websocketTargets) {
-                        try {
-                            if (!view || !view.webContents || view.webContents.isDestroyed()) continue;
-                            view.webContents.send('sendToTab', {
-                                type: 'SEND_MESSAGE',
-                                message: text
-                            });
-                        } catch (_) {}
-                    }
-                }
-
                 const rawTargets = [];
                 if (Array.isArray(overlay.tid)) {
                     rawTargets.push(...overlay.tid);
@@ -7104,23 +7078,56 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     .filter((t) => t !== null);
 
                 const availableWssIds = Object.keys(websocketConnections).map((key) => Number(key)).filter((n) => Number.isFinite(n));
+                const availableWssIdSet = new Set(availableWssIds);
 
                 const targetWssIds = parsedTargets.length
-                    ? parsedTargets.map((t) => (t >= 900000 ? t - 900000 : t))
+                    // Only TikTok virtual tabs use the synthetic 900000+ IDs.
+                    ? parsedTargets
+                        .filter((t) => t >= 900000)
+                        .map((t) => t - 900000)
+                        .filter((t) => availableWssIdSet.has(t))
                     : availableWssIds;
 
                 if (!targetWssIds.length) {
-                    return handled;
+                    return false;
                 }
 
-                handled = true;
                 for (const wssId of targetWssIds) {
                     if (!Number.isFinite(wssId)) continue;
                     sendToTikTok({ wssID: wssId, message: text }).catch(() => {});
                 }
-                return handled;
+                return true;
             } catch (_) {
                 return false;
+            }
+        };
+
+        const normalizeDockResponseForBackground = (overlay = {}) => {
+            try {
+                if (!overlay || typeof overlay !== 'object') {
+                    return null;
+                }
+
+                if (overlay.tid === undefined || overlay.tid === null || overlay.tid === false) {
+                    return overlay;
+                }
+
+                const rawTargets = Array.isArray(overlay.tid) ? overlay.tid : [overlay.tid];
+                const browserTargets = rawTargets.filter((target) => {
+                    const numericTarget = typeof target === 'number' ? target : Number(target);
+                    return !Number.isFinite(numericTarget) || numericTarget < 900000;
+                });
+
+                if (!browserTargets.length) {
+                    return null;
+                }
+
+                return {
+                    ...overlay,
+                    tid: Array.isArray(overlay.tid) ? browserTargets : browserTargets[0]
+                };
+            } catch (_) {
+                return overlay;
             }
         };
 
@@ -7138,6 +7145,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
 
         let senderUrl = '';
+        let dockChatHandled = false;
+        let dockResponsePayload = undefined;
         try {
             senderUrl = eventRet.sender.getURL().toLowerCase();
             if (senderUrl.startsWith("https://socialstream.ninja/featured.html?") || senderUrl.startsWith("https://beta.socialstream.ninja/featured.html?") || (senderUrl.startsWith("file://") && senderUrl.includes("/featured.html?"))) {
@@ -7147,11 +7156,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (senderUrl.includes('/dock.html') || senderUrl.includes('/background.html')) {
                 const payload = args && args[0] ? args[0] : null;
                 if (payload && payload.overlayNinja && payload.overlayNinja.response !== undefined) {
-                    const handled = handleDockChatSend(payload.overlayNinja);
-                    if (handled) {
-                        eventRet.returnValue = { ok: true };
-                        return;
-                    }
+                    dockResponsePayload = normalizeDockResponseForBackground(payload.overlayNinja);
+                    dockChatHandled = handleDockChatSend(payload.overlayNinja);
                 }
             }
         } catch (e) { }
@@ -7260,13 +7266,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 sender.tab.url = eventRet.sender.getURL();
             }
 
-            mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (frame.url.split("?")[0].endsWith("background.html")) {
-                    frame.postMessage("fromMainSender", [args[0], {
-                        ...sender
-                    }]);
-                }
-            });
+            const backgroundPayload = dockResponsePayload !== undefined ? dockResponsePayload : args[0];
+            if (backgroundPayload !== null) {
+                mainWindow.webContents.mainFrame.frames.forEach((frame) => {
+                    if (frame.url.split("?")[0].endsWith("background.html")) {
+                        frame.postMessage("fromMainSender", [backgroundPayload, {
+                            ...sender
+                        }]);
+                    }
+                });
+            }
 
             // Return response with message ID for callbacks
             if (args[0] && args[0].message) {
@@ -7277,6 +7286,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     response.id = args[0].message.id;
                 }
                 eventRet.returnValue = response;
+                return;
+            }
+
+            if (dockChatHandled) {
+                eventRet.returnValue = { ok: true };
                 return;
             }
         }
@@ -10618,11 +10632,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
         const tabId = args.tab || args.tabID;
         const message = args.message || args;
 
-        // Debug log for TikTok chat messages
-        if (message && message.text && typeof message.text === 'string') {
-            console.log('[IPC Debug] sendToTab received potential chat message:', { tabId, text: message.text });
-        }
-
         const view = getActiveBrowserView(tabId);
         if (view && view.webContents) {
             try {
@@ -10633,7 +10642,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 eventRet.returnValue = false;
             }
         } else {
-            console.warn('[IPC Debug] sendToTab failed: view not found for tabId', tabId);
             eventRet.returnValue = false;
         }
     });
@@ -10661,6 +10669,85 @@ async function createWindow(args, reuse = false, mainApp = false) {
         });
         eventRet.returnValue = tabs;
     });
+
+    const pendingDebuggerInputByContents = new WeakMap();
+
+    function buildDebuggerKeyboardCommand(args) {
+        if (!args || !args.type) return null;
+        const command = {
+            type: args.type
+        };
+        const allowedKeys = [
+            "modifiers",
+            "text",
+            "unmodifiedText",
+            "key",
+            "code",
+            "windowsVirtualKeyCode",
+            "nativeVirtualKeyCode",
+            "autoRepeat",
+            "isKeypad",
+            "isSystemKey",
+            "location",
+            "commands"
+        ];
+        allowedKeys.forEach((key) => {
+            if (args[key] !== undefined) {
+                command[key] = args[key];
+            }
+        });
+        if ((args.type === "char") && (typeof args.text === "string") && args.text) {
+            command.text = args.text;
+            command.unmodifiedText = args.unmodifiedText !== undefined ? args.unmodifiedText : args.text;
+        }
+        if (!command.key && typeof args.key === "string" && args.key) {
+            command.key = args.key;
+        }
+        return command;
+    }
+
+    function queueDebuggerInput(webContents, task) {
+        const previousTask = pendingDebuggerInputByContents.get(webContents) || Promise.resolve();
+        const nextTask = previousTask
+            .catch(() => { })
+            .then(task);
+        pendingDebuggerInputByContents.set(webContents, nextTask.finally(() => {
+            if (pendingDebuggerInputByContents.get(webContents) === nextTask) {
+                pendingDebuggerInputByContents.delete(webContents);
+            }
+        }));
+        return nextTask;
+    }
+
+    const debuggerDetachTimers = new WeakMap();
+
+    function scheduleDebuggerDetach(webContents, delayMs = 3000) {
+        const existing = debuggerDetachTimers.get(webContents);
+        if (existing) clearTimeout(existing);
+        debuggerDetachTimers.set(webContents, setTimeout(() => {
+            debuggerDetachTimers.delete(webContents);
+            try {
+                if (webContents.debugger && webContents.debugger.isAttached()) {
+                    webContents.debugger.detach();
+                }
+            } catch (_) { }
+        }, delayMs));
+    }
+
+    function sendDebuggerKeyboardCommand(webContents, args) {
+        const command = buildDebuggerKeyboardCommand(args);
+        if (!command || !webContents?.debugger) {
+            return Promise.resolve(false);
+        }
+        return queueDebuggerInput(webContents, async () => {
+            if (!webContents.debugger.isAttached()) {
+                webContents.debugger.attach("1.3");
+            }
+            await webContents.debugger.sendCommand("Input.dispatchKeyEvent", command);
+            scheduleDebuggerDetach(webContents);
+            return true;
+        });
+    }
 
     ipcMain.on("sendInputToTab", function (eventRet, args) {
         log("sendInputToTab 1");
@@ -10729,25 +10816,41 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 log("Sent message to TikTok WebSocket");
                 eventRet.returnValue = true;
                 */
-            } else if (view && view.webContents && view.webContents.sendInputEvent) {
+            } else if (view && view.webContents && (view.webContents.sendInputEvent || view.webContents.insertText || view.webContents.debugger)) {
                 try {
-                    // 2025-11-24: Disabled to avoid stealing focus when relaying messages; re-enable if focus is required for input paths.
-                    // view.focus();
-                    if (args.key && args.type) {
-                        log("inputting: " + args.key);
-                        view.webContents.sendInputEvent({
-                            keyCode: args.key,
-                            type: args.type
-                        });
-                    } else if (args.text) {
-                        for (const char of [...args.text]) {
-                            log("Inputting: " + char);
-                            view.webContents.sendInputEvent({
-                                type: "char",
-                                keyCode: char
-                            });
+                    let method = null;
+                    const wc = view.webContents;
+
+                    // Route through webContents.debugger (CDP) —
+                    // same protocol the Chrome extension uses.
+                    // Produces isTrusted:true events via Chromium's backend.
+                    // Skip char \r — submit fires on keyDown, char \r
+                    // just inserts an unwanted newline afterward.
+                    if (args.type === "char" && args.text === "\r") {
+                        method = "skipped-char-cr";
+                    } else {
+                    const cdpPromise = queueDebuggerInput(wc, async () => {
+                        if (!wc.debugger.isAttached()) {
+                            wc.debugger.attach("1.3");
                         }
-                    }
+                        if (args.type) {
+                            const command = buildDebuggerKeyboardCommand(args);
+                            if (command) {
+                                await wc.debugger.sendCommand("Input.dispatchKeyEvent", command);
+                            }
+                        } else if (args.text) {
+                            await wc.debugger.sendCommand("Input.insertText", { text: args.text });
+                            // Give React time to process the onChange from
+                            // insertText before the next CDP command (Enter)
+                            await new Promise(r => setTimeout(r, 100));
+                        }
+                        scheduleDebuggerDetach(wc);
+                    });
+                    cdpPromise.catch((error) => {
+                        console.error("CDP command failed:", error);
+                    });
+                    method = args.type ? "cdp.dispatchKeyEvent" : "cdp.insertText";
+                    } // end skip char \r
                     log("ISSUED KEY EVENT");
                     eventRet.returnValue = true;
                 } catch (error) {

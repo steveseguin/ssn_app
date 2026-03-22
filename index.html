@@ -1497,11 +1497,18 @@
                 stopButton?.classList.add('hidden');
                 if (reloadButton) reloadButton.classList.add('hidden');
             } else if (source.status === 'active' && (source.vid || activeWssHandle)) {
-                activateButton?.classList.add('hidden');
+                const isTikTokApiMode = source.target === 'tiktok' && (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy');
+                if (isTikTokApiMode && activateButton) {
+                    activateButton.classList.remove('hidden');
+                    activateButton.textContent = '⏹️ Disconnect';
+                    activateButton.onclick = function () { stopThis(this); };
+                    delete activateButton.dataset.connecting;
+                } else {
+                    activateButton?.classList.add('hidden');
+                }
                 stopButton?.classList.remove('hidden');
 
                 // Hide reload button for TikTok websocket mode
-                const isTikTokApiMode = source.target === 'tiktok' && (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy');
                 if (reloadButton) {
                     reloadButton.classList.toggle('hidden', isTikTokApiMode || !source.vid);
                 }
@@ -3664,15 +3671,6 @@
                 }
             }
 
-            if (nextProvider === 'custom' && typeof showTikTokSignInMenu === 'function') {
-                setTimeout(() => {
-                    try {
-                        showTikTokSignInMenu(sourceId);
-                    } catch (err) {
-                        console.error('Failed to present TikTok signing modal for custom provider:', err);
-                    }
-                }, 0);
-            }
         }
 
         function setTikTokSigningProvider(entryElement, provider) {
@@ -3693,15 +3691,6 @@
                     }
                 }
                 console.log(`[TikTok] Signing provider for ${sourceId} set to: ${provider}`);
-                if (provider === 'custom' && typeof showTikTokSignInMenu === 'function') {
-                    setTimeout(() => {
-                        try {
-                            showTikTokSignInMenu(sourceId);
-                        } catch (err) {
-                            console.error('Failed to present TikTok signing modal for custom provider:', err);
-                        }
-                    }, 0);
-                }
             }
         }
 
@@ -4946,6 +4935,12 @@
             const target = source?.target;
 
             if (target === 'tiktok') {
+                const isTikTokApiMode = activeMode === 'tiktok-websocket' || activeMode === 'tiktok-legacy';
+                if (isTikTokApiMode && source && source.status === 'active') {
+                    activateButton.textContent = '⏹️ Disconnect';
+                    activateButton.onclick = function () { stopThis(this); };
+                    return;
+                }
                 if (activeMode === 'tiktok-websocket') {
                     activateButton.textContent = 'Connect TikTok WebSocket';
                 } else if (activeMode === 'tiktok-legacy') {
@@ -6760,12 +6755,12 @@
                     <div style="background: rgba(34, 197, 94, 0.1); border-left: 3px solid #22c55e; padding: 12px 16px; border-radius: 6px; margin-bottom: 20px;">
                         <h4 style="margin: 0 0 6px 0; color: #4ade80; font-size: 15px;">Auto Mode Active</h4>
                         <p style="margin: 0; font-size: 13px; color: #dcfce7;">
-                            Tries Euler signing, falls back to Polling if it fails. No configuration required.
-                            <span style="color: #fde68a;">Options below are for advanced users.</span>
+                            Tries Euler signing, falls back to Polling if it fails. Adding an API key can help avoid rate limits.
                         </p>
                     </div>
+                    ${apiInputsBlock}
                 `;
-                advancedContent = apiInputsBlock + localSignerBlock + manualAndDebugBlock;
+                advancedContent = localSignerBlock + manualAndDebugBlock;
 
             } else if (providerValue === 'local') {
                 headerTitle = 'TikTok Signing: Local Signer (Experimental)';
@@ -9247,7 +9242,22 @@
                                         updateConnectionStatus(entryElement, 'retry', msg);
                                         setConnectingStopUI();
                                     } else {
-                                        updateConnectionStatus(entryElement, 'error', errorMessage);
+                                        const isExhausted = errorMessage && /retries were exhausted/i.test(errorMessage);
+                                        const provider = currentState.tiktokSigningProvider || 'auto';
+                                        const showKeyPrompt = isExhausted
+                                            && !offlineExhausted
+                                            && (provider === 'auto' || provider === 'euler-ws')
+                                            && !currentState.tiktokSigningApiKey;
+                                        if (showKeyPrompt) {
+                                            const sid = sourceId.replace(/'/g, "\\'");
+                                            const keyMsg = 'Connection methods exhausted. '
+                                                + '<a href="#" onclick="window.open(\'https://www.eulerstream.com/dashboard\', \'_blank\'); return false;" style="color: #93c5fd; text-decoration: underline;">Get a free API key</a>'
+                                                + ' · '
+                                                + `<a href="#" onclick="showTikTokSignInMenu('${sid}'); return false;" style="color: #93c5fd; text-decoration: underline;">Enter key</a>`;
+                                            updateConnectionStatus(entryElement, 'error', keyMsg);
+                                        } else {
+                                            updateConnectionStatus(entryElement, 'error', errorMessage);
+                                        }
                                         restoreActivateUI();
                                     }
                                 }

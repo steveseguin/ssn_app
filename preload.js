@@ -598,10 +598,10 @@ function injectDockBridge() {
 							fromDock: true
 						});
 					} catch (_) {}
-					// For response messages (chat replies), Electron's handleDockChatSend
-					// already broadcasts to websocket sources. Only call original for
-					// non-response messages (settings sync, P2P state, etc.) to avoid
-					// duplicate sends through background.html path.
+					// Response messages already go through Electron's main-process relay,
+					// which forwards them to background.html and separately handles any
+					// TikTok virtual tabs. Calling the original path here would duplicate
+					// the background.html send.
 					if (typeof originalSend2Extension === 'function' && !data?.response) {
 						return originalSend2Extension.apply(this, arguments);
 					}
