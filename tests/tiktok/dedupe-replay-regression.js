@@ -184,6 +184,33 @@ test('room pin dedupe: same pinId is suppressed, new pinId passes', () => {
     }
 });
 
+test('poll message dedupe: same poll snapshot is suppressed, changed votes pass', () => {
+    const manager = {
+        recentEventDedupes: new Map(),
+        nextEventDedupePruneAt: 0,
+        logDebug() {},
+        pruneRecentEventDedupes: ConnectionManager.prototype.pruneRecentEventDedupes,
+        shouldSuppressDuplicateEvent: ConnectionManager.prototype.shouldSuppressDuplicateEvent
+    };
+
+    const first = manager.shouldSuppressDuplicateEvent('poll_message', {
+        pollBasicInfo: { pollIdStr: 'poll-1' },
+        nickname: 'Poll'
+    }, 'Poll votes: Pick Your Chaos Level - A: 1, B: 2');
+    const second = manager.shouldSuppressDuplicateEvent('poll_message', {
+        pollBasicInfo: { pollIdStr: 'poll-1' },
+        nickname: 'Poll'
+    }, 'Poll votes: Pick Your Chaos Level - A: 1, B: 2');
+    const third = manager.shouldSuppressDuplicateEvent('poll_message', {
+        pollBasicInfo: { pollIdStr: 'poll-1' },
+        nickname: 'Poll'
+    }, 'Poll votes: Pick Your Chaos Level - A: 2, B: 3');
+
+    assert.strictEqual(first, false, 'first poll snapshot should pass');
+    assert.strictEqual(second, true, 'identical poll snapshot should be suppressed');
+    assert.strictEqual(third, false, 'changed poll votes should pass');
+});
+
 // ---------------------------------------------------------------------------
 // Replay seeding regression
 // ---------------------------------------------------------------------------

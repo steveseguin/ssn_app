@@ -1205,6 +1205,7 @@ const TIKTOK_EVENT_TYPE_ALIASES = Object.freeze({
 const TIKTOK_EVENT_DEDUPE_WINDOWS_MS = Object.freeze({
     followed: 3000,
     shared: 3000,
+    poll_message: 60 * 1000,
     room_pin: 10 * 60 * 1000,
     chat: 60 * 60 * 1000,
     gift: 60 * 60 * 1000
@@ -1250,6 +1251,8 @@ function buildTikTokEventDedupeKey(eventType, data = {}, message = null) {
         data?.eventId,
         data?.messageId,
         data?.msgId,
+        data?.pollId,
+        data?.pollBasicInfo?.pollIdStr,
         data?.pinId,
         data?.idStr,
         data?.id,
@@ -4544,6 +4547,9 @@ class ConnectionManager {
     }
 
     getSanitizedFallbackMessage(primaryError, defaultMessage = 'TikTok WebSocket signer returned unreadable data. Using polling fallback.') {
+        if (this.isBrokenSignerBootstrapError(primaryError, primaryError?.message || '')) {
+            return 'TikTok returned invalid websocket bootstrap data. Switching to compatibility mode.';
+        }
         const rawMessage = typeof primaryError?.ssappFallbackMessage === 'string' && primaryError.ssappFallbackMessage.trim()
             ? primaryError.ssappFallbackMessage.trim()
             : (typeof primaryError?.message === 'string' ? primaryError.message : '');
@@ -6402,10 +6408,14 @@ class ConnectionManager {
                     if (proxyFallbackHandled) {
                         return this.restartConnectionAttempt(primaryError);
                     }
-                    const fallbackThresholdReached = this.signServerFailureCount >= SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD;
+                    const immediateBootstrapFallback = this.isBrokenSignerBootstrapError(primaryError, errorMessage);
+                    const fallbackThresholdReached = immediateBootstrapFallback
+                        || this.signServerFailureCount >= SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD;
 
                     if (this.sessionId || (fallbackThresholdReached && !this.pollingFallbackActivated)) {
-                        const fallbackStage = this.sessionId ? 'connect_sign_error_session' : 'connect_sign_error_threshold';
+                        const fallbackStage = this.sessionId
+                            ? 'connect_sign_error_session'
+                            : (immediateBootstrapFallback ? 'connect_sign_error_bootstrap' : 'connect_sign_error_threshold');
                         const fallbackHandled = await this.tryFallbackToPolling(primaryError, fallbackStage);
                         if (fallbackHandled) {
                             return this.restartConnectionAttempt(primaryError);
@@ -6831,6 +6841,10 @@ class ConnectionManager {
             return true;
         }
 
+        if (this.isBrokenSignerBootstrapError(primaryError, rawMessage)) {
+            return true;
+        }
+
         const reason = typeof primaryError?.reason === 'string'
             ? primaryError.reason.toLowerCase()
             : '';
@@ -6872,6 +6886,39 @@ class ConnectionManager {
             || combined.includes('connect error')
             || combined.includes('empty payload')
             || combined.includes('empty cookies');
+    }
+
+    isBrokenSignerBootstrapError(primaryError, rawMessage = '') {
+        const code = typeof primaryError?.code === 'string'
+            ? primaryError.code
+            : '';
+        if (code === 'SSAPP_TIKTOK_WSURL_INVALID' || code === 'SSAPP_TIKTOK_WSURL_MISSING') {
+            return true;
+        }
+
+        const name = typeof primaryError?.name === 'string'
+            ? primaryError.name.toLowerCase()
+            : '';
+        if (name === 'tiktokwsurlerror') {
+            return true;
+        }
+
+        const combined = [
+            rawMessage,
+            primaryError?.message,
+            primaryError?.reason,
+            ...this.collectNestedErrorMessages(primaryError)
+        ]
+            .filter(value => typeof value === 'string' && value.trim().length)
+            .join('\n')
+            .toLowerCase();
+
+        return combined.includes('tiktok returned an invalid websocket url')
+            || combined.includes('did not return a websocket url')
+            || combined.includes('invalid url: ?version_code=')
+            || combined.includes('invalid url: ?aid=')
+            || combined.includes('invalid url: ?live_id=')
+            || (combined.includes('invalid url: ?') && combined.includes('room_id='));
     }
 
     collectNestedErrorMessages(primaryError, depth = 0, seen = new Set(), messages = []) {
@@ -6951,6 +6998,10 @@ class ConnectionManager {
 
         if (this.shouldPromptForEulerApiKey(primaryError, normalized)) {
             return this.getEulerApiKeyPromptMessage();
+        }
+
+        if (this.isBrokenSignerBootstrapError(primaryError, message)) {
+            return 'TikTok returned invalid websocket bootstrap data. Trying another mode may help.';
         }
 
         if (normalized.includes('unexpected sign server status 524') || normalized.includes('524: a timeout occurred')) {
@@ -7319,9 +7370,14 @@ class ConnectionManager {
             if (proxyFallbackHandled) {
                 return this.restartConnectionAttempt(primaryError);
             }
-            const fallbackThresholdReached = this.signServerFailureCount >= SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD;
+            const immediateBootstrapFallback = this.isBrokenSignerBootstrapError(primaryError, combinedMessage);
+            const fallbackThresholdReached = immediateBootstrapFallback
+                || this.signServerFailureCount >= SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD;
             if (fallbackThresholdReached && !this.pollingFallbackActivated) {
-                const pollingHandled = await this.tryFallbackToPolling(primaryError, 'error_sign_server_threshold');
+                const fallbackStage = immediateBootstrapFallback
+                    ? 'error_sign_server_bootstrap'
+                    : 'error_sign_server_threshold';
+                const pollingHandled = await this.tryFallbackToPolling(primaryError, fallbackStage);
                 if (pollingHandled) {
                     return this.restartConnectionAttempt(primaryError);
                 }

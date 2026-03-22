@@ -53,6 +53,12 @@ function createUserNotFoundLookupError() {
 	return error;
 }
 
+function createInvalidBootstrapUrlError() {
+	const error = new SyntaxError('Invalid URL: ?version_code=180800&aid=1988&room_id=1234567890');
+	error.code = 'SSAPP_TIKTOK_WSURL_INVALID';
+	return error;
+}
+
 function createOfflineError() {
 	const error = new Error("The requested user isn't online :(");
 	error.name = 'UserOfflineError';
@@ -264,6 +270,7 @@ function buildScenario(seed) {
 		'rate_limit_local',
 		'rate_limit_proxy',
 		'rate_limit_polling',
+		'invalid_url_polling',
 		'user_not_found',
 		'offline',
 		'sign_then_local'
@@ -306,6 +313,15 @@ function buildScenario(seed) {
 					polling: [{ ok: true }]
 				},
 				options: {}
+			};
+		case 'invalid_url_polling':
+			return {
+				kind,
+				outcomesByMode: {
+					auto: [{ error: createInvalidBootstrapUrlError(), emitErrorEvent: duplicateErrorEvent }],
+					polling: [{ ok: true }]
+				},
+				options: { allowProxy: false, localSignerEnabled: false }
 			};
 		case 'user_not_found':
 			return {
@@ -373,6 +389,11 @@ async function runScenario(seed) {
 		case 'rate_limit_polling':
 			assert.strictEqual(result, true, `seed ${seed}: polling fallback scenario should connect`);
 			assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'proxy', 'polling']);
+			assert.strictEqual(plan.reconnects.length, 0);
+			break;
+		case 'invalid_url_polling':
+			assert.strictEqual(result, true, `seed ${seed}: invalid bootstrap URL should reach polling`);
+			assert.deepStrictEqual(getConnectModes(plan), ['auto', 'polling']);
 			assert.strictEqual(plan.reconnects.length, 0);
 			break;
 		case 'user_not_found': {

@@ -44,6 +44,12 @@ function createUserNotFoundLookupError() {
 	return error;
 }
 
+function createInvalidBootstrapUrlError() {
+	const error = new SyntaxError('Invalid URL: ?version_code=180800&aid=1988&room_id=1234567890');
+	error.code = 'SSAPP_TIKTOK_WSURL_INVALID';
+	return error;
+}
+
 function createScenarioPlan(outcomesByMode = {}) {
 	const queues = Object.create(null);
 	for (const [mode, outcomes] of Object.entries(outcomesByMode)) {
@@ -379,6 +385,53 @@ async function testBlankRoomLookupErrorsBecomeUsefulMessages() {
 	assert.strictEqual(message, 'TikTok user not found. Check the username and try again.');
 }
 
+async function testInvalidBootstrapUrlGetsUsefulMessages() {
+	const { manager } = createHarness({}, {
+		allowProxy: false,
+		localSignerEnabled: false
+	});
+
+	const bootstrapError = createInvalidBootstrapUrlError();
+
+	assert.strictEqual(manager.isSignServerError(bootstrapError, bootstrapError.message), true);
+	assert.strictEqual(
+		manager.getUserFriendlyErrorMessage(bootstrapError, ''),
+		'TikTok returned invalid websocket bootstrap data. Trying another mode may help.'
+	);
+	assert.strictEqual(
+		manager.getSanitizedFallbackMessage(bootstrapError),
+		'TikTok returned invalid websocket bootstrap data. Switching to compatibility mode.'
+	);
+}
+
+async function testInvalidBootstrapUrlFallsBackToPollingImmediately() {
+	const bootstrapError = createInvalidBootstrapUrlError();
+	const { manager, plan } = createHarness({
+		auto: [{ error: bootstrapError }],
+		polling: [{ ok: true }]
+	}, {
+		allowProxy: false,
+		localSignerEnabled: false
+	});
+
+	const result = await manager.initialize();
+
+	assert.strictEqual(result, true);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'polling']);
+	assert.strictEqual(plan.reconnects.length, 0);
+
+	const pollingFallback = getLastStatus(plan, 'fallback_polling');
+	assert(pollingFallback, 'expected a polling fallback status');
+	assert.strictEqual(
+		pollingFallback.error,
+		'TikTok returned invalid websocket bootstrap data. Switching to compatibility mode.'
+	);
+
+	const connected = getLastStatus(plan, 'connected');
+	assert(connected, 'expected a connected status');
+	assert.strictEqual(connected.connectionMethod, 'Polling (legacy fallback)');
+}
+
 async function testUserNotFoundStopsWithoutReconnectSpam() {
 	const { manager, plan } = createHarness({
 		auto: [{ error: createUserNotFoundLookupError() }]
@@ -538,6 +591,14 @@ async function run() {
 		{
 			name: 'blank room lookup errors become useful messages',
 			fn: testBlankRoomLookupErrorsBecomeUsefulMessages
+		},
+		{
+			name: 'invalid bootstrap URL gets useful messages',
+			fn: testInvalidBootstrapUrlGetsUsefulMessages
+		},
+		{
+			name: 'invalid bootstrap URL falls back to polling immediately',
+			fn: testInvalidBootstrapUrlFallsBackToPollingImmediately
 		},
 		{
 			name: 'user not found stops without reconnect spam',
