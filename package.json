@@ -33,7 +33,7 @@
     "clean": "rimraf ./dist",
     "release": "electron-builder --publish always",
     "preinstall": "npx npm-force-resolutions",
-    "postinstall": "node -e \"console.log('[custom-electron] Skipping legacy custom Electron install; using standard Electron package.')\""
+    "postinstall": "node -e \"console.log('[custom-electron] Skipping legacy custom Electron install; using standard Electron package.')\" && node scripts/patch-deps.js"
   },
   "repository": {
     "type": "git",
