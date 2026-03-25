@@ -3723,7 +3723,7 @@ class ConnectionManager {
 	                this,
 	                uniqueId || this.username,
 	                'local_signer_im_fetch',
-	                async () => this.localSigner.sign('https://webcast.tiktok.com/webcast/im/fetch/', signOptions)
+	                async () => this.localSigner.sign('https://webcast.tiktok.com/webcast/im/fetch/?identity=anchor', signOptions)
 	            );
 	        } catch (error) {
 	            if (error?.code !== 'SSAPP_TIKTOK_STOPPED') {

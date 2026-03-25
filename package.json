@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.3.106",
+  "version": "0.3.107",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "main": "main.js",
@@ -67,6 +67,7 @@
       "youtube-grpc-client.js",
       "tiktok-auth.js",
       "tiktok-badges.js",
+      "error-reporter.js",
       "preload.js",
       "preload-mock.js",
       "preload-kasada.js",
