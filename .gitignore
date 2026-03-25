@@ -36,3 +36,7 @@ build-config.env
 electron-builder.env
 social_stream_fallback/
 resources/social_stream_fallback/
+
+# Cloudflare / Wrangler
+cloudflare/.wrangler/
+cloudflare/node_modules/
