@@ -3363,7 +3363,6 @@ class GiftProcessor {
         }
         if (donationDisplay && !hiddenFromTray) {
             msg.hasDonation = donationDisplay;
-            msg.subtitle = donationDisplay;
             msg.donoValue = totalDiamonds * 0.005;
         }
         const fanTicketCount = pickFirstPositiveNumber([
