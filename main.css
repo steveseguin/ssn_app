@@ -2816,12 +2816,12 @@ input:checked + .slider:before {
 /* Sources panel heading & label */
 .sources-heading {
   margin: 8px 10px 4px;
-  font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .sources-label {
+  clear: right; /* ensure it sits below the beta-toggle float */
   margin: 0 0 12px 10px;
   font-size: 11px;
   font-weight: 600;
