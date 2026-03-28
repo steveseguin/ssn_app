@@ -1,4 +1,4 @@
-<html>
+<html lang="en">
 
 <head>
     <title>Social Stream Ninja</title>
@@ -103,7 +103,7 @@
         <ul>
             <li><a href="#" data-page="streams">🎭 Sources and Settings</a></li>
             <li><a href="#" data-page="dashboard">📰 Status and Logs</a></li>
-            <li><a href="#" data-page="event-flow-editor">🪤 Event Flow Editor</a></li>
+            <li><a href="#" data-page="event-flow-editor">⚡ Event Flow Editor</a></li>
             <li><a href="#" data-page="vdo-ninja">🎦 Remote Camera Feed</a></li>
             <li><a href="#" data-page="sessions">🧑‍🤝‍🧑 Sessions</a></li>
         </ul>
@@ -131,76 +131,57 @@
             <div class="addnew">
                 <p data-i18n="source.add">Add a new source:</p>
                 <span><button onclick="newSourcePrompt('youtube');" data-source-type="youtube-username"><img
-                            src="https://socialstream.ninja/sources/images/youtube.png" class="icon" />YouTube
-                        Username</button></span>
+                            src="https://socialstream.ninja/sources/images/youtube.png" class="icon" />YouTube</button></span>
                 <span><button onclick="newSourceVideoIDPrompt('youtube');" data-source-type="youtube-videoid"><img
-                            src="https://socialstream.ninja/sources/images/youtube.png" class="icon" />YouTube Video
-                        ID</button></span>
+                            src="https://socialstream.ninja/sources/images/youtube.png" class="icon" />YouTube Video</button></span>
                 <span><button onclick="newSourcePrompt('twitch');" data-source-type="twitch"><img
-                            src="https://socialstream.ninja/sources/images/twitch.png" class="icon" />Twitch
-                        Username</button></span>
+                            src="https://socialstream.ninja/sources/images/twitch.png" class="icon" />Twitch</button></span>
                 <span><button onclick="newSourcePrompt('kick');" data-source-type="kick"><img
-                            src="https://socialstream.ninja/sources/images/kick.png" class="icon" />Kick
-                        Username</button></span>
+                            src="https://socialstream.ninja/sources/images/kick.png" class="icon" />Kick</button></span>
                 <span><button onclick="newSourcePrompt('instagramlive');" data-source-type="instagram"><img
                             src="https://socialstream.ninja/sources/images/instagramlive.png"
-                            class="icon" />Instagramlive Username</button></span>
+                            class="icon" />Instagram Live</button></span>
                 <span><button onclick="newSourcePrompt('facebook');" data-source-type="facebook"><img
-                            src="https://socialstream.ninja/sources/images/facebook.png" class="icon" />Facebook
-                        Username</button></span>
+                            src="https://socialstream.ninja/sources/images/facebook.png" class="icon" />Facebook</button></span>
                 <span><button onclick="newSourcePrompt('tiktok');" data-source-type="tiktok"><img
-                            src="https://socialstream.ninja/sources/images/tiktok.png" class="icon" />tiktok
-                        Username</button></span>
+                            src="https://socialstream.ninja/sources/images/tiktok.png" class="icon" />TikTok</button></span>
                 <span><button onclick="newSourcePrompt('trovo');"><img
-                            src="https://socialstream.ninja/sources/images/trovo.png" class="icon" />trovo
-                        Username</button></span>
+                            src="https://socialstream.ninja/sources/images/trovo.png" class="icon" />Trovo</button></span>
                 <span><button onclick="newSourcePrompt('picarto');"><img
-                            src="https://socialstream.ninja/sources/images/picarto.png" class="icon" />picarto
-                        Username</button></span>
+                            src="https://socialstream.ninja/sources/images/picarto.png" class="icon" />Picarto</button></span>
                 <span><button onclick="newSourcePrompt('dlive');"><img
-                            src="https://socialstream.ninja/sources/images/dlive.png" class="icon" />dlive
-                        Username</button></span>
+                            src="https://socialstream.ninja/sources/images/dlive.png" class="icon" />DLive</button></span>
                 <span><button onclick="newSourcePrompt('x');"><img src="https://socialstream.ninja/sources/images/x.png"
-                            class="icon" />X.com Username</button></span>
+                            class="icon" />X.com</button></span>
                 <span><button onclick="newSourcePrompt('rumble');"><img
-                            src="https://socialstream.ninja/sources/images/rumble.png" class="icon" />Rumble
-                        Username</button></span>
+                            src="https://socialstream.ninja/sources/images/rumble.png" class="icon" />Rumble</button></span>
                 <span><button onclick="newSourceVideoIDPrompt('rumble');"><img
-                            src="https://socialstream.ninja/sources/images/rumble.png" class="icon" />Rumble Video
-                        URL</button></span>
+                            src="https://socialstream.ninja/sources/images/rumble.png" class="icon" />Rumble Video</button></span>
                 <span><button onclick="newSourcePrompt('beamstream');"><img
-                            src="https://socialstream.ninja/sources/images/beamstream.png" class="icon" />Beamstream
-                        Username</button></span>
+                            src="https://socialstream.ninja/sources/images/beamstream.png" class="icon" />Beamstream</button></span>
                 <span><button onclick="newSourcePrompt('parti');"><img
-                            src="https://socialstream.ninja/sources/images/parti.png" class="icon" />Parti User
-                        ID</button></span>
+                            src="https://socialstream.ninja/sources/images/parti.png" class="icon" />Parti</button></span>
                 <span><button onclick="newSourcePrompt('arenasocial');"><img
-                            src="https://socialstream.ninja/sources/images/arenasocial.png" class="icon" />Arena Social
-                        Username</button></span>
+                            src="https://socialstream.ninja/sources/images/arenasocial.png" class="icon" />Arena Social</button></span>
                 <span class="hidden"><button onclick="newSourcePrompt('pilled');"><img
-                            src="https://socialstream.ninja/sources/images/pilled.png" class="icon" />Pilled
-                        Username</button></span>
+                            src="https://socialstream.ninja/sources/images/pilled.png" class="icon" />Pilled</button></span>
                 <span><button onclick="newSourcePrompt('bilibili');"><img
-                            src="https://socialstream.ninja/sources/images/bilibili.png" class="icon" />BiliBili Stream
-                        ID</button></span>
+                            src="https://socialstream.ninja/sources/images/bilibili.png" class="icon" />BiliBili</button></span>
                 <span><button onclick="newOtherSourcePrompt('peertube');"><img
-                            src="https://socialstream.ninja/sources/images/peertube.png" class="icon" />Peertube
-                        URL</button></span>
+                            src="https://socialstream.ninja/sources/images/peertube.png" class="icon" />Peertube</button></span>
                 <span><button title="Add a chat source that isn't listed by providing the chat URL"
                         onclick="newOtherSourcePrompt();" data-source-type="other"><img
-                            src="https://socialstream.ninja/sources/images/unknown.png" class="icon" />Other chat
-                        sites</button></span>
+                            src="https://socialstream.ninja/sources/images/unknown.png" class="icon" />Other</button></span>
             </div>
 
             <div id="sources" style="right:calc(max(35%, 400px))">
-                <h2 style="margin: 10px;" data-i18n="app.title">Social Stream Ninja Standalone</h2>
+                <h2 class="sources-heading" data-i18n="app.title">Social Stream Ninja</h2>
                 <span id='newver' class='hidden'>
                     <h1 data-i18n="app.newversion">NEW VERSION AVAILABLE</h1>
                     <a id="downloadlink" data-i18n="app.download">Download new version here</a>
                 </span>
-                <div id="fallback-indicator" class="hidden"
-                    style="margin: 0 0 10px 10px; color: #c77; font-size: 0.9em;"></div>
-                <p style="margin: 0 0 15px 10px; color: #9d8c8c;">Added Sources:</p>
+                <div id="fallback-indicator" class="hidden fallback-indicator"></div>
+                <p class="sources-label">Added Sources</p>
             </div>
 
             <div id="link-overlay-page" style="min-width:400px;right:0;position:absolute;height:100%;width:35%">
@@ -256,11 +237,9 @@
                 </div>
 
                 <div class="session-warnings">
-                    <p>ℹ️ <strong>Note:</strong> The "Default Session (Original)" contains all your existing sources and
-                        settings.</p>
-                    <p>🔄 <strong>Switching:</strong> Changing sessions will restart the application.</p>
-                    <p>⚠️ <strong>Important:</strong> Each session has completely separate settings, sources, and stored
-                        data.</p>
+                    <p><strong>Note:</strong> The "Default Session (Original)" contains all your existing sources and settings.</p>
+                    <p><strong>Switching:</strong> Changing sessions will restart the application.</p>
+                    <p><strong>Important:</strong> Each session has completely separate settings, sources, and stored data.</p>
                 </div>
             </div>
         </div>
@@ -445,55 +424,49 @@
 
     <!-- User Agent Settings Modal -->
     <div class="modal hidden" id="userAgentModal">
-        <div class="modal-content" style="max-width: 500px;">
+        <div class="modal-content modal-md">
             <h2>User Agent Settings</h2>
-            <div style="margin-bottom: 20px;">
-                <label for="userAgentSelect" style="display: block; margin-bottom: 8px; font-weight: bold;">Select User
-                    Agent:</label>
-                <select id="userAgentSelect" style="width: 100%; padding: 8px; margin-bottom: 10px;">
-                    <option value="AUTO">AUTO (Use config file)</option>
-                </select>
-                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
-                    <input type="text" id="customUserAgentInput" placeholder="Enter custom user agent..."
-                        style="flex: 1; padding: 8px; border-radius: 4px; border: 1px solid #ccc;">
+            <div class="modal-body">
+                <div>
+                    <label for="userAgentSelect" class="field-label">Select User Agent</label>
+                    <select id="userAgentSelect" class="modal-content select" style="width:100%;padding:8px 12px;margin-bottom:10px;border-radius:4px;border:1px solid var(--border-default);background:rgba(0,0,0,0.3);color:var(--text-primary);">
+                        <option value="AUTO">AUTO (Use config file)</option>
+                    </select>
+                </div>
+                <div class="field-row">
+                    <input type="text" id="customUserAgentInput" placeholder="Enter custom user agent..." class="modal-input">
                     <button onclick="addCustomUserAgent()">Add</button>
                 </div>
-                <div id="customUserAgentsList"
-                    style="max-height: 200px; overflow-y: auto; margin-top: 10px; background: rgba(0,0,0,0.2); border-radius: 4px; padding: 10px;">
-                </div>
+                <div id="customUserAgentsList" class="scrollable-list"></div>
             </div>
-            <div style="display: flex; justify-content: flex-end; gap: 10px;">
-                <button onclick="closeUserAgentModal()" style="background: #95a5a6;">Cancel</button>
+            <div class="modal-footer">
+                <button onclick="closeUserAgentModal()" class="btn-secondary">Cancel</button>
                 <button onclick="saveUserAgentSelection()">Save</button>
             </div>
         </div>
     </div>
 
     <div class="modal hidden" id="sessionModal">
-        <div class="modal-content" style="max-width: 500px;">
+        <div class="modal-content modal-md">
             <h2>Browser Session Settings</h2>
-            <div style="margin-bottom: 20px;">
-                <div style="margin-bottom: 15px;">
-                    <label style="display: block; margin-bottom: 8px; font-weight: bold;">Select Browser
-                        Session:</label>
-                    <small style="color: #ddd; display: block; margin-bottom: 10px;">Sessions allow you to be logged
-                        into different accounts on the same platform</small>
+            <div class="modal-body">
+                <div>
+                    <label class="field-label">Select Browser Session</label>
+                    <span class="field-hint">Sessions let you stay logged into different accounts on the same platform</span>
                 </div>
-                <div id="sessionsList"
-                    style="max-height: 300px; overflow-y: auto; background: rgba(0,0,0,0.2); border-radius: 4px; padding: 10px;">
+                <div id="sessionsList" class="scrollable-list scrollable-list-lg">
                     <!-- Sessions will be populated here -->
                 </div>
-                <div style="margin-top: 15px;">
-                    <label style="display: block; margin-bottom: 8px; color: #9d8c8c;">Create New Session:</label>
-                    <div style="display: flex; gap: 10px;">
-                        <input type="text" id="customSessionName" placeholder="Session name (e.g., 'work-account')"
-                            style="flex: 1; padding: 8px; border-radius: 4px; border: 1px solid #ccc;">
+                <div>
+                    <label class="field-label">Create New Session</label>
+                    <div class="field-row">
+                        <input type="text" id="customSessionName" placeholder="e.g. work-account" class="modal-input">
                         <button onclick="addCustomSession()">Create</button>
                     </div>
                 </div>
             </div>
-            <div style="display: flex; justify-content: flex-end; gap: 10px;">
-                <button onclick="closeSessionModal()" style="background: #95a5a6;">Cancel</button>
+            <div class="modal-footer">
+                <button onclick="closeSessionModal()" class="btn-secondary">Cancel</button>
                 <button onclick="saveSessionSelection()">Save</button>
             </div>
         </div>
