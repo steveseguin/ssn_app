@@ -9455,20 +9455,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 injectSourceIntoExistingFrames("main-injection");
             }
 
-            function shouldInjectMainFrame(webContents) {
-                if (!hasManifestRules) {
-                    // If source isn't in manifest, preserve legacy behavior.
-                    return true;
-                }
-                if (!webContents) return false;
-                let currentUrl = "";
-                try {
-                    currentUrl = webContents.getURL() || "";
-                } catch (_) {
-                    currentUrl = "";
-                }
-                if (!currentUrl) return false;
-                return urlMatchesManifestRules(currentUrl, false);
+            function shouldInjectMainFrame(_webContents) {
+                // The user explicitly chose this classic source for the top-level page.
+                // Manifest rules should only scope all_frames injection, not block main-frame injection
+                // on custom domains selected via the "Other site" flow.
+                return true;
             }
 
             function logManifestMainFrameSkip(webContents) {
@@ -9954,6 +9945,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
 										
 										chrome.runtime = {};
 										chrome.runtime.id = 1;
+										chrome.runtime.getURL = function(path) {
+											return 'electron-inject:' + path;
+										};
 										chrome.runtime.onMessage = {};
 										chrome.runtime.onMessage.addListener = function(callback) {
 											// Set up the callback for sendToTab messages
@@ -10149,6 +10143,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
 					
 					chrome.runtime = {};
 					chrome.runtime.id = 1;
+					chrome.runtime.getURL = function(path) {
+						return 'electron-inject:' + path;
+					};
 					chrome.runtime.onMessage = {};
 					chrome.runtime.onMessage.addListener = function(callback) {
 						// Listen for responses from preload script
