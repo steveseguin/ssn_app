@@ -2645,7 +2645,7 @@ async function loadBundledSocialStream(branch, relativePath) {
 }
 
 async function fetchWithTimeout(url, timeoutMs = SOCIAL_STREAM_REMOTE_TIMEOUT_MS) {
-    const fetchPromise = fetch(url);
+    const fetchPromise = fetch(url, { cache: 'no-store' });
     let timeoutId;
     const timeoutPromise = new Promise((_, reject) => {
         timeoutId = setTimeout(() => reject(new Error(`Request timed out after ${timeoutMs} ms`)), timeoutMs);
@@ -3593,7 +3593,8 @@ app.commandLine.appendSwitch("max-web-media-player-count", "5000");
 
 // Network and security flags
 app.commandLine.appendSwitch("ignore-certificate-errors");
-app.commandLine.appendSwitch("disable-http-cache");
+// disable-http-cache removed: was preventing Facebook/Twitch SharedWorker MQTT real-time delivery;
+// SSN GitHub source fetches use { cache: 'no-store' } in fetchWithTimeout instead
 app.commandLine.appendSwitch('dns-server', '1.1.1.1,8.8.8.8');
 
 // Enable experimental features for better compatibility
