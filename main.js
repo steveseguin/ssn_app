@@ -10837,7 +10837,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         if (!wc.debugger.isAttached()) {
                             wc.debugger.attach("1.3");
                         }
-                        if (args.type) {
+                        if (args.type && ["mousePressed", "mouseReleased", "mouseMoved", "mouseWheel"].includes(args.type)) {
+                            const { tab: _tab, ...mouseArgs } = args;
+                            await wc.debugger.sendCommand("Input.dispatchMouseEvent", mouseArgs);
+                        } else if (args.type) {
                             const command = buildDebuggerKeyboardCommand(args);
                             if (command) {
                                 await wc.debugger.sendCommand("Input.dispatchKeyEvent", command);
@@ -13094,6 +13097,17 @@ function minimizeToTray() {
     }
 }
 
+function showMainWindowFromTray() {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+        return;
+    }
+    if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+    }
+    mainWindow.show();
+    mainWindow.focus();
+}
+
 
 // Offline source helpers
 function ensureTrailingSep(pth) {
@@ -14183,9 +14197,7 @@ function createMenu() {
     const trayMenu = Menu.buildFromTemplate([
         {
             label: "Show App",
-            click: () => {
-                mainWindow.show();
-            },
+            click: () => showMainWindowFromTray(),
         },
         {
             label: "Exit",
@@ -14205,6 +14217,8 @@ function createMenu() {
     }
     tray.setToolTip("Social Stream Ninja");
     tray.setContextMenu(trayMenu);
+    tray.removeListener("double-click", showMainWindowFromTray);
+    tray.on("double-click", showMainWindowFromTray);
 
     const menu = Menu.buildFromTemplate(template);
     Menu.setApplicationMenu(menu);

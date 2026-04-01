@@ -1443,8 +1443,14 @@
             }
 
             const wsStatusElement = element.querySelector('.ws-status');
-            if (source.connectionMode === 'websocket' || source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy') {
-                if (source.status === 'active' && activeWssHandle) {
+            const shouldManageConnectionStatus = effectiveMode === 'websocket'
+                || effectiveMode === 'tiktok-websocket'
+                || effectiveMode === 'tiktok-legacy'
+                || source.target === 'tiktok';
+            const hasTikTokConnectedContext = source.target === 'tiktok'
+                && !!(source.vid || activeWssHandle || source.tiktokConnectionMethod);
+            if (shouldManageConnectionStatus) {
+                if (source.status === 'active' && (activeWssHandle || hasTikTokConnectedContext)) {
                     updateConnectionStatus(element, 'connected');
                 } else if (source.status === 'activating') {
                     // Show connecting for supported WSS (YouTube/TikTok)
@@ -1465,12 +1471,12 @@
             }
 
             // While activating a regular WSS, allow stopping
-            if ((source.connectionMode === 'websocket' || (source.target === 'tiktok' && (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy'))) && source.status === 'activating') {
+            if ((effectiveMode === 'websocket' || (source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy'))) && source.status === 'activating') {
                 setActivateButtonConnecting(element);
                 stopButton?.classList.add('hidden');
                 if (reloadButton) reloadButton.classList.add('hidden');
             } else if (source.status === 'active' && (source.vid || activeWssHandle)) {
-                const isTikTokApiMode = source.target === 'tiktok' && (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy');
+                const isTikTokApiMode = source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy');
                 if (isTikTokApiMode && activateButton) {
                     activateButton.classList.remove('hidden');
                     activateButton.textContent = '⏹️ Disconnect';
@@ -1488,18 +1494,28 @@
 
                 element.dataset.vid = source.vid;
             } else {
-                // Default inactive UI, but if a WSS window exists, allow closing it
+                const hasClosableHandle = !!(source.vid || activeWssHandle);
+                const isTikTokApiMode = source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy');
+
                 if (activateButton) activateButton.classList.remove('hidden');
                 if (stopButton) stopButton.classList.add('hidden');
-                if (reloadButton) reloadButton.classList.add('hidden');
-                if (source.connectionMode === 'websocket' && source.vid) {
-                    // Window exists but not connected: present a Close action
-                    activateButton.textContent = translate('btn.closewebsocket');
+                if (reloadButton) {
+                    reloadButton.classList.toggle('hidden', !source.vid || isTikTokApiMode);
+                }
+                if (hasClosableHandle && activateButton) {
+                    if (isTikTokApiMode) {
+                        activateButton.textContent = '⏹️ Disconnect';
+                    } else if (effectiveMode === 'websocket') {
+                        activateButton.textContent = translate('btn.closewebsocket');
+                    } else {
+                        activateButton.textContent = translate('btn.stop');
+                    }
                     activateButton.onclick = function () { stopThis(this); };
                 } else {
+                    if (reloadButton) reloadButton.classList.add('hidden');
                     // Restore default activate label based on mode
                     if (activateButton) {
-                        const mode = source.connectionMode || 'classic';
+                        const mode = effectiveMode || source.connectionMode || 'classic';
                         if (mode === 'tiktok-websocket' && source.target === 'tiktok') {
                             activateButton.textContent = 'Connect TikTok WebSocket';
                         } else if (mode === 'tiktok-legacy' && source.target === 'tiktok') {
@@ -3256,8 +3272,13 @@
 
                 if (target === 'tiktok') {
                     const provider = srcForMode?.tiktokSigningProvider || 'auto';
+                    const hasActiveHandle = !!(srcForMode && (srcForMode.vid || getSourceWssHandle(srcForMode)));
                     if (srcForMode && srcForMode.status === 'activating') {
                         setActivateButtonConnecting(sourceElement);
+                    } else if (hasActiveHandle) {
+                        activateButton.innerText = (displayMode === 'tiktok-legacy' || displayMode === 'tiktok-websocket')
+                            ? '⏹️ Disconnect'
+                            : translate('btn.stop');
                     } else if (displayMode === 'tiktok-legacy') {
                         activateButton.innerText = 'Connect TikTok Polling';
                     } else if (displayMode === 'tiktok-websocket') {
@@ -5460,13 +5481,21 @@
             return false;
         }
 
-        function shouldKeepTikTokClassicWindowOpenOnFatal(source, statusPayload = null) {
+        function shouldPreserveTikTokClassicHandles(source, statusPayload = null, hasRetryScheduled = false) {
             if (!source || source.target !== 'tiktok') {
                 return false;
             }
 
-            const isClassicStatus = !statusPayload?.wssID && !!source.vid;
-            if (!isClassicStatus) {
+            if (hasRetryScheduled) {
+                return true;
+            }
+
+            if (statusPayload?.wssID) {
+                return false;
+            }
+
+            const classicTabId = normalizeNumericId(statusPayload?.tabID);
+            if (!source.vid && !classicTabId) {
                 return false;
             }
 
@@ -5478,6 +5507,10 @@
                 && source.autoActivate !== true;
         }
 
+        function shouldKeepTikTokClassicWindowOpenOnFatal(source, statusPayload = null) {
+            return shouldPreserveTikTokClassicHandles(source, statusPayload, false);
+        }
+
         function shouldReleaseTikTokClassicHandles(source, statusPayload = null, hasRetryScheduled = false) {
             if (!source || source.target !== 'tiktok') {
                 return false;
@@ -5485,7 +5518,17 @@
             if (hasRetryScheduled) {
                 return false;
             }
-            return !statusPayload?.wssID && !!source.vid;
+
+            if (statusPayload?.wssID) {
+                return false;
+            }
+
+            const classicTabId = normalizeNumericId(statusPayload?.tabID);
+            if (!source.vid && !classicTabId) {
+                return false;
+            }
+
+            return !shouldPreserveTikTokClassicHandles(source, statusPayload, hasRetryScheduled);
         }
 
         function autoFallbackToNextTikTokMode(sourceId, failureStatus, errorMessage = null) {
@@ -7248,14 +7291,35 @@
             }
         }
 
+        function formatTikTokConnectionMethodLabel(method, sourceCtx = null) {
+            if (!method) return null;
+            const normalized = String(method).trim();
+            if (!normalized) return null;
+
+            const lower = normalized.toLowerCase();
+            const effectiveMode = normalizeTikTokMode(
+                sourceCtx?.activeConnectionMode
+                || sourceCtx?.connectionMode
+                || (lower.includes('polling')
+                    ? 'tiktok-legacy'
+                    : ((lower.includes('standard') || lower.includes('capture'))
+                        ? 'classic'
+                        : null))
+            );
+            const useStandardPrefix = effectiveMode === 'classic'
+                || effectiveMode === 'tiktok-legacy'
+                || lower.includes('polling')
+                || lower.includes('standard')
+                || lower.includes('capture');
+
+            return `${useStandardPrefix ? 'Connected via' : 'Websocket connected via'} ${normalized}`;
+        }
+
         function formatConnectionLabel(sourceCtx) {
             if (!sourceCtx) return null;
             if (sourceCtx.target === 'tiktok') {
                 if (sourceCtx.tiktokConnectionMethod) {
-                    const normalized = String(sourceCtx.tiktokConnectionMethod);
-                    const lower = normalized.toLowerCase();
-                    const prefix = lower.includes('polling') ? 'Connected via' : 'Websocket connected via';
-                    return `${prefix} ${normalized}`;
+                    return formatTikTokConnectionMethodLabel(sourceCtx.tiktokConnectionMethod, sourceCtx);
                 }
                 const modeLabel = formatTikTokConnectionLabelFromMode(getEffectiveConnectionMode(sourceCtx));
                 if (modeLabel) return modeLabel;
@@ -9028,13 +9092,6 @@
                     const restoreActivateUI = () => {
                         if (entryElement) restoreActivateButton(entryElement);
                     };
-                    const formatTikTokConnectionLabel = (method) => {
-                        if (!method) return null;
-                        const normalized = String(method);
-                        const lower = normalized.toLowerCase();
-                        const prefix = lower.includes('polling') ? 'Connected via' : 'Websocket connected via';
-                        return `${prefix} ${normalized}`;
-                    };
 
                     if (currentState.status === 'inactive' && !currentState.vid && !currentState.wssId && !currentState.tiktokWssId && (data.status === 'error' || data.status === 'failed' || data.status === 'disconnected')) {
                         return;
@@ -9043,7 +9100,17 @@
                     switch (data.status) {
                         case 'connecting':
                             {
-                                const updatePayload = { tiktokConnectionMethod: null };
+                                const classicTabId = normalizeNumericId(data.tabID);
+                                const updatePayload = {
+                                    error: null,
+                                    tiktokConnectionMethod: null
+                                };
+                                if (typeof classicTabId === 'number' && !data.wssID) {
+                                    updatePayload.vid = classicTabId;
+                                    updatePayload.wssId = null;
+                                    updatePayload.tiktokWssId = null;
+                                    updatePayload.activeConnectionMode = 'classic';
+                                }
                                 if (currentState.status !== 'activating') {
                                     updatePayload.status = 'activating';
                                 }
@@ -9062,57 +9129,74 @@
                             }
                             break;
                         case 'connected':
-                            if (entryElement) {
-                                if (entryElement._tiktokRetryTimer) {
-                                    clearInterval(entryElement._tiktokRetryTimer);
-                                    entryElement._tiktokRetryTimer = null;
-                                }
-                                entryElement._tiktokRetryEndAt = null;
-                                entryElement._tiktokRetryAttempt = null;
-                                entryElement._tiktokRetryMax = null;
-                            }
-                            const connectionMethod = data.connectionMethod || data.effectiveMode || null;
-                            stateManager.updateSource(sourceId, {
-                                status: 'active',
-                                tiktokFallbackMode: null,
-                                tiktokConnectionMethod: connectionMethod
-                            });
                             {
-                                const connectedLabel = data.connectionLabel
-                                    || formatTikTokConnectionLabel(connectionMethod)
-                                    || (data.effectiveMode ? `Connected via ${data.effectiveMode}` : null);
-                                if (entryElement) updateConnectionStatus(entryElement, 'connected', connectedLabel);
+                                if (entryElement) {
+                                    if (entryElement._tiktokRetryTimer) {
+                                        clearInterval(entryElement._tiktokRetryTimer);
+                                        entryElement._tiktokRetryTimer = null;
+                                    }
+                                    entryElement._tiktokRetryEndAt = null;
+                                    entryElement._tiktokRetryAttempt = null;
+                                    entryElement._tiktokRetryMax = null;
+                                }
+                                const connectionMethod = data.connectionMethod || data.effectiveMode || null;
+                                const classicTabId = normalizeNumericId(data.tabID);
+                                const updatePayload = {
+                                    status: 'active',
+                                    error: null,
+                                    tiktokFallbackMode: null,
+                                    tiktokConnectionMethod: connectionMethod
+                                };
+                                if (typeof classicTabId === 'number' && !data.wssID) {
+                                    updatePayload.vid = classicTabId;
+                                    updatePayload.wssId = null;
+                                    updatePayload.tiktokWssId = null;
+                                    updatePayload.activeConnectionMode = 'classic';
+                                }
+                                stateManager.updateSource(sourceId, updatePayload);
+                                {
+                                    const latestSource = stateManager.getSource(sourceId) || { ...currentState, ...updatePayload };
+                                    const connectedLabel = data.connectionLabel
+                                        || formatTikTokConnectionMethodLabel(connectionMethod, latestSource)
+                                        || (data.effectiveMode ? `Connected via ${data.effectiveMode}` : null);
+                                    if (entryElement) updateConnectionStatus(entryElement, 'connected', connectedLabel);
+                                }
+                                if (entryElement && entryElement._tiktokFallback) {
+                                    try {
+                                        const latestSource = stateManager.getSource(sourceId);
+                                        const effectiveMode = latestSource ? getEffectiveConnectionMode(latestSource) : null;
+                                        entryElement._tiktokFallback.connectedMode = normalizeTikTokMode(
+                                            effectiveMode || latestSource?.connectionMode || entryElement._tiktokFallback.preferredMode
+                                        );
+                                        entryElement._tiktokFallback.pendingAutoRetry = false;
+                                        entryElement._tiktokFallback.exhausted = false;
+                                        entryElement._tiktokFallback.notifiedExhausted = false;
+                                    } catch (_) { /* noop */ }
+                                }
+                                restoreActivateUI();
+                                break;
                             }
-                            if (entryElement && entryElement._tiktokFallback) {
-                                try {
-                                    const latestSource = stateManager.getSource(sourceId);
-                                    const effectiveMode = latestSource ? getEffectiveConnectionMode(latestSource) : null;
-                                    entryElement._tiktokFallback.connectedMode = normalizeTikTokMode(
-                                        effectiveMode || latestSource?.connectionMode || entryElement._tiktokFallback.preferredMode
-                                    );
-                                    entryElement._tiktokFallback.pendingAutoRetry = false;
-                                    entryElement._tiktokFallback.exhausted = false;
-                                    entryElement._tiktokFallback.notifiedExhausted = false;
-                                } catch (_) { /* noop */ }
-                            }
-                            restoreActivateUI();
-                            break;
                         case 'disconnected':
                             {
                                 const hasRetryScheduled = !!(entryElement && entryElement._tiktokRetryEndAt);
+                                const classicTabId = normalizeNumericId(data.tabID);
                                 const updatePayload = {
                                     status: 'error',
                                     error: data.error || 'Connection lost.',
                                     tiktokFallbackMode: null,
                                     tiktokConnectionMethod: null
                                 };
+                                if (typeof classicTabId === 'number' && !data.wssID) {
+                                    updatePayload.vid = classicTabId;
+                                    updatePayload.wssId = null;
+                                    updatePayload.tiktokWssId = null;
+                                    updatePayload.activeConnectionMode = 'classic';
+                                }
                                 if (shouldReleaseTikTokClassicHandles(currentState, data, hasRetryScheduled)) {
                                     updatePayload.vid = null;
                                     updatePayload.wssId = null;
                                     updatePayload.tiktokWssId = null;
                                     updatePayload.activeConnectionMode = null;
-                                } else {
-                                    updatePayload.vid = null;
                                 }
                                 stateManager.updateSource(sourceId, updatePayload);
                             }
@@ -9133,12 +9217,19 @@
                         case 'error':
                             {
                                 const hasRetryScheduled = !!(entryElement && entryElement._tiktokRetryEndAt);
+                                const classicTabId = normalizeNumericId(data.tabID);
                                 const updatePayload = {
                                     status: 'error',
                                     error: data.error || 'Connection error',
                                     tiktokFallbackMode: null,
                                     tiktokConnectionMethod: null
                                 };
+                                if (typeof classicTabId === 'number' && !data.wssID) {
+                                    updatePayload.vid = classicTabId;
+                                    updatePayload.wssId = null;
+                                    updatePayload.tiktokWssId = null;
+                                    updatePayload.activeConnectionMode = 'classic';
+                                }
                                 if (shouldReleaseTikTokClassicHandles(currentState, data, hasRetryScheduled)) {
                                     updatePayload.vid = null;
                                     updatePayload.wssId = null;
@@ -9191,17 +9282,26 @@
                                     ? 'TikTok sign-in failed. Provide your Euler API key.'
                                     : 'Connection failed';
                                 const errorMessage = data.error || defaultMessage;
+                                const classicTabId = normalizeNumericId(data.tabID);
                                 {
                                     const updatePayload = {
                                         status: 'error',
                                         error: errorMessage,
-                                        vid: null,
                                         tiktokFallbackMode: null,
                                         tiktokConnectionMethod: null
                                     };
+                                    if (typeof classicTabId === 'number' && !data.wssID) {
+                                        updatePayload.vid = classicTabId;
+                                        updatePayload.wssId = null;
+                                        updatePayload.tiktokWssId = null;
+                                        updatePayload.activeConnectionMode = 'classic';
+                                    } else {
+                                        updatePayload.vid = null;
+                                    }
                                     if (shouldReleaseTikTokClassicHandles(currentState, data, hasRetryScheduled)) {
                                         updatePayload.wssId = null;
                                         updatePayload.tiktokWssId = null;
+                                        updatePayload.vid = null;
                                         updatePayload.activeConnectionMode = null;
                                     }
                                     stateManager.updateSource(sourceId, updatePayload);
@@ -9252,46 +9352,57 @@
                         case 'fatal_error':
                             {
                                 const keepClassicWindowOpen = shouldKeepTikTokClassicWindowOpenOnFatal(currentState, data);
-                                if (!keepClassicWindowOpen && !data.wssID && currentState.vid && ipcRenderer) {
+                                const classicTabId = normalizeNumericId(data.tabID) || normalizeNumericId(currentState.vid);
+                                if (!keepClassicWindowOpen && !data.wssID && classicTabId && ipcRenderer) {
                                     try {
-                                        ipcRenderer.sendSync('closeWindow', { vid: currentState.vid });
+                                        ipcRenderer.sendSync('closeWindow', { vid: classicTabId });
                                     } catch (closeError) {
                                         console.warn('Failed to close TikTok classic window after fatal error:', closeError);
                                     }
                                 }
-                            }
-                            if (entryElement) {
-                                if (entryElement._tiktokRetryTimer) {
-                                    clearInterval(entryElement._tiktokRetryTimer);
-                                    entryElement._tiktokRetryTimer = null;
+
+                                if (entryElement) {
+                                    if (entryElement._tiktokRetryTimer) {
+                                        clearInterval(entryElement._tiktokRetryTimer);
+                                        entryElement._tiktokRetryTimer = null;
+                                    }
+                                    entryElement._tiktokRetryEndAt = null;
+                                    entryElement._tiktokRetryAttempt = null;
+                                    entryElement._tiktokRetryMax = null;
                                 }
-                                entryElement._tiktokRetryEndAt = null;
-                                entryElement._tiktokRetryAttempt = null;
-                                entryElement._tiktokRetryMax = null;
-                            }
-                            stateManager.updateSource(sourceId, {
-                                status: 'error',
-                                error: data.error || 'Connection failed',
-                                vid: null,
-                                wssId: null,
-                                tiktokWssId: null,
-                                activeConnectionMode: null,
-                                tiktokFallbackMode: null,
-                                tiktokConnectionMethod: null
-                            });
-                            if (entryElement) {
-                                updateConnectionStatus(entryElement, 'error', data.error || 'Connection failed');
-                                if (entryElement._tiktokFallback) {
-                                    entryElement._tiktokFallback.pendingAutoRetry = false;
-                                    entryElement._tiktokFallback.lastFailureStatus = 'fatal_error';
-                                    entryElement._tiktokFallback.lastFailureMessage = data.error || null;
+
+                                const fatalUpdatePayload = {
+                                    status: 'error',
+                                    error: data.error || 'Connection failed',
+                                    tiktokFallbackMode: null,
+                                    tiktokConnectionMethod: null
+                                };
+                                if (keepClassicWindowOpen && classicTabId) {
+                                    fatalUpdatePayload.vid = classicTabId;
+                                    fatalUpdatePayload.wssId = null;
+                                    fatalUpdatePayload.tiktokWssId = null;
+                                    fatalUpdatePayload.activeConnectionMode = 'classic';
+                                } else {
+                                    fatalUpdatePayload.vid = null;
+                                    fatalUpdatePayload.wssId = null;
+                                    fatalUpdatePayload.tiktokWssId = null;
+                                    fatalUpdatePayload.activeConnectionMode = null;
                                 }
+                                stateManager.updateSource(sourceId, fatalUpdatePayload);
+                                if (entryElement) {
+                                    updateConnectionStatus(entryElement, 'error', data.error || 'Connection failed');
+                                    if (entryElement._tiktokFallback) {
+                                        entryElement._tiktokFallback.pendingAutoRetry = false;
+                                        entryElement._tiktokFallback.lastFailureStatus = 'fatal_error';
+                                        entryElement._tiktokFallback.lastFailureMessage = data.error || null;
+                                    }
+                                }
+                                restoreActivateUI();
+                                if (!shouldSuppressTikTokUiAutoFallback('fatal_error', data.error || null)) {
+                                    autoFallbackToNextTikTokMode(sourceId, 'fatal_error', data.error || null);
+                                }
+                                break;
                             }
-                            restoreActivateUI();
-                            if (!shouldSuppressTikTokUiAutoFallback('fatal_error', data.error || null)) {
-                                autoFallbackToNextTikTokMode(sourceId, 'fatal_error', data.error || null);
-                            }
-                            break;
                         case 'fallback_polling':
                             stateManager.updateSource(sourceId, {
                                 status: 'activating',
