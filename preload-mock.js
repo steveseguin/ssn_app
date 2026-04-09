@@ -727,6 +727,12 @@ if (contextIsolated) {
     startTwitchOAuth: async (payload) => {
       return await ipcRenderer.invoke('twitch-oauth', payload);
     },
+    startFacebookOAuth: async (payload) => {
+      return await ipcRenderer.invoke('facebook-oauth', payload);
+    },
+    exchangeFacebookOAuthCode: async (payload) => {
+      return await ipcRenderer.invoke('facebook-oauth-exchange', payload);
+    },
     startKickOAuth: async (payload) => {
       return await ipcRenderer.invoke('kick-oauth', payload);
     }
@@ -779,6 +785,12 @@ if (contextIsolated) {
     },
     startTwitchOAuth: async (payload) => {
       return await ipcRenderer.invoke('twitch-oauth', payload);
+    },
+    startFacebookOAuth: async (payload) => {
+      return await ipcRenderer.invoke('facebook-oauth', payload);
+    },
+    exchangeFacebookOAuthCode: async (payload) => {
+      return await ipcRenderer.invoke('facebook-oauth-exchange', payload);
     },
     startKickOAuth: async (payload) => {
       return await ipcRenderer.invoke('kick-oauth', payload);

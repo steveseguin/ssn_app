@@ -336,13 +336,14 @@ const tipsContent = {
 		  <td style="text-align:center; padding: 6px 8px;">✅</td>
 		  <td style="padding: 6px 8px;">Need to reply (requires sign-in)</td>
 		</tr>
-		<tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
-		  <td style="padding: 6px 8px;"><strong>Polling</strong></td>
-		  <td style="text-align:center; padding: 6px 8px;">❌</td>
-		  <td style="padding: 6px 8px;">Fallback only — messages arrive in batches</td>
-		</tr>
+	<tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+	  <td style="padding: 6px 8px;"><strong>Polling</strong></td>
+	  <td style="text-align:center; padding: 6px 8px;">❌</td>
+	  <td style="padding: 6px 8px;">Fallback only — messages arrive in batches</td>
+	</tr>
 	  </table>
 	  <p style="font-size: 0.85em; opacity: 0.8;"><strong>TikTok WS</strong> with <strong>Auto</strong> is the default. It tries WebSocket first and falls back to Polling if needed. Reply support depends on the signing provider.</p>
+	  <p style="font-size: 0.85em; opacity: 0.8;"><strong>Backup option:</strong> If TikTok modes keep failing or miss messages, use a <strong>TikFinity OBS Dock</strong> URL as an <strong>Other chat site</strong> in SSN. In TikFinity, go to <strong>Overlay -> OBS Docks</strong>, set one dock to chat, copy the URL, and keep TikFinity open.</p>
 	</div>
 	<div class="tips-section">
 	  <h3>Troubleshooting</h3>
@@ -357,6 +358,12 @@ const tipsContent = {
 		<li>Close other TikTok tabs/apps on this device</li>
 		<li>Avoid viewing the same stream elsewhere</li>
 		<li>Wait a few minutes, then try again</li>
+	  </ul>
+	  <p><strong>Still missing chat?</strong></p>
+	  <ul>
+		<li>Use a <strong>TikFinity OBS Dock</strong> URL as an <strong>Other chat site</strong> in SSN</li>
+		<li>In TikFinity, go to <strong>Overlay -> OBS Docks</strong> and set a dock to chat</li>
+		<li>Keep TikFinity open during the stream</li>
 	  </ul>
 	  <p><strong>Need to reply to chat?</strong></p>
 	  <ul>

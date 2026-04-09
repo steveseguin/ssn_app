@@ -61,6 +61,7 @@ const {
 } = require('./resources/electron-spotify-handler');
 const { setupYouTubeOAuthHandler } = require('./resources/electron-youtube-handler');
 const { setupTwitchOAuthHandler } = require('./resources/electron-twitch-handler');
+const { setupFacebookOAuthHandler } = require('./resources/electron-facebook-handler');
 const { setupKickOAuthHandler } = require('./resources/electron-kick-handler');
 const { KickWsClient } = require('./resources/kick-ws-client');
 
@@ -129,6 +130,12 @@ const WINDOWS_BUILD_NUMBER = parseWindowsBuildNumber();
 const IS_WINDOWS_11 = process.platform === 'win32' && WINDOWS_BUILD_NUMBER >= 22000;
 const IS_WINDOWS_10 = process.platform === 'win32' && WINDOWS_BUILD_NUMBER > 0 && WINDOWS_BUILD_NUMBER < 22000;
 const startupFlagsSnapshot = readStartupFlagsSnapshot();
+const WINDOW_STATE_DIAGNOSTICS_ENABLED = process.argv.includes('--window-state-diagnostics');
+const WINDOW_STATE_DIAGNOSTICS_REPORT_PATH = (() => {
+    const arg = process.argv.find((value) => typeof value === 'string' && value.startsWith('--window-state-report='));
+    if (!arg) return null;
+    return arg.slice('--window-state-report='.length);
+})();
 
 const win10TransparencyCompatRequested = (() => {
     const envFlag = parseBooleanLikeFlag(process.env.SSAPP_WIN10_TRANSPARENCY_COMPAT);
@@ -1300,6 +1307,7 @@ function configureSpotifyOAuthHandlers() {
 configureSpotifyOAuthHandlers();
 setupYouTubeOAuthHandler();
 setupTwitchOAuthHandler();
+setupFacebookOAuthHandler();
 setupKickOAuthHandler();
 
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
@@ -3187,6 +3195,528 @@ function validateSavedBounds(savedState) {
 
     // Position is off-screen (monitor likely disconnected)
     return null;
+}
+
+function getWindowStateDefaults(url) {
+    return {
+        width: url && url.includes("input.html") ? 600 : 800,
+        height: url && url.includes("input.html") ? 60 : 600,
+        x: null,
+        y: null,
+        displayId: null
+    };
+}
+
+function getDisplayWorkAreaBounds(display) {
+    const source = display && typeof display === "object" ? display : {};
+    const fallbackBounds = source.bounds || {};
+    const workArea = source.workArea || fallbackBounds;
+    return {
+        x: Number.isFinite(workArea.x) ? workArea.x : (Number.isFinite(fallbackBounds.x) ? fallbackBounds.x : 0),
+        y: Number.isFinite(workArea.y) ? workArea.y : (Number.isFinite(fallbackBounds.y) ? fallbackBounds.y : 0),
+        width: Math.max(100, Math.round(Number.isFinite(workArea.width) ? workArea.width : fallbackBounds.width || 800)),
+        height: Math.max(100, Math.round(Number.isFinite(workArea.height) ? workArea.height : fallbackBounds.height || 600))
+    };
+}
+
+function getPreferredDisplayForSavedState(savedState) {
+    const displays = screen.getAllDisplays();
+
+    if (savedState && savedState.displayId !== null && savedState.displayId !== undefined) {
+        const matchedDisplay = displays.find((display) => String(display.id) === String(savedState.displayId));
+        if (matchedDisplay) {
+            return matchedDisplay;
+        }
+    }
+
+    if (savedState && Number.isFinite(savedState.x) && Number.isFinite(savedState.y)) {
+        try {
+            return screen.getDisplayNearestPoint({
+                x: Math.round(savedState.x),
+                y: Math.round(savedState.y)
+            });
+        } catch (_) { }
+    }
+
+    return screen.getPrimaryDisplay();
+}
+
+function resolveWindowBoundsForUrl(url) {
+    const savedState = loadWindowState(url);
+    const defaults = getWindowStateDefaults(url);
+    const width = Math.max(100, Math.round(savedState && savedState.width ? savedState.width : defaults.width));
+    const height = Math.max(100, Math.round(savedState && savedState.height ? savedState.height : defaults.height));
+
+    if (!savedState) {
+        return {
+            width,
+            height
+        };
+    }
+
+    const validatedBounds = validateSavedBounds(savedState);
+    if (validatedBounds) {
+        return validatedBounds;
+    }
+
+    if (savedState.x === null || savedState.x === undefined || savedState.y === null || savedState.y === undefined) {
+        return {
+            width,
+            height
+        };
+    }
+
+    const targetDisplay = getPreferredDisplayForSavedState(savedState);
+    const workArea = getDisplayWorkAreaBounds(targetDisplay);
+    const clampedWidth = Math.min(width, workArea.width);
+    const clampedHeight = Math.min(height, workArea.height);
+
+    return {
+        x: Math.round(workArea.x + Math.max(workArea.width - clampedWidth, 0) / 2),
+        y: Math.round(workArea.y + Math.max(workArea.height - clampedHeight, 0) / 2),
+        width: clampedWidth,
+        height: clampedHeight
+    };
+}
+
+function normalizeBrowserWindowBounds(window, desiredBounds) {
+    const currentBounds = window && !window.isDestroyed() ? window.getBounds() : { x: 0, y: 0, width: 800, height: 600 };
+    return {
+        x: desiredBounds && desiredBounds.x !== null && desiredBounds.x !== undefined ? Math.round(desiredBounds.x) : currentBounds.x,
+        y: desiredBounds && desiredBounds.y !== null && desiredBounds.y !== undefined ? Math.round(desiredBounds.y) : currentBounds.y,
+        width: Math.max(100, Math.round(desiredBounds && desiredBounds.width ? desiredBounds.width : currentBounds.width)),
+        height: Math.max(100, Math.round(desiredBounds && desiredBounds.height ? desiredBounds.height : currentBounds.height))
+    };
+}
+
+function applyBrowserWindowBounds(window, desiredBounds, options = {}) {
+    if (!window || window.isDestroyed()) {
+        return;
+    }
+
+    const finalBounds = normalizeBrowserWindowBounds(window, desiredBounds);
+
+    if (process.platform === "win32") {
+        try {
+            const currentBounds = window.getBounds();
+            const currentDisplay = screen.getDisplayMatching(currentBounds);
+            const targetDisplay = screen.getDisplayMatching(finalBounds);
+            const crossesDisplay = currentDisplay && targetDisplay && currentDisplay.id !== targetDisplay.id;
+
+            if (crossesDisplay) {
+                window.setBounds({
+                    x: finalBounds.x,
+                    y: finalBounds.y,
+                    width: currentBounds.width,
+                    height: currentBounds.height
+                }, false);
+
+                setTimeout(() => {
+                    try {
+                        if (!window || window.isDestroyed()) return;
+                        window.setBounds(finalBounds, false);
+                    } catch (_) { }
+                }, options.followUpDelayMs || 75);
+                return;
+            }
+        } catch (_) { }
+    }
+
+    try {
+        window.setBounds(finalBounds, false);
+    } catch (_) { }
+}
+
+async function waitForCondition(predicate, timeoutMs = 10000, intervalMs = 100) {
+    const startedAt = Date.now();
+    while ((Date.now() - startedAt) < timeoutMs) {
+        try {
+            const result = await predicate();
+            if (result) {
+                return result;
+            }
+        } catch (_) { }
+        await sleep(intervalMs);
+    }
+    throw new Error(`Timed out after ${timeoutMs}ms`);
+}
+
+function getWindowStateDiagnosticFixturePath() {
+    return path.join(__dirname, 'tests', 'electron', 'fixtures', 'dock.html');
+}
+
+function buildWindowStateDiagnosticUrl(caseId) {
+    const fixturePath = getWindowStateDiagnosticFixturePath();
+    const baseUrl = pathToFileURL(fixturePath).href;
+    const suffix = baseUrl.includes('?') ? '&' : '?';
+    return `${baseUrl}${suffix}windowStateDiagnostic=${encodeURIComponent(caseId)}`;
+}
+
+function getWindowStateDiagnosticTargetBounds(display, caseIndex) {
+    const workArea = getDisplayWorkAreaBounds(display);
+    const width = Math.max(420, Math.min(1200, workArea.width - 140));
+    const height = Math.max(320, Math.min(860, workArea.height - 140));
+    const offsetX = 30 + (caseIndex * 18);
+    const offsetY = 40 + (caseIndex * 18);
+    const maxX = workArea.x + Math.max(workArea.width - width - 30, 0);
+    const maxY = workArea.y + Math.max(workArea.height - height - 30, 0);
+
+    return {
+        x: Math.min(workArea.x + offsetX, maxX),
+        y: Math.min(workArea.y + offsetY, maxY),
+        width,
+        height
+    };
+}
+
+function getWindowStateDiagnosticsTolerance() {
+    return {
+        x: 8,
+        y: 8,
+        width: 12,
+        height: 12
+    };
+}
+
+function compareWindowBounds(expectedBounds, actualBounds) {
+    return {
+        x: Math.round((actualBounds?.x || 0) - (expectedBounds?.x || 0)),
+        y: Math.round((actualBounds?.y || 0) - (expectedBounds?.y || 0)),
+        width: Math.round((actualBounds?.width || 0) - (expectedBounds?.width || 0)),
+        height: Math.round((actualBounds?.height || 0) - (expectedBounds?.height || 0))
+    };
+}
+
+function isWindowBoundsWithinTolerance(diff, tolerance = getWindowStateDiagnosticsTolerance()) {
+    return (
+        Math.abs(diff.x) <= tolerance.x &&
+        Math.abs(diff.y) <= tolerance.y &&
+        Math.abs(diff.width) <= tolerance.width &&
+        Math.abs(diff.height) <= tolerance.height
+    );
+}
+
+async function openWindowStateDiagnosticChildWindow(diagnosticUrl) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+        throw new Error('Main window unavailable for diagnostics');
+    }
+
+    const existingIds = new Set(BrowserWindow.getAllWindows().map((win) => win.id));
+    await mainWindow.webContents.executeJavaScript(`window.open(${JSON.stringify(diagnosticUrl)}, "_blank");`, true);
+
+    return waitForCondition(() => {
+        const windows = BrowserWindow.getAllWindows();
+        return windows.find((win) => {
+            if (!win || win.isDestroyed() || existingIds.has(win.id) || win === mainWindow) return false;
+            try {
+                const currentUrl = win.webContents && typeof win.webContents.getURL === 'function' ? win.webContents.getURL() : '';
+                return currentUrl.includes('windowStateDiagnostic=');
+            } catch (_) {
+                return false;
+            }
+        });
+    }, 15000, 100);
+}
+
+async function closeWindowStateDiagnosticChildWindow(win) {
+    if (!win || win.isDestroyed()) {
+        return;
+    }
+
+    try {
+        win.close();
+    } catch (_) { }
+
+    await waitForCondition(() => !win || win.isDestroyed(), 15000, 100);
+}
+
+async function waitForWindowStateDiagnosticReady(win) {
+    if (!win || win.isDestroyed()) {
+        throw new Error('Diagnostic window destroyed before ready');
+    }
+
+    if (win.webContents && !win.webContents.isLoading()) {
+        await sleep(1000);
+        return;
+    }
+
+    await new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+        };
+        const fail = () => {
+            if (settled) return;
+            settled = true;
+            reject(new Error('Diagnostic window was destroyed while loading'));
+        };
+
+        try {
+            win.once('closed', fail);
+            win.webContents.once('did-finish-load', finish);
+            setTimeout(finish, 5000);
+        } catch (error) {
+            reject(error);
+        }
+    });
+
+    await sleep(1000);
+}
+
+async function runWindowStateDiagnostics() {
+    const report = {
+        startedAt: new Date().toISOString(),
+        platform: process.platform,
+        displays: screen.getAllDisplays().map((display) => ({
+            id: display.id,
+            label: display.label || null,
+            scaleFactor: display.scaleFactor || 1,
+            bounds: display.bounds,
+            workArea: display.workArea
+        })),
+        cases: [],
+        summary: {
+            passed: 0,
+            failed: 0
+        }
+    };
+
+    const fixturePath = getWindowStateDiagnosticFixturePath();
+    const originalDockState = store.get('windowState_dock');
+
+    if (!fs.existsSync(fixturePath)) {
+        throw new Error(`Diagnostic fixture missing: ${fixturePath}`);
+    }
+
+    try {
+        await waitForCondition(() => mainWindow && !mainWindow.isDestroyed(), 15000, 100);
+        await waitForCondition(() => mainWindow.webContents && !mainWindow.webContents.isLoading(), 30000, 100);
+        await sleep(1000);
+
+        const displays = screen.getAllDisplays();
+        for (let index = 0; index < displays.length; index += 1) {
+            const display = displays[index];
+            const caseId = `display-${display.id}-${index}`;
+            const diagnosticUrl = buildWindowStateDiagnosticUrl(caseId);
+            const targetBounds = getWindowStateDiagnosticTargetBounds(display, index);
+            const seededState = {
+                x: targetBounds.x,
+                y: targetBounds.y,
+                width: targetBounds.width,
+                height: targetBounds.height,
+                displayId: display.id,
+                scaleFactor: display.scaleFactor || 1
+            };
+
+            try {
+                store.set('windowState_dock', seededState);
+
+                const firstWindow = await openWindowStateDiagnosticChildWindow(diagnosticUrl);
+                await waitForWindowStateDiagnosticReady(firstWindow);
+                await sleep(400);
+
+                const restoredBounds = firstWindow.getBounds();
+                const restoredDiff = compareWindowBounds(targetBounds, restoredBounds);
+                const restoredPassed = isWindowBoundsWithinTolerance(restoredDiff);
+                await closeWindowStateDiagnosticChildWindow(firstWindow);
+                await sleep(300);
+
+                const savedState = store.get('windowState_dock');
+                const reopenedWindow = await openWindowStateDiagnosticChildWindow(diagnosticUrl);
+                await waitForWindowStateDiagnosticReady(reopenedWindow);
+                const reopenedBounds = reopenedWindow.getBounds();
+                const reopenedDiff = compareWindowBounds(targetBounds, reopenedBounds);
+                const reopenedPassed = isWindowBoundsWithinTolerance(reopenedDiff);
+                const passed = restoredPassed && reopenedPassed;
+
+                report.cases.push({
+                    id: caseId,
+                    displayId: display.id,
+                    scaleFactor: display.scaleFactor || 1,
+                    workArea: display.workArea,
+                    seededState,
+                    targetBounds,
+                    restoredBounds,
+                    restoredDiff,
+                    restoredPassed,
+                    savedState,
+                    reopenedBounds,
+                    reopenedDiff,
+                    reopenedPassed,
+                    passed
+                });
+
+                if (passed) {
+                    report.summary.passed += 1;
+                } else {
+                    report.summary.failed += 1;
+                }
+
+                await closeWindowStateDiagnosticChildWindow(reopenedWindow);
+            } catch (error) {
+                report.cases.push({
+                    id: caseId,
+                    displayId: display.id,
+                    scaleFactor: display.scaleFactor || 1,
+                    workArea: display.workArea,
+                    targetBounds,
+                    error: error && error.message ? error.message : String(error),
+                    passed: false
+                });
+                report.summary.failed += 1;
+            }
+        }
+    } finally {
+        if (typeof originalDockState === 'undefined') {
+            store.delete('windowState_dock');
+        } else {
+            store.set('windowState_dock', originalDockState);
+        }
+    }
+
+    report.finishedAt = new Date().toISOString();
+    report.success = report.summary.failed === 0;
+
+    if (WINDOW_STATE_DIAGNOSTICS_REPORT_PATH) {
+        await fsp.writeFile(WINDOW_STATE_DIAGNOSTICS_REPORT_PATH, JSON.stringify(report, null, 2), 'utf8');
+    }
+
+    return report;
+}
+
+const DEFAULT_SOURCE_WINDOW_X = 635;
+const DEFAULT_SOURCE_WINDOW_Y = 100;
+const DEFAULT_SOURCE_WINDOW_WIDTH = 1366;
+const DEFAULT_SOURCE_WINDOW_HEIGHT = 768;
+
+function normalizeRememberedSourceWindowMode(mode) {
+    if (mode === "signin" || mode === "wss") {
+        return mode;
+    }
+    return "classic";
+}
+
+function getRememberedSourceWindowPlatform(args) {
+    if (args && args.platform) {
+        return String(args.platform).trim().toLowerCase();
+    }
+
+    try {
+        const domain = getPrimaryDomain(args && args.url ? args.url : "");
+        const platform = resolveSessionPlatform(args, domain);
+        if (platform) {
+            return String(platform).trim().toLowerCase();
+        }
+    } catch (_) { }
+
+    return "default";
+}
+
+function getRememberedSourceWindowKey(args, mode) {
+    const platform = getRememberedSourceWindowPlatform(args).replace(/[^a-z0-9_-]/g, "_") || "default";
+    const normalizedMode = normalizeRememberedSourceWindowMode(mode);
+    return `sourceWindowState_${platform}_${normalizedMode}`;
+}
+
+function getConfiguredSourceWindowSize(args, mode) {
+    const normalizedMode = normalizeRememberedSourceWindowMode(mode);
+    let size = null;
+
+    if (args && args.size) {
+        size = { ...args.size };
+    } else if (args && args.configs) {
+        const platform = getRememberedSourceWindowPlatform(args);
+        const platformConfig = args.configs[platform];
+
+        if (args.configs.global && args.configs.global.size) {
+            size = { ...args.configs.global.size };
+        }
+        if (platformConfig && platformConfig.size) {
+            size = { ...(size || {}), ...platformConfig.size };
+        }
+        if (normalizedMode === "signin" && platformConfig && platformConfig.signin && platformConfig.signin.size) {
+            size = { ...(size || {}), ...platformConfig.signin.size };
+        } else if (normalizedMode === "wss" && platformConfig && platformConfig.wss && platformConfig.wss.size) {
+            size = { ...(size || {}), ...platformConfig.wss.size };
+        }
+    } else if (args && args.config && args.config.size) {
+        size = { ...args.config.size };
+    }
+
+    const width = Math.max(parseInt(size && size.width, 10) || 0, 100) || DEFAULT_SOURCE_WINDOW_WIDTH;
+    const height = Math.max(parseInt(size && size.height, 10) || 0, 100) || DEFAULT_SOURCE_WINDOW_HEIGHT;
+
+    return { width, height };
+}
+
+function loadRememberedSourceWindowBounds(args, mode) {
+    const savedState = validateSavedBounds(store.get(getRememberedSourceWindowKey(args, mode)));
+    if (savedState) {
+        return savedState;
+    }
+
+    const size = getConfiguredSourceWindowSize(args, mode);
+    return {
+        x: DEFAULT_SOURCE_WINDOW_X,
+        y: DEFAULT_SOURCE_WINDOW_Y,
+        width: size.width,
+        height: size.height
+    };
+}
+
+function saveRememberedSourceWindowBounds(window, mode) {
+    try {
+        if (!window || (typeof window.isDestroyed === "function" && window.isDestroyed())) {
+            return;
+        }
+        if (window.__ss_visible === false) {
+            return;
+        }
+
+        const bounds = window.getBounds();
+        const display = screen.getDisplayMatching(bounds);
+        const stateKey = getRememberedSourceWindowKey(window.args || {}, mode);
+
+        store.set(stateKey, {
+            width: Math.max(parseInt(bounds.width, 10) || 0, 100),
+            height: Math.max(parseInt(bounds.height, 10) || 0, 100),
+            x: bounds.x,
+            y: bounds.y,
+            displayId: display.id,
+            scaleFactor: display.scaleFactor || 1
+        });
+    } catch (_) { }
+}
+
+function installRememberedSourceWindowBoundsTracking(window, mode) {
+    if (!window) return;
+
+    let readyToSave = false;
+    let saveTimeout = null;
+
+    setTimeout(() => {
+        readyToSave = true;
+    }, 500);
+
+    const scheduleSave = () => {
+        if (!readyToSave) return;
+        if (window.__ss_visible === false) return;
+
+        clearTimeout(saveTimeout);
+        saveTimeout = setTimeout(() => {
+            saveRememberedSourceWindowBounds(window, mode);
+        }, 100);
+    };
+
+    window.on("resize", scheduleSave);
+    window.on("move", scheduleSave);
+    window.once("closed", () => {
+        if (saveTimeout) {
+            clearTimeout(saveTimeout);
+        }
+    });
 }
 
 function setPopupUnclickableForWindow(win, enabled) {
@@ -5664,7 +6194,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const applyDesiredBounds = () => {
                 try {
                     if (!mainWindow || mainWindow.isDestroyed()) return;
-                    mainWindow.setBounds(desiredMainBounds, false);
+                    applyBrowserWindowBounds(mainWindow, desiredMainBounds);
                 } catch (_) { }
             };
 
@@ -5880,24 +6410,37 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
             applyPlatformWindowCompatibility(config);
 
-            const windowState = loadWindowState(url);
-            if (windowState) {
-                // Window bounds are already DPI-independent; avoid scaleFactor math.
-                if (windowState.x !== null && windowState.x !== undefined) {
-                    config.x = windowState.x;
+            const restoredWindowBounds = resolveWindowBoundsForUrl(url);
+            if (restoredWindowBounds) {
+                if (restoredWindowBounds.x !== null && restoredWindowBounds.x !== undefined) {
+                    config.x = restoredWindowBounds.x;
                 }
-                if (windowState.y !== null && windowState.y !== undefined) {
-                    config.y = windowState.y;
+                if (restoredWindowBounds.y !== null && restoredWindowBounds.y !== undefined) {
+                    config.y = restoredWindowBounds.y;
                 }
-                if (windowState.width) {
-                    config.width = Math.round(windowState.width);
+                if (restoredWindowBounds.width) {
+                    config.width = Math.round(restoredWindowBounds.width);
                 }
-                if (windowState.height) {
-                    config.height = Math.round(windowState.height);
+                if (restoredWindowBounds.height) {
+                    config.height = Math.round(restoredWindowBounds.height);
                 }
             }
 
             const view = new BrowserWindow(config);
+
+            if (process.platform === "win32" && restoredWindowBounds) {
+                const applyDesiredBounds = () => {
+                    try {
+                        if (!view || view.isDestroyed()) return;
+                        applyBrowserWindowBounds(view, restoredWindowBounds);
+                    } catch (_) { }
+                };
+
+                view.once("ready-to-show", () => {
+                    applyDesiredBounds();
+                    setTimeout(applyDesiredBounds, 100);
+                });
+            }
 
             // Workaround for Electron 36 frameless window titlebar issue
             if (!frame && APPLY_WIN_FRAMELESS_WORKAROUND) {
@@ -8070,29 +8613,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 }
             }
 
-            // Set window bounds
-            if (args.size) {
-                view.setBounds({
-                    x: 635,
-                    y: 100,
-                    width: Math.max(parseInt(args.size.width), 0) || 1100,
-                    height: Math.max(0, parseInt(args.size.height)) || 600,
-                });
-            } else if (args.config && args.config.size) {
-                view.setBounds({
-                    x: 635,
-                    y: 100,
-                    width: args.config.size.width,
-                    height: args.config.size.height
-                });
-            } else {
-                view.setBounds({
-                    x: 635,
-                    y: 100,
-                    width: 1100,
-                    height: 600
-                });
-            }
+            view.setBounds(loadRememberedSourceWindowBounds(args, "signin"));
+            installRememberedSourceWindowBoundsTracking(view, "signin");
 
 
             // Set up window behaviors
@@ -8843,6 +9365,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             });
             //log(args);
             view.args = args;
+            view.__ss_visible = !!visibibility;
             const releaseActivatedWindowSessionHooks = registerActivatedWindowSessionHooks(view, args);
             view.once('closed', () => {
                 try {
@@ -8850,35 +9373,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 } catch (_) { }
             });
 
+            view.tabID = generateUniqueWindowId();;
+            browserViews[view.tabID] = view;
+            const sourceWindowMode = args.wss ? "wss" : "classic";
+            view.setBounds(loadRememberedSourceWindowBounds(args, sourceWindowMode));
+            installRememberedSourceWindowBoundsTracking(view, sourceWindowMode);
+
             // Show without stealing focus if visibility is enabled
             if (visibibility) {
                 view.showInactive();
-            }
-
-            view.tabID = generateUniqueWindowId();;
-            browserViews[view.tabID] = view;
-
-            if (args.size) {
-                view.setBounds({
-                    x: 635,
-                    y: 100,
-                    width: Math.max(parseInt(args.size.width), 0) || 1200,
-                    height: Math.max(0, parseInt(args.size.height)) || 600,
-                });
-            } else if (args.config && args.config.size) {
-                view.setBounds({
-                    x: 635,
-                    y: 100,
-                    width: args.config.size.width,
-                    height: args.config.size.height
-                });
-            } else {
-                view.setBounds({
-                    x: 635,
-                    y: 100,
-                    width: 1100,
-                    height: 600
-                });
             }
 
             if (view.webContents) {
@@ -12791,6 +13294,31 @@ app.whenReady().then(async function () {
     queueStabilityStartupNotice();
     setupRemoteControlServer();
 
+    if (WINDOW_STATE_DIAGNOSTICS_ENABLED) {
+        setTimeout(() => {
+            runWindowStateDiagnostics()
+                .then((report) => {
+                    console.log('[WindowStateDiagnostics] Summary:', JSON.stringify(report.summary));
+                    app.exit(report.success ? 0 : 1);
+                })
+                .catch(async (error) => {
+                    const failureReport = {
+                        startedAt: new Date().toISOString(),
+                        finishedAt: new Date().toISOString(),
+                        success: false,
+                        error: error && error.message ? error.message : String(error)
+                    };
+                    if (WINDOW_STATE_DIAGNOSTICS_REPORT_PATH) {
+                        try {
+                            await fsp.writeFile(WINDOW_STATE_DIAGNOSTICS_REPORT_PATH, JSON.stringify(failureReport, null, 2), 'utf8');
+                        } catch (_) { }
+                    }
+                    console.error('[WindowStateDiagnostics] Failed:', failureReport.error);
+                    app.exit(1);
+                });
+        }, 1000);
+    }
+
     // Start/refresh transfer backup timers after app is ready.
     try {
         scheduleTransferBackupTimers();
@@ -13101,11 +13629,44 @@ function showMainWindowFromTray() {
     if (!mainWindow || mainWindow.isDestroyed()) {
         return;
     }
-    if (mainWindow.isMinimized()) {
-        mainWindow.restore();
+    try {
+        if (typeof app.focus === "function") {
+            try {
+                app.focus({ steal: true });
+            } catch (_) {
+                app.focus();
+            }
+        }
+    } catch (_) { }
+
+    try {
+        if (mainWindow.isMinimized()) {
+            mainWindow.restore();
+        }
+    } catch (_) { }
+
+    try {
+        mainWindow.show();
+    } catch (_) { }
+
+    try {
+        mainWindow.moveTop();
+    } catch (_) { }
+
+    try {
+        const wasAlwaysOnTop = mainWindow.isAlwaysOnTop();
+        if (!wasAlwaysOnTop) {
+            mainWindow.setAlwaysOnTop(true);
+        }
+        mainWindow.focus();
+        if (!wasAlwaysOnTop) {
+            mainWindow.setAlwaysOnTop(false);
+        }
+    } catch (_) {
+        try {
+            mainWindow.focus();
+        } catch (_) { }
     }
-    mainWindow.show();
-    mainWindow.focus();
 }
 
 

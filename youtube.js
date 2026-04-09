@@ -1,6 +1,178 @@
 // Force a consistent language so our scrape keyword checks (LIVE/UPCOMING/etc.) behave the same across locales.
 const YT_ACCEPT_LANGUAGE = 'en-US,en;q=0.9';
 window.SSAPP_ACCEPT_LANGUAGE = YT_ACCEPT_LANGUAGE;
+const YOUTUBE_STREAM_DISCOVERY_CACHE_TTL_MS = 60000;
+const youtubeStreamDiscoveryCache = new Map();
+const youtubeStreamDiscoveryInflight = new Map();
+const MANUAL_YOUTUBE_DISCOVERY_CACHE_TTL_MS = 5000;
+const manualYouTubeDiscoveryCache = new Map();
+const manualYouTubeDiscoveryInflight = new Map();
+
+function cloneYouTubeStreams(streams) {
+    if (!Array.isArray(streams)) return [];
+    return streams.map(stream => (stream && typeof stream === 'object') ? { ...stream } : stream);
+}
+
+function getYouTubeStreamDiscoveryCacheKey(identifier, options = {}) {
+    return JSON.stringify({
+        identifier: String(identifier || '').trim(),
+        isChannelOnly: !!options.isChannelOnly,
+        isUsernameOnly: !!options.isUsernameOnly,
+        isShortDefault: !!options.isShortDefault
+    });
+}
+
+function getYouTubeStreamSortTimestamp(stream) {
+    if (!stream || typeof stream !== 'object') return Number.MAX_SAFE_INTEGER;
+    let value = stream.actualStartTime || stream.scheduledStartTime || stream.publishedAt || 0;
+    if (typeof value === 'string') {
+        const parsedDate = Date.parse(value);
+        if (!Number.isNaN(parsedDate)) {
+            return parsedDate;
+        }
+        value = Number(value);
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value < 1e12 ? value * 1000 : value;
+    }
+    return Number.MAX_SAFE_INTEGER;
+}
+
+function sortYouTubeStreams(streams) {
+    const sorted = cloneYouTubeStreams(streams);
+    sorted.sort((a, b) => {
+        const statusA = a && typeof a.status === 'string' ? a.status : '';
+        const statusB = b && typeof b.status === 'string' ? b.status : '';
+        const rank = (status) => {
+            if (status === 'live') return 0;
+            if (status === 'upcoming') return 1;
+            if (status === 'ended') return 2;
+            return 3;
+        };
+        const rankDiff = rank(statusA) - rank(statusB);
+        if (rankDiff) return rankDiff;
+        return getYouTubeStreamSortTimestamp(a) - getYouTubeStreamSortTimestamp(b);
+    });
+    return sorted;
+}
+
+function mergeYouTubeStreams(primaryStreams = [], fallbackStreams = [], isShortDefault = false) {
+    const combined = [];
+    const seenVideoIds = new Set();
+
+    const appendStream = (stream) => {
+        if (!stream || !stream.videoId || seenVideoIds.has(stream.videoId)) return;
+        const normalized = { ...stream };
+        if (typeof normalized.isShort !== 'boolean') {
+            normalized.isShort = isShortDefault;
+        }
+        combined.push(normalized);
+        seenVideoIds.add(normalized.videoId);
+    };
+
+    primaryStreams.forEach(appendStream);
+    fallbackStreams.forEach(appendStream);
+
+    return sortYouTubeStreams(combined);
+}
+
+async function fetchYouTubeLiveStreamsFromApi(identifier, options = {}) {
+  try {
+	const { isChannelOnly = false, isUsernameOnly = false } = options;
+	let apiUrl = `https://api.socialstream.ninja/youtube/streams?username=${encodeURIComponent(identifier)}`;
+	if (isChannelOnly) {
+	  apiUrl += '&channelsonly';
+	} else if (isUsernameOnly) {
+	  apiUrl += '&usernameonly';
+	}
+	const response = await fetch(apiUrl);
+    if (!response.ok) {
+        console.error(`API Error for ${identifier}: ${response.status} ${response.statusText}`);
+        const errorBody = await response.text();
+        console.error("API Error Body:", errorBody);
+        return [];
+    }
+	const data = await response.json();
+	if (!data.success || !Array.isArray(data.data)) {
+      console.warn(`API call for ${identifier} not successful or data is not an array:`, data);
+	  return [];
+	}
+	const live = [];
+	const upcoming = [];
+	data.data.forEach(video => {
+      if (video && typeof video.status === 'string') {
+        if (video.status === 'live') {
+          live.push(video);
+        } else if (video.status === 'upcoming') {
+          upcoming.push(video);
+        }
+      } else {
+          console.warn("Skipping video due to missing or invalid status:", video);
+      }
+	});
+	live.sort((a, b) => new Date(a.actualStartTime) - new Date(b.actualStartTime));
+	upcoming.sort((a, b) => new Date(a.scheduledStartTime) - new Date(b.scheduledStartTime));
+	return [...live, ...upcoming];
+  } catch (error) {
+	console.error(`General Error fetching YouTube Live Streams for ${identifier}:`, error);
+	return [];
+  }
+}
+
+async function discoverYouTubeStreamsForManualAction(username, isShortDefault = false, isChannelName = false) {
+    const cacheKey = getYouTubeStreamDiscoveryCacheKey(username, {
+        isChannelOnly: isChannelName,
+        isUsernameOnly: !isChannelName && !username.startsWith("UC"),
+        isShortDefault
+    });
+    const cached = manualYouTubeDiscoveryCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+        return cloneYouTubeStreams(cached.streams);
+    }
+
+    if (manualYouTubeDiscoveryInflight.has(cacheKey)) {
+        const pending = await manualYouTubeDiscoveryInflight.get(cacheKey);
+        return cloneYouTubeStreams(pending);
+    }
+
+    const request = (async () => {
+        const streamsFromApi = await fetchYouTubeLiveStreamsFromApi(username, {
+            isChannelOnly: isChannelName,
+            isUsernameOnly: !isChannelName && !username.startsWith("UC")
+        });
+        let streamsFromScrape = [];
+
+        if (!streamsFromApi || streamsFromApi.length === 0) {
+            streamsFromScrape = await fetchYoutube(username, false);
+            if (!Array.isArray(streamsFromScrape) || !streamsFromScrape.length) {
+                streamsFromScrape = await fetchYoutube(username, true) || [];
+            }
+        }
+
+        const combinedStreams = [...streamsFromApi];
+        streamsFromScrape.forEach(scrapedStream => {
+            if (!combinedStreams.some(apiStream => apiStream.videoId === scrapedStream.videoId)) {
+                if (typeof scrapedStream.isShort !== 'boolean') {
+                    scrapedStream.isShort = isShortDefault;
+                }
+                combinedStreams.push(scrapedStream);
+            }
+        });
+
+        return combinedStreams;
+    })().finally(() => {
+        manualYouTubeDiscoveryInflight.delete(cacheKey);
+    });
+
+    manualYouTubeDiscoveryInflight.set(cacheKey, request);
+    const streams = await request;
+    manualYouTubeDiscoveryCache.set(cacheKey, {
+        expiresAt: Date.now() + MANUAL_YOUTUBE_DISCOVERY_CACHE_TTL_MS,
+        streams: cloneYouTubeStreams(streams)
+    });
+
+    return cloneYouTubeStreams(streams);
+}
 
 class YouTubeStreamSelector {
     constructor() {
@@ -260,24 +432,18 @@ class YouTubeStreamSelector {
 }
 
 
-async function handleYouTubeActivation(username, isShortDefault = false, showPrompts = true, autoActivateAll = false, isChannelName = false) {
+async function handleYouTubeActivation(username, isShortDefault = false, showPrompts = true, autoActivateAll = false, isChannelName = false, options = {}) {
     try {
-        console.log("handleYouTubeActivation:", { username, isShortDefault, showPrompts, autoActivateAll, isChannelName });
-        let streamsFromApi = await fetchYouTubeLiveStreams(username, { isChannelOnly: isChannelName, isUsernameOnly: !isChannelName && !username.startsWith("UC") });
-        let streamsFromScrape = [];
-        if (!streamsFromApi || streamsFromApi.length === 0) {
-            streamsFromScrape = await fetchYoutube(username, false) || await fetchYoutube(username, true) || [];
-        }
-
-        let combinedStreams = [...streamsFromApi];
-        streamsFromScrape.forEach(scrapedStream => {
-            if (!combinedStreams.some(apiStream => apiStream.videoId === scrapedStream.videoId)) {
-                if (typeof scrapedStream.isShort !== 'boolean') {
-                     scrapedStream.isShort = isShortDefault; 
-                }
-                combinedStreams.push(scrapedStream);
-            }
-        });
+        const manualTrigger = !!options.manualTrigger;
+        console.log("handleYouTubeActivation:", { username, isShortDefault, showPrompts, autoActivateAll, isChannelName, manualTrigger });
+        const combinedStreams = manualTrigger
+            ? await discoverYouTubeStreamsForManualAction(username, isShortDefault, isChannelName)
+            : await fetchYouTubeLiveStreams(username, {
+                isChannelOnly: isChannelName,
+                isUsernameOnly: !isChannelName && !username.startsWith("UC"),
+                isShortDefault,
+                cacheTtlMs: showPrompts ? 15000 : YOUTUBE_STREAM_DISCOVERY_CACHE_TTL_MS
+            });
         
         if (!combinedStreams.length) {
             Toast.warning("YouTube", `No live or upcoming streams found for ${username}.`);
@@ -1371,48 +1537,65 @@ function extractYoutubeID(urlInput) {
 	return null; 
 }
 async function fetchYouTubeLiveStreams(identifier, options = {}) {
-  try {
-	const { isChannelOnly = false, isUsernameOnly = false } = options;
-	let apiUrl = `https://api.socialstream.ninja/youtube/streams?username=${encodeURIComponent(identifier)}`;
-	if (isChannelOnly) {
-	  apiUrl += '&channelsonly';
-	} else if (isUsernameOnly) {
-	  apiUrl += '&usernameonly';
-	}
-	const response = await fetch(apiUrl);
-    if (!response.ok) { // Check for non-2xx responses
-        console.error(`API Error for ${identifier}: ${response.status} ${response.statusText}`);
-        const errorBody = await response.text();
-        console.error("API Error Body:", errorBody);
-        return []; // Return empty on API error
-    }
-	const data = await response.json();
-	if (!data.success || !Array.isArray(data.data)) {
-      console.warn(`API call for ${identifier} not successful or data is not an array:`, data);
-	  return [];
-	}
-	const live = [];
-	const upcoming = [];
-	// const ended = []; // Not currently used after filtering
-	data.data.forEach(video => {
-      // Ensure each video object has a 'status' property before categorizing
-      if (video && typeof video.status === 'string') {
-        if (video.status === 'live') {
-          live.push(video);
-        } else if (video.status === 'upcoming') {
-          upcoming.push(video);
-        } else if (video.status === 'ended') {
-          // ended.push(video); // Can collect if needed later
+    const {
+        isChannelOnly = false,
+        isUsernameOnly = false,
+        isShortDefault = false,
+        cacheTtlMs = YOUTUBE_STREAM_DISCOVERY_CACHE_TTL_MS,
+        allowScrapeFallback = true,
+        bypassCache = false
+    } = options;
+    const cacheKey = getYouTubeStreamDiscoveryCacheKey(identifier, {
+        isChannelOnly,
+        isUsernameOnly,
+        isShortDefault
+    });
+    const resolvedCacheTtl = (typeof cacheTtlMs === 'number' && cacheTtlMs >= 0)
+        ? cacheTtlMs
+        : YOUTUBE_STREAM_DISCOVERY_CACHE_TTL_MS;
+
+    if (!bypassCache) {
+        const cached = youtubeStreamDiscoveryCache.get(cacheKey);
+        if (cached && cached.expiresAt > Date.now()) {
+            return cloneYouTubeStreams(cached.streams);
         }
-      } else {
-          console.warn("Skipping video due to missing or invalid status:", video);
-      }
-	});
-	live.sort((a, b) => new Date(a.actualStartTime) - new Date(b.actualStartTime));
-	upcoming.sort((a, b) => new Date(a.scheduledStartTime) - new Date(b.scheduledStartTime));
-	return [...live, ...upcoming];
-  } catch (error) {
-	console.error(`General Error fetching YouTube Live Streams for ${identifier}:`, error);
-	return []; // Return empty on general error
-  }
+        if (youtubeStreamDiscoveryInflight.has(cacheKey)) {
+            const pending = await youtubeStreamDiscoveryInflight.get(cacheKey);
+            return cloneYouTubeStreams(pending);
+        }
+    }
+
+    const request = (async () => {
+        const streamsFromApi = await fetchYouTubeLiveStreamsFromApi(identifier, {
+            isChannelOnly,
+            isUsernameOnly
+        });
+        let streamsFromScrape = [];
+
+        if (allowScrapeFallback && (!streamsFromApi || streamsFromApi.length === 0)) {
+            streamsFromScrape = await fetchYoutube(identifier, false);
+            if (!Array.isArray(streamsFromScrape) || !streamsFromScrape.length) {
+                streamsFromScrape = await fetchYoutube(identifier, true) || [];
+            }
+        }
+
+        return mergeYouTubeStreams(streamsFromApi, streamsFromScrape, isShortDefault);
+    })().finally(() => {
+        youtubeStreamDiscoveryInflight.delete(cacheKey);
+    });
+
+    if (!bypassCache) {
+        youtubeStreamDiscoveryInflight.set(cacheKey, request);
+    }
+
+    const streams = await request;
+
+    if (!bypassCache) {
+        youtubeStreamDiscoveryCache.set(cacheKey, {
+            expiresAt: Date.now() + resolvedCacheTtl,
+            streams: cloneYouTubeStreams(streams)
+        });
+    }
+
+    return cloneYouTubeStreams(streams);
 }

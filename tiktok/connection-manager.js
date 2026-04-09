@@ -589,6 +589,26 @@ function normalizeSigningConfig(signing) {
     };
 }
 
+function parseHostAllowlist(rawValue) {
+    if (typeof rawValue !== 'string' || !rawValue.trim()) {
+        return new Set();
+    }
+    return new Set(
+        rawValue
+            .split(/[,\s]+/)
+            .map(value => value.trim().toLowerCase())
+            .filter(Boolean)
+    );
+}
+
+function isLoopbackHostname(hostname) {
+    const normalized = typeof hostname === 'string' ? hostname.trim().toLowerCase() : '';
+    return normalized === 'localhost'
+        || normalized === '127.0.0.1'
+        || normalized === '::1'
+        || normalized === '[::1]';
+}
+
 function resolveSourceIdForPayload(payload) {
     if (!payload || typeof payload !== 'object') return null;
     if (payload.sourceId) return payload.sourceId;
@@ -3493,6 +3513,7 @@ class ConnectionManager {
         this.replayActive = false;
         this.pendingStreamEndTimer = null;
         this.pendingStreamEndReason = null;
+        this.authenticatedWsBootstrapHost = null;
         this.streamEndConfirmDelayMs = Number(CONFIG.CONNECTION.STREAM_END_CONFIRM_DELAY_MS) || 5000;
         if (!Number.isFinite(this.streamEndConfirmDelayMs) || this.streamEndConfirmDelayMs < 0) {
             this.streamEndConfirmDelayMs = 5000;
@@ -3617,6 +3638,7 @@ class ConnectionManager {
 
 	    buildConnectionOptions(useLegacyConnector = false) {
 	        const forceLegacy = useLegacyConnector || usingLegacyTikTokConnector || this.preferredStrategy === 'legacy';
+            this.authenticatedWsBootstrapHost = null;
 	        if (forceLegacy) {
 	            const legacyOptions = {
 	                processInitialData: false,
@@ -3661,6 +3683,10 @@ class ConnectionManager {
 	        if (this.signingConfig?.apiKey && !usingLocalSigner && this.signingProvider !== 'local') {
 	            options.signApiKey = this.signingConfig.apiKey;
 	        }
+            const authenticatedWsHost = this.resolveAuthenticatedWebsocketBootstrapHost();
+            if (authenticatedWsHost) {
+                options.authenticateWs = true;
+            }
 
         const localProvider = usingLocalSigner
             ? this.createLocalSignedWebSocketProvider()
@@ -3680,6 +3706,93 @@ class ConnectionManager {
             return true;
         }
         return false;
+    }
+
+    resolveAuthenticatedWebsocketBootstrapHost() {
+        this.authenticatedWsBootstrapHost = null;
+        if (!this.sessionId || !this.ttTargetIdc) {
+            return null;
+        }
+        if (this.shouldUseLocalSigner()) {
+            return null;
+        }
+        if (this.signingProvider !== 'custom') {
+            return null;
+        }
+        const serviceUrl = this.signingConfig?.serviceUrl || null;
+        if (!serviceUrl) {
+            return null;
+        }
+
+        let parsed;
+        try {
+            parsed = new URL(serviceUrl);
+        } catch (_) {
+            return null;
+        }
+
+        const hostname = typeof parsed.hostname === 'string'
+            ? parsed.hostname.trim().toLowerCase()
+            : '';
+        const host = typeof parsed.host === 'string'
+            ? parsed.host.trim().toLowerCase()
+            : '';
+        if (!hostname || !host) {
+            return null;
+        }
+
+        if (isLoopbackHostname(hostname)) {
+            this.authenticatedWsBootstrapHost = host;
+            return host;
+        }
+
+        const allowlist = parseHostAllowlist(process.env.SSAPP_TIKTOK_AUTH_WS_ALLOWED_HOSTS || '');
+        if (allowlist.has(host) || allowlist.has(hostname)) {
+            this.authenticatedWsBootstrapHost = host;
+            return host;
+        }
+
+        return null;
+    }
+
+    resolveConnectionAuthenticatedWebsocketBootstrapHost(connection = this.connection) {
+        if (!connection || typeof connection !== 'object' || !connection.options || connection.options.authenticateWs !== true) {
+            return null;
+        }
+        try {
+            const basePath = connection.webClient?.webSigner?.configuration?.basePath || null;
+            if (!basePath) {
+                return this.authenticatedWsBootstrapHost || null;
+            }
+            const parsed = new URL(basePath);
+            const host = typeof parsed.host === 'string' ? parsed.host.trim().toLowerCase() : '';
+            return host || this.authenticatedWsBootstrapHost || null;
+        } catch (_) {
+            return this.authenticatedWsBootstrapHost || null;
+        }
+    }
+
+    prepareAuthenticatedWebsocketBootstrapEnv(connection) {
+        const host = this.resolveConnectionAuthenticatedWebsocketBootstrapHost(connection);
+        if (!host) {
+            return null;
+        }
+
+        const previousHost = typeof process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST === 'string'
+            ? process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST
+            : null;
+        process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST = host;
+        this.logDebug('sign.auth_ws.bootstrap', {
+            host,
+            provider: this.signingProvider || null
+        });
+        return () => {
+            if (previousHost) {
+                process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST = previousHost;
+            } else {
+                delete process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST;
+            }
+        };
     }
 
     createLocalSignedWebSocketProvider() {
@@ -6207,6 +6320,7 @@ class ConnectionManager {
         }
 
         const runConnect = async () => {
+            let restoreAuthenticatedWsBootstrapEnv = null;
             try {
                 this.logDebug('lifecycle.connect.start');
                 const usingLocalSigner = this.shouldUseLocalSigner();
@@ -6250,12 +6364,17 @@ class ConnectionManager {
                     unavailableError.code = 'SSAPP_TIKTOK_CONNECTION_UNAVAILABLE';
                     throw unavailableError;
                 }
+                restoreAuthenticatedWsBootstrapEnv = this.prepareAuthenticatedWebsocketBootstrapEnv(activeConnection);
 
                 if (this.pollingFallbackActivated || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy') {
                     this.resetConnectionBootstrapState();
                 }
 
                 await activeConnection.connect();
+                if (typeof restoreAuthenticatedWsBootstrapEnv === 'function') {
+                    restoreAuthenticatedWsBootstrapEnv();
+                    restoreAuthenticatedWsBootstrapEnv = null;
+                }
 
                 const modeDetails = this.getConnectionModeDetails();
                 const effectiveMode = modeDetails.effectiveMode;
@@ -6292,6 +6411,10 @@ class ConnectionManager {
                 this.offlineReason = null;
                 return true;
             } catch (err) {
+                if (typeof restoreAuthenticatedWsBootstrapEnv === 'function') {
+                    restoreAuthenticatedWsBootstrapEnv();
+                    restoreAuthenticatedWsBootstrapEnv = null;
+                }
                 const primaryError = err instanceof Error ? err : (err && err.exception instanceof Error ? err.exception : err);
                 const errorName = primaryError && primaryError.name;
                 const errorMessage = primaryError && primaryError.message ? primaryError.message : '';

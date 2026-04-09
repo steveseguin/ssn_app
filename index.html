@@ -1209,9 +1209,24 @@
             } catch (e) { return false; }
         }
 
+        function isYouTubeTarget(target) {
+            return target === 'youtube' || target === 'youtubeshorts';
+        }
+
+        function isYouTubeWebSocketSigninContext(source) {
+            if (!source || !isYouTubeTarget(source.target)) return false;
+            const effectiveMode = source.activeConnectionMode || source.connectionMode || null;
+            return effectiveMode === 'websocket';
+        }
+
         // Apply disabled state and tooltip to a sign-in button
         function applySigninPolicy(signinButton, source) {
             if (!signinButton || !source) return;
+            if (isYouTubeWebSocketSigninContext(source)) {
+                signinButton.disabled = false;
+                signinButton.style.cursor = '';
+                return;
+            }
             const disabled = isSigninDisabledForSource(source);
             if (disabled) {
                 signinButton.disabled = true;
@@ -1324,14 +1339,24 @@
                 const isWebsocketMode = effectiveMode === 'websocket' ||
                     effectiveMode === 'tiktok-websocket' ||
                     effectiveMode === 'tiktok-legacy';
+                const useYouTubeWebSocketSignin = isYouTubeWebSocketSigninContext(source);
                 if (isTikTokLocalSigner && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy')) {
                     signinButton.classList.remove('hidden');
                     signinButton.innerHTML = translate('btn.signingwindow');
                     signinButton.title = 'Open the TikTok signing window (local signer)';
                     signinButton.onclick = () => tiktokShowSigningWindow(source.id);
                 } else {
-                    signinButton.classList.toggle("hidden", isWebsocketMode);
-                    applySigninPolicy(signinButton, source);
+                    signinButton.classList.toggle("hidden", isWebsocketMode && !useYouTubeWebSocketSignin);
+                    if (useYouTubeWebSocketSignin) {
+                        signinButton.classList.remove('hidden');
+                        signinButton.innerHTML = translate('btn.signin');
+                        signinButton.title = 'Open the YouTube WebSocket sign-in window for this session.';
+                        signinButton.onclick = function () { signin(this); };
+                        signinButton.disabled = false;
+                        signinButton.style.cursor = '';
+                    } else {
+                        applySigninPolicy(signinButton, source);
+                    }
                 }
             }
 
@@ -1564,16 +1589,20 @@
             if (groupSigninButton) {
                 const isYouTubeGroup = group.target === 'youtube' || group.target === 'youtubeshorts';
                 const isWebsocketMode = group.connectionMode === 'websocket';
-                if (isYouTubeGroup && !isWebsocketMode) {
+                if (isYouTubeGroup) {
                     const label = typeof translate === 'function' ? translate('btn.signin') : '🔑 Sign-in';
                     groupSigninButton.textContent = label;
                     groupSigninButton.classList.remove('hidden');
                     groupSigninButton.classList.remove('authenticated');
                     groupSigninButton.disabled = false;
                     groupSigninButton.style.cursor = '';
-                    groupSigninButton.title = 'Open a sign-in window for this group\'s browser session.';
+                    groupSigninButton.title = isWebsocketMode
+                        ? 'Open the YouTube WebSocket sign-in window for this group session.'
+                        : 'Open a sign-in window for this group\'s browser session.';
                     groupSigninButton.onclick = function () { signin(this); };
-                    applySigninPolicy(groupSigninButton, group);
+                    if (!isWebsocketMode) {
+                        applySigninPolicy(groupSigninButton, group);
+                    }
                 } else {
                     groupSigninButton.classList.add('hidden');
                 }
@@ -2857,7 +2886,8 @@
             const group = stateManager.getGroup(groupId);
             if (!group || (group.target !== "youtube" && group.target !== "youtubeshorts")) return;
 
-            handleYouTubeActivation(group.username, group.target === "youtubeshorts", true, false, group.isChannel);
+            resetYouTubeGroupApiBootstrap(groupId, 'manual discovery');
+            handleYouTubeActivation(group.username, group.target === "youtubeshorts", true, false, group.isChannel, { manualTrigger: true });
         }
 
         function handleYouTubeGroupAutoActivation(buttonElement) {
@@ -2867,7 +2897,8 @@
             const group = stateManager.getGroup(groupId);
             if (!group || (group.target !== "youtube" && group.target !== "youtubeshorts")) return;
 
-            handleYouTubeActivation(group.username, group.target === "youtubeshorts", false, true, group.isChannel);
+            resetYouTubeGroupApiBootstrap(groupId, 'manual auto-activate');
+            handleYouTubeActivation(group.username, group.target === "youtubeshorts", false, true, group.isChannel, { manualTrigger: true });
         }
 
         // Store interval IDs for YouTube group checking
@@ -2875,6 +2906,7 @@
 
         // Store backoff state for YouTube groups
         const youtubeGroupBackoffState = new Map();
+        const youtubeGroupDiscoveryState = new Map();
 
         // Store interval IDs for Rumble auto-checking
         const rumbleIntervals = new Map();
@@ -2904,6 +2936,104 @@
             return true;
         }
 
+        function getYouTubeGroupDiscoveryIdentity(group) {
+            if (!group) return '';
+            return JSON.stringify({
+                username: String(group.username || '').trim(),
+                target: group.target || '',
+                isChannel: !!group.isChannel
+            });
+        }
+
+        function getYouTubeGroupDiscoveryState(group) {
+            if (!group || !group.id || !isYouTubeTarget(group.target)) return null;
+            const identity = getYouTubeGroupDiscoveryIdentity(group);
+            let state = youtubeGroupDiscoveryState.get(group.id);
+            if (!state || state.identity !== identity) {
+                state = {
+                    identity,
+                    apiBootstrapPending: true
+                };
+                youtubeGroupDiscoveryState.set(group.id, state);
+            }
+            return state;
+        }
+
+        function resetYouTubeGroupApiBootstrap(groupId, reason = '') {
+            const group = stateManager.getGroup(groupId);
+            if (!group || !isYouTubeTarget(group.target)) return;
+            youtubeGroupDiscoveryState.set(groupId, {
+                identity: getYouTubeGroupDiscoveryIdentity(group),
+                apiBootstrapPending: true
+            });
+            if (reason) {
+                console.log(`Resetting YouTube auto-check bootstrap for ${group.username} (${reason})`);
+            }
+        }
+
+        function preferYouTubeGroupScrapeOnly(groupId, reason = '') {
+            const group = stateManager.getGroup(groupId);
+            if (!group || !isYouTubeTarget(group.target)) return;
+            const identity = getYouTubeGroupDiscoveryIdentity(group);
+            const existingState = youtubeGroupDiscoveryState.get(groupId);
+            if (existingState && existingState.identity === identity && existingState.apiBootstrapPending) {
+                return;
+            }
+            youtubeGroupDiscoveryState.set(groupId, {
+                identity,
+                apiBootstrapPending: false
+            });
+            if (reason) {
+                console.log(`Using scrape-only YouTube auto-checks for ${group.username} (${reason})`);
+            }
+        }
+
+        function shouldUseYouTubeGroupApiBootstrap(group) {
+            if (!group || !isYouTubeTarget(group.target)) return false;
+            return !!group.isChannel;
+        }
+
+        function groupHasActiveConnection(group) {
+            if (!group) return false;
+            return (group.streams || []).some(sid => {
+                const source = stateManager.getSource(sid);
+                if (!source) return false;
+                const hasHandle = !!(source.vid || source.wssId || source.tiktokWssId);
+                return hasHandle || source.status === 'active' || source.status === 'activating';
+            });
+        }
+
+        function maybeRestartYouTubeGroupAutoCheck(groupId, reason = '') {
+            const group = stateManager.getGroup(groupId);
+            if (!group || !group.autoActivate || !isYouTubeTarget(group.target)) return;
+            if (groupHasActiveConnection(group)) return;
+            if (youtubeGroupIntervals.has(groupId)) return;
+            preferYouTubeGroupScrapeOnly(groupId, reason || 'restart');
+            const reasonSuffix = reason ? ` (${reason})` : '';
+            console.log(`Restarting auto-check for YouTube group ${group.username}${reasonSuffix}`);
+            startYouTubeGroupAutoCheck(groupId);
+        }
+
+        function didYouTubeSourceLoseActiveConnection(oldState, source, updates) {
+            if (!oldState || !source || !source.groupId || !isYouTubeTarget(source.target)) return false;
+            const touchedConnectionState =
+                'status' in updates ||
+                'vid' in updates ||
+                'wssId' in updates ||
+                'tiktokWssId' in updates ||
+                'activeConnectionMode' in updates;
+            if (!touchedConnectionState) return false;
+
+            const oldHadConnection = !!(oldState.vid || oldState.wssId || oldState.tiktokWssId)
+                || oldState.status === 'active'
+                || oldState.status === 'activating';
+            const newHasConnection = !!(source.vid || source.wssId || source.tiktokWssId)
+                || source.status === 'active'
+                || source.status === 'activating';
+
+            return oldHadConnection && !newHasConnection;
+        }
+
         function startYouTubeGroupAutoCheck(groupId) {
             // Clear any existing interval for this group
             stopYouTubeGroupAutoCheck(groupId);
@@ -2912,11 +3042,7 @@
             if (!group || !group.autoActivate) return;
 
             // Skip auto-check entirely if any source in the group is already active
-            const hasActive = (group.streams || []).some(sid => {
-                const s = stateManager.getSource(sid);
-                return s && s.status === 'active' && (s.vid || s.wssId || s.tiktokWssId);
-            });
-            if (hasActive) {
+            if (groupHasActiveConnection(group)) {
                 console.log(`YouTube group ${group.username} already has an active stream; skipping auto-check.`);
                 return;
             }
@@ -2946,10 +3072,7 @@
         async function checkYouTubeGroupForNewStreamsWithBackoff(groupId) {
             // If any stream is already active, stop checking and return
             const groupPre = stateManager.getGroup(groupId);
-            if (groupPre && (groupPre.streams || []).some(sid => {
-                const s = stateManager.getSource(sid);
-                return s && s.status === 'active' && (s.vid || s.wssId || s.tiktokWssId);
-            })) {
+            if (groupPre && groupHasActiveConnection(groupPre)) {
                 console.log(`YouTube group ${groupPre.username} has an active stream; stopping auto-check.`);
                 stopYouTubeGroupAutoCheck(groupId);
                 return;
@@ -2995,53 +3118,31 @@
         async function checkYouTubeGroupForNewStreams(groupId) {
             const group = stateManager.getGroup(groupId);
             if (!group || (group.target !== "youtube" && group.target !== "youtubeshorts")) return false;
+            const useApiBootstrap = shouldUseYouTubeGroupApiBootstrap(group);
 
-            console.log(`Checking for new streams in YouTube group: ${group.username}`);
+            console.log(`Checking for new streams in YouTube group: ${group.username} via ${useApiBootstrap ? 'API-only' : 'scrape-only'} discovery`);
 
             let streams = [];
-            let usingFallback = false;
 
             try {
-                // Try the API first
-                const response = await fetch(`https://api.socialstream.ninja/youtube/streams?username=${encodeURIComponent(group.username)}`);
-                const data = await response.json();
-
-                if (!data.success || !Array.isArray(data.data)) {
-                    console.warn("API response invalid, falling back to fetchYoutube");
-                    throw new Error("Invalid API response");
-                }
-
-                streams = data.data;
-            } catch (error) {
-                console.error("API call failed, attempting fallback to fetchYoutube:", error);
-
-                // Fallback to fetchYoutube
-                try {
-                    usingFallback = true;
-
-                    // Check if fetchYoutube is available
-                    if (typeof fetchYoutube !== 'function') {
-                        console.error("fetchYoutube function not available");
-                        return false;
+                if (useApiBootstrap && typeof fetchYouTubeLiveStreams === 'function') {
+                    streams = await fetchYouTubeLiveStreams(group.username, {
+                        isChannelOnly: !!group.isChannel,
+                        isUsernameOnly: !group.isChannel && !group.username.startsWith("UC"),
+                        isShortDefault: group.target === "youtubeshorts"
+                    });
+                } else if (typeof fetchYoutube === 'function') {
+                    streams = await fetchYoutube(group.username, false);
+                    if (!Array.isArray(streams) || !streams.length) {
+                        streams = await fetchYoutube(group.username, true) || [];
                     }
-
-                    // Try both alt=false and alt=true if needed
-                    let fetchResult = await fetchYoutube(group.username, false);
-                    if (!fetchResult || fetchResult.length === 0) {
-                        fetchResult = await fetchYoutube(group.username, true);
-                    }
-
-                    if (fetchResult && Array.isArray(fetchResult)) {
-                        streams = fetchResult;
-                        console.log(`Fallback successful, found ${streams.length} streams via fetchYoutube`);
-                    } else {
-                        console.error("Fallback to fetchYoutube also failed");
-                        return false;
-                    }
-                } catch (fallbackError) {
-                    console.error("Fallback to fetchYoutube failed:", fallbackError);
+                } else {
+                    console.error("No YouTube discovery helper is available");
                     return false;
                 }
+            } catch (error) {
+                console.error("YouTube group discovery failed:", error);
+                return false;
             }
 
             // Filter streams based on type
@@ -3081,7 +3182,7 @@
             const newStreams = eligibleStreams.filter(stream => !existingVideoIds.has(stream.videoId));
 
             if (newStreams.length > 0) {
-                console.log(`Found ${newStreams.length} new streams for group ${group.username}${usingFallback ? ' (via fallback)' : ''}`);
+                console.log(`Found ${newStreams.length} new streams for group ${group.username}`);
                 Toast.info("New Streams Found", `Found ${newStreams.length} new live stream(s) for ${group.username}`);
 
                 // Auto-activate new streams if auto-activate is enabled
@@ -3093,6 +3194,7 @@
                         groupId: groupId,
                         videoId: stream.videoId,
                         title: stream.title,
+                        isAutoDiscovered: true,
                         autoActivate: true, // Inherit auto-activate from group
                         connectionMode: group.connectionMode || 'classic',
                         // Respect current group visibility/mute state for newly auto-added streams
@@ -3802,7 +3904,8 @@
                             <strong style="color: #f8fafc;">Most users</strong> → Use <strong>TikTok WS</strong> with <strong>Auto</strong> (default). It falls back to Polling if needed.<br>
                             <strong style="color: #f8fafc;">Need to reply to chat?</strong> → Use <strong>Standard</strong> mode and sign in first.<br>
                             <strong style="color: #f8fafc;">Standard not working?</strong> → Try <strong>TikTok WS</strong> with <strong>Local Signer</strong> for replies.<br>
-                            <strong style="color: #f8fafc;">Everything failing?</strong> → Try <strong>Euler Proxy</strong> or <strong>Euler Signing</strong> with an API key.
+                            <strong style="color: #f8fafc;">Everything failing?</strong> → Try <strong>Euler Proxy</strong> or <strong>Euler Signing</strong> with an API key.<br>
+                            <strong style="color: #f8fafc;">Need a backup source?</strong> → Use <strong>TikFinity OBS Dock</strong> in <strong>Other chat sites</strong> if TikTok keeps missing chat.
                         </div>
                     </div>
 
@@ -3831,6 +3934,17 @@
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
                                 Fetches chat via HTTP in batches. No signing needed. Use as a fallback when other modes fail. Cannot send replies. Messages may have slight delay.
                             </div>
+                        </div>
+                    </div>
+
+                    <h4 style="margin: 20px 0 10px 0; font-size: 14px; color: #e2e8f0;">External Backup</h4>
+                    <div style="background: rgba(168, 85, 247, 0.10); border-left: 3px solid #a855f7; border-radius: 8px; padding: 12px 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+                            <h4 style="margin: 0; font-size: 13px; color: #f8fafc;">TikFinity OBS Dock</h4>
+                            <span style="font-size: 11px; background: rgba(168,85,247,0.2); color: #e9d5ff; padding: 2px 8px; border-radius: 4px;">Other Site Source</span>
+                        </div>
+                        <div style="color: #94a3b8; font-size: 12px; line-height: 1.6; margin-top: 6px;">
+                            If TikTok modes keep dropping or missing messages, open TikFinity, go to <strong>Overlay -> OBS Docks</strong>, set a dock to chat, copy its URL, and paste it into <strong>Other chat sites</strong> in SSN. Keep TikFinity open while you are live. This is a backup source, not a reply mode.
                         </div>
                     </div>
 
@@ -3885,6 +3999,7 @@
                             <strong>Standard mode not working?</strong> → Click <strong>👁️ Show capture page</strong> to check for CAPTCHA or sign-in. If nothing appears, try <strong>🔄 Reload</strong>.<br>
                             <strong>WebSocket keeps failing?</strong> → Try a different signing provider, or switch to Polling.<br>
                             <strong>Getting blocked/throttled?</strong> → Close other TikTok tabs/apps. Wait a few minutes and retry.<br>
+                            <strong>Still missing chat?</strong> → Try a <strong>TikFinity OBS Dock</strong> URL in <strong>Other chat sites</strong> and keep TikFinity open.<br>
                             <strong>Need replies but nothing works?</strong> → Standard (with sign-in) or Local Signer are your options.
                         </div>
                     </div>
@@ -6237,7 +6352,9 @@
                 // For now, fall back to sync while we debug the async issue
                 const response = ipcRenderer.sendSync('createWindow', {
                     url: rewriteKickUrl(urlToLoad),
+                    platform: source.target,
                     config: conf,
+                    configs: config,
                     visible: source.isVisible,
                     muted: source.isMuted,
                     source: scriptPath,
@@ -6280,6 +6397,10 @@
             let conf = config.global ? { ...config.global } : {};
             if (config[source.target]) conf = { ...conf, ...config[source.target] };
             if (conf.wss) conf = { ...conf, ...conf.wss };
+
+            if (source.target === 'facebook') {
+                conf.preload = 'full';
+            }
 
             // Apply custom user agent if set
             if (source.userAgent && source.userAgent !== 'AUTO') {
@@ -6337,6 +6458,8 @@
                 // For now, fall back to sync while we debug the async issue
                 const response = ipcRenderer.sendSync('createWindow', {
                     url: rewriteKickUrl(urlWSS.trim()),
+                    platform: source.target,
+                    configs: config,
                     muted: source.isMuted,
                     visible: source.isVisible,
                     source: scriptPath,
@@ -6426,6 +6549,8 @@
             try {
                 const response = ipcRenderer.sendSync('createWindow', {
                     url: rewriteKickUrl(urlWSS.trim()),
+                    platform: source.target,
+                    configs: config,
                     muted: source.isMuted,
                     visible: source.isVisible,
                     source: scriptPath,
@@ -7480,6 +7605,59 @@
             const effectivePlatform = rawTargetPlatform === 'youtubeshorts' ? 'youtube' : rawTargetPlatform;
             let urlForSignin = source ? source.url : (group ? null : entry.dataset.url);
 
+            if ((source && isYouTubeWebSocketSigninContext(source)) || (group && isYouTubeWebSocketSigninContext(group))) {
+                try {
+                    let conf = config.global ? { ...config.global } : {};
+                    if (config.youtube) conf = { ...conf, ...config.youtube };
+                    if (conf.wss) conf = { ...conf, ...conf.wss };
+
+                    const sourceLike = source || group;
+                    if (sourceLike?.userAgent && sourceLike.userAgent !== 'AUTO') {
+                        conf.userAgent = sourceLike.userAgent;
+                        if (sourceLike.mockUserAgentData) conf.mockUserAgentData = sourceLike.mockUserAgentData;
+                    }
+
+                    const queryParams = { ssapp: '1', authonly: '1', autostartauth: '1' };
+                    if (devmode) {
+                        queryParams.devmode = '';
+                    }
+
+                    const resolvedHtml = await resolveWebSocketHtml('youtube', queryParams, { branch: isBetaMode ? 'beta' : 'main' });
+                    if (!resolvedHtml) {
+                        Toast.error("Sign-in Error", "Unable to resolve the YouTube WebSocket sign-in page.");
+                        return false;
+                    }
+
+                    const customSession = source ? (source.customSession || 'AUTO') : (group ? (group.customSession || 'AUTO') : 'AUTO');
+                    const response = ipcRenderer.sendSync('signIn', {
+                        url: rewriteKickUrl(resolvedHtml.url.trim()),
+                        platform: effectivePlatform,
+                        wss: true,
+                        muted: true, visible: true, source: false, tab: tabid,
+                        userInitiated: true,
+                        customSession,
+                        config: conf, configs: config
+                    });
+                    console.log("YouTube WebSocket sign-in window created with ID:", response);
+                    if (response && ipcRenderer) {
+                        ipcRenderer.once(`window-closed-${response}`, () => {
+                            Toast.info("Sign-in window closed.", "Refreshing YouTube state...");
+                            refreshWindow(ele);
+                            if (group?.autoActivate) {
+                                startYouTubeGroupAutoCheck(group.id);
+                            } else if (source?.groupId) {
+                                maybeRestartYouTubeGroupAutoCheck(source.groupId, 'youtube signin closed');
+                            }
+                        });
+                    }
+                    return response;
+                } catch (err) {
+                    console.error('YouTube websocket signin failed:', err);
+                    Toast.error("Sign-in Error", `Could not open the YouTube sign-in window: ${err.message}`);
+                    return false;
+                }
+            }
+
             let signinUrl = config?.[effectivePlatform]?.signin?.url;
             if (!signinUrl && urlForSignin) {
                 try {
@@ -7511,6 +7689,7 @@
             try {
                 const response = ipcRenderer.sendSync('signIn', {
                     url: signinUrl.trim(),
+                    platform: effectivePlatform,
                     muted: true, visible: true, source: false, tab: tabid,
                     userInitiated: true,
                     customSession,
@@ -8435,6 +8614,14 @@
                     }
                 } catch (_) { }
 
+                try {
+                    if (source && didYouTubeSourceLoseActiveConnection(oldState, source, updates)) {
+                        maybeRestartYouTubeGroupAutoCheck(source.groupId, `source ${sourceId} became inactive`);
+                    }
+                } catch (e) {
+                    console.warn('Failed to restart YouTube auto-check after source update:', e);
+                }
+
                 if ('groupId' in updates) {
                     const currentElement = document.querySelector(`[data-source-id="${sourceId}"]`);
                     if (!currentElement) return;
@@ -8495,6 +8682,11 @@
                         stopRumbleAutoCheck(sourceId);
                     }
                 } catch (e) { console.warn('Error stopping auto-check for removed source', sourceId, e); }
+                try {
+                    if (source?.groupId && isYouTubeTarget(source.target)) {
+                        maybeRestartYouTubeGroupAutoCheck(source.groupId, `source ${sourceId} removed`);
+                    }
+                } catch (e) { console.warn('Error restarting YouTube auto-check for removed source', sourceId, e); }
                 // Update root order if standalone
                 try {
                     if (source && !source.groupId) {
@@ -8563,12 +8755,32 @@
                 manageWelcomePage();
             });
 
-            stateManager.on('groupUpdated', ({ groupId, updates }) => {
+            stateManager.on('groupUpdated', ({ groupId, updates, oldState }) => {
                 const element = document.querySelector(`[data-group-id="${groupId}"]`);
                 const group = stateManager.getGroup(groupId);
                 if (element && group) {
                     updateGroupUI(element, group);
                     try { reorderGroupDom(groupId); } catch (e) { /* noop */ }
+                }
+
+                try {
+                    const touchesYouTubeDiscovery = isYouTubeTarget(oldState?.target) || isYouTubeTarget(group?.target);
+                    if (touchesYouTubeDiscovery) {
+                        const oldIdentity = isYouTubeTarget(oldState?.target) ? getYouTubeGroupDiscoveryIdentity(oldState) : '';
+                        const newIdentity = isYouTubeTarget(group?.target) ? getYouTubeGroupDiscoveryIdentity(group) : '';
+
+                        if (newIdentity && oldIdentity !== newIdentity) {
+                            resetYouTubeGroupApiBootstrap(groupId, 'group updated');
+                            if (group?.autoActivate) {
+                                startYouTubeGroupAutoCheck(groupId);
+                            }
+                        } else if (!newIdentity) {
+                            stopYouTubeGroupAutoCheck(groupId);
+                            youtubeGroupDiscoveryState.delete(groupId);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Failed to update YouTube group discovery state:', e);
                 }
             });
 
@@ -8577,6 +8789,7 @@
                 element?.remove();
                 // Stop any YouTube group auto-check timers
                 try { stopYouTubeGroupAutoCheck(groupId); } catch (e) { /* noop */ }
+                try { youtubeGroupDiscoveryState.delete(groupId); } catch (e) { /* noop */ }
                 // Update root order for groups
                 try {
                     let ro = getRootOrder();
