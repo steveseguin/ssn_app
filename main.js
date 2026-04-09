@@ -3164,6 +3164,15 @@ function validateSavedBounds(savedState) {
     }
 
     const displays = screen.getAllDisplays();
+    const preferredDisplayId = savedState.displayId !== null && savedState.displayId !== undefined
+        ? String(savedState.displayId)
+        : null;
+    const orderedDisplays = preferredDisplayId
+        ? [
+            ...displays.filter((display) => String(display.id) === preferredDisplayId),
+            ...displays.filter((display) => String(display.id) !== preferredDisplayId)
+        ]
+        : displays;
     const bounds = {
         x: savedState.x,
         y: savedState.y,
@@ -3175,7 +3184,7 @@ function validateSavedBounds(savedState) {
     // We require at least 100px of the window to be on-screen
     const minVisiblePx = 100;
 
-    for (const display of displays) {
+    for (const display of orderedDisplays) {
         const db = display.bounds;
         const overlapX = Math.max(0, Math.min(bounds.x + bounds.width, db.x + db.width) - Math.max(bounds.x, db.x));
         const overlapY = Math.max(0, Math.min(bounds.y + bounds.height, db.y + db.height) - Math.max(bounds.y, db.y));
@@ -3183,11 +3192,14 @@ function validateSavedBounds(savedState) {
         if (overlapX >= minVisiblePx && overlapY >= minVisiblePx) {
             // Electron bounds are already DPI-independent; avoid scaleFactor math.
 
-            // Clamp saved size to the display work area so we don't restore runaway sizes.
-            const maxWidth = display.workArea?.width || display.bounds.width;
-            const maxHeight = display.workArea?.height || display.bounds.height;
-            bounds.width = Math.min(Math.max(bounds.width, 100), maxWidth);
-            bounds.height = Math.min(Math.max(bounds.height, 100), maxHeight);
+            // Clamp saved bounds into the display work area so reopened windows stay fully reachable.
+            const workArea = getDisplayWorkAreaBounds(display);
+            bounds.width = Math.min(Math.max(bounds.width, 100), workArea.width);
+            bounds.height = Math.min(Math.max(bounds.height, 100), workArea.height);
+            const maxX = workArea.x + Math.max(workArea.width - bounds.width, 0);
+            const maxY = workArea.y + Math.max(workArea.height - bounds.height, 0);
+            bounds.x = Math.max(workArea.x, Math.min(bounds.x, maxX));
+            bounds.y = Math.max(workArea.y, Math.min(bounds.y, maxY));
 
             return bounds;
         }
@@ -3369,6 +3381,21 @@ function getWindowStateDiagnosticTargetBounds(display, caseIndex) {
     };
 }
 
+function getClampedVisibleBoundsForDisplay(display, desiredBounds) {
+    const workArea = getDisplayWorkAreaBounds(display);
+    const width = Math.min(Math.max(Math.round(desiredBounds.width || workArea.width), 100), workArea.width);
+    const height = Math.min(Math.max(Math.round(desiredBounds.height || workArea.height), 100), workArea.height);
+    const maxX = workArea.x + Math.max(workArea.width - width, 0);
+    const maxY = workArea.y + Math.max(workArea.height - height, 0);
+
+    return {
+        x: Math.max(workArea.x, Math.min(Math.round(desiredBounds.x || workArea.x), maxX)),
+        y: Math.max(workArea.y, Math.min(Math.round(desiredBounds.y || workArea.y), maxY)),
+        width,
+        height
+    };
+}
+
 function getWindowStateDiagnosticsTolerance() {
     return {
         x: 8,
@@ -3496,19 +3523,69 @@ async function runWindowStateDiagnostics() {
         await sleep(1000);
 
         const displays = screen.getAllDisplays();
+        const cases = [];
         for (let index = 0; index < displays.length; index += 1) {
             const display = displays[index];
-            const caseId = `display-${display.id}-${index}`;
-            const diagnosticUrl = buildWindowStateDiagnosticUrl(caseId);
-            const targetBounds = getWindowStateDiagnosticTargetBounds(display, index);
-            const seededState = {
-                x: targetBounds.x,
-                y: targetBounds.y,
-                width: targetBounds.width,
-                height: targetBounds.height,
+            const exactBounds = getWindowStateDiagnosticTargetBounds(display, index);
+            cases.push({
+                id: `display-${display.id}-${index}-exact`,
+                display,
+                seededState: {
+                    x: exactBounds.x,
+                    y: exactBounds.y,
+                    width: exactBounds.width,
+                    height: exactBounds.height,
+                    displayId: display.id,
+                    scaleFactor: display.scaleFactor || 1
+                },
+                targetBounds: exactBounds
+            });
+
+            const workArea = getDisplayWorkAreaBounds(display);
+            const oversizedSeed = {
+                x: workArea.x + 80,
+                y: workArea.y + 70,
+                width: workArea.width + 420,
+                height: workArea.height + 310,
                 displayId: display.id,
                 scaleFactor: display.scaleFactor || 1
             };
+            cases.push({
+                id: `display-${display.id}-${index}-oversized`,
+                display,
+                seededState: oversizedSeed,
+                targetBounds: getClampedVisibleBoundsForDisplay(display, oversizedSeed)
+            });
+
+            const offscreenSeed = {
+                x: workArea.x + workArea.width + 1600,
+                y: workArea.y + workArea.height + 1200,
+                width: Math.min(900, Math.max(420, workArea.width - 220)),
+                height: Math.min(700, Math.max(320, workArea.height - 220)),
+                displayId: display.id,
+                scaleFactor: display.scaleFactor || 1
+            };
+            cases.push({
+                id: `display-${display.id}-${index}-offscreen`,
+                display,
+                seededState: offscreenSeed,
+                targetBounds: getClampedVisibleBoundsForDisplay(display, {
+                    x: Math.round(workArea.x + Math.max(workArea.width - offscreenSeed.width, 0) / 2),
+                    y: Math.round(workArea.y + Math.max(workArea.height - offscreenSeed.height, 0) / 2),
+                    width: offscreenSeed.width,
+                    height: offscreenSeed.height
+                })
+            });
+        }
+
+        for (const testCase of cases) {
+            const {
+                id,
+                display,
+                seededState,
+                targetBounds
+            } = testCase;
+            const diagnosticUrl = buildWindowStateDiagnosticUrl(id);
 
             try {
                 store.set('windowState_dock', seededState);
@@ -3532,7 +3609,7 @@ async function runWindowStateDiagnostics() {
                 const passed = restoredPassed && reopenedPassed;
 
                 report.cases.push({
-                    id: caseId,
+                    id,
                     displayId: display.id,
                     scaleFactor: display.scaleFactor || 1,
                     workArea: display.workArea,
@@ -3557,10 +3634,11 @@ async function runWindowStateDiagnostics() {
                 await closeWindowStateDiagnosticChildWindow(reopenedWindow);
             } catch (error) {
                 report.cases.push({
-                    id: caseId,
+                    id,
                     displayId: display.id,
                     scaleFactor: display.scaleFactor || 1,
                     workArea: display.workArea,
+                    seededState,
                     targetBounds,
                     error: error && error.message ? error.message : String(error),
                     passed: false
@@ -11328,14 +11406,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     let method = null;
                     const wc = view.webContents;
 
-                    // Route through webContents.debugger (CDP) —
-                    // same protocol the Chrome extension uses.
-                    // Produces isTrusted:true events via Chromium's backend.
-                    // Skip char \r — submit fires on keyDown, char \r
-                    // just inserts an unwanted newline afterward.
-                    if (args.type === "char" && args.text === "\r") {
-                        method = "skipped-char-cr";
-                    } else {
                     const cdpPromise = queueDebuggerInput(wc, async () => {
                         if (!wc.debugger.isAttached()) {
                             wc.debugger.attach("1.3");
@@ -11360,7 +11430,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         console.error("CDP command failed:", error);
                     });
                     method = args.type ? "cdp.dispatchKeyEvent" : "cdp.insertText";
-                    } // end skip char \r
                     log("ISSUED KEY EVENT");
                     eventRet.returnValue = true;
                 } catch (error) {
