@@ -138,6 +138,8 @@
                             src="https://socialstream.ninja/sources/images/twitch.png" class="icon" />Twitch</button></span>
                 <span><button onclick="newSourcePrompt('kick');" data-source-type="kick"><img
                             src="https://socialstream.ninja/sources/images/kick.png" class="icon" />Kick</button></span>
+                <span><button onclick="newSourcePrompt('velora');" data-source-type="velora"><img
+                            src="https://velora.tv/favicon.ico" class="icon" />Velora</button></span>
                 <span><button onclick="newSourcePrompt('instagramlive');" data-source-type="instagram"><img
                             src="https://socialstream.ninja/sources/images/instagramlive.png"
                             class="icon" />Instagram Live</button></span>
@@ -145,14 +147,22 @@
                             src="https://socialstream.ninja/sources/images/facebook.png" class="icon" />Facebook</button></span>
                 <span><button onclick="newSourcePrompt('tiktok');" data-source-type="tiktok"><img
                             src="https://socialstream.ninja/sources/images/tiktok.png" class="icon" />TikTok</button></span>
-                <span><button onclick="newSourcePrompt('trovo');"><img
-                            src="https://socialstream.ninja/sources/images/trovo.png" class="icon" />Trovo</button></span>
                 <span><button onclick="newSourcePrompt('picarto');"><img
                             src="https://socialstream.ninja/sources/images/picarto.png" class="icon" />Picarto</button></span>
-                <span><button onclick="newSourcePrompt('dlive');"><img
-                            src="https://socialstream.ninja/sources/images/dlive.png" class="icon" />DLive</button></span>
                 <span><button onclick="newSourcePrompt('x');"><img src="https://socialstream.ninja/sources/images/x.png"
                             class="icon" />X.com</button></span>
+                <span><button onclick="newSourcePrompt('mixcloud');"><img
+                            src="https://socialstream.ninja/sources/images/mixcloud.png" class="icon" />Mixcloud</button></span>
+                <span><button onclick="newSourcePrompt('twitcasting');"><img
+                            src="https://socialstream.ninja/sources/images/twitcasting.png" class="icon" />TwitCasting</button></span>
+                <span><button onclick="newSourcePrompt('younow');"><img
+                            src="https://socialstream.ninja/sources/images/younow.png" class="icon" />YouNow</button></span>
+                <span><button onclick="newSourcePrompt('chzzk');"><img
+                            src="https://socialstream.ninja/sources/images/chzzk.png" class="icon" />CHZZK</button></span>
+                <span><button onclick="newSourcePrompt('nimo');"><img
+                            src="https://socialstream.ninja/sources/images/nimo.png" class="icon" />Nimo</button></span>
+                <span><button onclick="newSourcePrompt('sooplive');"><img
+                            src="https://socialstream.ninja/sources/images/sooplive.png" class="icon" />SOOP Live</button></span>
                 <span><button onclick="newSourcePrompt('rumble');"><img
                             src="https://socialstream.ninja/sources/images/rumble.png" class="icon" />Rumble</button></span>
                 <span><button onclick="newSourceVideoIDPrompt('rumble');"><img
@@ -185,9 +195,10 @@
             </div>
 
             <div id="link-overlay-page" style="min-width:400px;right:0;position:absolute;height:100%;width:35%">
-                <!-- Subtle edge handle to collapse/expand the popup sidebar -->
-                <div id="popup-handle" class="overlay-handle" role="button" tabindex="0" aria-label="Toggle chat panel"
-                    title="Hide/Show chat panel">⯇</div>
+                <!-- Edge handle to collapse/expand the popup sidebar -->
+                <div id="popup-handle" class="overlay-handle" role="button" tabindex="0" aria-controls="frame1"
+                    aria-expanded="true" aria-label="Hide chat panel"
+                    title="Hide chat panel">&#9654;</div>
                 <iframe id="frame1" class="loading" style="height:100%;width:100%"
                     allow="autoplay *; camera *; clipboard-write *; encrypted-media *; fullscreen *; geolocation *; microphone *; midi *; usb *"></iframe>
             </div>
@@ -1299,7 +1310,9 @@
             // Update data-target attribute
             element.dataset.target = source.target;
 
-            element.querySelector("[data-sourceicon]").src = `https://socialstream.ninja/sources/images/${source.target || "unknown"}.png`;
+            element.querySelector("[data-sourceicon]").src = source.target === 'velora'
+                ? 'https://velora.tv/favicon.ico'
+                : `https://socialstream.ninja/sources/images/${source.target || "unknown"}.png`;
             element.querySelector("[data-sourceicon]").title = source.target || "unknown";
             element.querySelector("[data-channelname]").textContent = source.username || "";
             element.querySelector("[data-sourcename]").textContent = source.videoId || "";
@@ -1478,9 +1491,9 @@
                 if (source.status === 'active' && (activeWssHandle || hasTikTokConnectedContext)) {
                     updateConnectionStatus(element, 'connected');
                 } else if (source.status === 'activating') {
-                    // Show connecting for supported WSS (YouTube/TikTok)
+                    // Show connecting for supported WSS sources.
                     const t = (source.target || '').toLowerCase();
-                    const supports = t === 'tiktok' || t.startsWith('youtube') || t === 'twitch';
+                    const supports = t === 'tiktok' || t.startsWith('youtube') || t === 'twitch' || t === 'velora';
                     if (supports) updateConnectionStatus(element, 'connecting');
                 } else if (source.status === 'inactive' && wsStatusElement && !wsStatusElement.classList.contains('error')) {
                     updateConnectionStatus(element, 'clear');
@@ -1575,7 +1588,9 @@
         function updateGroupUI(element, group) {
             if (!element || !group) return;
 
-            element.querySelector("[data-sourceicon]").src = `https://socialstream.ninja/sources/images/${group.target || "unknown"}.png`;
+            element.querySelector("[data-sourceicon]").src = group.target === 'velora'
+                ? 'https://velora.tv/favicon.ico'
+                : `https://socialstream.ninja/sources/images/${group.target || "unknown"}.png`;
             element.querySelector("[data-sourceicon]").title = group.target;
             element.querySelector("[data-channelname]").textContent = group.username || "";
             element.querySelector("[data-targetname]").textContent = group.target || "";
@@ -1662,6 +1677,7 @@
                 // Check if platform supports websockets
                 const hasWebSocketSupport =
                     target.startsWith('youtube') ||
+                    target === 'velora' ||
                     target === 'tiktok' ||
                     (manifest?.content_scripts?.some(cs =>
                         cs.js?.some(jsFile => jsFile.includes(`websocket/${target}.js`))
@@ -1805,6 +1821,15 @@
             let isChannelName = false;
             let lastError = '';
             let lastInvalidToast = null;
+            const promptTargetLabels = {
+                chzzk: "CHZZK channel ID",
+                mixcloud: "Mixcloud username",
+                nimo: "Nimo username",
+                sooplive: "SOOP broadcaster ID/name",
+                twitcasting: "TwitCasting username",
+                younow: "YouNow username"
+            };
+            const promptTargetLabel = promptTargetLabels[target] || `${target} user name`;
 
             const spaceErrorMessage = 'Usernames cannot contain spaces. Please enter the username exactly as it appears on the platform.';
             const emptyErrorMessage = 'Please enter a username to continue.';
@@ -1826,7 +1851,7 @@
                         messageParts.push('Note: Usernames cannot contain spaces.');
                     }
                     const promptOptions = {
-                        title: `Enter the ${target} user name`,
+                        title: `Enter the ${promptTargetLabel}`,
                         message: messageParts.join('\n\n'),
                         value: typeof username === 'string' ? username : '',
                         errorMessage,
@@ -1991,7 +2016,7 @@
                     return;
                 }
             } else if (target === "rumble") {
-                const input = window.prompt("Enter the Rumble video URL (e.g., https://rumble.com/a1b2c3d4-now-live.html):");
+                const input = window.prompt("Enter the Rumble stream or video URL.\n\nExample: https://rumble.com/v60552h-newsmax2-live.html\nSSApp will try to detect the popup chat automatically.");
                 if (input) {
                     // Check if it's a full Rumble URL and extract the video ID or full path
                     const trimmedInput = input.trim();
@@ -2223,6 +2248,7 @@
                 if (!sourceUrl) {
                     if (target === "twitch") sourceUrl = `https://www.twitch.tv/popout/${username}/chat?popout=`;
                     else if (target === "kick") sourceUrl = `https://kick.com/popout/${username}/chat`;
+                    else if (target === "velora") sourceUrl = `https://velora.tv/${username}`;
                     else if (target === "parti") sourceUrl = `https://parti.com/popout-chat?id=${username}`;
                     else if (target === "rumble") {
                         if (isChannelName) {
@@ -2232,11 +2258,15 @@
                         }
                     }
                     else if (target === "tiktok") sourceUrl = `https://www.tiktok.com/@${username.replace('@', '')}/live`;
-                    else if (target === "trovo") sourceUrl = `https://trovo.live/chat/${username}`;
                     else if (target === "instagram" || target === "instagramlive") sourceUrl = `https://www.instagram.com/${username}/live/`;
                     else if (target === "picarto") sourceUrl = `https://picarto.tv/chatpopout/${username}/public`;
-                    else if (target === "dlive") sourceUrl = `https://dlive.tv/c/${username}/${username}`;
                     else if (target === "x") sourceUrl = `https://x.com/${username}/livechat`;
+                    else if (target === "mixcloud") sourceUrl = `https://www.mixcloud.com/live/${username}/chat/`;
+                    else if (target === "twitcasting") sourceUrl = `https://twitcasting.tv/${username}`;
+                    else if (target === "younow") sourceUrl = `https://www.younow.com/${username}`;
+                    else if (target === "chzzk") sourceUrl = `https://chzzk.naver.com/live/${username}/chat`;
+                    else if (target === "nimo") sourceUrl = `https://www.nimo.tv/popout/chat/${username}`;
+                    else if (target === "sooplive") sourceUrl = `https://www.sooplive.com/chat/${username}`;
                     else if (target === "beamstream") sourceUrl = `https://beamstream.gg/${username}/chat`;
                     else if (target === "vimm") sourceUrl = `https://www.vimm.tv/c/${username}`;
                     else if (target === "bilibili") sourceUrl = `https://live.bilibili.com/${username}`;
@@ -2248,9 +2278,7 @@
                 // Determine specific sourceFile if not provided in initialState
                 if (!sourceFile) {
                     if (target === "instagramlive" || target === "instagram") sourceFile = "sources/instagram.js";
-                    else if (target === "trovo") sourceFile = "sources/trovo.js";
                     else if (target === "picarto") sourceFile = "sources/picarto.js";
-                    else if (target === "dlive") sourceFile = "sources/dlive.js";
                     else if (target === "x") sourceFile = "sources/x.js";
                     else if (target === "beamstream") sourceFile = "sources/beamstream.js";
                     // Add other platform-specific script files here if necessary
@@ -2261,6 +2289,8 @@
                 let supportsWSS = false;
                 if (target === 'tiktok') {
                     supportsWSS = true; // TikTok has built-in websocket support
+                } else if (target === 'velora') {
+                    supportsWSS = true;
                 } else if (typeof manifest !== 'undefined' && manifest?.content_scripts) {
                     supportsWSS = manifest.content_scripts.some(cs =>
                         cs.js?.some(jsFile => jsFile.includes(`websocket/${target}.js`))
@@ -2269,7 +2299,7 @@
 
                 // Set default connection mode based on platform
                 let defaultMode = 'classic';
-                if (target === 'twitch' || target === 'kick') {
+                if (target === 'twitch' || target === 'kick' || target === 'velora') {
                     defaultMode = 'websocket';
                 } else if (target === 'tiktok') {
                     if (preferTikTokClassic || cliForcesTikTokClassic) {
@@ -2477,6 +2507,8 @@
             let supportsWSS = false;
             if (target === 'tiktok') {
                 supportsWSS = true; // TikTok has built-in websocket support
+            } else if (target === 'velora') {
+                supportsWSS = true;
             } else if (target && typeof manifest !== 'undefined' && manifest?.content_scripts) {
                 supportsWSS = manifest.content_scripts.some(cs =>
                     cs.js?.some(jsFile => jsFile.includes(`websocket/${target}.js`))
@@ -2485,6 +2517,9 @@
 
             // Set default connection mode based on platform
             let defaultMode = 'classic';
+            if (target === 'velora') {
+                defaultMode = 'websocket';
+            }
             // TikTok defaults based on global preference
             if (target === 'tiktok') {
                 if (preferTikTokClassic || cliForcesTikTokClassic) {
@@ -2990,6 +3025,10 @@
 
         function shouldUseYouTubeGroupApiBootstrap(group) {
             if (!group || !isYouTubeTarget(group.target)) return false;
+            const state = getYouTubeGroupDiscoveryState(group);
+            if (state && state.apiBootstrapPending === false) {
+                return false;
+            }
             return !!group.isChannel;
         }
 
@@ -4100,7 +4139,7 @@
             // Check if platform supports websockets
             if (!isYouTube && !isTikTok && target) {
                 // Check manifest for websocket support
-                genericWsSupported = manifest?.content_scripts?.some(cs =>
+                genericWsSupported = target === 'velora' || manifest?.content_scripts?.some(cs =>
                     cs.js?.some(jsFile => jsFile.includes(`websocket/${target}.js`))
                 );
             }
@@ -4508,6 +4547,7 @@
                     'youtubeshorts': 'YouTube Default',
                     'twitch': 'Twitch Default',
                     'kick': 'Kick Default',
+                    'velora': 'Velora Default',
                     'tiktok': 'TikTok Default',
                     'facebook': 'Facebook Default',
                     'instagramlive': 'Instagram Default',
@@ -5302,6 +5342,7 @@
             if (mode === 'websocket' && !source.supportsWSS) {
                 // Check WebSocket support if not already stored
                 const hasWebSocketSupport = (target === 'tiktok') ||
+                    (target === 'velora') ||
                     (typeof manifest !== 'undefined' && manifest?.content_scripts?.some(cs =>
                         cs.js?.some(jsFile => jsFile.includes(`websocket/${target}.js`))
                     ));
@@ -6114,6 +6155,7 @@
         async function createClassicWindowFromSource(source, tabid = false) {
             if (!ipcRenderer) return false;
             let urlToLoad = source.url;
+            let forceVisibleForFallback = false;
 
             if (source.target?.startsWith("youtube") && source.videoId && (!urlToLoad || !urlToLoad.includes(source.videoId))) {
                 const isShort = source.target === "youtubeshorts";
@@ -6205,8 +6247,9 @@
                                         isChannel: source.isChannel
                                     });
                                     if (fallbackUrl) {
-                                        Toast.warning("Rumble Fallback", "Could not open the chat popup; loading the live page instead.");
+                                        Toast.warning("Rumble Fallback", "Could not open the popup chat automatically. Opening the Rumble page instead so you can complete any Cloudflare check.");
                                         urlToLoad = fallbackUrl;
+                                        forceVisibleForFallback = true;
                                         stateManager.updateSource(source.id, { url: urlToLoad, chatId: null });
                                     } else {
                                         Toast.error("Rumble Error", `Could not find chat ID for video ${videoId}`);
@@ -6239,8 +6282,9 @@
                                 isChannel: source.isChannel
                             });
                             if (fallbackUrl) {
-                                Toast.warning("Rumble Fallback", "Rumble request failed; loading the live page instead.");
+                                Toast.warning("Rumble Fallback", "Rumble lookup failed. Opening the Rumble page instead so you can complete any Cloudflare check.");
                                 urlToLoad = fallbackUrl;
+                                forceVisibleForFallback = true;
                                 stateManager.updateSource(source.id, { url: urlToLoad, videoId: null, chatId: null });
                             } else {
                                 Toast.error("Rumble Error", `No live video found for ${source.username}.`);
@@ -6286,8 +6330,9 @@
                                     isChannel: source.isChannel
                                 });
                                 if (fallbackUrl) {
-                                    Toast.warning("Rumble Fallback", "Could not open the chat popup; loading the live page instead.");
+                                    Toast.warning("Rumble Fallback", "Could not open the popup chat automatically. Opening the Rumble page instead so you can complete any Cloudflare check.");
                                     urlToLoad = fallbackUrl;
+                                    forceVisibleForFallback = true;
                                     stateManager.updateSource(source.id, { url: urlToLoad, chatId: null });
                                 } else {
                                     Toast.error("Rumble Error", `Could not find chat ID for video ${source.videoId}`);
@@ -6355,7 +6400,7 @@
                     platform: source.target,
                     config: conf,
                     configs: config,
-                    visible: source.isVisible,
+                    visible: forceVisibleForFallback ? true : source.isVisible,
                     muted: source.isMuted,
                     source: scriptPath,
                     sourceFiles: sourceFiles.length ? sourceFiles : undefined,
@@ -7667,6 +7712,7 @@
             if (!signinUrl) {
                 if (effectivePlatform === 'youtube') signinUrl = 'https://youtube.com';
                 else if (effectivePlatform === 'twitch') signinUrl = 'https://www.twitch.tv';
+                else if (effectivePlatform === 'velora') signinUrl = 'https://velora.tv';
                 else { Toast.error("Sign-in Error", `No sign-in URL configured for ${rawTargetPlatform || 'this platform'}.`); return; }
             }
 
@@ -8935,7 +8981,7 @@
                 await ensurePopupPanelLoaded();
             })();
 
-            // Popup sidebar show/hide toggle setup (subtle edge handle)
+            // Popup sidebar show/hide toggle setup
             (function setupPopupSidebarToggle() {
                 const linkOverlay = document.getElementById('link-overlay-page');
                 const handle = document.getElementById('popup-handle');
@@ -8950,8 +8996,10 @@
                             // Prevent interactions when collapsed (CSS also hides it)
                             frame1.setAttribute('aria-hidden', collapsed ? 'true' : 'false');
                         }
-                        handle.textContent = collapsed ? '⯈' : '⯇';
+                        handle.textContent = collapsed ? '\u25C0' : '\u25B6';
                         handle.title = collapsed ? 'Show chat panel' : 'Hide chat panel';
+                        handle.setAttribute('aria-label', collapsed ? 'Show chat panel' : 'Hide chat panel');
+                        handle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
                     } catch (e) { console.error('Failed to apply popup collapsed state:', e); }
                 }
 
@@ -10615,6 +10663,7 @@
                 'source.youtube.videoid': 'YouTube Video',
                 'source.twitch': 'Twitch',
                 'source.kick': 'Kick',
+                'source.velora': 'Velora',
                 'source.instagram': 'Instagram Live',
                 'source.facebook': 'Facebook',
                 'source.tiktok': 'TikTok',
@@ -11743,6 +11792,7 @@
                 'youtube-videoid': 'source.youtube.videoid',
                 'twitch': 'source.twitch',
                 'kick': 'source.kick',
+                'velora': 'source.velora',
                 'instagram': 'source.instagram',
                 'facebook': 'source.facebook',
                 'tiktok': 'source.tiktok',
@@ -12507,6 +12557,7 @@
                 'youtubeshorts': 'YouTube Default',
                 'twitch': 'Twitch Default',
                 'kick': 'Kick Default',
+                'velora': 'Velora Default',
                 'tiktok': 'TikTok Default',
                 'facebook': 'Facebook Default',
                 'instagramlive': 'Instagram Default',

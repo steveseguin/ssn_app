@@ -2567,7 +2567,7 @@ input:checked + .slider:before {
   transition: width 0.18s ease-in-out;
 }
 
-/* Subtle edge handle for popup sidebar */
+/* Edge handle for popup sidebar */
 #link-overlay-page .overlay-handle {
   position: absolute;
   top: 50%;
@@ -2581,10 +2581,17 @@ input:checked + .slider:before {
   border-radius: 12px;
   background: rgba(0, 0, 0, 0.5);
   color: #fff;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
   cursor: pointer;
   user-select: none;
   opacity: 0.4;
-  transition: opacity 0.15s ease-in-out, background 0.15s ease-in-out;
+  transition:
+    opacity 0.15s ease-in-out,
+    background 0.15s ease-in-out,
+    transform 0.15s ease-in-out,
+    box-shadow 0.15s ease-in-out;
   z-index: 5;
 }
 
@@ -2594,12 +2601,47 @@ input:checked + .slider:before {
   outline: none;
 }
 
+@keyframes overlay-handle-pulse {
+  0% {
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38), 0 0 0 0 rgba(37, 99, 235, 0.48);
+  }
+  70% {
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38), 0 0 0 16px rgba(37, 99, 235, 0);
+  }
+  100% {
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38), 0 0 0 0 rgba(37, 99, 235, 0);
+  }
+}
 
 /* Collapsed state: make overlay a thin handle; expand sources to full width */
 .overlay-collapsed #link-overlay-page {
   width: 28px !important;
   min-width: 28px !important;
-  overflow: hidden;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 20;
+}
+
+.overlay-collapsed #link-overlay-page .overlay-handle {
+  left: -52px;
+  width: 58px;
+  height: 82px;
+  border-radius: 14px 0 0 14px;
+  background: #2563eb;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  color: #fff;
+  font-size: 32px;
+  opacity: 1;
+  pointer-events: auto;
+  animation: overlay-handle-pulse 1.8s ease-in-out infinite;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38);
+}
+
+.overlay-collapsed #link-overlay-page .overlay-handle:hover,
+.overlay-collapsed #link-overlay-page .overlay-handle:focus {
+  background: #1d4ed8;
+  transform: translateY(-50%) scale(1.04);
+  opacity: 1;
 }
 
 .overlay-collapsed #link-overlay-page iframe {
@@ -2623,6 +2665,19 @@ input:checked + .slider:before {
     width: 28px;
     height: 56px;
     border-radius: 14px;
+  }
+
+  .overlay-collapsed #link-overlay-page .overlay-handle {
+    left: -58px;
+    width: 64px;
+    height: 86px;
+    border-radius: 16px 0 0 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay-collapsed #link-overlay-page .overlay-handle {
+    animation: none;
   }
 }
 

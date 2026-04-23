@@ -733,6 +733,9 @@ if (contextIsolated) {
     exchangeFacebookOAuthCode: async (payload) => {
       return await ipcRenderer.invoke('facebook-oauth-exchange', payload);
     },
+    startVeloraOAuth: async (payload) => {
+      return await ipcRenderer.invoke('velora-oauth', payload);
+    },
     startKickOAuth: async (payload) => {
       return await ipcRenderer.invoke('kick-oauth', payload);
     }
@@ -791,6 +794,9 @@ if (contextIsolated) {
     },
     exchangeFacebookOAuthCode: async (payload) => {
       return await ipcRenderer.invoke('facebook-oauth-exchange', payload);
+    },
+    startVeloraOAuth: async (payload) => {
+      return await ipcRenderer.invoke('velora-oauth', payload);
     },
     startKickOAuth: async (payload) => {
       return await ipcRenderer.invoke('kick-oauth', payload);

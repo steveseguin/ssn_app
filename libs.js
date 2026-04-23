@@ -438,18 +438,48 @@ const tipsContent = {
 	  </ul>
 	</div>
   `,
+	velora: `
+	<div class="tips-section">
+	  <h3>Use WebSocket Mode First</h3>
+	  <p>Velora works best in <strong>WebSocket mode</strong>. It uses the OAuth connection directly and is the default in SSApp.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>Connection Modes</h3>
+	  <ul>
+		<li><span class="tips-highlight">WebSocket Mode:</span> Uses the Velora OAuth/API connection. Best for stability and chat events.</li>
+		<li><span class="tips-highlight">Standard Mode:</span> Uses the normal channel page at <code>velora.tv/USERNAME</code> as a fallback.</li>
+	  </ul>
+	</div>
+	<div class="tips-section">
+	  <h3>If WebSocket Sign-in Fails</h3>
+	  <ul>
+		<li>Make sure your Velora app has the correct redirect URLs configured</li>
+		<li>Try <strong>ðŸ”„ Reload</strong> after signing in</li>
+		<li>Switch to <strong>Standard</strong> mode if you only need DOM capture temporarily</li>
+	  </ul>
+	</div>
+  `,
 	rumble: `
 	<div class="tips-section">
 	  <h3>You Must Be Live First</h3>
 	  <p>Rumble chat only works when you are already streaming. <strong>Go live before activating</strong> this source.</p>
 	</div>
 	<div class="tips-section">
+	  <h3>Paste The Normal Stream URL</h3>
+	  <p>You do <strong>not</strong> need to find the popup chat URL manually. Paste the normal Rumble stream or video URL and SSApp will try to detect the popup chat automatically.</p>
+	</div>
+	<div class="tips-section">
+	  <h3>If Rumble Shows A Challenge</h3>
+	  <p>If Rumble or Cloudflare blocks the automatic lookup, SSApp may open the regular Rumble page instead. Complete the check there, then reload or reactivate the source.</p>
+	  <p>Use <strong>👁️ Show capture page</strong> if you need to bring that page back into view.</p>
+	</div>
+	<div class="tips-section">
 	  <h3>If Username Doesn't Work</h3>
-	  <p>Adding by username requires a lookup that can sometimes fail. Try adding the chat URL directly instead:</p>
+	  <p>Adding by username still depends on Rumble lookup pages. If that fails, paste the full stream URL instead:</p>
 	  <ol>
 		<li>Open your Rumble stream in a browser</li>
-		<li>Find the chat popup URL (right-click on chat, look for popup option)</li>
-		<li>Add a new source using <strong>"Other"</strong> and paste the chat URL</li>
+		<li>Copy the page URL from the address bar</li>
+		<li>Add a new source using <strong>Rumble Video</strong> or <strong>Other</strong> and paste that normal URL</li>
 	  </ol>
 	</div>
 	<div class="tips-section">

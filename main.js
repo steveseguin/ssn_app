@@ -62,6 +62,7 @@ const {
 const { setupYouTubeOAuthHandler } = require('./resources/electron-youtube-handler');
 const { setupTwitchOAuthHandler } = require('./resources/electron-twitch-handler');
 const { setupFacebookOAuthHandler } = require('./resources/electron-facebook-handler');
+const { setupVeloraOAuthHandler } = require('./resources/electron-velora-handler');
 const { setupKickOAuthHandler } = require('./resources/electron-kick-handler');
 const { KickWsClient } = require('./resources/kick-ws-client');
 
@@ -1308,6 +1309,7 @@ configureSpotifyOAuthHandlers();
 setupYouTubeOAuthHandler();
 setupTwitchOAuthHandler();
 setupFacebookOAuthHandler();
+setupVeloraOAuthHandler();
 setupKickOAuthHandler();
 
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
@@ -5551,15 +5553,58 @@ function getVirtualScreenBounds() {
     }
 }
 
+function notifySourceWindowVisibilityChange(view, visible) {
+    try {
+        if (!mainWindow || mainWindow.isDestroyed() || !view || view.isDestroyed()) return;
+        mainWindow.webContents.send(visible ? 'window-shown' : 'window-hidden', {
+            tabID: view.tabID,
+            url: view.args && view.args.url
+        });
+    } catch (_) { }
+}
+
+function installWindowsSourceWindowMinimizeGuard(view) {
+    if (process.platform !== 'win32' || !view || view.__ss_windowsMinimizeGuardInstalled) return;
+    view.__ss_windowsMinimizeGuardInstalled = true;
+    view.on('minimize', (event) => {
+        if (app.isQuitting) {
+            return;
+        }
+        try {
+            if (event && typeof event.preventDefault === 'function') {
+                event.preventDefault();
+            }
+        } catch (_) { }
+        setTimeout(() => {
+            try {
+                if (!view || view.isDestroyed()) return;
+                try {
+                    if (typeof view.isMinimized === 'function' && view.isMinimized()) {
+                        view.restore();
+                    }
+                } catch (_) { }
+                stealthHideView(view);
+                notifySourceWindowVisibilityChange(view, false);
+            } catch (_) { }
+        }, 0);
+    });
+}
+
 // Stealth-hide: keep window visible to the OS, but move/resize it off-screen
 function stealthHideView(view) {
     try {
         if (!view || view.isDestroyed()) return false;
+        const wasVisible = view.__ss_visible !== false;
         // Mark logical visibility
         view.__ss_visible = false;
-        // Remember current bounds once
-        if (!view.__prevBounds) {
+        // Remember current bounds before parking, but do not overwrite with parked bounds.
+        if (wasVisible || !view.__prevBounds) {
             try { view.__prevBounds = view.getBounds(); } catch (_) { view.__prevBounds = null; }
+        }
+        if (process.platform === 'linux') {
+            try { view.setSkipTaskbar(true); } catch (_) { }
+            try { view.minimize(); } catch (_) { }
+            return false;
         }
         // Compute an off-screen coordinate
         const vb = getVirtualScreenBounds();
@@ -5584,6 +5629,22 @@ function stealthShowView(view, options = {}) {
         if (!view || view.isDestroyed()) return true;
         view.__ss_visible = true;
         const bringToFront = !!(options && options.bringToFront);
+        if (process.platform === 'linux') {
+            try { view.setSkipTaskbar(false); } catch (_) { }
+            try {
+                if (typeof view.isMinimized === 'function' && view.isMinimized()) {
+                    view.restore();
+                }
+            } catch (_) { }
+            try {
+                if (bringToFront) {
+                    view.show();
+                } else {
+                    view.showInactive();
+                }
+            } catch (_) { }
+            return true;
+        }
         // Restore size/position
         if (view.__prevBounds && typeof view.__prevBounds.x === 'number') {
             view.setBounds(view.__prevBounds);
@@ -9456,10 +9517,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const sourceWindowMode = args.wss ? "wss" : "classic";
             view.setBounds(loadRememberedSourceWindowBounds(args, sourceWindowMode));
             installRememberedSourceWindowBoundsTracking(view, sourceWindowMode);
+            installWindowsSourceWindowMinimizeGuard(view);
 
             // Show without stealing focus if visibility is enabled
             if (visibibility) {
                 view.showInactive();
+            } else if (process.platform === 'win32') {
+                try { view.setSkipTaskbar(true); } catch (_) { }
+                try { view.showInactive(); } catch (_) { }
+                stealthHideView(view);
             }
 
             if (view.webContents) {
