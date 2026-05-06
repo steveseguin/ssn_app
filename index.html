@@ -9067,7 +9067,7 @@
 
                             titleEl = document.createElement('div');
                             titleEl.className = 'ssapp-progress-title';
-                            titleEl.textContent = 'Transfer Backup';
+                            titleEl.textContent = 'Full Session Transfer';
 
                             messageEl = document.createElement('div');
                             messageEl.className = 'ssapp-progress-message';
@@ -9114,7 +9114,7 @@
 
                         try {
                             root.classList.add('ssapp-visible');
-                            const title = (payload && payload.title) ? String(payload.title) : 'Transfer Backup';
+                            const title = (payload && payload.title) ? String(payload.title) : 'Full Session Transfer';
                             const message = payload && payload.message ? String(payload.message) : '';
 
                             if (titleEl) titleEl.textContent = title;

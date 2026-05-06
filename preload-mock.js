@@ -658,12 +658,41 @@ Function.prototype.toString = function() {
 // Handle IPC exposure based on context isolation setting
 const { contextBridge, ipcRenderer } = require('electron');
 
-// Forward main-process sendToTab to the page without exposing APIs
-// This must be after require('electron') so ipcRenderer is defined
-ipcRenderer.on('sendToTab', (event, message) => {
+function dispatchSendToTabMessage(message, requestId) {
+  try {
+    if (typeof window.doSomethingInWebApp === 'function') {
+      window.doSomethingInWebApp(message, null, (response) => {
+        if (requestId) {
+          ipcRenderer.send(`sendToTab-response-${requestId}`, response);
+        }
+      });
+      return;
+    }
+  } catch (_) {}
+
   try {
     window.postMessage({ __ssappSendToTab: message }, '*');
   } catch (_) {}
+
+  if (requestId) {
+    ipcRenderer.send(`sendToTab-response-${requestId}`, true);
+  }
+}
+
+ipcRenderer.on('sendToTab-request', (event, data) => {
+  try {
+    dispatchSendToTabMessage(data && data.message, data && data.requestId);
+  } catch (_) {
+    if (data && data.requestId) {
+      ipcRenderer.send(`sendToTab-response-${data.requestId}`, false);
+    }
+  }
+});
+
+// Forward main-process sendToTab to the page without exposing APIs
+// This must be after require('electron') so ipcRenderer is defined
+ipcRenderer.on('sendToTab', (event, message) => {
+  dispatchSendToTabMessage(message);
 });
 
 // Check if contextIsolation is enabled

@@ -18,6 +18,11 @@ const {
     installTikTokSignServerFallback,
     createTikTokEnvironment
 } = require('./tiktok/connection-manager');
+const {
+    LOCAL_STORAGE_SETTING_KEYS,
+    readSettingsBackupFile,
+    writeSettingsBackupFile
+} = require('./settings-backup');
 const crypto = require("node:crypto");
 const {
     app,
@@ -488,7 +493,7 @@ function showTransferBackupNotification(title, body) {
             return;
         }
         const notification = new electron.Notification({
-            title: String(title || 'Transfer Backup'),
+            title: String(title || 'Full Session Transfer'),
             body: String(body || ''),
             icon: TRANSFER_BACKUP_NOTIFICATION_ICON
         });
@@ -558,6 +563,265 @@ function buildTransferBackupFilePath(config) {
         ? config.fileName.trim()
         : DEFAULT_TRANSFER_BACKUP_CONFIG.fileName;
     return path.join(folderPath, fileName);
+}
+
+function getDefaultSettingsBackupFileName() {
+    const date = new Date().toISOString().slice(0, 10);
+    return `social-stream-settings-${date}.data`;
+}
+
+function getSettingsObjectKeyCount(settings) {
+    return settings && typeof settings === 'object' && !Array.isArray(settings)
+        ? Object.keys(settings).length
+        : 0;
+}
+
+async function flushPendingStorageSaveForSettingsBackup() {
+    try {
+        if (typeof global.flushPendingStorageSave === 'function') {
+            global.flushPendingStorageSave();
+        }
+    } catch (error) {
+        console.warn('[SettingsBackup] Failed to flush pending settings save:', error?.message || error);
+    }
+}
+
+async function collectMainWindowSettingsLocalStorage() {
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents) {
+        return {};
+    }
+
+    const script = `(function(){\n` +
+        `const keys = ${JSON.stringify(LOCAL_STORAGE_SETTING_KEYS)};\n` +
+        `const out = {};\n` +
+        `keys.forEach((key) => {\n` +
+        `  try {\n` +
+        `    const value = localStorage.getItem(key);\n` +
+        `    if (value !== null) out[key] = value;\n` +
+        `  } catch (e) {}\n` +
+        `});\n` +
+        `return out;\n` +
+        `})();`;
+
+    try {
+        const result = await mainWindow.webContents.executeJavaScript(script, true);
+        return result && typeof result === 'object' ? result : {};
+    } catch (error) {
+        console.warn('[SettingsBackup] Failed to read app localStorage settings:', error?.message || error);
+        return {};
+    }
+}
+
+async function applyImportedSettingsLocalStorage(localStorageData) {
+    if (!localStorageData || typeof localStorageData !== 'object' || !Object.keys(localStorageData).length) {
+        return 0;
+    }
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents) {
+        return 0;
+    }
+
+    const entries = {};
+    for (const key of LOCAL_STORAGE_SETTING_KEYS) {
+        if (!Object.prototype.hasOwnProperty.call(localStorageData, key)) continue;
+        const value = localStorageData[key];
+        if (value === null || value === undefined) continue;
+        entries[key] = String(value);
+    }
+
+    const script = `(function(){\n` +
+        `const entries = ${JSON.stringify(entries)};\n` +
+        `let restored = 0;\n` +
+        `Object.keys(entries).forEach((key) => {\n` +
+        `  try {\n` +
+        `    localStorage.setItem(key, String(entries[key]));\n` +
+        `    restored++;\n` +
+        `  } catch (e) {}\n` +
+        `});\n` +
+        `return restored;\n` +
+        `})();`;
+
+    try {
+        const restored = await mainWindow.webContents.executeJavaScript(script, true);
+        return Number.isFinite(restored) ? restored : 0;
+    } catch (error) {
+        console.warn('[SettingsBackup] Failed to restore app localStorage settings:', error?.message || error);
+        return 0;
+    }
+}
+
+function applyImportedCachedSettings(importedState) {
+    if (!importedState || typeof importedState !== 'object') {
+        return { saved: false, settingsCount: 0 };
+    }
+
+    const next = { ...(cachedState && typeof cachedState === 'object' ? cachedState : {}) };
+
+    if (Object.prototype.hasOwnProperty.call(importedState, 'streamID')) {
+        const normalizedStreamID = normalizeStreamIdValue(importedState.streamID);
+        if (normalizedStreamID !== null) {
+            next.streamID = normalizedStreamID;
+        }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(importedState, 'password')) {
+        const normalizedPassword = normalizePasswordValue(importedState.password);
+        if (normalizedPassword !== null) {
+            next.password = normalizedPassword;
+        } else {
+            delete next.password;
+        }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(importedState, 'state')) {
+        if (typeof importedState.state === 'boolean') {
+            next.state = importedState.state;
+        } else if (typeof importedState.state === 'string') {
+            const normalizedState = importedState.state.trim().toLowerCase();
+            if (normalizedState === 'true') next.state = true;
+            if (normalizedState === 'false') next.state = false;
+        }
+    }
+
+    if (importedState.settings && typeof importedState.settings === 'object' && !Array.isArray(importedState.settings)) {
+        next.settings = importedState.settings;
+    }
+
+    cachedState = normalizeCachedStateSnapshot(next);
+
+    const persistResult = persistCachedStateSafely(cachedState, {
+        reason: 'settings-import',
+        allowSettingsDowngrade: true
+    });
+
+    const payload = buildLocalStorageMirrorPayload(cachedState);
+    updateLocalStorageBackup(payload, { allowSettingsDowngrade: true });
+
+    return {
+        saved: !!(persistResult && persistResult.saved),
+        settingsCount: getSettingsObjectKeyCount(cachedState.settings)
+    };
+}
+
+async function exportSettingsBackupWithDialog() {
+    try {
+        await flushPendingStorageSaveForSettingsBackup();
+        await recoverCachedStateIfNeeded('settings-export');
+
+        const localStorageData = await collectMainWindowSettingsLocalStorage();
+        const defaultPath = path.join(app.getPath('documents'), getDefaultSettingsBackupFileName());
+        const picked = await dialog.showSaveDialog({
+            title: 'Export Settings',
+            defaultPath,
+            filters: [
+                { name: 'Social Stream Settings', extensions: ['data', 'json'] },
+                { name: 'All Files', extensions: ['*'] }
+            ]
+        });
+        if (picked.canceled || !picked.filePath) return null;
+
+        rememberDialogApprovedPath(picked.filePath);
+        const payload = writeSettingsBackupFile(picked.filePath, cachedState, localStorageData);
+        const settingsCount = getSettingsObjectKeyCount(payload.settings);
+        const sourceListIncluded = !!(payload.localStorage && payload.localStorage.socialStreamState);
+
+        showTransferBackupToast(
+            'success',
+            'Settings Exported',
+            `${path.basename(picked.filePath)} (${settingsCount} settings${sourceListIncluded ? ', source list included' : ''})`
+        );
+
+        await dialog.showMessageBox({
+            type: 'info',
+            buttons: ['OK'],
+            title: 'Settings Exported',
+            message: `Saved:\n${picked.filePath}`,
+            detail: `${settingsCount} Social Stream setting key${settingsCount === 1 ? '' : 's'} exported.${sourceListIncluded ? '\nApp source list settings were included.' : ''}`
+        });
+
+        return { filePath: picked.filePath, settingsCount, sourceListIncluded };
+    } catch (error) {
+        const message = error && error.message ? error.message : String(error);
+        showTransferBackupToast('error', 'Settings Export Failed', message);
+        await dialog.showMessageBox({
+            type: 'error',
+            buttons: ['OK'],
+            title: 'Settings Export Failed',
+            message
+        });
+        return null;
+    }
+}
+
+async function importSettingsBackupWithDialog() {
+    try {
+        const picked = await dialog.showOpenDialog({
+            title: 'Import Settings',
+            properties: ['openFile'],
+            filters: [
+                { name: 'Social Stream Settings', extensions: ['data', 'json'] },
+                { name: 'All Files', extensions: ['*'] }
+            ]
+        });
+        if (picked.canceled || !picked.filePaths || !picked.filePaths[0]) return null;
+
+        const filePath = picked.filePaths[0];
+        rememberDialogApprovedPath(filePath);
+
+        const imported = readSettingsBackupFile(filePath);
+        const incomingSettingsCount = getSettingsObjectKeyCount(imported.cachedState.settings);
+        const incomingLocalStorageCount = Object.keys(imported.localStorage || {}).length;
+
+        const confirmResult = await dialog.showMessageBox({
+            type: 'question',
+            buttons: ['Import and Reload', 'Cancel'],
+            defaultId: 0,
+            cancelId: 1,
+            title: 'Import Settings',
+            message: `Import settings from:\n${filePath}`,
+            detail: `${incomingSettingsCount} Social Stream setting key${incomingSettingsCount === 1 ? '' : 's'} found.${incomingLocalStorageCount ? `\n${incomingLocalStorageCount} app setting key${incomingLocalStorageCount === 1 ? '' : 's'} found.` : ''}\n\nThe main app window will reload after import.`
+        });
+        if (confirmResult.response !== 0) return null;
+
+        const cachedStateResult = applyImportedCachedSettings(imported.cachedState);
+        const restoredLocalStorageCount = await applyImportedSettingsLocalStorage(imported.localStorage);
+
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            try {
+                await mirrorCachedStateToLocalStorage(mainWindow);
+            } catch (_) { }
+            mainWindow.webContents.reload();
+        }
+
+        showTransferBackupToast(
+            'success',
+            'Settings Imported',
+            `${cachedStateResult.settingsCount} settings restored${restoredLocalStorageCount ? `, ${restoredLocalStorageCount} app keys restored` : ''}.`
+        );
+
+        await dialog.showMessageBox({
+            type: 'info',
+            buttons: ['OK'],
+            title: 'Settings Imported',
+            message: 'Settings were imported and the app window is reloading.',
+            detail: `${cachedStateResult.settingsCount} Social Stream setting key${cachedStateResult.settingsCount === 1 ? '' : 's'} restored.${restoredLocalStorageCount ? `\n${restoredLocalStorageCount} app setting key${restoredLocalStorageCount === 1 ? '' : 's'} restored.` : ''}`
+        });
+
+        return {
+            filePath,
+            settingsCount: cachedStateResult.settingsCount,
+            restoredLocalStorageCount
+        };
+    } catch (error) {
+        const message = error && error.message ? error.message : String(error);
+        showTransferBackupToast('error', 'Settings Import Failed', message);
+        await dialog.showMessageBox({
+            type: 'error',
+            buttons: ['OK'],
+            title: 'Settings Import Failed',
+            message
+        });
+        return null;
+    }
 }
 
 async function flushAllSessionStorageData() {
@@ -721,19 +985,19 @@ async function createTransferBackupWithDialog({ useAutoConfig = false, onStart =
     let outputFilePath = null;
     let includeCaches = config.includeCaches;
     let password = null;
-    const progressTitle = useAutoConfig ? 'Auto Transfer Backup' : 'Transfer Backup';
+    const progressTitle = useAutoConfig ? 'Auto Full Session Transfer' : 'Full Session Transfer';
 
     if (useAutoConfig) {
         outputFilePath = buildTransferBackupFilePath(config);
         password = decryptTransferBackupPassword(config);
         includeCaches = !!config.includeCaches;
         if (!outputFilePath || !password) {
-            throw new Error('Auto transfer backup is not configured');
+            throw new Error('Auto full session transfer is not configured');
         }
     } else {
         const defaultName = config.fileName || DEFAULT_TRANSFER_BACKUP_CONFIG.fileName;
         const picked = await dialog.showSaveDialog({
-            title: 'Create Transfer Backup',
+            title: 'Create Full Session Transfer Backup',
             defaultPath: path.join(app.getPath('documents'), defaultName),
             filters: [{ name: 'SSAPP Backup', extensions: ['ssappbk'] }]
         });
@@ -744,12 +1008,12 @@ async function createTransferBackupWithDialog({ useAutoConfig = false, onStart =
             type: 'question',
             buttons: ['Exclude caches (recommended)', 'Include caches (bigger)'],
             defaultId: 0,
-            title: 'Backup Size',
-            message: 'Include Chromium caches in the transfer backup?'
+            title: 'Full Session Transfer Size',
+            message: 'Include Chromium caches in the full session transfer backup?'
         });
         includeCaches = includeChoice.response === 1;
 
-        password = await promptForPasswordPair({ title: 'Create Transfer Backup', label: 'Encryption password:' });
+        password = await promptForPasswordPair({ title: 'Create Full Session Transfer Backup', label: 'Encryption password:' });
         if (!password) return null;
     }
 
@@ -896,14 +1160,14 @@ function spawnTransferRestoreRunner({ backupFilePath, password }) {
 
 async function restoreTransferBackupWithDialog() {
     const picked = await dialog.showOpenDialog({
-        title: 'Restore Transfer Backup',
+        title: 'Restore Full Session Transfer Backup',
         properties: ['openFile'],
         filters: [{ name: 'SSAPP Backup', extensions: ['ssappbk'] }]
     });
     if (picked.canceled || !picked.filePaths || !picked.filePaths[0]) return null;
 
     const backupFilePath = picked.filePaths[0];
-    const password = await promptForPasswordOnce({ title: 'Restore Transfer Backup', label: 'Encryption password:' });
+    const password = await promptForPasswordOnce({ title: 'Restore Full Session Transfer Backup', label: 'Encryption password:' });
     if (!password) return null;
 
     const confirmResult = await dialog.showMessageBox({
@@ -911,8 +1175,9 @@ async function restoreTransferBackupWithDialog() {
         buttons: ['Restore and Restart', 'Cancel'],
         defaultId: 1,
         cancelId: 1,
-        title: 'Restore Transfer Backup',
-        message: 'This will close the app, replace all local data, and restart.\n\nA copy of your current data will be kept beside your userData folder as "pre-restore-*".'
+        title: 'Restore Full Session Transfer Backup',
+        message: 'This will close the app, replace all local session data, and restart.\n\nA copy of your current data will be kept beside your userData folder as "pre-restore-*".',
+        detail: 'For normal settings moves, use File -> Settings Backup instead. Full Session Transfer is intended for whole-profile migration only.'
     });
 
     if (confirmResult.response !== 0) return null;
@@ -922,8 +1187,8 @@ async function restoreTransferBackupWithDialog() {
     await dialog.showMessageBox({
         type: 'info',
         buttons: ['OK'],
-        title: 'Restoring…',
-        message: `The app will now close and restore your backup.\n\nIf something goes wrong, check:\n${logPath}`
+        title: 'Restoring Full Session…',
+        message: `The app will now close and restore your full session backup.\n\nIf something goes wrong, check:\n${logPath}`
     });
 
     markStabilitySessionGraceful('transfer-restore');
@@ -948,8 +1213,8 @@ async function handleCreateTransferBackupMenu() {
         await dialog.showMessageBox({
             type: 'info',
             buttons: ['OK'],
-            title: 'Transfer Backup',
-            message: 'A transfer backup is already running.'
+            title: 'Full Session Transfer',
+            message: 'A full session transfer backup is already running.'
         });
         return;
     }
@@ -962,14 +1227,14 @@ async function handleCreateTransferBackupMenu() {
             onStart: ({ outputFilePath }) => {
                 didStart = true;
                 setTransferBackupUiBusy(true);
-                showTransferBackupToast('info', 'Transfer Backup', `Creating backup…\n${outputFilePath}`);
+                showTransferBackupToast('info', 'Full Session Transfer', `Creating backup…\n${outputFilePath}`);
             }
         });
         if (!result) return;
         setTransferBackupConfig({ lastSuccessAt: Date.now(), lastError: null });
 
-        showTransferBackupToast('success', 'Transfer Backup Created', `${path.basename(result.filePath)} (${formatBytes(result.bytes)})`);
-        showTransferBackupNotification('Transfer Backup Created', `Saved:\n${result.filePath}\nSize: ${formatBytes(result.bytes)}`);
+        showTransferBackupToast('success', 'Full Session Transfer Created', `${path.basename(result.filePath)} (${formatBytes(result.bytes)})`);
+        showTransferBackupNotification('Full Session Transfer Created', `Saved:\n${result.filePath}\nSize: ${formatBytes(result.bytes)}`);
 
         if (didStart) {
             setTransferBackupUiBusy(false);
@@ -979,14 +1244,14 @@ async function handleCreateTransferBackupMenu() {
         await dialog.showMessageBox({
             type: 'info',
             buttons: ['OK'],
-            title: 'Transfer Backup Created',
+            title: 'Full Session Transfer Created',
             message: `Saved:\n${result.filePath}\n\nSize: ${formatBytes(result.bytes)}`
         });
     } catch (error) {
         const msg = error && error.message ? error.message : String(error);
 
-        showTransferBackupToast('error', 'Transfer Backup Failed', msg);
-        showTransferBackupNotification('Transfer Backup Failed', msg);
+        showTransferBackupToast('error', 'Full Session Transfer Failed', msg);
+        showTransferBackupNotification('Full Session Transfer Failed', msg);
 
         if (didStart) {
             setTransferBackupUiBusy(false);
@@ -996,7 +1261,7 @@ async function handleCreateTransferBackupMenu() {
         await dialog.showMessageBox({
             type: 'error',
             buttons: ['OK'],
-            title: 'Transfer Backup Failed',
+            title: 'Full Session Transfer Failed',
             message: msg
         });
     } finally {
@@ -1011,8 +1276,8 @@ async function handleAutoTransferBackupNowMenu() {
         await dialog.showMessageBox({
             type: 'info',
             buttons: ['OK'],
-            title: 'Auto Backup',
-            message: 'A transfer backup is already running.'
+            title: 'Auto Full Session Transfer',
+            message: 'A full session transfer backup is already running.'
         });
         return;
     }
@@ -1022,8 +1287,8 @@ async function handleAutoTransferBackupNowMenu() {
         await dialog.showMessageBox({
             type: 'warning',
             buttons: ['OK'],
-            title: 'Auto Backup Disabled',
-            message: 'Enable auto transfer backup first.'
+            title: 'Auto Full Session Transfer Disabled',
+            message: 'Enable auto full session transfer first.'
         });
         return;
     }
@@ -1049,13 +1314,13 @@ async function handleAutoTransferBackupNowMenu() {
             onStart: ({ outputFilePath }) => {
                 didStart = true;
                 setTransferBackupUiBusy(true);
-                showTransferBackupToast('info', 'Auto Transfer Backup', `Creating backup…\n${outputFilePath}`);
+                showTransferBackupToast('info', 'Auto Full Session Transfer', `Creating backup…\n${outputFilePath}`);
             }
         });
         setTransferBackupConfig({ lastSuccessAt: Date.now(), lastError: null });
 
-        showTransferBackupToast('success', 'Auto Backup Complete', `${path.basename(result.filePath)} (${formatBytes(result.bytes)})`);
-        showTransferBackupNotification('Auto Backup Complete', `Saved:\n${result.filePath}\nSize: ${formatBytes(result.bytes)}`);
+        showTransferBackupToast('success', 'Auto Full Session Transfer Complete', `${path.basename(result.filePath)} (${formatBytes(result.bytes)})`);
+        showTransferBackupNotification('Auto Full Session Transfer Complete', `Saved:\n${result.filePath}\nSize: ${formatBytes(result.bytes)}`);
 
         if (didStart) {
             setTransferBackupUiBusy(false);
@@ -1065,15 +1330,15 @@ async function handleAutoTransferBackupNowMenu() {
         await dialog.showMessageBox({
             type: 'info',
             buttons: ['OK'],
-            title: 'Auto Backup Complete',
+            title: 'Auto Full Session Transfer Complete',
             message: `Saved:\n${result.filePath}\n\nSize: ${formatBytes(result.bytes)}`
         });
     } catch (error) {
         const msg = error && error.message ? error.message : String(error);
         setTransferBackupConfig({ lastError: msg });
 
-        showTransferBackupToast('error', 'Auto Backup Failed', msg);
-        showTransferBackupNotification('Auto Backup Failed', msg);
+        showTransferBackupToast('error', 'Auto Full Session Transfer Failed', msg);
+        showTransferBackupNotification('Auto Full Session Transfer Failed', msg);
 
         if (didStart) {
             setTransferBackupUiBusy(false);
@@ -1083,7 +1348,7 @@ async function handleAutoTransferBackupNowMenu() {
         await dialog.showMessageBox({
             type: 'error',
             buttons: ['OK'],
-            title: 'Auto Backup Failed',
+            title: 'Auto Full Session Transfer Failed',
             message: msg
         });
     } finally {
@@ -1098,28 +1363,28 @@ async function configureAutoTransferBackup() {
         await dialog.showMessageBox({
             type: 'error',
             buttons: ['OK'],
-            title: 'Auto Backup Unavailable',
-            message: 'Your system does not support secure credential storage. Auto transfer backups require OS encryption.'
+            title: 'Auto Full Session Transfer Unavailable',
+            message: 'Your system does not support secure credential storage. Auto full session transfer backups require OS encryption.'
         });
         return null;
     }
 
     const folderPick = await dialog.showOpenDialog({
-        title: 'Select Auto Backup Folder',
+        title: 'Select Auto Full Session Transfer Folder',
         properties: ['openDirectory', 'createDirectory']
     });
     if (folderPick.canceled || !folderPick.filePaths || !folderPick.filePaths[0]) return null;
 
     const folderPath = folderPick.filePaths[0];
-    const password = await promptForPasswordPair({ title: 'Enable Auto Transfer Backup', label: 'Encryption password:' });
+    const password = await promptForPasswordPair({ title: 'Enable Auto Full Session Transfer', label: 'Encryption password:' });
     if (!password) return null;
 
     const includeChoice = await dialog.showMessageBox({
         type: 'question',
         buttons: ['Exclude caches (recommended)', 'Include caches (bigger)'],
         defaultId: 0,
-        title: 'Backup Size',
-        message: 'Include Chromium caches in the auto backup?'
+        title: 'Full Session Transfer Size',
+        message: 'Include Chromium caches in the auto full session transfer backup?'
     });
     const includeCaches = includeChoice.response === 1;
 
@@ -1170,7 +1435,7 @@ async function maybeRunAutoTransferBackup(trigger) {
 
     const password = decryptTransferBackupPassword(config);
     if (!password) {
-        console.warn('[TransferBackup] Auto backup enabled but password unavailable; disabling.');
+        console.warn('[TransferBackup] Auto full session transfer enabled but password unavailable; disabling.');
         disableAutoTransferBackup();
         return;
     }
@@ -1182,21 +1447,21 @@ async function maybeRunAutoTransferBackup(trigger) {
         const result = await createTransferBackupWithDialog({
             useAutoConfig: true,
             onStart: ({ outputFilePath: startedPath }) => {
-                showTransferBackupToast('info', 'Auto Transfer Backup', `Creating backup… (${trigger || 'auto'})\n${startedPath}`);
-                showTransferBackupNotification('Auto Transfer Backup Started', `Saving:\n${startedPath}`);
+                showTransferBackupToast('info', 'Auto Full Session Transfer', `Creating backup… (${trigger || 'auto'})\n${startedPath}`);
+                showTransferBackupNotification('Auto Full Session Transfer Started', `Saving:\n${startedPath}`);
             }
         });
         setTransferBackupConfig({ lastSuccessAt: Date.now(), lastError: null });
 
-        console.log(`[TransferBackup] Auto backup complete (${trigger || 'auto'})`);
-        showTransferBackupToast('success', 'Auto Transfer Backup', `Complete (${trigger || 'auto'}): ${path.basename(result.filePath)} (${formatBytes(result.bytes)})`);
-        showTransferBackupNotification('Auto Transfer Backup Complete', `Saved:\n${result.filePath}\nSize: ${formatBytes(result.bytes)}`);
+        console.log(`[TransferBackup] Auto full session transfer complete (${trigger || 'auto'})`);
+        showTransferBackupToast('success', 'Auto Full Session Transfer', `Complete (${trigger || 'auto'}): ${path.basename(result.filePath)} (${formatBytes(result.bytes)})`);
+        showTransferBackupNotification('Auto Full Session Transfer Complete', `Saved:\n${result.filePath}\nSize: ${formatBytes(result.bytes)}`);
     } catch (error) {
         const msg = error && error.message ? error.message : String(error);
-        console.warn('[TransferBackup] Auto backup failed:', msg);
+        console.warn('[TransferBackup] Auto full session transfer failed:', msg);
         setTransferBackupConfig({ lastError: msg });
-        showTransferBackupToast('error', 'Auto Transfer Backup Failed', msg);
-        showTransferBackupNotification('Auto Transfer Backup Failed', msg);
+        showTransferBackupToast('error', 'Auto Full Session Transfer Failed', msg);
+        showTransferBackupNotification('Auto Full Session Transfer Failed', msg);
     } finally {
         setTransferBackupUiBusy(false);
     }
@@ -10208,6 +10473,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 const selectedSourceFiles = explicitSourceFiles.length
                     ? explicitSourceFiles
                     : (args.source ? [normalizeSelectedSourcePath(args.source)] : []);
+                let sourceInjectionHandled = false;
 
                 if (runningLocally && selectedSourceFiles.length && selectedSourceFiles.every((value) => value && !value.startsWith("https://"))) {
                     const normalizeRoot = (value) => {
@@ -10304,6 +10570,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
 
                     if (loadedSourceTexts.length) {
+                        sourceInjectionHandled = true;
                         const text = loadedSourceTexts.map((entry) => entry.text).join("\n\n");
                         if (sourceLoadFailures.length) {
                             console.warn("[Injection] Continuing after local source load failures:", sourceLoadFailures);
@@ -10514,14 +10781,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 : "";
                             return `${entry.path}: ${entry.message}${tried}`;
                         }).join("\n\n");
-                        let options = {
-                            title: "Site not supported or injection script not found",
-                            buttons: ["OK"],
-                            message: `${failureDetails}\n\njoin the Discord for support: \nhttps://discord.socialstream.ninja`,
-                        };
-                        dialog.showMessageBoxSync(options);
+                        console.warn("[Injection] Local Social Stream source failed. Falling back to remote/bundled scripts:", failureDetails);
+                        clearSavedLocalSourcePath("Local Social Stream source files were missing. Retrying with online/packaged scripts.", runningLocally);
                     }
-                } else if (selectedSourceFiles.length) {
+                }
+                if (!sourceInjectionHandled && selectedSourceFiles.length) {
+                    sourceInjectionHandled = true;
                     (async () => {
                         try {
                             const branch = (typeof args.assetBranch === 'string' && args.assetBranch.trim())
@@ -10774,7 +11039,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             }
                         }
                     })();
-                } else {
+                }
+                if (!sourceInjectionHandled) {
                     var code =
                         `
 					// Get the random flag from contextBridge if available
@@ -13396,14 +13662,15 @@ app.whenReady().then(async function () {
     try {
         const savedLocalSource = store.get('localSourcePath');
         if (!Argv.filesource && !preferLocalAssetsFlag && savedLocalSource) {
-            const resolved = fsPathFromMaybeFileUrl(savedLocalSource) || savedLocalSource;
-            if (resolved && fs.existsSync(resolved)) {
+            const validation = validateSocialStreamSourceRoot(savedLocalSource);
+            if (validation.valid) {
                 Argv.filesource = savedLocalSource;
                 log(`Using saved local source: ${savedLocalSource}`);
             } else {
-                console.warn('Saved local Social Stream source missing, reverting to online assets:', savedLocalSource);
-                try { store.delete('localSourcePath'); } catch (_) { }
-                queueInjectorToast('warning', 'Local Social Stream Missing', 'Saved Social Stream files were not found. Reverting to the online version.');
+                clearSavedLocalSourcePath(
+                    `Saved Social Stream source is invalid: ${validation.reason || 'unknown problem'}`,
+                    savedLocalSource
+                );
             }
         }
     } catch (e) {
@@ -13830,6 +14097,68 @@ function fsPathFromMaybeFileUrl(p) {
     return p;
 }
 
+function validateSocialStreamSourceRoot(sourcePath) {
+    const resolved = fsPathFromMaybeFileUrl(sourcePath);
+    if (!resolved || typeof resolved !== 'string') {
+        return { valid: false, path: resolved || '', reason: 'No folder path was provided.' };
+    }
+
+    const root = path.resolve(resolved);
+    const requiredFiles = [
+        'manifest.json',
+        'background.html',
+        'popup.html',
+        path.join('sources', 'twitch.js')
+    ];
+
+    try {
+        if (!fs.existsSync(root)) {
+            return { valid: false, path: root, reason: 'Folder does not exist.' };
+        }
+        const stat = fs.statSync(root);
+        if (!stat.isDirectory()) {
+            return { valid: false, path: root, reason: 'Path is not a folder.' };
+        }
+        for (const relativePath of requiredFiles) {
+            const candidate = path.join(root, relativePath);
+            if (!fs.existsSync(candidate)) {
+                return {
+                    valid: false,
+                    path: root,
+                    reason: `Missing required Social Stream file: ${relativePath.replace(/\\/g, '/')}`
+                };
+            }
+        }
+        const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
+        if (!manifest || typeof manifest !== 'object' || !Array.isArray(manifest.content_scripts)) {
+            return { valid: false, path: root, reason: 'manifest.json is not a valid Social Stream manifest.' };
+        }
+        return { valid: true, path: ensureTrailingSep(root), reason: null };
+    } catch (error) {
+        return {
+            valid: false,
+            path: root,
+            reason: error && error.message ? error.message : String(error)
+        };
+    }
+}
+
+function clearSavedLocalSourcePath(reason, sourcePath = null) {
+    try {
+        store.delete('localSourcePath');
+    } catch (_) { }
+    try {
+        if (Argv) Argv.filesource = null;
+    } catch (_) { }
+    const detail = reason ? ` ${reason}` : '';
+    console.warn(`[SSAPP] Cleared saved local Social Stream source.${detail}`, sourcePath || '');
+    queueInjectorToast(
+        'warning',
+        'Local Social Stream Disabled',
+        reason || 'Saved local Social Stream files were invalid. Reverting to online/packaged assets.'
+    );
+}
+
 function reloadWithLocalSource(localPath) {
     try {
         if (!mainWindow) return;
@@ -13958,6 +14287,10 @@ async function handleLoadFromFolder() {
         const chosen = result.filePaths[0];
         const root = findSocialStreamRoot(chosen);
         const finalPath = ensureTrailingSep(root);
+        const validation = validateSocialStreamSourceRoot(finalPath);
+        if (!validation.valid) {
+            throw new Error(`Selected folder is not a valid Social Stream source folder.\n\n${validation.reason || 'Missing required files.'}`);
+        }
         const fileUrl = pathToFileUrl(finalPath);
         store.set('localSourcePath', fileUrl);
         try { Argv.filesource = fileUrl; } catch (e) { }
@@ -13995,6 +14328,10 @@ async function handleLoadFromZip() {
         const preferredGithubRoot = findPreferredGithubZipRoot(extractedDir, zip);
         const root = preferredGithubRoot || findSocialStreamRoot(extractedDir);
         const finalPath = ensureTrailingSep(root);
+        const validation = validateSocialStreamSourceRoot(finalPath);
+        if (!validation.valid) {
+            throw new Error(`ZIP did not contain a valid Social Stream source folder.\n\n${validation.reason || 'Missing required files.'}`);
+        }
         const fileUrl = pathToFileUrl(finalPath);
         store.set('localSourcePath', fileUrl);
         try { Argv.filesource = fileUrl; } catch (e) { }
@@ -14496,36 +14833,53 @@ function createMenu() {
                     click: () => clearAllData()
                 },
                 {
-                    label: 'Transfer Backup',
+                    label: 'Settings Backup',
                     submenu: [
                         {
-                            label: 'Create Transfer Backup…',
+                            label: 'Export Settings…',
+                            click: async () => {
+                                await exportSettingsBackupWithDialog();
+                            }
+                        },
+                        {
+                            label: 'Import Settings…',
+                            click: async () => {
+                                await importSettingsBackupWithDialog();
+                            }
+                        }
+                    ]
+                },
+                {
+                    label: 'Advanced Full Session Transfer',
+                    submenu: [
+                        {
+                            label: 'Create Full Session Transfer Backup…',
                             click: async () => {
                                 await handleCreateTransferBackupMenu();
                             }
                         },
                         {
-                            label: 'Restore Transfer Backup…',
+                            label: 'Restore Full Session Transfer Backup…',
                             click: async () => {
                                 await restoreTransferBackupWithDialog();
                             }
                         },
                         { type: 'separator' },
                         {
-                            label: autoBackupConfigured ? 'Reconfigure Auto Transfer Backup…' : 'Configure Auto Transfer Backup…',
+                            label: autoBackupConfigured ? 'Reconfigure Auto Full Session Transfer…' : 'Configure Auto Full Session Transfer…',
                             click: async () => {
                                 await configureAutoTransferBackup();
                             }
                         },
                         {
-                            label: 'Run Auto Backup Now',
+                            label: 'Run Auto Full Session Transfer Now',
                             enabled: autoBackupConfigured && !transferBackupRuntime.inProgress,
                             click: async () => {
                                 await handleAutoTransferBackupNowMenu();
                             }
                         },
                         {
-                            label: 'Disable Auto Transfer Backup',
+                            label: 'Disable Auto Full Session Transfer',
                             enabled: transferBackupConfig.enabled === true,
                             click: () => {
                                 disableAutoTransferBackup();
