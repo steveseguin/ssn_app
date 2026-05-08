@@ -1862,15 +1862,16 @@
                 } else if (target === "youtube" || target === "youtubeshorts") {
                     const messageParts = [];
                     if (errorMessage) messageParts.push(errorMessage);
-                    messageParts.push('If loading chat via username on Youtube, you must be live and the stream set to public for it to work.');
+                    messageParts.push('Enter your YouTube handle, like @TGG_, or paste your channel URL.');
+                    messageParts.push('The stream must be live and public for chat discovery to work.');
                     const allowSpacesForChannel = (target === 'youtube' || target === 'youtubeshorts') && isChannelName;
                     if (allowSpacesForChannel) {
                         messageParts.push('Channel names can include spaces when the channel option is enabled.');
                     } else {
-                        messageParts.push('Note: Usernames cannot contain spaces.');
+                        messageParts.push('Do not enter a display name with spaces here; use the @handle or channel URL instead.');
                     }
                     response = await ipcRenderer.sendSync('prompt', {
-                        title: `Enter the ${target} user name or channel name`,
+                        title: `Enter the ${target} handle or channel URL`,
                         message: messageParts.join('\n\n'),
                         showChannelTypeCheckbox: true,
                         showShortsCheckbox: (target === "youtubeshorts"),
@@ -2008,9 +2009,8 @@
                         isShorts = extracted.isShorts || response.isShorts;
                         target = isShorts ? "youtubeshorts" : "youtube";
                     } else {
-                        videoID = response.value;
-                        isShorts = response.isShorts;
-                        target = isShorts ? "youtubeshorts" : "youtube";
+                        Toast.warning("YouTube", "Enter a YouTube video URL or the 11-character video ID. Channel URLs should be added with the YouTube source option.");
+                        return;
                     }
                 } else {
                     return;
@@ -2164,11 +2164,15 @@
                     const hostname = url.hostname.toLowerCase();
                     if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
                         const result = parseYoutubeUrl(url);
-                        if (result.isYoutubeUrl && result.id) {
+                        if (result.isYoutubeUrl && result.type === 'video' && result.id) {
                             return newSourceVideoID(result.isShort ? "youtubeshorts" : "youtube", result.id, startup, initialState);
                         } else if (result.isYoutubeUrl && result.username) {
                             target = result.isShort ? "youtubeshorts" : "youtube";
                             username = result.username;
+                        } else if (result.isYoutubeUrl && result.type === 'channel_id' && result.id) {
+                            target = result.isShort ? "youtubeshorts" : "youtube";
+                            username = result.id;
+                            isChannelName = true;
                         } else {
                             username = url.pathname.split('/').filter(Boolean)[0];
                         }

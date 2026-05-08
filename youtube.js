@@ -1470,13 +1470,29 @@ function extractYoutubeVideoId(url) {
 		const searchParams = urlObj.searchParams;
         const youtubeDomains = ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be', 'music.youtube.com'];
         const youtubeContentDomain = 'googleusercontent.com'; 
+        const validVideoId = (value) => /^[a-zA-Z0-9_-]{11}$/.test(value || '');
 
         if (youtubeDomains.includes(hostname)) {
-            if (pathname.startsWith('/shorts/')) return pathname.split('/shorts/')[1].split(/[?\/#]/)[0];
-            if (pathname.startsWith('/live/')) return pathname.split('/live/')[1].split(/[?\/#]/)[0];
-            if (pathname.startsWith('/embed/')) return pathname.split('/embed/')[1].split(/[?\/#]/)[0];
-            if (pathname === '/watch') return searchParams.get('v');
-            if (hostname === 'youtu.be') return pathname.substring(1).split(/[?\/#]/)[0]; 
+            if (pathname.startsWith('/shorts/')) {
+                const candidate = pathname.split('/shorts/')[1].split(/[?\/#]/)[0];
+                return validVideoId(candidate) ? candidate : null;
+            }
+            if (pathname.startsWith('/live/')) {
+                const candidate = pathname.split('/live/')[1].split(/[?\/#]/)[0];
+                return validVideoId(candidate) ? candidate : null;
+            }
+            if (pathname.startsWith('/embed/')) {
+                const candidate = pathname.split('/embed/')[1].split(/[?\/#]/)[0];
+                return validVideoId(candidate) ? candidate : null;
+            }
+            if (pathname === '/watch') {
+                const candidate = searchParams.get('v');
+                return validVideoId(candidate) ? candidate : null;
+            }
+            if (hostname === 'youtu.be') {
+                const candidate = pathname.substring(1).split(/[?\/#]/)[0];
+                return validVideoId(candidate) ? candidate : null;
+            }
         } else if (hostname.endsWith(youtubeContentDomain) && pathname.startsWith('/youtube.com/')) {
             const pathParts = pathname.split('/');
             if (pathParts.length > 2) {
@@ -1498,7 +1514,8 @@ function extractYoutubeVideoId(url) {
 }
 function parseYoutubeUrl(url) { 
     const urlString = typeof url === 'string' ? url : url.toString();
-	const usernameRegex = /(?:youtube\.com\/(?:user\/|c\/|@))([a-zA-Z0-9_-]+)/i; 
+	const handleRegex = /(?:youtube\.com\/)(@[a-zA-Z0-9._-]+)/i;
+	const usernameRegex = /(?:youtube\.com\/(?:user\/|c\/))([a-zA-Z0-9._-]+)/i;
     const channelIdRegex = /(?:youtube\.com\/channel\/)(UC[a-zA-Z0-9_-]{22})/i;
 
 	try {
@@ -1506,6 +1523,10 @@ function parseYoutubeUrl(url) {
         const videoId = extractYoutubeVideoId(urlString); 
         if (videoId) {
             return { isYoutubeUrl: true, type: 'video', id: videoId, isShort: urlString.includes('/shorts/') };
+        }
+        const handleMatch = urlString.match(handleRegex);
+        if (handleMatch && handleMatch[1]) {
+            return { isYoutubeUrl: true, type: 'channel_username', username: handleMatch[1] };
         }
         const usernameMatch = urlString.match(usernameRegex);
         if (usernameMatch && usernameMatch[1]) {
