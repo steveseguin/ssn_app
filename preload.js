@@ -368,6 +368,10 @@ function configureContextBridge(){
 				return await ipcRenderer.invoke('kick-oauth', payload);
 			  },
 
+			  startVpzoneOAuth: async (payload) => {
+				return await ipcRenderer.invoke('vpzone-oauth', payload);
+			  },
+
 			  startKickWebSocket: async (payload) => {
 				return await ipcRenderer.invoke('kick-ws-connect', payload);
 			  },
@@ -536,6 +540,10 @@ try {
 
 			startKickOAuth: async (payload) => {
 				return await ipcRenderer.invoke('kick-oauth', payload);
+			},
+
+			startVpzoneOAuth: async (payload) => {
+				return await ipcRenderer.invoke('vpzone-oauth', payload);
 			},
 
 			startKickWebSocket: async (payload) => {

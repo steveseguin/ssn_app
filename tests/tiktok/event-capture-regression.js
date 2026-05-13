@@ -168,12 +168,43 @@ function runSparseSharePayloadAssertions() {
   );
 }
 
+function runEulerShareReplayDedupeAssertions() {
+  const { emitted, manager } = createHarness({ captureLikedEvent: true });
+
+  manager.sendEventMessage(
+    {
+      common: { msgId: 'share-copy-1', createTime: '1778445659' },
+      user: { uniqueId: 'ayub1.33', nickname: '￶' },
+      displayType: 'share_message'
+    },
+    'shared',
+    '￶ shared the live stream!'
+  );
+  manager.sendEventMessage(
+    {
+      common: { msgId: 'share-copy-2', createTime: '1778445660' },
+      user: { uniqueId: 'ayub1.33', nickname: '￶' },
+      displayType: 'share_message'
+    },
+    'shared',
+    '￶ shared the live stream!'
+  );
+
+  const sharedCount = emitted.filter((event) => event.event === 'shared').length;
+  assert.strictEqual(
+    sharedCount,
+    1,
+    'Euler shared-event replays from the same user should be suppressed even when msgId/createTime changes'
+  );
+}
+
 function run() {
   runCanonicalizationAssertions();
   runLikeGateAssertions();
   runFollowShareDedupeAssertions();
   runLikePassthroughAssertions();
   runSparseSharePayloadAssertions();
+  runEulerShareReplayDedupeAssertions();
   console.log('event-capture-regression: all checks passed');
 }
 

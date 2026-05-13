@@ -167,7 +167,7 @@ Object.defineProperty(navigator, 'productSub', {
 if (navigator.userAgentData && navigator.userAgent.includes('Chrome')) {
   // Extract Chrome version from the actual user agent that was set
   const chromeMatch = navigator.userAgent.match(/Chrome\/(\d+)/);
-  const chromeVersion = chromeMatch ? chromeMatch[1] : '144'; // Default to 144 if not detectable
+  const chromeVersion = chromeMatch ? chromeMatch[1] : '148';
   
   if (PRELOAD_DEBUG) console.log('[Preload] Detected Chrome version from UA:', chromeVersion);
   
@@ -178,17 +178,17 @@ if (navigator.userAgentData && navigator.userAgent.includes('Chrome')) {
     // Add Google Chrome to brands
     if (result.brands) {
       result.brands = [
-        {"brand": "Google Chrome", "version": chromeVersion},
         {"brand": "Chromium", "version": chromeVersion},
-        {"brand": "Not(A:Brand", "version": "8"}
+        {"brand": "Google Chrome", "version": chromeVersion},
+        {"brand": "Not/A)Brand", "version": "99"}
       ];
     }
     
     if (result.fullVersionList) {
       result.fullVersionList = [
-        {"brand": "Google Chrome", "version": `${chromeVersion}.0.0.0`},
         {"brand": "Chromium", "version": `${chromeVersion}.0.0.0`},
-        {"brand": "Not(A:Brand", "version": "8.0.0.0"}
+        {"brand": "Google Chrome", "version": `${chromeVersion}.0.0.0`},
+        {"brand": "Not/A)Brand", "version": "99.0.0.0"}
       ];
     }
     
@@ -203,9 +203,9 @@ if (navigator.userAgentData && navigator.userAgent.includes('Chrome')) {
   // Also override the low entropy values
   Object.defineProperty(navigator.userAgentData, 'brands', {
     get: () => [
-      {"brand": "Google Chrome", "version": chromeVersion},
       {"brand": "Chromium", "version": chromeVersion},
-      {"brand": "Not(A:Brand", "version": "8"}
+      {"brand": "Google Chrome", "version": chromeVersion},
+      {"brand": "Not/A)Brand", "version": "99"}
     ],
     configurable: true
   });
@@ -831,4 +831,26 @@ if (contextIsolated) {
       return await ipcRenderer.invoke('kick-oauth', payload);
     }
   };
+}
+
+// Google OAuth relay: when this window is a Google popup with a real window.opener,
+// wrap window.opener.postMessage so the token is also sent via IPC as a backup.
+// COOP stripping may or may not work in Electron, so this ensures the token reaches
+// the main process regardless.
+if (window.__ipc && window.opener && window.location.hostname.includes('google')) {
+  try {
+    const realOpener = window.opener;
+    const realPostMessage = realOpener.postMessage.bind(realOpener);
+    Object.defineProperty(window, 'opener', {
+      get: () => ({
+        postMessage: (data, targetOrigin) => {
+          try { realPostMessage(data, targetOrigin); } catch (_) {}
+          try { ipcRenderer.send('google-oauth-relay', JSON.stringify({ data, targetOrigin })); } catch (_) {}
+        },
+        closed: realOpener.closed,
+        origin: realOpener.origin,
+      }),
+      configurable: true
+    });
+  } catch (_) {}
 }

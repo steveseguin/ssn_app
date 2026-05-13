@@ -138,6 +138,8 @@
                             src="https://socialstream.ninja/sources/images/twitch.png" class="icon" />Twitch</button></span>
                 <span><button onclick="newSourcePrompt('kick');" data-source-type="kick"><img
                             src="https://socialstream.ninja/sources/images/kick.png" class="icon" />Kick</button></span>
+                <span><button onclick="newSourcePrompt('vpzone');" data-source-type="vpzone"><img
+                            src="https://socialstream.ninja/sources/images/vpzone.png" class="icon" />VPZONE</button></span>
                 <span><button onclick="newSourcePrompt('velora');" data-source-type="velora"><img
                             src="https://velora.tv/favicon.ico" class="icon" />Velora</button></span>
                 <span><button onclick="newSourcePrompt('instagramlive');" data-source-type="instagram"><img
@@ -1224,6 +1226,26 @@
             return target === 'youtube' || target === 'youtubeshorts';
         }
 
+        function getWebSocketManifestTarget(target) {
+            if (target === 'youtubeshorts') return 'youtube';
+            return target;
+        }
+
+        function hasWebSocketManifestEntry(target) {
+            const manifestTarget = getWebSocketManifestTarget(target);
+            if (!manifestTarget || typeof manifest === 'undefined' || !manifest?.content_scripts) return false;
+            return manifest.content_scripts.some(cs =>
+                cs.js?.some(jsFile => jsFile.includes(`websocket/${manifestTarget}.js`))
+            );
+        }
+
+        function platformSupportsWebSocket(target) {
+            if (!target) return false;
+            if (isYouTubeTarget(target)) return true;
+            if (target === 'tiktok' || target === 'velora' || target === 'vpzone') return true;
+            return hasWebSocketManifestEntry(target);
+        }
+
         function isYouTubeWebSocketSigninContext(source) {
             if (!source || !isYouTubeTarget(source.target)) return false;
             const effectiveMode = source.activeConnectionMode || source.connectionMode || null;
@@ -1359,16 +1381,28 @@
                     signinButton.title = 'Open the TikTok signing window (local signer)';
                     signinButton.onclick = () => tiktokShowSigningWindow(source.id);
                 } else {
-                    signinButton.classList.toggle("hidden", isWebsocketMode && !useYouTubeWebSocketSignin);
-                    if (useYouTubeWebSocketSignin) {
+                    const isTikTokWs = source.target === 'tiktok' && (isWebsocketMode);
+                    if (isTikTokWs) {
                         signinButton.classList.remove('hidden');
-                        signinButton.innerHTML = translate('btn.signin');
-                        signinButton.title = 'Open the YouTube WebSocket sign-in window for this session.';
-                        signinButton.onclick = function () { signin(this); };
-                        signinButton.disabled = false;
-                        signinButton.style.cursor = '';
+                        const hasSession = !!(source.tiktokSessionId);
+                        signinButton.innerHTML = hasSession ? '✓ TikTok Session Saved' : '🔐 Sign in to TikTok';
+                        signinButton.title = hasSession
+                            ? 'TikTok session cookie stored for this source.'
+                            : 'Sign in to receive more chat messages from TikTok live streams.';
+                        signinButton.onclick = function () { showTikTokSignInMenu(source.id); };
+                        signinButton.classList.toggle('authenticated', hasSession);
                     } else {
-                        applySigninPolicy(signinButton, source);
+                        signinButton.classList.toggle("hidden", isWebsocketMode && !useYouTubeWebSocketSignin);
+                        if (useYouTubeWebSocketSignin) {
+                            signinButton.classList.remove('hidden');
+                            signinButton.innerHTML = translate('btn.signin');
+                            signinButton.title = 'Open the YouTube WebSocket sign-in window for this session.';
+                            signinButton.onclick = function () { signin(this); };
+                            signinButton.disabled = false;
+                            signinButton.style.cursor = '';
+                        } else {
+                            applySigninPolicy(signinButton, source);
+                        }
                     }
                 }
             }
@@ -1493,7 +1527,7 @@
                 } else if (source.status === 'activating') {
                     // Show connecting for supported WSS sources.
                     const t = (source.target || '').toLowerCase();
-                    const supports = t === 'tiktok' || t.startsWith('youtube') || t === 'twitch' || t === 'velora';
+                    const supports = t === 'tiktok' || t.startsWith('youtube') || t === 'twitch' || t === 'vpzone' || t === 'velora';
                     if (supports) updateConnectionStatus(element, 'connecting');
                 } else if (source.status === 'inactive' && wsStatusElement && !wsStatusElement.classList.contains('error')) {
                     updateConnectionStatus(element, 'clear');
@@ -1678,6 +1712,7 @@
                 const hasWebSocketSupport =
                     target.startsWith('youtube') ||
                     target === 'velora' ||
+                    target === 'vpzone' ||
                     target === 'tiktok' ||
                     (manifest?.content_scripts?.some(cs =>
                         cs.js?.some(jsFile => jsFile.includes(`websocket/${target}.js`))
@@ -1755,13 +1790,8 @@
             }
             const parentGroup = stateManager.getGroup(groupId);
 
-            // Check if YouTube supports WebSockets
-            let supportsWSS = false;
-            if (typeof manifest !== 'undefined' && manifest?.content_scripts) {
-                supportsWSS = manifest.content_scripts.some(cs =>
-                    cs.js?.some(jsFile => jsFile.includes(`websocket/${target}.js`))
-                );
-            }
+            // YouTube Shorts uses the regular YouTube WebSocket source.
+            const supportsWSS = platformSupportsWebSocket(target);
 
             const sourceDataObject = {
                 target: target,
@@ -1827,7 +1857,8 @@
                 nimo: "Nimo username",
                 sooplive: "SOOP broadcaster ID/name",
                 twitcasting: "TwitCasting username",
-                younow: "YouNow username"
+                younow: "YouNow username",
+                vpzone: "VPZONE username"
             };
             const promptTargetLabel = promptTargetLabels[target] || `${target} user name`;
 
@@ -2252,6 +2283,7 @@
                 if (!sourceUrl) {
                     if (target === "twitch") sourceUrl = `https://www.twitch.tv/popout/${username}/chat?popout=`;
                     else if (target === "kick") sourceUrl = `https://kick.com/popout/${username}/chat`;
+                    else if (target === "vpzone") sourceUrl = `https://vpzone.tv/stream/${username}`;
                     else if (target === "velora") sourceUrl = `https://velora.tv/${username}`;
                     else if (target === "parti") sourceUrl = `https://parti.com/popout-chat?id=${username}`;
                     else if (target === "rumble") {
@@ -2290,20 +2322,11 @@
 
 
                 // Check if platform supports WebSockets
-                let supportsWSS = false;
-                if (target === 'tiktok') {
-                    supportsWSS = true; // TikTok has built-in websocket support
-                } else if (target === 'velora') {
-                    supportsWSS = true;
-                } else if (typeof manifest !== 'undefined' && manifest?.content_scripts) {
-                    supportsWSS = manifest.content_scripts.some(cs =>
-                        cs.js?.some(jsFile => jsFile.includes(`websocket/${target}.js`))
-                    );
-                }
+                const supportsWSS = platformSupportsWebSocket(target);
 
                 // Set default connection mode based on platform
                 let defaultMode = 'classic';
-                if (target === 'twitch' || target === 'kick' || target === 'velora') {
+                if (target === 'twitch' || target === 'kick' || target === 'vpzone' || target === 'velora') {
                     defaultMode = 'websocket';
                 } else if (target === 'tiktok') {
                     if (preferTikTokClassic || cliForcesTikTokClassic) {
@@ -2399,14 +2422,7 @@
             }
 
             // Check if platform supports WebSockets
-            let supportsWSS = false;
-            if (target === 'tiktok') {
-                supportsWSS = true; // TikTok has built-in websocket support
-            } else if (typeof manifest !== 'undefined' && manifest?.content_scripts) {
-                supportsWSS = manifest.content_scripts.some(cs =>
-                    cs.js?.some(jsFile => jsFile.includes(`websocket/${target}.js`))
-                );
-            }
+            const supportsWSS = platformSupportsWebSocket(target);
 
             // Set default connection mode based on platform
             let defaultMode = 'classic';
@@ -2508,20 +2524,11 @@
 
 
             // Check if platform supports WebSockets
-            let supportsWSS = false;
-            if (target === 'tiktok') {
-                supportsWSS = true; // TikTok has built-in websocket support
-            } else if (target === 'velora') {
-                supportsWSS = true;
-            } else if (target && typeof manifest !== 'undefined' && manifest?.content_scripts) {
-                supportsWSS = manifest.content_scripts.some(cs =>
-                    cs.js?.some(jsFile => jsFile.includes(`websocket/${target}.js`))
-                );
-            }
+            const supportsWSS = platformSupportsWebSocket(target);
 
             // Set default connection mode based on platform
             let defaultMode = 'classic';
-            if (target === 'velora') {
+            if (target === 'velora' || target === 'vpzone') {
                 defaultMode = 'websocket';
             }
             // TikTok defaults based on global preference
@@ -3508,38 +3515,32 @@
                         || provider === 'euler-ws';
                     const providerRequiresApiKey = provider === 'custom' || provider === 'euler-ws';
                     const showTools = providerRequiresSigningTools || !!tikTokSource?.showTikTokSigningTools;
-                    const shouldShowSigninButton = hasCustomSigningConfig || showTools;
+                    const shouldShowSigninButton = true;
 
-                    if (shouldShowSigninButton) {
-                        signinButton.setAttribute('data-tiktok-signin', 'true');
-                        signinButton.classList.remove('hidden');
-                        signinButton.style.display = '';
-                        if (resolvedSourceId) {
-                            signinButton.onclick = function () {
-                                showTikTokSignInMenu(resolvedSourceId);
-                            };
-                        } else {
-                            signinButton.onclick = null;
-                        }
-	                        const needsApiKeyPrompt = providerRequiresApiKey && !hasCustomSigningConfig;
-	                        if (needsApiKeyPrompt) {
-	                            signinButton.innerHTML = provider === 'euler-ws'
-	                                ? '🧪 Enter Euler API key/JWT'
-	                                : '🧪 Enter API key / signing URL';
-	                            signinButton.title = 'Experimental: Configure TikTok signing credentials for WebSocket mode.';
-	                        } else {
-	                            signinButton.innerHTML = hasSession ? '✓ TikTok Session Saved' : '🔐 Manage TikTok Signing';
-	                            signinButton.title = 'Open the TikTok session manager to save cookies and collect signing keys.';
-	                        }
-                        signinButton.classList.toggle('authenticated', hasSession);
+                    signinButton.setAttribute('data-tiktok-signin', 'true');
+                    signinButton.classList.remove('hidden');
+                    signinButton.style.display = '';
+                    if (resolvedSourceId) {
+                        signinButton.onclick = function () {
+                            showTikTokSignInMenu(resolvedSourceId);
+                        };
                     } else {
-                        signinButton.classList.add('hidden');
-                        signinButton.style.display = '';
-                        signinButton.removeAttribute('data-tiktok-signin');
                         signinButton.onclick = null;
-                        signinButton.title = '';
-                        signinButton.classList.remove('authenticated');
                     }
+                    const needsApiKeyPrompt = providerRequiresApiKey && !hasCustomSigningConfig;
+                    if (needsApiKeyPrompt) {
+                        signinButton.innerHTML = provider === 'euler-ws'
+                            ? '🧪 Enter Euler API key/JWT'
+                            : '🧪 Enter API key / signing URL';
+                        signinButton.title = 'Experimental: Configure TikTok signing credentials for WebSocket mode.';
+                    } else if (hasSession) {
+                        signinButton.innerHTML = '✓ TikTok Session Saved';
+                        signinButton.title = 'TikTok session cookie stored for this source.';
+                    } else {
+                        signinButton.innerHTML = '🔐 Sign in to TikTok';
+                        signinButton.title = 'Sign in to receive more chat messages from TikTok live streams.';
+                    }
+                    signinButton.classList.toggle('authenticated', hasSession);
                 } else if (isWebsocketMode) {
                     // Hide for other websocket modes
                     signinButton.classList.add("hidden");
@@ -4143,9 +4144,7 @@
             // Check if platform supports websockets
             if (!isYouTube && !isTikTok && target) {
                 // Check manifest for websocket support
-                genericWsSupported = target === 'velora' || manifest?.content_scripts?.some(cs =>
-                    cs.js?.some(jsFile => jsFile.includes(`websocket/${target}.js`))
-                );
+                genericWsSupported = platformSupportsWebSocket(target);
             }
 
             // For YouTube entries, websocket is supported
@@ -5310,8 +5309,9 @@
                         if (!windowExists) {
                             stateManager.updateSource(sourceId, { vid: null, wssId: null, tiktokWssId: null, status: 'inactive', activeConnectionMode: null });
                         } else {
-                            if (target !== 'tiktok' && source.activeConnectionMode !== 'classic') {
-                                stateManager.updateSource(sourceId, { activeConnectionMode: 'classic' });
+                            const restoredMode = target !== 'tiktok' && source.wssId ? 'websocket' : 'classic';
+                            if (target !== 'tiktok' && source.activeConnectionMode !== restoredMode) {
+                                stateManager.updateSource(sourceId, { activeConnectionMode: restoredMode });
                             }
                             return source.vid;
                         }
@@ -5345,17 +5345,15 @@
             // Validate connection mode - force classic for platforms without websocket support
             if (mode === 'websocket' && !source.supportsWSS) {
                 // Check WebSocket support if not already stored
-                const hasWebSocketSupport = (target === 'tiktok') ||
-                    (target === 'velora') ||
-                    (typeof manifest !== 'undefined' && manifest?.content_scripts?.some(cs =>
-                        cs.js?.some(jsFile => jsFile.includes(`websocket/${target}.js`))
-                    ));
+                const hasWebSocketSupport = platformSupportsWebSocket(target);
 
                 if (!hasWebSocketSupport) {
                     console.log(`Platform ${target} doesn't support websocket, switching to classic mode`);
                     mode = 'classic';
                     // Update the source to reflect the correct mode
                     stateManager.updateSource(sourceId, { connectionMode: 'classic', supportsWSS: false });
+                } else {
+                    stateManager.updateSource(sourceId, { supportsWSS: true });
                 }
             }
 
@@ -6447,7 +6445,7 @@
             if (config[source.target]) conf = { ...conf, ...config[source.target] };
             if (conf.wss) conf = { ...conf, ...conf.wss };
 
-            if (source.target === 'facebook') {
+            if (source.target === 'facebook' || source.target === 'vpzone') {
                 conf.preload = 'full';
             }
 
@@ -6941,10 +6939,32 @@
 
             if (providerValue === 'auto') {
                 headerTitle = 'TikTok Signing: Auto';
-                mainContent = `
-                    <div style="background: rgba(34, 197, 94, 0.1); border-left: 3px solid #22c55e; padding: 12px 16px; border-radius: 6px; margin-bottom: 20px;">
-                        <h4 style="margin: 0 0 6px 0; color: #4ade80; font-size: 15px;">Auto Mode Active</h4>
+                const sessionBanner = isAuthenticated
+                    ? `<div style="background: rgba(34, 197, 94, 0.12); border-left: 3px solid #22c55e; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px;">
+                        <h4 style="margin: 0 0 4px 0; color: #4ade80; font-size: 14px;">✓ Signed in to TikTok</h4>
                         <p style="margin: 0; font-size: 13px; color: #dcfce7;">
+                            Your session is active. Authenticated connections receive more chat messages.
+                        </p>
+                    </div>`
+                    : `<div style="background: rgba(59, 130, 246, 0.12); border-left: 3px solid #3b82f6; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px;">
+                        <h4 style="margin: 0 0 6px 0; color: #93c5fd; font-size: 14px;">Sign in for more messages</h4>
+                        <p style="margin: 0 0 10px 0; font-size: 13px; color: #dbeafe;">
+                            Connecting with your TikTok account can significantly increase the number of chat messages you receive from live streams.
+                        </p>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button onclick="tiktokSignIn('${sourceId}')" class="button" style="background: #2563eb;">
+                                🔑 Sign in to TikTok
+                            </button>
+                            <button onclick="tiktokManualSignIn('${sourceId}')" class="button" style="background: #475569; font-size: 13px;">
+                                📝 Enter Session ID manually
+                            </button>
+                        </div>
+                    </div>`;
+                mainContent = `
+                    ${sessionBanner}
+                    <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
+                        <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #94a3b8;">Auto Mode</h4>
+                        <p style="margin: 0; font-size: 13px; color: #94a3b8;">
                             Tries Euler signing, falls back to Polling if it fails. Adding an API key can help avoid rate limits.
                         </p>
                     </div>
@@ -7415,6 +7435,26 @@
                 serviceUrlInput.value = '';
             }
             Toast.info("TikTok Signing", "Signing settings cleared.");
+        }
+
+        function clearTikTokAuth(sourceId) {
+            if (!stateManager) return;
+            const source = stateManager.getSource(sourceId);
+            if (!source) return;
+            stateManager.updateSource(sourceId, {
+                tiktokSessionId: null,
+                tiktokTtTargetIdc: null
+            });
+            const entry = document.querySelector(`[data-source-id="${sourceId}"]`);
+            if (entry) {
+                const signInBtn = entry.querySelector('[data-tiktok-signin]') || entry.querySelector('[data-signin]');
+                if (signInBtn) {
+                    signInBtn.innerHTML = '🔐 Sign in to TikTok';
+                    signInBtn.classList.remove('authenticated');
+                    signInBtn.title = 'Sign in to receive more chat messages from TikTok live streams.';
+                }
+            }
+            Toast.info("TikTok Sign-in", "TikTok session cleared.");
         }
 
         function resolveTikTokSigningConfigForIPC(source) {
@@ -10668,6 +10708,7 @@
                 'source.twitch': 'Twitch',
                 'source.kick': 'Kick',
                 'source.velora': 'Velora',
+                'source.vpzone': 'VPZONE',
                 'source.instagram': 'Instagram Live',
                 'source.facebook': 'Facebook',
                 'source.tiktok': 'TikTok',
@@ -11746,11 +11787,11 @@
                     return;
                 }
 
-                btn.textContent = hasSession ? '✓ TikTok Session Saved' : '🔐 Manage TikTok Signing';
+                btn.textContent = hasSession ? '✓ TikTok Session Saved' : '🔐 Sign in to TikTok';
                 btn.classList.toggle('authenticated', hasSession);
                 btn.title = hasSession
                     ? 'TikTok session cookie stored for this source.'
-                    : 'Provide your TikTok session cookie to enable chat replies and authenticated features.';
+                    : 'Sign in to receive more chat messages from TikTok live streams.';
             });
 
             document.querySelectorAll('[data-showtips]').forEach(btn => {
@@ -11797,6 +11838,7 @@
                 'twitch': 'source.twitch',
                 'kick': 'source.kick',
                 'velora': 'source.velora',
+                'vpzone': 'source.vpzone',
                 'instagram': 'source.instagram',
                 'facebook': 'source.facebook',
                 'tiktok': 'source.tiktok',

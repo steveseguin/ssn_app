@@ -29,15 +29,16 @@ class StateManager {
     checkWebSocketSupport(target) {
         if (!target) return false;
         
-        // TikTok has special built-in websocket support in the electron layer
-        if (target === 'tiktok') {
+        // These platforms have dedicated Electron or shared WebSocket handling.
+        if (target === 'tiktok' || target === 'youtube' || target === 'youtubeshorts' || target === 'velora' || target === 'vpzone') {
             return true;
         }
         
         // Check if a websocket file exists in the manifest
         if (typeof manifest !== 'undefined' && manifest?.content_scripts) {
+            const manifestTarget = target === 'youtubeshorts' ? 'youtube' : target;
             return manifest.content_scripts.some(cs => 
-                cs.js?.some(jsFile => jsFile.includes(`websocket/${target}.js`))
+                cs.js?.some(jsFile => jsFile.includes(`websocket/${manifestTarget}.js`))
             );
         }
         

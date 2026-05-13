@@ -44,6 +44,18 @@ const {
 const { WebcastEventMap, WebcastEvent } = require('tiktok-live-connector/dist/types/events');
 const { ControlAction, GiftMessageIgnoreConfig } = require('tiktok-live-connector/dist/types/tiktok/enums');
 
+(function applyAnchorIdentityPatch() {
+    try {
+        const wsClientPath = require.resolve('tiktok-live-connector/dist/lib/ws/lib/ws-client.js');
+        const content = fs.readFileSync(wsClientPath, 'utf8');
+        if (content.includes("identity: 'audience',") && !content.includes("identity: 'anchor',")) {
+            const patched = content.replace("identity: 'audience',", "identity: 'anchor',");
+            fs.writeFileSync(wsClientPath, patched, 'utf8');
+            console.log('[TikTok] Applied runtime anchor identity patch to ws-client.js');
+        }
+    } catch (_) { }
+})();
+
 const env = {
     shouldEnableTikTokLogging: false,
     resolveLogDirectory: null,
@@ -61,6 +73,9 @@ const env = {
     onEvent: () => { },
     isDevMode: () => false
 };
+
+const EULER_SIGNING_HOST = 'tiktok.eulerstream.com';
+let activeAuthWsHostRef = { count: 0, host: null };
 
 const SIGNING_SERVICE_HELP_URL = (process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL && process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL.trim())
     ? process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL.trim()
@@ -1234,6 +1249,7 @@ const TIKTOK_EVENT_DEDUPE_WINDOWS_MS = Object.freeze({
 
 const TIKTOK_EVENT_DEDUPE_MAX_ENTRIES = 10000;
 const TIKTOK_EVENT_DEDUPE_TRIM_TO = 8000;
+const TIKTOK_USER_SCOPED_EVENT_DEDUPE_TYPES = new Set(['followed', 'shared']);
 
 function canonicalizeTikTokEventType(eventType) {
     const cleaned = cleanGenericString(eventType);
@@ -1285,6 +1301,10 @@ function buildTikTokEventDedupeKey(eventType, data = {}, message = null) {
     // Skip dedupe when payload lacks reliable identity and event identifiers.
     if (!stableUserKey && !stableDetailKey) {
         return null;
+    }
+
+    if (TIKTOK_USER_SCOPED_EVENT_DEDUPE_TYPES.has(eventType) && stableUserKey) {
+        return `${eventType}|${String(stableUserKey).toLowerCase()}`;
     }
 
     const weakDetailKey = firstNonEmptyVisibleString([
@@ -3716,40 +3736,42 @@ class ConnectionManager {
         if (this.shouldUseLocalSigner()) {
             return null;
         }
-        if (this.signingProvider !== 'custom') {
-            return null;
-        }
-        const serviceUrl = this.signingConfig?.serviceUrl || null;
-        if (!serviceUrl) {
+
+        if (this.signingProvider === 'custom') {
+            const serviceUrl = this.signingConfig?.serviceUrl || null;
+            if (!serviceUrl) {
+                return null;
+            }
+            let parsed;
+            try {
+                parsed = new URL(serviceUrl);
+            } catch (_) {
+                return null;
+            }
+            const hostname = typeof parsed.hostname === 'string'
+                ? parsed.hostname.trim().toLowerCase()
+                : '';
+            const host = typeof parsed.host === 'string'
+                ? parsed.host.trim().toLowerCase()
+                : '';
+            if (!hostname || !host) {
+                return null;
+            }
+            if (isLoopbackHostname(hostname)) {
+                this.authenticatedWsBootstrapHost = host;
+                return host;
+            }
+            const allowlist = parseHostAllowlist(process.env.SSAPP_TIKTOK_AUTH_WS_ALLOWED_HOSTS || '');
+            if (allowlist.has(host) || allowlist.has(hostname)) {
+                this.authenticatedWsBootstrapHost = host;
+                return host;
+            }
             return null;
         }
 
-        let parsed;
-        try {
-            parsed = new URL(serviceUrl);
-        } catch (_) {
-            return null;
-        }
-
-        const hostname = typeof parsed.hostname === 'string'
-            ? parsed.hostname.trim().toLowerCase()
-            : '';
-        const host = typeof parsed.host === 'string'
-            ? parsed.host.trim().toLowerCase()
-            : '';
-        if (!hostname || !host) {
-            return null;
-        }
-
-        if (isLoopbackHostname(hostname)) {
-            this.authenticatedWsBootstrapHost = host;
-            return host;
-        }
-
-        const allowlist = parseHostAllowlist(process.env.SSAPP_TIKTOK_AUTH_WS_ALLOWED_HOSTS || '');
-        if (allowlist.has(host) || allowlist.has(hostname)) {
-            this.authenticatedWsBootstrapHost = host;
-            return host;
+        if (this.signingProvider === 'auto' || this.signingProvider === 'euler-ws') {
+            this.authenticatedWsBootstrapHost = EULER_SIGNING_HOST;
+            return EULER_SIGNING_HOST;
         }
 
         return null;
@@ -3778,19 +3800,29 @@ class ConnectionManager {
             return null;
         }
 
-        const previousHost = typeof process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST === 'string'
-            ? process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST
+        const isFirst = activeAuthWsHostRef.count === 0;
+        const originalEnvHost = isFirst
+            ? (typeof process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST === 'string'
+                ? process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST
+                : null)
             : null;
+        activeAuthWsHostRef.count += 1;
+        activeAuthWsHostRef.host = host;
         process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST = host;
         this.logDebug('sign.auth_ws.bootstrap', {
             host,
-            provider: this.signingProvider || null
+            provider: this.signingProvider || null,
+            activeCount: activeAuthWsHostRef.count
         });
         return () => {
-            if (previousHost) {
-                process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST = previousHost;
-            } else {
-                delete process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST;
+            activeAuthWsHostRef.count = Math.max(0, activeAuthWsHostRef.count - 1);
+            if (activeAuthWsHostRef.count === 0) {
+                if (originalEnvHost) {
+                    process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST = originalEnvHost;
+                } else {
+                    delete process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST;
+                }
+                activeAuthWsHostRef.host = null;
             }
         };
     }
@@ -4394,18 +4426,35 @@ class ConnectionManager {
 
     initializeConnectionInstance({ forceLegacy = false, context = 'primary' } = {}) {
         if (!forceLegacy && this.signingProvider === EULER_WS_PROVIDER) {
-            const rawKey = this.signingConfig?.apiKey || null;
+            const rawKey = typeof this.signingConfig?.apiKey === 'string' && this.signingConfig.apiKey.trim()
+                ? this.signingConfig.apiKey.trim()
+                : null;
+            const rawJwtKey = typeof this.signingConfig?.jwtKey === 'string' && this.signingConfig.jwtKey.trim()
+                ? this.signingConfig.jwtKey.trim()
+                : null;
             const looksLikeJwt = rawKey && rawKey.split('.').length === 3;
+            const apiKey = looksLikeJwt ? null : rawKey;
+            const jwtKey = looksLikeJwt ? rawKey : rawJwtKey;
+            if (!apiKey && !jwtKey) {
+                const missingKeyError = new Error('Euler Proxy requires an Euler API key or JWT. Add one in TikTok Signing settings or switch to Auto/Polling.');
+                missingKeyError.code = 'SSAPP_TIKTOK_EULER_WS_MISSING_KEY';
+                this.logDebug('lifecycle.initialize.euler_ws_missing_key', {
+                    provider: this.signingProvider,
+                    context
+                });
+                throw missingKeyError;
+            }
             this.connectionStrategy = 'websocket';
             this.connection = new EulerWebsocketServerConnection(this.username, {
-                apiKey: looksLikeJwt ? null : rawKey,
-                jwtKey: looksLikeJwt ? rawKey : (this.signingConfig?.jwtKey || null),
+                apiKey,
+                jwtKey,
                 features: { rawMessages: true, bundleEvents: true }
             });
             this.applyResumeCursorToConnection();
             this.logDebug('lifecycle.initialize.euler_ws', {
                 provider: this.signingProvider,
-                hasApiKey: !!this.signingConfig?.apiKey
+                hasApiKey: !!apiKey,
+                hasJwtKey: !!jwtKey
             });
             this.setupEventHandlers();
             return;
@@ -6544,6 +6593,15 @@ class ConnectionManager {
                             return this.restartConnectionAttempt(primaryError);
                         }
                         if (this.sessionId) {
+                            this.logConsoleFailure('TikTok session was rejected by sign server. Retrying without session credentials.', primaryError instanceof Error ? primaryError : null);
+                            this.sessionId = null;
+                            this.ttTargetIdc = null;
+                            if (this.connection && this.connection.options) {
+                                this.connection.options.sessionId = undefined;
+                                this.connection.options.ttTargetIdc = undefined;
+                                this.connection.options.authenticateWs = undefined;
+                            }
+                            this.authenticatedWsBootstrapHost = null;
                             this.handleSignServerRejection(primaryError instanceof Error ? primaryError : err);
                             return false;
                         }
@@ -6953,6 +7011,10 @@ class ConnectionManager {
     }
 
     isSignServerError(primaryError, rawMessage = '') {
+        if (primaryError?.code === 'SSAPP_TIKTOK_EULER_WS_MISSING_KEY') {
+            return false;
+        }
+
         const statusCode = Number(
             primaryError?.status
             ?? primaryError?.statusCode

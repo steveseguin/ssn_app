@@ -69,6 +69,7 @@ const { setupTwitchOAuthHandler } = require('./resources/electron-twitch-handler
 const { setupFacebookOAuthHandler } = require('./resources/electron-facebook-handler');
 const { setupVeloraOAuthHandler } = require('./resources/electron-velora-handler');
 const { setupKickOAuthHandler } = require('./resources/electron-kick-handler');
+const { setupVpzoneOAuthHandler } = require('./resources/electron-vpzone-handler');
 const { KickWsClient } = require('./resources/kick-ws-client');
 
 const {
@@ -1576,6 +1577,7 @@ setupTwitchOAuthHandler();
 setupFacebookOAuthHandler();
 setupVeloraOAuthHandler();
 setupKickOAuthHandler();
+setupVpzoneOAuthHandler();
 
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
 
@@ -2570,14 +2572,13 @@ if (!IS_MAC_BALANCED_MODE) {
 // app.commandLine.appendSwitch('user-data-dir', path.join(app.getPath('userData'), 'ChromeProfile'));
 // User agent override at app level - this will be overridden by config if available
 // Set platform-specific user agent with simplified Chrome version
-const CHROME_UA_VERSION = '144.0.0.0';  // Chrome shows simplified version in UA string
+const CHROME_UA_VERSION = '148.0.0.0';  // Chrome shows simplified version in UA string
 if (isMac) {
-    app.userAgentFallback = app.userAgentFallback || `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
+    app.userAgentFallback = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
 } else if (process.platform === 'linux') {
-    app.userAgentFallback = app.userAgentFallback || `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
+    app.userAgentFallback = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
 } else {
-    // Default to Windows
-    app.userAgentFallback = app.userAgentFallback || `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
+    app.userAgentFallback = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
 }
 
 // Session management initialization
@@ -2624,6 +2625,45 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
     reporter.report('unhandled_rejection', reason instanceof Error ? reason : new Error(String(reason)));
 });
+
+function safeUnregisterGlobalShortcuts(context = 'shutdown') {
+    try {
+        if (!app || typeof app.isReady !== 'function' || !app.isReady()) return;
+        if (!globalShortcut || typeof globalShortcut.unregisterAll !== 'function') return;
+        globalShortcut.unregisterAll();
+    } catch (error) {
+        console.warn(`[Shortcuts] Failed to unregister global shortcuts during ${context}:`, error?.message || error);
+    }
+}
+
+function reportExecuteJavaScriptFailure(label, error, webContents = null) {
+    const normalizedError = error instanceof Error ? error : new Error(String(error));
+    let url = null;
+    try {
+        url = webContents && typeof webContents.getURL === 'function' ? webContents.getURL() : null;
+    } catch (_) { }
+    console.warn(`[ExecuteJS] ${label} failed:`, normalizedError.message || normalizedError);
+    reporter.report('execute_javascript_failed', normalizedError, { label, url });
+}
+
+function executeJavaScriptWithReport(webContents, script, label, userGesture) {
+    if (!webContents || typeof webContents.executeJavaScript !== 'function') {
+        return Promise.resolve(null);
+    }
+    try {
+        return webContents.executeJavaScript(script, userGesture).catch((error) => {
+            reportExecuteJavaScriptFailure(label, error, webContents);
+            throw error;
+        });
+    } catch (error) {
+        reportExecuteJavaScriptFailure(label, error, webContents);
+        return Promise.reject(error);
+    }
+}
+
+function executeJavaScriptQuietly(webContents, script, label, userGesture) {
+    executeJavaScriptWithReport(webContents, script, label, userGesture).catch(() => null);
+}
 
 app.on('render-process-gone', (_event, webContents, details) => {
     const reason = details && details.reason ? String(details.reason) : 'unknown';
@@ -7786,14 +7826,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     if (savedLanguageRaw && savedLanguage !== savedLanguageRaw) {
                         store.set('language', savedLanguage);
                     }
-                    mainWindow.webContents.executeJavaScript(`
+                    executeJavaScriptQuietly(mainWindow.webContents, `
                         // Set the language preference in localStorage for the UI to use
                         localStorage.setItem('language', ${JSON.stringify(savedLanguage)});
                         // Also trigger language change if the page is already loaded
                         if (typeof changeLanguage === 'function') {
                             changeLanguage(${JSON.stringify(savedLanguage)});
                         }
-                    `);
+                    `, 'main_window.saved_language');
                 } else if (SYSTEM_LOCALE && SYSTEM_LOCALE !== 'en-US') {
                     // If no saved preference, use system locale
                     // Map common system locales to our supported languages
@@ -7828,12 +7868,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
                     uiLanguage = normalizeUiLanguage(uiLanguage);
 
-                    mainWindow.webContents.executeJavaScript(`
+                    executeJavaScriptQuietly(mainWindow.webContents, `
                         localStorage.setItem('language', ${JSON.stringify(uiLanguage)});
                         if (typeof changeLanguage === 'function') {
                             changeLanguage(${JSON.stringify(uiLanguage)});
                         }
-                    `);
+                    `, 'main_window.system_language');
                 }
             } catch (e) {
                 console.log('Could not inject language preference:', e);
@@ -7844,7 +7884,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 const localStorageBackup = store.get('localStorageBackup');
                 if (localStorageBackup && Object.keys(localStorageBackup).length > 0) {
                     // Check if localStorage appears empty or missing key settings
-                    mainWindow.webContents.executeJavaScript(`
+                    executeJavaScriptWithReport(mainWindow.webContents, `
                         (function() {
                             // Check for key indicators that settings exist
                             const hasSettings = localStorage.length > 2 ||
@@ -7853,7 +7893,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 localStorage.getItem('socialStreamState');
                             return { isEmpty: !hasSettings, count: localStorage.length };
                         })();
-                    `).then((result) => {
+                    `, 'main_window.localstorage_restore_check').then((result) => {
                         if (result && result.isEmpty) {
                             const backupTime = store.get('localStorageBackupTime');
                             log(`localStorage appears empty (${result.count} keys), restoring from backup` +
@@ -7887,17 +7927,17 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 })();
                             `;
 
-                            mainWindow.webContents.executeJavaScript(restoreScript)
+                            executeJavaScriptWithReport(mainWindow.webContents, restoreScript, 'main_window.localstorage_restore')
                                 .then((restoredCount) => {
                                     const restored = Number.isFinite(restoredCount) ? restoredCount : 0;
                                     log(`Restored ${restored} localStorage keys from backup`);
                                     if (restored > 0) {
                                         // Reload the page to apply restored settings
-                                        mainWindow.webContents.executeJavaScript(`
+                                        executeJavaScriptQuietly(mainWindow.webContents, `
                                             if (typeof location !== 'undefined' && location.reload) {
                                                 location.reload();
                                             }
-                                        `);
+                                        `, 'main_window.localstorage_restore_reload');
                                     }
                                 })
                                 .catch(err => console.error('Failed to restore localStorage:', err));
@@ -7964,7 +8004,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 if (!mainWindow.__ytSkipperNavHandlerAttached) {
                     const clearYtPageTimer = () => {
                         try {
-                            mainWindow.webContents.executeJavaScript('try{ if (window.xxxxxx){ clearInterval(window.xxxxxx); window.xxxxxx=null; } }catch(e){}');
+                            executeJavaScriptQuietly(mainWindow.webContents, 'try{ if (window.xxxxxx){ clearInterval(window.xxxxxx); window.xxxxxx=null; } }catch(e){}', 'youtube.clear_page_timer');
                         } catch (_) { }
                     };
                     try {
@@ -7983,7 +8023,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
         }
 
-        mainWindow.webContents.executeJavaScript(`
+        executeJavaScriptQuietly(mainWindow.webContents, `
 			document.addEventListener('wheel', (event) => {
 			  if (event.ctrlKey) {
 				event.preventDefault();
@@ -7991,7 +8031,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 				require('electron').ipcRenderer.send('zoom', direction);
 			  }
 			}, { passive: false });
-		  `);
+		  `, 'main_window.zoom_wheel_listener');
 
         if (CSSCONTENT && mainWindow && mainWindow.webContents) {
             try {
@@ -12769,7 +12809,7 @@ app.on("before-quit", (event) => {
 
 app.on("will-quit", () => {
     markStabilitySessionGraceful('will-quit');
-    globalShortcut.unregisterAll();
+    safeUnregisterGlobalShortcuts('will-quit');
 });
 
 const folder = path.join(app.getPath("appData"), `${app.name}`);
@@ -13529,8 +13569,7 @@ app.whenReady().then(async function () {
 
     // Set a global fallback user agent WITHOUT Electron to avoid detection
     // Chrome shows simplified version in UA string
-    const CHROME_UA_VERSION = '144.0.0.0';  // For user agent string
-    const CHROME_UA_FULL_VERSION = '144.0.7559.97'; // For Client Hints full version
+    const CHROME_UA_VERSION = '148.0.0.0';
     let CHROME_UA;
     if (isMac) {
         CHROME_UA = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_UA_VERSION} Safari/537.36`;
@@ -13552,31 +13591,17 @@ app.whenReady().then(async function () {
     ses.webRequest.onBeforeSendHeaders((details, callback) => {
         const headers = details.requestHeaders;
 
-        // Chrome's exact header order and values
+        headers['User-Agent'] = CHROME_UA;
+
+        for (const key of Object.keys(headers)) {
+            if (key.toLowerCase() === 'sec-ch-ua') {
+                headers[key] = '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"';
+            }
+        }
+
         headers['Accept'] = headers['Accept'] || 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7';
-        // Don't override Accept-Language - let the system locale from command line take effect
         headers['Accept-Encoding'] = 'gzip, deflate, br, zstd';
         headers['Cache-Control'] = headers['Cache-Control'] || 'max-age=0';
-
-        // Chrome's security headers / Client Hints
-        const chromeMainVersion = CHROME_UA_VERSION.split('.')[0]; // Extract "140" from "140.0.0.0"
-        headers['Sec-CH-UA'] = `"Not(A:Brand";v="8", "Chromium";v="${chromeMainVersion}", "Google Chrome";v="${chromeMainVersion}"`;
-        headers['Sec-CH-UA-Mobile'] = '?0';
-        headers['Sec-CH-UA-Platform'] = '"Windows"';
-        headers['Sec-CH-UA-Platform-Version'] = '"19.0.0"';
-        headers['Sec-CH-UA-Arch'] = '"x86"';
-        headers['Sec-CH-UA-Bitness'] = '"64"';
-        headers['Sec-CH-UA-Model'] = '""';
-        headers['Sec-CH-UA-Full-Version'] = `"${CHROME_UA_FULL_VERSION}"`;
-        headers['Sec-CH-UA-Full-Version-List'] = `"Not(A:Brand";v="8.0.0.0", "Chromium";v="${CHROME_UA_FULL_VERSION}", "Google Chrome";v="${CHROME_UA_FULL_VERSION}"`;
-        headers['Sec-Fetch-Site'] = headers['Sec-Fetch-Site'] || 'none';
-        headers['Sec-Fetch-Mode'] = headers['Sec-Fetch-Mode'] || 'navigate';
-        headers['Sec-Fetch-User'] = headers['Sec-Fetch-User'] || '?1';
-        headers['Sec-Fetch-Dest'] = headers['Sec-Fetch-Dest'] || 'document';
-        headers['Upgrade-Insecure-Requests'] = '1';
-
-        // Chrome sends DNT
-        headers['DNT'] = '1';
 
         // Remove Electron specific headers
         delete headers['X-DevTools-Request-Id'];
@@ -14787,6 +14812,112 @@ ipcMain.handle('startupPrefs:reset', async () => {
     return { ok: true };
 });
 
+function getReporterDialogParent() {
+    return mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+}
+
+function showReporterMessageBox(options) {
+    const parent = getReporterDialogParent();
+    return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
+}
+
+async function uploadDiagnosticReport(type, message, context = {}) {
+    return reporter.send(type, message, context, { bypassRateLimit: true });
+}
+
+async function showDiagnosticReportUploadError(error) {
+    await showReporterMessageBox({
+        type: 'error',
+        title: 'Report Not Sent',
+        message: 'Could not send the report.',
+        detail: error && error.message ? error.message : String(error),
+        buttons: ['OK']
+    });
+}
+
+async function sendErrorReportingEnabledSnapshot() {
+    try {
+        await uploadDiagnosticReport(
+            'diagnostic_snapshot',
+            'User enabled error reporting; sending current settings snapshot.',
+            {
+                trigger: 'enable_error_reporting',
+                platform: process.platform
+            }
+        );
+        return true;
+    } catch (error) {
+        await showDiagnosticReportUploadError(error);
+        return false;
+    }
+}
+
+async function promptAndSendManualIssueReport() {
+    if (!reporter.isEnabled()) {
+        const { response } = await showReporterMessageBox({
+            type: 'info',
+            buttons: ['Enable and Continue', 'Cancel'],
+            defaultId: 0,
+            cancelId: 1,
+            title: 'Report Issue',
+            message: 'Error reporting needs to be enabled to send a diagnostic report.',
+            detail:
+                'This sends your app version, a random install ID, your current app settings, and the issue description you enter next.\n\n' +
+                'OAuth tokens, session data, and backup credentials are not sent.'
+        });
+        if (response !== 0) {
+            return;
+        }
+        reporter.enable();
+        createMenu();
+    }
+
+    const description = await prompt({
+        title: 'Report Issue',
+        label: 'Describe the issue:',
+        value: '',
+        inputAttrs: {
+            type: 'text',
+            placeholder: 'Example: TikTok messages are relaying back and doubling'
+        },
+        buttonLabels: {
+            ok: 'Send',
+            cancel: 'Cancel'
+        },
+        width: 560,
+        height: 170,
+        minWidth: 480,
+        resizable: true,
+        type: 'input'
+    }, getReporterDialogParent());
+
+    if (description === null) {
+        return;
+    }
+
+    const cleanedDescription = String(description || '').trim();
+    try {
+        const result = await uploadDiagnosticReport(
+            'manual_issue_report',
+            cleanedDescription || 'Manual issue report submitted without a description.',
+            {
+                trigger: 'manual_issue_report',
+                description: cleanedDescription,
+                platform: process.platform
+            }
+        );
+        await showReporterMessageBox({
+            type: 'info',
+            title: 'Report Sent',
+            message: 'Diagnostic report sent to the developer.',
+            detail: result && result.install_id ? `Install ID: ${result.install_id}` : undefined,
+            buttons: ['OK']
+        });
+    } catch (error) {
+        await showDiagnosticReportUploadError(error);
+    }
+}
+
 function createMenu() {
     const transferBackupConfig = getTransferBackupConfig();
     const hasTransferBackupFolder = !!(transferBackupConfig.folderPath && String(transferBackupConfig.folderPath).trim());
@@ -15051,7 +15182,10 @@ function createMenu() {
                 label: 'Insert Custom CSS',
                 click: async () => {
                     if (mainWindow && mainWindow.webContents) {
-                        const savedValue = await mainWindow.webContents.executeJavaScript(`localStorage.getItem('insertCSS');`);
+                        let savedValue = null;
+                        try {
+                            savedValue = await executeJavaScriptWithReport(mainWindow.webContents, `localStorage.getItem('insertCSS');`, 'menu.insert_custom_css.read');
+                        } catch (_) { }
                         prompt({
                             title: 'Insert Custom CSS',
                             label: 'CSS:',
@@ -15062,7 +15196,7 @@ function createMenu() {
                             type: 'input'
                         }).then(r => {
                             if (r !== null) {
-                                mainWindow.webContents.executeJavaScript(`localStorage.setItem('insertCSS', ${JSON.stringify(r)});`);
+                                executeJavaScriptQuietly(mainWindow.webContents, `localStorage.setItem('insertCSS', ${JSON.stringify(r)});`, 'menu.insert_custom_css.save');
                                 mainWindow.webContents.insertCSS(r, {
                                     cssOrigin: 'user'
                                 });
@@ -15205,6 +15339,12 @@ function createMenu() {
             },
             { type: 'separator' },
             {
+                label: 'Report current issue to developer...',
+                click: async () => {
+                    await promptAndSendManualIssueReport();
+                }
+            },
+            {
                 label: 'Send error reports to developer',
                 type: 'checkbox',
                 checked: store.get('errorReportingEnabled', false),
@@ -15221,7 +15361,7 @@ function createMenu() {
                         title: 'Error Reporting',
                         message: 'What will be sent to the developer?',
                         detail:
-                            'When an error occurs, the following is sent automatically:\n\n' +
+                            'When you enable this, a current diagnostic snapshot is sent once. After that, the following is sent automatically when an error occurs:\n\n' +
                             '  • Error message and stack trace\n' +
                             '  • App settings (startup flags, window state, language, etc.)\n' +
                             '  • App version and a random install ID\n\n' +
@@ -15237,6 +15377,15 @@ function createMenu() {
                         return;
                     }
                     reporter.enable();
+                    const sent = await sendErrorReportingEnabledSnapshot();
+                    if (sent) {
+                        await showReporterMessageBox({
+                            type: 'info',
+                            title: 'Error Reporting Enabled',
+                            message: 'Error reporting is enabled and a current diagnostic snapshot was sent.',
+                            buttons: ['OK']
+                        });
+                    }
                 }
             },
             ],
