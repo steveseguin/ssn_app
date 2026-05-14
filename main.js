@@ -2938,6 +2938,7 @@ function getCandidateBundledPaths(branch, relativePath) {
     if (process.resourcesPath) {
         candidates.push(path.join(process.resourcesPath, SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
         candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
+        candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'resources', SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
     }
     candidates.push(path.join(__dirname, 'resources', SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
     candidates.push(path.join(__dirname, SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
@@ -3198,7 +3199,7 @@ ipcMain.handle('socialstream:resolve-file-url', async (_event, relativePath, opt
             return { success: false, error: 'NOT_FOUND' };
         }
         const fileUrl = pathToFileURL(descriptor.path).toString();
-        const baseUrl = pathToFileURL(path.dirname(descriptor.path)).toString();
+        const baseUrl = pathToFileUrl(path.dirname(descriptor.path));
         return {
             success: true,
             url: fileUrl,

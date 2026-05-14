@@ -113,7 +113,8 @@
       "!claude-artifacts/**"
     ],
     "asarUnpack": [
-      "Kokoro-82M-ONNX/**/*"
+      "Kokoro-82M-ONNX/**/*",
+      "resources/social_stream_fallback/**/*"
     ],
     "mac": {
       "category": "public.build.automation",
