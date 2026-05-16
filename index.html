@@ -2254,6 +2254,16 @@
                             }
                         }
                     }
+                    else if (target === 'vpzone' && /(^|\.)vpzone\.tv$/i.test(hostname)) {
+                        const pathParts = url.pathname.split('/').filter(Boolean);
+                        const channel = url.searchParams.get('channel') || ((pathParts[0] === 'watch' || pathParts[0] === 'stream') ? pathParts[1] : '');
+                        return newOtherSource('vpzone', url.toString(), startup, {
+                            ...initialState,
+                            username: channel || initialState.username || 'VPZONE',
+                            sourceFile: 'sources/vpzone.js',
+                            connectionMode: initialState.connectionMode || 'classic'
+                        });
+                    }
                 }
             }
 
@@ -2283,7 +2293,7 @@
                 if (!sourceUrl) {
                     if (target === "twitch") sourceUrl = `https://www.twitch.tv/popout/${username}/chat?popout=`;
                     else if (target === "kick") sourceUrl = `https://kick.com/popout/${username}/chat`;
-                    else if (target === "vpzone") sourceUrl = `https://vpzone.tv/stream/${username}`;
+                    else if (target === "vpzone") sourceUrl = `https://vpzone.tv/watch/${username}`;
                     else if (target === "velora") sourceUrl = `https://velora.tv/${username}`;
                     else if (target === "parti") sourceUrl = `https://parti.com/popout-chat?id=${username}`;
                     else if (target === "rumble") {
