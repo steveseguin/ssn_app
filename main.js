@@ -11373,6 +11373,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
     const debuggerDetachTimers = new WeakMap();
 
     function scheduleDebuggerDetach(webContents, delayMs = 3000) {
+        if (!webContents.__debuggerOwnedByInput) {
+            return; // Do not detach if we didn't attach it
+        }
         const existing = debuggerDetachTimers.get(webContents);
         if (existing) clearTimeout(existing);
         debuggerDetachTimers.set(webContents, setTimeout(() => {
@@ -11381,6 +11384,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 if (webContents.debugger && webContents.debugger.isAttached()) {
                     webContents.debugger.detach();
                 }
+                webContents.__debuggerOwnedByInput = false;
             } catch (_) { }
         }, delayMs));
     }
@@ -11393,6 +11397,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         return queueDebuggerInput(webContents, async () => {
             if (!webContents.debugger.isAttached()) {
                 webContents.debugger.attach("1.3");
+                webContents.__debuggerOwnedByInput = true;
             }
             await webContents.debugger.sendCommand("Input.dispatchKeyEvent", command);
             scheduleDebuggerDetach(webContents);
@@ -11475,6 +11480,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     const cdpPromise = queueDebuggerInput(wc, async () => {
                         if (!wc.debugger.isAttached()) {
                             wc.debugger.attach("1.3");
+                            wc.__debuggerOwnedByInput = true;
                         }
                         if (args.type && ["mousePressed", "mouseReleased", "mouseMoved", "mouseWheel"].includes(args.type)) {
                             const { tab: _tab, ...mouseArgs } = args;
