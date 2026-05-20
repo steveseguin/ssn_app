@@ -3182,9 +3182,9 @@
                         isShortDefault: group.target === "youtubeshorts"
                     });
                 } else if (typeof fetchYoutube === 'function') {
-                    streams = await fetchYoutube(group.username, false);
+                    streams = await fetchYoutube(group.username, false, { forceSearch: !!group.isChannel });
                     if (!Array.isArray(streams) || !streams.length) {
-                        streams = await fetchYoutube(group.username, true) || [];
+                        streams = await fetchYoutube(group.username, true, { forceSearch: !!group.isChannel }) || [];
                     }
                 } else {
                     console.error("No YouTube discovery helper is available");
@@ -3208,9 +3208,10 @@
                 if (stream.status === 'live') return true;
                 if (stream.status === 'upcoming' && stream.scheduledStartTime) {
                     try {
-                        let startMs = stream.scheduledStartTime;
-                        if (typeof startMs === 'string') startMs = Number(startMs);
-                        if (typeof startMs === 'number' && startMs < 1e12) startMs *= 1000; // seconds -> ms
+                        let startMs = typeof getYouTubeStreamSortTimestamp === 'function'
+                            ? getYouTubeStreamSortTimestamp(stream)
+                            : Date.parse(stream.scheduledStartTime);
+                        if (startMs === Number.MAX_SAFE_INTEGER || Number.isNaN(startMs)) return false;
                         const start = new Date(startMs);
                         const diffMins = (start - now) / (1000 * 60);
                         return diffMins >= 0 && diffMins <= 60; // within next hour

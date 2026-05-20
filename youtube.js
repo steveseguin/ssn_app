@@ -143,9 +143,9 @@ async function discoverYouTubeStreamsForManualAction(username, isShortDefault = 
         let streamsFromScrape = [];
 
         if (!streamsFromApi || streamsFromApi.length === 0) {
-            streamsFromScrape = await fetchYoutube(username, false);
+            streamsFromScrape = await fetchYoutube(username, false, { forceSearch: isChannelName });
             if (!Array.isArray(streamsFromScrape) || !streamsFromScrape.length) {
-                streamsFromScrape = await fetchYoutube(username, true) || [];
+                streamsFromScrape = await fetchYoutube(username, true, { forceSearch: isChannelName }) || [];
             }
         }
 
@@ -530,9 +530,8 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
                 if (streamStatus === 'ended') continue;
                 let shouldActivate = streamStatus === 'live';
                 if (!shouldActivate && streamStatus === 'upcoming' && stream.scheduledStartTime) {
-                    let startMs = stream.scheduledStartTime;
-                    if (typeof startMs === 'string') startMs = Number(startMs);
-                    if (typeof startMs === 'number' && startMs < 1e12) startMs *= 1000; // seconds -> ms
+                    let startMs = getYouTubeStreamSortTimestamp(stream);
+                    if (startMs === Number.MAX_SAFE_INTEGER) continue;
                     const startTime = new Date(startMs);
                     const now = new Date();
                     const diffMs = startTime - now;
@@ -837,7 +836,321 @@ function decodeUnicodeEscapes(str) {
         return String.fromCharCode(parseInt(hex, 16));
     });
 }
-async function fetchYoutube(username, alt = false) { 
+
+function extractYouTubeInitialDataFromHtml(htmlData) {
+    if (!htmlData || typeof htmlData !== 'string') return null;
+    const markers = ['ytInitialData"] = ', "ytInitialData'] = ", 'var ytInitialData = ', 'ytInitialData = '];
+    let jsonStart = -1;
+    for (const marker of markers) {
+        const markerIndex = htmlData.indexOf(marker);
+        if (markerIndex !== -1) {
+            jsonStart = htmlData.indexOf('{', markerIndex + marker.length);
+            break;
+        }
+    }
+    if (jsonStart === -1) return null;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = jsonStart; index < htmlData.length; index++) {
+        const char = htmlData[index];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (char === '\\' && inString) {
+            escaped = true;
+            continue;
+        }
+        if (char === '"') {
+            inString = !inString;
+            continue;
+        }
+        if (inString) continue;
+        if (char === '{') {
+            depth++;
+        } else if (char === '}') {
+            depth--;
+            if (depth === 0) {
+                try {
+                    return JSON.parse(htmlData.slice(jsonStart, index + 1));
+                } catch (e) {
+                    console.error("Error parsing ytInitialData:", e);
+                    return null;
+                }
+            }
+        }
+    }
+    return null;
+}
+
+function normalizeYouTubeLookupText(value) {
+    return String(value || '').replace(/^@+/, '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function getYouTubeFormattedText(value) {
+    if (!value || typeof value !== 'object') return '';
+    if (typeof value.simpleText === 'string') return value.simpleText;
+    if (Array.isArray(value.runs)) {
+        return value.runs.map(run => run && run.text ? run.text : '').join('');
+    }
+    return '';
+}
+
+function collectYouTubeChannelCandidates(node, candidates = []) {
+    if (!node || typeof node !== 'object') return candidates;
+    if (node.channelRenderer && typeof node.channelRenderer === 'object') {
+        const renderer = node.channelRenderer;
+        candidates.push({
+            channelId: renderer.channelId || null,
+            title: getYouTubeFormattedText(renderer.title),
+            handle: getYouTubeFormattedText(renderer.subscriberCountText || renderer.videoCountText),
+            url: renderer.navigationEndpoint?.commandMetadata?.webCommandMetadata?.url || null
+        });
+    }
+    Object.keys(node).forEach(key => {
+        const value = node[key];
+        if (value && typeof value === 'object') {
+            if (Array.isArray(value)) {
+                value.forEach(item => collectYouTubeChannelCandidates(item, candidates));
+            } else {
+                collectYouTubeChannelCandidates(value, candidates);
+            }
+        }
+    });
+    return candidates;
+}
+
+function collectYouTubeVideoRenderers(node, videos = []) {
+    if (!node || typeof node !== 'object') return videos;
+    if (node.videoRenderer && typeof node.videoRenderer === 'object') {
+        videos.push({ type: 'videoRenderer', renderer: node.videoRenderer });
+    }
+    if (node.lockupViewModel && typeof node.lockupViewModel === 'object') {
+        videos.push({ type: 'lockupViewModel', renderer: node.lockupViewModel });
+    }
+    Object.keys(node).forEach(key => {
+        const value = node[key];
+        if (value && typeof value === 'object') {
+            if (Array.isArray(value)) {
+                value.forEach(item => collectYouTubeVideoRenderers(item, videos));
+            } else {
+                collectYouTubeVideoRenderers(value, videos);
+            }
+        }
+    });
+    return videos;
+}
+
+function findFirstYouTubeVideoId(node) {
+    if (!node || typeof node !== 'object') return null;
+    if (typeof node.videoId === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(node.videoId)) {
+        return node.videoId;
+    }
+    for (const key of Object.keys(node)) {
+        const value = node[key];
+        if (value && typeof value === 'object') {
+            if (Array.isArray(value)) {
+                for (const item of value) {
+                    const found = findFirstYouTubeVideoId(item);
+                    if (found) return found;
+                }
+            } else {
+                const found = findFirstYouTubeVideoId(value);
+                if (found) return found;
+            }
+        }
+    }
+    return null;
+}
+
+function collectYouTubeStringValues(node, values = []) {
+    if (!node || typeof node !== 'object') return values;
+    if (typeof node.simpleText === 'string') values.push(node.simpleText);
+    if (typeof node.content === 'string') values.push(node.content);
+    if (Array.isArray(node.runs)) {
+        node.runs.forEach(run => {
+            if (run && typeof run.text === 'string') values.push(run.text);
+        });
+    }
+    Object.keys(node).forEach(key => {
+        const value = node[key];
+        if (value && typeof value === 'object') {
+            if (Array.isArray(value)) {
+                value.forEach(item => collectYouTubeStringValues(item, values));
+            } else {
+                collectYouTubeStringValues(value, values);
+            }
+        }
+    });
+    return values;
+}
+
+function extractLockupThumbnails(lockup) {
+    const sources = lockup?.contentImage?.thumbnailViewModel?.image?.sources;
+    if (!Array.isArray(sources)) return null;
+    const result = {};
+    sources.forEach((thumb, index) => {
+        if (!thumb || !thumb.url) return;
+        let sizeName = `custom${index}`;
+        if (thumb.width === 120) sizeName = 'default';
+        else if (thumb.width === 320 || thumb.width === 336) sizeName = 'medium';
+        else if (thumb.width === 480) sizeName = 'high';
+        else if (thumb.width === 640) sizeName = 'standard';
+        else if (thumb.width === 1280 && thumb.height === 720) sizeName = 'maxres';
+        result[sizeName] = { url: thumb.url, width: thumb.width, height: thumb.height };
+    });
+    return Object.keys(result).length ? result : null;
+}
+
+function getLockupScheduledStartTime(textValues) {
+    const scheduledText = textValues.find(text => /^scheduled for\s+/i.test(text));
+    if (!scheduledText) return null;
+    const parsed = Date.parse(scheduledText.replace(/^scheduled for\s+/i, '').trim());
+    return Number.isNaN(parsed) ? null : parsed;
+}
+
+function getVideoStatusFromLockup(lockup) {
+    const textValues = collectYouTubeStringValues(lockup);
+    const normalizedText = textValues.join(' ').toLowerCase();
+    const isUpcoming = normalizedText.includes('upcoming') || normalizedText.includes('scheduled for') || normalizedText.includes(' waiting');
+    const isLive = normalizedText.includes(' watching') || normalizedText.includes(' live now') || normalizedText === 'live';
+    const isEnded = normalizedText.includes('streamed') || normalizedText.includes('premiered');
+    return {
+        status: isLive ? 'live' : isUpcoming ? 'upcoming' : isEnded ? 'ended' : 'video',
+        scheduledStartTime: getLockupScheduledStartTime(textValues)
+    };
+}
+
+function getVideoStatusFromAnyRenderer(videoEntry, fallbackRendererStatus) {
+    if (!videoEntry || !videoEntry.renderer) return null;
+    if (videoEntry.type === 'videoRenderer') {
+        return fallbackRendererStatus(videoEntry.renderer);
+    }
+    const lockup = videoEntry.renderer;
+    const status = getVideoStatusFromLockup(lockup);
+    const videoId = findFirstYouTubeVideoId(lockup);
+    if (!videoId) return null;
+    return {
+        videoId,
+        title: lockup?.metadata?.lockupMetadataViewModel?.title?.content || '',
+        description: null,
+        thumbnails: extractLockupThumbnails(lockup),
+        tags: [],
+        categoryId: null,
+        defaultLanguage: null,
+        defaultAudioLanguage: null,
+        isShort: false,
+        viewers: null,
+        status: status.status,
+        statusDisplay: status.status,
+        scheduledStartTime: status.scheduledStartTime,
+        actualStartTime: null,
+        actualEndTime: null,
+        channelId: null,
+        channelTitle: null
+    };
+}
+
+function selectYouTubeChannelCandidate(candidates, identifier) {
+    if (!Array.isArray(candidates) || !candidates.length) return null;
+    const query = normalizeYouTubeLookupText(identifier);
+    if (!query) return candidates[0];
+    return candidates.find(candidate => normalizeYouTubeLookupText(candidate.title) === query)
+        || candidates.find(candidate => normalizeYouTubeLookupText(candidate.url || '').endsWith('/' + query))
+        || candidates.find(candidate => normalizeYouTubeLookupText(candidate.title).includes(query))
+        || candidates[0];
+}
+
+function normalizeYouTubeChannelIdentifier(identifier) {
+    let normalized = String(identifier || '').trim();
+    if (!normalized) return '';
+    try {
+        const parsed = parseYoutubeUrl(normalized);
+        if (parsed?.type === 'channel_id' && parsed.id) return parsed.id;
+        if (parsed?.username) return parsed.username;
+        const url = new URL(normalized);
+        const pathParts = url.pathname.split('/').filter(Boolean);
+        if (pathParts[0] === 'channel' && pathParts[1]) return pathParts[1];
+        if (pathParts[0] && pathParts[0].startsWith('@')) return pathParts[0];
+        if ((pathParts[0] === 'c' || pathParts[0] === 'user') && pathParts[1]) return `${pathParts[0]}/${pathParts[1]}`;
+    } catch (_) {}
+    return normalized;
+}
+
+function shouldResolveYouTubeChannelBySearch(identifier) {
+    const normalized = normalizeYouTubeChannelIdentifier(identifier);
+    if (!normalized) return false;
+    return !(
+        normalized.startsWith("UC") ||
+        normalized.startsWith("HC") ||
+        normalized.startsWith("UU") ||
+        normalized.startsWith('@') ||
+        normalized.startsWith('channel/') ||
+        normalized.startsWith('c/') ||
+        normalized.startsWith('user/')
+    );
+}
+
+function buildYouTubeChannelScrapeUrl(identifier, alt = false) {
+    const normalized = normalizeYouTubeChannelIdentifier(identifier);
+    if (!normalized) return '';
+    const section = alt ? 'live' : 'streams';
+    if (normalized.startsWith("UC") || normalized.startsWith("HC") || normalized.startsWith("UU")) {
+        return `https://www.youtube.com/channel/${encodeURIComponent(normalized)}/${section}`;
+    }
+    if (normalized.startsWith('channel/')) {
+        return `https://www.youtube.com/${normalized.split('/').map(encodeURIComponent).join('/')}/${section}`;
+    }
+    if (normalized.startsWith('c/') || normalized.startsWith('user/')) {
+        return `https://www.youtube.com/${normalized.split('/').map(encodeURIComponent).join('/')}/${section}`;
+    }
+    if (/\s/.test(normalized)) {
+        return '';
+    }
+    const handle = normalized.startsWith('@') ? normalized : '@' + normalized;
+    return `https://www.youtube.com/${encodeURI(handle)}/${section}`;
+}
+
+function getYouTubeDiscoveryFetchHeaders() {
+    return {
+        'Accept-Language': YT_ACCEPT_LANGUAGE,
+        'User-Agent': config?.global?.userAgent || getDefaultConfig().global.userAgent,
+        'Cookie': 'SOCS=CAESNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMxMTE0LjAzX3AwGgJlbiADGgYIgObvqgY; CONSENT=YES+ regione.lang'
+    };
+}
+
+async function fetchYouTubeDiscoveryHtml(fetchUrl) {
+    const response = await ipcRenderer.invoke('nodefetch', {
+        url: fetchUrl,
+        headers: getYouTubeDiscoveryFetchHeaders(),
+        timeout: 15000
+    });
+    if (response?.status && response.status >= 400) {
+        console.warn(`YouTube discovery fetch returned HTTP ${response.status}:`, fetchUrl);
+    }
+    const htmlData = response?.data || response;
+    return typeof htmlData === 'string' ? htmlData : '';
+}
+
+async function resolveYouTubeChannelScrapeUrl(identifier, alt = false) {
+    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(identifier)}&sp=EgIQAg%253D%253D`;
+    console.log("Resolving YouTube channel by search:", searchUrl);
+    const searchHtml = await fetchYouTubeDiscoveryHtml(searchUrl);
+    const searchData = extractYouTubeInitialDataFromHtml(searchHtml);
+    const candidates = collectYouTubeChannelCandidates(searchData);
+    const selected = selectYouTubeChannelCandidate(candidates, identifier);
+    if (selected?.channelId) {
+        return buildYouTubeChannelScrapeUrl(selected.channelId, alt);
+    }
+    if (selected?.url) {
+        return buildYouTubeChannelScrapeUrl(selected.url, alt);
+    }
+    return '';
+}
+
+async function fetchYoutube(username, alt = false, options = {}) {
     function getVideoStatusFromRenderer(videoRenderer) { 
 			  const data = videoRenderer; 
 			  const isLiveNow = checkIsLiveNow(data);
@@ -935,67 +1248,56 @@ async function fetchYoutube(username, alt = false) {
 			  return wasStreamText && hasDefaultTimeOverlay && !checkIsLiveNow(data) && !checkIsUpcoming(data);
 		}
 
-        let fetchUrl = "";
-        if (username.startsWith("UC") || username.startsWith("HC") || username.startsWith("UU")) { 
-            fetchUrl = `https://www.youtube.com/channel/${username}/${alt ? 'live' : 'streams'}`;
-        } else if (username.startsWith('c/')) { 
-            fetchUrl = `https://www.youtube.com/${username}/${alt ? 'live' : 'streams'}`;
-        } else { 
-            const handle = username.startsWith('@') ? username : '@' + username;
-            fetchUrl = `https://www.youtube.com/${handle}/${alt ? 'live' : 'streams'}`;
-        }
+        const scrapeOptions = options && typeof options === 'object' ? options : {};
+        const forceSearch = !!scrapeOptions.forceSearch && shouldResolveYouTubeChannelBySearch(username);
+        let fetchUrl = forceSearch ? '' : buildYouTubeChannelScrapeUrl(username, alt);
 
-		console.log("Fetching YouTube URL (scrape):", fetchUrl);
 		try {
             if (!ipcRenderer) { // Guard against ipcRenderer not being available (e.g. web context)
                 console.warn("ipcRenderer not available for fetchYoutube scrape.");
                 return false;
             }
-			const response = await ipcRenderer.invoke('nodefetch', {
-				url: fetchUrl,
-				headers: { 'Accept-Language': YT_ACCEPT_LANGUAGE, 'User-Agent': config?.global?.userAgent || getDefaultConfig().global.userAgent, 'Cookie': 'SOCS=CAESNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMxMTE0LjAzX3AwGgJlbiADGgYIgObvqgY; CONSENT=YES+ regione.lang'},
-                timeout: 15000 
-			});
-			const htmlData = response?.data || response; 
+            if (!fetchUrl) {
+                fetchUrl = await resolveYouTubeChannelScrapeUrl(username, alt);
+            }
+            if (!fetchUrl) {
+                console.warn("Unable to resolve YouTube channel scrape URL for:", username);
+                return false;
+            }
+
+			console.log("Fetching YouTube URL (scrape):", fetchUrl);
+			const htmlData = await fetchYouTubeDiscoveryHtml(fetchUrl);
 			if (!htmlData || typeof htmlData !== 'string') {
 				console.warn("No valid string data received from YouTube scrape for:", username);
 				return false;
 			}
-            let ytInitialData;
-            try {
-                const match = htmlData.match(/ytInitialData\s*=\s*(\{.*?\});/s);
-                if (match && match[1]) {
-                    ytInitialData = JSON.parse(match[1]);
-                } else {
-                    console.warn("Could not find ytInitialData in scrape for:", username);
-                }
-            } catch (e) {
-                console.error("Error parsing ytInitialData for:", username, e);
+            const ytInitialData = extractYouTubeInitialDataFromHtml(htmlData);
+            if (!ytInitialData) {
+                console.warn("Could not find ytInitialData in scrape for:", username);
             }
 
             const videos = [];
             if (ytInitialData) {
                 const tabs = ytInitialData.contents?.twoColumnBrowseResultsRenderer?.tabs;
-                let streamContents = [];
+                let targetTabContents = null;
 
                 if (tabs) {
                     const liveTab = tabs.find(tab => tab.tabRenderer?.title?.toLowerCase() === 'live' || tab.tabRenderer?.endpoint?.commandMetadata?.webCommandMetadata?.url?.endsWith('/live'));
                     const streamsTab = tabs.find(tab => tab.tabRenderer?.title?.toLowerCase() === 'streams' || tab.tabRenderer?.endpoint?.commandMetadata?.webCommandMetadata?.url?.endsWith('/streams'));
                     const videosTab = tabs.find(tab => tab.tabRenderer?.title?.toLowerCase() === 'videos' || tab.tabRenderer?.endpoint?.commandMetadata?.webCommandMetadata?.url?.endsWith('/videos'));
-                    const targetTabContents = liveTab?.tabRenderer?.content || streamsTab?.tabRenderer?.content || videosTab?.tabRenderer?.content;
+                    targetTabContents = liveTab?.tabRenderer?.content || streamsTab?.tabRenderer?.content || videosTab?.tabRenderer?.content;
 
-                    if (targetTabContents?.richGridRenderer?.contents) {
-                        streamContents = targetTabContents.richGridRenderer.contents;
-                    } else if (targetTabContents?.sectionListRenderer?.contents) { 
-                        targetTabContents.sectionListRenderer.contents.forEach(section => {
-                            section.itemSectionRenderer?.contents?.forEach(item => streamContents.push(item));
-                        });
-                    }
                 }
-                streamContents.forEach(item => {
-                    const videoRenderer = item.richItemRenderer?.content?.videoRenderer || item.videoRenderer;
-                    if (videoRenderer && videoRenderer.videoId) {
-                        videos.push(getVideoStatusFromRenderer(videoRenderer));
+
+                let videoEntries = collectYouTubeVideoRenderers(targetTabContents);
+                if (!videoEntries.length) {
+                    videoEntries = collectYouTubeVideoRenderers(ytInitialData);
+                }
+                videoEntries.forEach(entry => {
+                    const video = getVideoStatusFromAnyRenderer(entry, getVideoStatusFromRenderer);
+                    if (video && video.videoId) {
+                        video.queryIdentifier = username;
+                        videos.push(video);
                     }
                 });
                 if (videos.length === 0 && ytInitialData.contents?.twoColumnBrowseResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.sectionListRenderer?.contents) {
@@ -1594,9 +1896,9 @@ async function fetchYouTubeLiveStreams(identifier, options = {}) {
         let streamsFromScrape = [];
 
         if (allowScrapeFallback && (!streamsFromApi || streamsFromApi.length === 0)) {
-            streamsFromScrape = await fetchYoutube(identifier, false);
+            streamsFromScrape = await fetchYoutube(identifier, false, { forceSearch: isChannelOnly });
             if (!Array.isArray(streamsFromScrape) || !streamsFromScrape.length) {
-                streamsFromScrape = await fetchYoutube(identifier, true) || [];
+                streamsFromScrape = await fetchYoutube(identifier, true, { forceSearch: isChannelOnly }) || [];
             }
         }
 
