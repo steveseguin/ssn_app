@@ -491,7 +491,8 @@ async function testManualStandardFatalDoesNotAutoCloseClassicWindow() {
 		'expected helper to keep auto-activate behavior separate from manual standard mode'
 	);
 	assert.ok(
-		src.includes("if (!keepClassicWindowOpen && !data.wssID && currentState.vid && ipcRenderer)"),
+		src.includes("const classicTabId = normalizeNumericId(data.tabID) || normalizeNumericId(currentState.vid)")
+			&& src.includes("if (!keepClassicWindowOpen && !data.wssID && classicTabId && ipcRenderer)"),
 		'expected fatal_error closeWindow call to be skipped for manual classic mode'
 	);
 }

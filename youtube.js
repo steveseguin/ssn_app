@@ -1,6 +1,5 @@
 // Force a consistent language so our scrape keyword checks (LIVE/UPCOMING/etc.) behave the same across locales.
 const YT_ACCEPT_LANGUAGE = 'en-US,en;q=0.9';
-window.SSAPP_ACCEPT_LANGUAGE = YT_ACCEPT_LANGUAGE;
 const YOUTUBE_STREAM_DISCOVERY_CACHE_TTL_MS = 60000;
 const youtubeStreamDiscoveryCache = new Map();
 const youtubeStreamDiscoveryInflight = new Map();
@@ -1066,6 +1065,9 @@ function selectYouTubeChannelCandidate(candidates, identifier) {
 function normalizeYouTubeChannelIdentifier(identifier) {
     let normalized = String(identifier || '').trim();
     if (!normalized) return '';
+    if (normalized.startsWith('/')) {
+        normalized = `https://www.youtube.com${normalized}`;
+    }
     try {
         const parsed = parseYoutubeUrl(normalized);
         if (parsed?.type === 'channel_id' && parsed.id) return parsed.id;

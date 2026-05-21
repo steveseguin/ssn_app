@@ -55,6 +55,9 @@ const TIKTOK_AUTH_PARTITION = TikTokAuthModule.AUTH_PARTITION || 'persist:tiktok
 const configureTikTokAuthPartition = typeof TikTokAuthModule.configureAuthPartition === 'function'
     ? TikTokAuthModule.configureAuthPartition
     : () => {};
+const clearTikTokAuthSession = typeof TikTokAuthModule.clearTikTokAuthSession === 'function'
+    ? TikTokAuthModule.clearTikTokAuthSession
+    : async () => {};
 let tikTokSignerHelper = null;
 try {
     tikTokSignerHelper = require('./tiktok-signing/electron-signer');
@@ -16097,18 +16100,16 @@ ipcMain.on("disconnectTikTokConnection", function (eventRet, args) {
 });
 
 // TikTok authentication handlers
-ipcMain.handle("authenticateTikTok", async () => {
+ipcMain.handle("authenticateTikTok", async (_event, args = {}) => {
     try {
-        const auth = new TikTokAuth(mainWindow);
-        const credentials = await auth.authenticate();
-        if (auth.authWindow && !auth.authWindow.isDestroyed()) {
-            tiktokSigningWindow = auth.authWindow;
-            attachSigningWindow(tiktokSigningWindow);
-            try {
-                tiktokSigningWindow.show();
-                tiktokSigningWindow.focus();
-            } catch (_) { }
+        const forceRefresh = args && args.forceRefresh === true;
+        if (forceRefresh) {
+            disposeTikTokSigningWindow();
         }
+        const auth = new TikTokAuth(mainWindow);
+        const credentials = await auth.authenticate({
+            forceRefresh
+        });
         return {
             success: true,
             credentials
@@ -16118,6 +16119,20 @@ ipcMain.handle("authenticateTikTok", async () => {
         return {
             success: false,
             error: error.message
+        };
+    }
+});
+
+ipcMain.handle("clearTikTokAuthSession", async () => {
+    try {
+        disposeTikTokSigningWindow();
+        await clearTikTokAuthSession();
+        return { success: true };
+    } catch (error) {
+        console.error('Failed to clear TikTok auth session:', error);
+        return {
+            success: false,
+            error: error?.message || String(error)
         };
     }
 });

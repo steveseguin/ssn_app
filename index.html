@@ -7152,9 +7152,12 @@
                 const sessionBanner = isAuthenticated
                     ? `<div style="background: rgba(34, 197, 94, 0.12); border-left: 3px solid #22c55e; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px;">
                         <h4 style="margin: 0 0 4px 0; color: #4ade80; font-size: 14px;">✓ Signed in to TikTok</h4>
-                        <p style="margin: 0; font-size: 13px; color: #dcfce7;">
+                        <p style="margin: 0 0 10px 0; font-size: 13px; color: #dcfce7;">
                             Your session is active. Authenticated connections receive more chat messages.
                         </p>
+                        <button onclick="tiktokSignIn('${sourceId}', { forceRefresh: true })" class="button" style="background: #2563eb; font-size: 13px;">
+                            Re-authenticate
+                        </button>
                     </div>`
                     : `<div style="background: rgba(59, 130, 246, 0.12); border-left: 3px solid #3b82f6; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px;">
                         <h4 style="margin: 0 0 6px 0; color: #93c5fd; font-size: 14px;">Sign in for more messages</h4>
@@ -7520,10 +7523,12 @@
             }
         }
 
-        async function tiktokSignIn(sourceId) {
+        async function tiktokSignIn(sourceId, options = {}) {
             closeModal();
             try {
-                const result = await ipcRenderer.invoke('authenticateTikTok');
+                const result = await ipcRenderer.invoke('authenticateTikTok', {
+                    forceRefresh: !!(options && options.forceRefresh)
+                });
                 if (result.success && result.credentials) {
                     const rawSession = typeof result.credentials.sessionId === 'string' ? result.credentials.sessionId.trim() : '';
                     const rawIdc = typeof result.credentials.ttTargetIdc === 'string' ? result.credentials.ttTargetIdc.trim() : '';
@@ -7647,10 +7652,21 @@
             Toast.info("TikTok Signing", "Signing settings cleared.");
         }
 
-        function clearTikTokAuth(sourceId) {
+        async function clearTikTokAuth(sourceId) {
             if (!stateManager) return;
             const source = stateManager.getSource(sourceId);
             if (!source) return;
+            let sessionCleared = false;
+            let clearError = '';
+            try {
+                const result = await ipcRenderer.invoke('clearTikTokAuthSession');
+                sessionCleared = result?.success === true;
+                if (!sessionCleared && result?.error) {
+                    clearError = result.error;
+                }
+            } catch (error) {
+                clearError = error?.message || String(error);
+            }
             stateManager.updateSource(sourceId, {
                 tiktokSessionId: null,
                 tiktokTtTargetIdc: null
@@ -7664,7 +7680,14 @@
                     signInBtn.title = 'Sign in to receive more chat messages from TikTok live streams.';
                 }
             }
-            Toast.info("TikTok Sign-in", "TikTok session cleared.");
+            if (sessionCleared) {
+                Toast.info("TikTok Sign-in", "TikTok session cleared.");
+            } else {
+                if (clearError) {
+                    console.warn('Failed to clear TikTok browser session:', clearError);
+                }
+                Toast.warning("TikTok Sign-in", "Saved session cleared, but the browser session could not be cleared. Use Re-authenticate if TikTok keeps the old login.");
+            }
         }
 
         function resolveTikTokSigningConfigForIPC(source) {

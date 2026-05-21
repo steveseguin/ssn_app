@@ -18,13 +18,13 @@ app.whenReady().then(() => {
         headers['User-Agent'] = CHROME_UA;
         delete headers['X-DevTools-Request-Id'];
         delete headers['X-DevTools-Emulate-Network-Conditions-Client-Id'];
-        
+
         for (const key of Object.keys(headers)) {
             if (key.toLowerCase() === 'sec-ch-ua') {
                 headers[key] = '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"';
             }
         }
-        
+
         callback({ requestHeaders: headers });
     });
 

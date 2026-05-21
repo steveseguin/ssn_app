@@ -1,4 +1,4 @@
-const { BrowserWindow, session, dialog } = require('electron');
+const { BrowserWindow, session } = require('electron');
 const path = require('path');
 
 const AUTH_PARTITION = 'persist:tiktok-auth';
@@ -131,21 +131,28 @@ function configureAuthPartition() {
     partitionConfigured = true;
 }
 
+async function clearTikTokAuthSession() {
+  configureAuthPartition();
+  const authSession = session.fromPartition(AUTH_PARTITION);
+  await authSession.clearStorageData({
+    storages: ['cookies', 'localstorage', 'sessionstorage']
+  });
+}
+
 class TikTokAuth {
   constructor(mainWindow) {
     this.mainWindow = mainWindow;
     this.authWindow = null;
   }
 
-  async authenticate() {
+  async authenticate(options = {}) {
     configureAuthPartition();
     const authSession = session.fromPartition(AUTH_PARTITION);
+    const forceRefresh = !!(options && options.forceRefresh);
 
-    if (process.env.SSAPP_TIKTOK_AUTH_CLEAR === '1') {
+    if (forceRefresh || process.env.SSAPP_TIKTOK_AUTH_CLEAR === '1') {
       try {
-        await authSession.clearStorageData({
-          storages: ['cookies', 'localstorage', 'sessionstorage']
-        });
+        await clearTikTokAuthSession();
       } catch (error) {
         console.warn('Failed to clear previous TikTok auth session:', error);
       }
@@ -199,8 +206,6 @@ class TikTokAuth {
           preload: path.join(__dirname, 'preload-mock.js'),
         }
       });
-
-      this.authWindow.loadURL(LOGIN_URL);
 
       this.authWindow.on('closed', () => {
         this.authWindow = null;
@@ -385,6 +390,21 @@ class TikTokAuth {
           }
         });
       });
+
+      this.authWindow.loadURL(LOGIN_URL).catch((error) => {
+        if (resolved) return;
+        resolved = true;
+        if (cookiePoll) {
+          clearInterval(cookiePoll);
+          cookiePoll = null;
+        }
+        reject(error);
+        try {
+          if (this.authWindow && !this.authWindow.isDestroyed()) {
+            this.authWindow.close();
+          }
+        } catch (_) {}
+      });
     });
   }
 
@@ -450,3 +470,4 @@ class TikTokAuth {
 module.exports = TikTokAuth;
 module.exports.AUTH_PARTITION = AUTH_PARTITION;
 module.exports.configureAuthPartition = configureAuthPartition;
+module.exports.clearTikTokAuthSession = clearTikTokAuthSession;
