@@ -223,16 +223,24 @@ if (PRELOAD_DEBUG) {
 
 Object.defineProperty(navigator, 'language', { 
   get: () => {
-    // Force 'en' to match Chrome, regardless of system language
-    return 'en';
+    const locale = process.env.SSAPP_LOCALE_EFFECTIVE || 'en-US';
+    return typeof locale === 'string' && locale.trim() ? locale.trim() : 'en-US';
   }, 
   configurable: true 
 });
 
+const getNavigatorLanguages = () => {
+  const header = process.env.SSAPP_ACCEPT_LANGUAGE || 'en-US,en;q=0.9';
+  return header
+    .split(',')
+    .map(part => String(part || '').split(';')[0].trim())
+    .filter(Boolean);
+};
+
 Object.defineProperty(navigator, 'languages', { 
   get: () => {
-    // Force ['en'] to match Chrome, regardless of system language
-    return ['en'];
+    const languages = getNavigatorLanguages();
+    return languages.length ? languages : ['en-US', 'en'];
   }, 
   configurable: true 
 });
@@ -837,20 +845,86 @@ if (contextIsolated) {
 // wrap window.opener.postMessage so the token is also sent via IPC as a backup.
 // COOP stripping may or may not work in Electron, so this ensures the token reaches
 // the main process regardless.
-if (window.__ipc && window.opener && window.location.hostname.includes('google')) {
-  try {
-    const realOpener = window.opener;
-    const realPostMessage = realOpener.postMessage.bind(realOpener);
-    Object.defineProperty(window, 'opener', {
-      get: () => ({
-        postMessage: (data, targetOrigin) => {
-          try { realPostMessage(data, targetOrigin); } catch (_) {}
-          try { ipcRenderer.send('google-oauth-relay', JSON.stringify({ data, targetOrigin })); } catch (_) {}
+if (window.location.hostname.includes('google')) {
+  const summarizeCurrentLocation = () => {
+    try {
+      return `${window.location.origin}${window.location.pathname}`;
+    } catch (_) {
+      return '';
+    }
+  };
+
+  const installGoogleOAuthRelay = () => {
+    if (window.__ssappGoogleOAuthRelayInstalled || !window.opener) return;
+
+    try {
+      const realOpener = window.opener;
+      const realPostMessage = realOpener.postMessage.bind(realOpener);
+      const openerProxy = new Proxy(realOpener, {
+        get(target, prop, receiver) {
+          if (prop === 'postMessage') {
+            return (data, targetOrigin, transfer) => {
+              try {
+                if (typeof transfer === 'undefined') {
+                  realPostMessage(data, targetOrigin);
+                } else {
+                  realPostMessage(data, targetOrigin, transfer);
+                }
+              } catch (_) {}
+              try {
+                ipcRenderer.send('google-oauth-relay', JSON.stringify({
+                  data,
+                  targetOrigin,
+                  sourceOrigin: window.location.origin,
+                  sourceUrl: summarizeCurrentLocation()
+                }));
+              } catch (_) {}
+              try {
+                ipcRenderer.send('google-oauth-relay-state', JSON.stringify({
+                  event: 'postMessage',
+                  url: summarizeCurrentLocation()
+                }));
+              } catch (_) {}
+            };
+          }
+
+          try {
+            const value = Reflect.get(target, prop, receiver);
+            return typeof value === 'function' ? value.bind(target) : value;
+          } catch (_) {
+            try {
+              const value = target[prop];
+              return typeof value === 'function' ? value.bind(target) : value;
+            } catch (__) {
+              return undefined;
+            }
+          }
         },
-        closed: realOpener.closed,
-        origin: realOpener.origin,
-      }),
-      configurable: true
-    });
-  } catch (_) {}
+        set(target, prop, value) {
+          try {
+            target[prop] = value;
+            return true;
+          } catch (_) {
+            return false;
+          }
+        }
+      });
+
+      Object.defineProperty(window, 'opener', {
+        get: () => openerProxy,
+        configurable: true
+      });
+      window.__ssappGoogleOAuthRelayInstalled = true;
+      try {
+        ipcRenderer.send('google-oauth-relay-state', JSON.stringify({
+          event: 'installed',
+          url: summarizeCurrentLocation()
+        }));
+      } catch (_) {}
+    } catch (_) {}
+  };
+
+  installGoogleOAuthRelay();
+  const relayInstallTimer = setInterval(installGoogleOAuthRelay, 100);
+  setTimeout(() => clearInterval(relayInstallTimer), 10000);
 }
