@@ -28,21 +28,50 @@ class StateManager {
     // Helper to check if platform supports WebSockets
     checkWebSocketSupport(target) {
         if (!target) return false;
-        
+
+        if (target === 'bilibilicom') return this.checkWebSocketSupport('bilibili');
+        if (target === 'bilibilitv') return false;
+
         // These platforms have dedicated Electron or shared WebSocket handling.
         if (target === 'tiktok' || target === 'youtube' || target === 'youtubeshorts' || target === 'velora' || target === 'vpzone') {
             return true;
         }
-        
+
         // Check if a websocket file exists in the manifest
         if (typeof manifest !== 'undefined' && manifest?.content_scripts) {
             const manifestTarget = target === 'youtubeshorts' ? 'youtube' : target;
-            return manifest.content_scripts.some(cs => 
+            return manifest.content_scripts.some(cs =>
                 cs.js?.some(jsFile => jsFile.includes(`websocket/${manifestTarget}.js`))
             );
         }
-        
+
         return false;
+    }
+
+    normalizeBilibiliSource(source) {
+        if (!source || typeof source !== 'object') return source;
+        const url = String(source.url || source.URL || '');
+        if (source.target === 'bilibili' && /(^https?:\/\/)?([^\/]+\.)?bilibili\.tv\//i.test(url)) {
+            source.target = 'bilibilitv';
+            if (!source.sourceFile || source.sourceFile === 'sources/bilibilitv.js') {
+                source.sourceFile = 'sources/bilibili.js';
+            }
+            source.supportsWSS = false;
+        } else if (source.target === 'bilibilicom') {
+            source.sourceFile = 'sources/bilibilicom.js';
+            if (source.supportsWSS === undefined) {
+                source.supportsWSS = this.checkWebSocketSupport(source.target);
+            }
+        } else if (source.target === 'bilibilitv') {
+            source.sourceFile = 'sources/bilibili.js';
+            source.supportsWSS = false;
+        }
+        return source;
+    }
+
+    normalizeAccountRole(role) {
+        const value = String(role || 'normal').trim().toLowerCase();
+        return ['host', 'bot', 'relay'].includes(value) ? value : 'normal';
     }
 
     // Initialize state from localStorage
@@ -58,44 +87,47 @@ class StateManager {
                     this.state.sources = new Map(parsed.sources);
                     // Add supportsWSS to existing sources if missing
                     this.state.sources.forEach((source, id) => {
-                if (source.supportsWSS === undefined) {
-                    source.supportsWSS = this.checkWebSocketSupport(source.target);
+                        source = this.normalizeBilibiliSource(source);
+                        this.state.sources.set(id, source);
+                        if (source.supportsWSS === undefined) {
+                            source.supportsWSS = this.checkWebSocketSupport(source.target);
+                        }
+                        source.accountRole = this.normalizeAccountRole(source.accountRole);
+                        if (source.activeConnectionMode === undefined) {
+                            source.activeConnectionMode = null;
+                        }
+                        if (source.disableTikTokAutoFallback === undefined) {
+                            source.disableTikTokAutoFallback = false;
+                        }
+                        if (source.tiktokSigningApiKey === undefined) {
+                            source.tiktokSigningApiKey = null;
+                        }
+                        if (source.tiktokSigningServiceUrl === undefined) {
+                            source.tiktokSigningServiceUrl = null;
+                        }
+                        if (source.tiktokSigningParameters === undefined) {
+                            source.tiktokSigningParameters = null;
+                        }
+                        if (source.showTikTokSigningTools === undefined) {
+                            source.showTikTokSigningTools = false;
+                        }
+                        if (source.tiktokSigningRoomId === undefined) {
+                            source.tiktokSigningRoomId = null;
+                        }
+                        if (source.tiktokSigningEmail === undefined) {
+                            source.tiktokSigningEmail = null;
+                        }
+                        if (source.tiktokSigningAutoValidate === undefined) {
+                            source.tiktokSigningAutoValidate = false;
+                        }
+                        if (source.tiktokSigningProvider === undefined || !source.tiktokSigningProvider) {
+                            source.tiktokSigningProvider = 'auto';
+                        }
+                        if ((source.tiktokSigningProvider === 'custom' || source.tiktokSigningProvider === 'euler-ws' || source.tiktokSigningProvider === 'local') && source.showTikTokSigningTools !== true) {
+                            source.showTikTokSigningTools = true;
+                        }
+                    });
                 }
-                if (source.activeConnectionMode === undefined) {
-                    source.activeConnectionMode = null;
-                }
-                if (source.disableTikTokAutoFallback === undefined) {
-                    source.disableTikTokAutoFallback = false;
-                }
-                if (source.tiktokSigningApiKey === undefined) {
-                    source.tiktokSigningApiKey = null;
-                }
-                if (source.tiktokSigningServiceUrl === undefined) {
-                    source.tiktokSigningServiceUrl = null;
-                }
-                if (source.tiktokSigningParameters === undefined) {
-                    source.tiktokSigningParameters = null;
-                }
-                if (source.showTikTokSigningTools === undefined) {
-                    source.showTikTokSigningTools = false;
-                }
-                if (source.tiktokSigningRoomId === undefined) {
-                    source.tiktokSigningRoomId = null;
-                }
-                if (source.tiktokSigningEmail === undefined) {
-                    source.tiktokSigningEmail = null;
-                }
-                if (source.tiktokSigningAutoValidate === undefined) {
-                    source.tiktokSigningAutoValidate = false;
-                }
-                if (source.tiktokSigningProvider === undefined || !source.tiktokSigningProvider) {
-                    source.tiktokSigningProvider = 'auto';
-                }
-                if ((source.tiktokSigningProvider === 'custom' || source.tiktokSigningProvider === 'euler-ws' || source.tiktokSigningProvider === 'local') && source.showTikTokSigningTools !== true) {
-                    source.showTikTokSigningTools = true;
-                }
-            });
-        }
                 if (parsed.groups) {
                     this.state.groups = new Map(parsed.groups);
                 }
@@ -166,7 +198,7 @@ class StateManager {
                     const id = this.generateSourceId(source);
                     // Sources in the old settings format are manually added sources
                     // Auto-discovered sources were never saved to the old format
-                    this.state.sources.set(id, {
+                    this.state.sources.set(id, this.normalizeBilibiliSource({
                         id,
                         target: source.target,
                         url: source.URL || '',
@@ -196,7 +228,7 @@ class StateManager {
                         tiktokSigningEmail: null,
                         tiktokSigningAutoValidate: false,
                         tiktokSigningProvider: 'auto'
-                    });
+                    }));
                 });
             }
             
@@ -450,8 +482,10 @@ class StateManager {
             groupId: sourceData.groupId || null,
             // New: reply-only mode (do not capture messages)
             replyOnly: !!sourceData.replyOnly,
+            accountRole: this.normalizeAccountRole(sourceData.accountRole),
             ...sourceData // Allow additional properties
         };
+        source.accountRole = this.normalizeAccountRole(source.accountRole);
         if (source.activeConnectionMode === undefined) {
             source.activeConnectionMode = null;
         }
@@ -520,6 +554,7 @@ class StateManager {
         
         const oldState = { ...source };
         Object.assign(source, updates);
+        source.accountRole = this.normalizeAccountRole(source.accountRole);
 
         const providerValue = typeof source.tiktokSigningProvider === 'string' && source.tiktokSigningProvider.trim()
             ? source.tiktokSigningProvider.trim()

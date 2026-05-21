@@ -8961,6 +8961,39 @@ class ConnectionManager {
     }
 }
 
+function normalizeSourceAccountRole(role) {
+    const value = String(role || 'normal').trim().toLowerCase();
+    return ['host', 'bot', 'relay'].includes(value) ? value : 'normal';
+}
+
+function getConnectionForTikTokMessage(msg) {
+    try {
+        if (!msg || typeof msg.tid !== 'number' || msg.tid < 900001) return null;
+        const wssID = msg.tid - 900000;
+        return env.websocketConnections ? env.websocketConnections[wssID] : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function attachSourceAccountMeta(msg) {
+    const conn = getConnectionForTikTokMessage(msg);
+    if (!conn) return msg;
+    const role = normalizeSourceAccountRole(conn.accountRole);
+    if (role === 'normal') return msg;
+    if (!msg || typeof msg !== 'object') return msg;
+    if (msg.meta === undefined || msg.meta === null) {
+        msg.meta = {};
+    }
+    if (typeof msg.meta !== 'object' || Array.isArray(msg.meta)) {
+        return msg;
+    }
+    msg.meta.ssnAccountRole = role;
+    if (conn.sourceId) msg.meta.ssnSourceId = conn.sourceId;
+    if (conn.customSession && conn.customSession !== 'AUTO') msg.meta.ssnSession = conn.customSession;
+    return msg;
+}
+
 function logTikTokForwardedMessage(msg, context = 'single', meta = {}) {
     try {
         if (!msg || msg.type !== 'tiktok') return;
@@ -9008,6 +9041,7 @@ function sendToBackground(msg) {
         }
     } catch (_) { /* noop */ }
 
+    msg = attachSourceAccountMeta(msg);
     logTikTokForwardedMessage(msg);
     try { env.onEvent(msg); } catch (error) { console.warn('onEvent callback failed:', error); }
 
@@ -9054,6 +9088,7 @@ function sendBatchToBackground(messages) {
     } catch (_) { }
 
     if (Array.isArray(messages)) {
+        messages = messages.map(attachSourceAccountMeta);
         messages.forEach((m, idx) => {
             logTikTokForwardedMessage(m, 'batch', {
                 batchSize: messages.length,

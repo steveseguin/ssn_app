@@ -52,6 +52,9 @@ const fetch = require("electron-fetch").default;
 const TikTokAuthModule = require('./tiktok-auth');
 const TikTokAuth = TikTokAuthModule;
 const TIKTOK_AUTH_PARTITION = TikTokAuthModule.AUTH_PARTITION || 'persist:tiktok-auth';
+const configureTikTokAuthPartition = typeof TikTokAuthModule.configureAuthPartition === 'function'
+    ? TikTokAuthModule.configureAuthPartition
+    : () => {};
 let tikTokSignerHelper = null;
 try {
     tikTokSignerHelper = require('./tiktok-signing/electron-signer');
@@ -1583,6 +1586,59 @@ process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
 
 let connectionStates = new Map();
 let browserViews = {};
+
+function normalizeSourceAccountRole(role) {
+    const value = String(role || 'normal').trim().toLowerCase();
+    return ['host', 'bot', 'relay'].includes(value) ? value : 'normal';
+}
+
+function getBrowserViewAccountMeta(tabID) {
+    try {
+        const view = getActiveBrowserView(tabID) || browserViews[tabID];
+        const args = view && view.args ? view.args : {};
+        const role = normalizeSourceAccountRole(args.accountRole);
+        if (role === 'normal') return null;
+        return {
+            role,
+            sourceId: args.sourceId || view.sourceId || null,
+            session: args.customSession || null
+        };
+    } catch (_) {
+        return null;
+    }
+}
+
+function attachSourceAccountMetaToMessage(message, tabID) {
+    if (!message || typeof message !== 'object') return message;
+    const account = getBrowserViewAccountMeta(tabID);
+    if (!account) return message;
+    const next = { ...message };
+    if (next.meta === undefined || next.meta === null) {
+        next.meta = {};
+    }
+    if (typeof next.meta !== 'object' || Array.isArray(next.meta)) {
+        return next;
+    }
+    next.meta = { ...next.meta, ssnAccountRole: account.role };
+    if (account.sourceId) next.meta.ssnSourceId = account.sourceId;
+    if (account.session && account.session !== 'AUTO') next.meta.ssnSession = account.session;
+    return next;
+}
+
+function attachSourceAccountMetaToPayload(payload, tabID) {
+    if (!payload || typeof payload !== 'object') return payload;
+    if (payload.message && typeof payload.message === 'object') {
+        return { ...payload, message: attachSourceAccountMetaToMessage(payload.message, tabID) };
+    }
+    if (Array.isArray(payload.messages)) {
+        return { ...payload, messages: payload.messages.map(message => attachSourceAccountMetaToMessage(message, tabID)) };
+    }
+    if (payload.chatmessage !== undefined || payload.event !== undefined || payload.hasDonation !== undefined || payload.membership !== undefined) {
+        return attachSourceAccountMetaToMessage(payload, tabID);
+    }
+    return payload;
+}
+
 const remoteControlEnabled = (
     process.argv.includes('--remote-control') ||
     (process.env.SSAPP_REMOTE_CONTROL || '').trim() === '1'
@@ -8261,7 +8317,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 sender.tab.url = eventRet.sender.getURL();
             }
 
-            const backgroundPayload = dockResponsePayload !== undefined ? dockResponsePayload : args[0];
+            let backgroundPayload = dockResponsePayload !== undefined ? dockResponsePayload : args[0];
+            backgroundPayload = attachSourceAccountMetaToPayload(backgroundPayload, tabID);
             if (backgroundPayload !== null) {
                 mainWindow.webContents.mainFrame.frames.forEach((frame) => {
                     if (frame.url.split("?")[0].endsWith("background.html")) {
@@ -9609,6 +9666,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     const existingView = getActiveBrowserView(args.tab);
                     if (existingView && existingView.webContents) {
                         try {
+                            existingView.args = { ...(existingView.args || {}), ...args };
                             if (args?.config?.userAgent) {
                                 existingView.webContents.loadURL(args.url, {
                                     userAgent: args.config.userAgent
@@ -9683,6 +9741,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const existingView = getActiveBrowserView(args.tab);
             if (existingView && existingView.webContents) {
                 try {
+                    existingView.args = { ...(existingView.args || {}), ...args };
                     if (args?.config?.userAgent) {
                         existingView.webContents.loadURL(args.url, {
                             userAgent: args.config.userAgent
@@ -10896,6 +10955,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 												__SSAPP_MESSAGE_TARGET__ = window.top;
 											}
 										} catch(_) {}
+										const __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
 										
 										chrome.runtime = {};
 										chrome.runtime.id = 1;
@@ -10952,6 +11012,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
 													c(cachedSettings);
 													return;
 												}
+												try {
+													if (typeof __SSAPP_REPLY_ONLY__ !== 'undefined' && __SSAPP_REPLY_ONLY__) {
+														if (!messageData || (!messageData.wssStatus && !messageData.youtubeWssStatus)) {
+															if (typeof c === 'function') { try { c(null); } catch(_){} }
+															return;
+														}
+													}
+												} catch(_){}
 											
 											// For other messages, check if we can use ninjafy.sendMessage first
 											if (window.ninjafy && window.ninjafy.sendMessage) {
@@ -11619,9 +11687,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 url = view.url;
             }
             if (url) {
+                const viewArgs = view.args || {};
                 tabs.push({
                     id: parseInt(key),
-                    url: url
+                    url: url,
+                    accountRole: normalizeSourceAccountRole(viewArgs.accountRole),
+                    sourceId: viewArgs.sourceId || view.sourceId || null,
+                    customSession: viewArgs.customSession || null
                 });
             }
         });
@@ -15632,8 +15704,103 @@ function getTikTokSigningWindowState() {
     };
 }
 
+function getTikTokPopupRelayOrigin(popupWindow) {
+    try {
+        if (popupWindow && !popupWindow.isDestroyed() && popupWindow.webContents) {
+            return new URL(popupWindow.webContents.getURL()).origin;
+        }
+    } catch (_) { }
+    return 'https://accounts.google.com';
+}
+
+function buildTikTokGoogleOAuthRelayScript(data, targetOrigin, sourceOrigin) {
+    const safeTargetOrigin = typeof targetOrigin === 'string' && targetOrigin ? targetOrigin : '*';
+    const safeSourceOrigin = typeof sourceOrigin === 'string' && sourceOrigin ? sourceOrigin : 'https://accounts.google.com';
+    return `
+        (() => {
+            const data = ${JSON.stringify(data)};
+            const targetOrigin = ${JSON.stringify(safeTargetOrigin)};
+            const sourceOrigin = ${JSON.stringify(safeSourceOrigin)};
+            let normalizedTargetOrigin = targetOrigin;
+            try { normalizedTargetOrigin = new URL(targetOrigin).origin; } catch (_) { }
+            const canDeliver = targetOrigin === '*' || normalizedTargetOrigin === window.location.origin;
+            if (!canDeliver) return false;
+            const relayKey = JSON.stringify([sourceOrigin, typeof data, data]);
+            window.__ssappGoogleOAuthRelaySeen = window.__ssappGoogleOAuthRelaySeen || new Set();
+            if (window.__ssappGoogleOAuthRelaySeen.has(relayKey)) return false;
+            window.__ssappGoogleOAuthRelaySeen.add(relayKey);
+            try {
+                window.dispatchEvent(new MessageEvent('message', {
+                    data,
+                    origin: sourceOrigin,
+                    source: window
+                }));
+            } catch (_) { }
+            return true;
+        })();
+    `;
+}
+
+function installTikTokSigningWindowPopupHandling(win) {
+    if (!win || win.isDestroyed() || !win.webContents || win.__ssappTikTokPopupHandlingInstalled) {
+        return;
+    }
+    win.__ssappTikTokPopupHandlingInstalled = true;
+
+    const popupPreferences = {
+        nodeIntegration: false,
+        contextIsolation: false,
+        sandbox: false,
+        partition: TIKTOK_AUTH_PARTITION,
+        nativeWindowOpen: true,
+        preload: path.join(__dirname, 'preload-mock.js')
+    };
+
+    win.webContents.setWindowOpenHandler(({ url }) => {
+        return {
+            action: 'allow',
+            overrideBrowserWindowOptions: {
+                parent: win,
+                modal: false,
+                width: 640,
+                height: 760,
+                webPreferences: popupPreferences
+            }
+        };
+    });
+
+    const relayedGoogleMessages = new Set();
+    win.webContents.on('did-create-window', (popupWindow) => {
+        try {
+            popupWindow.webContents.setUserAgent(win.webContents.getUserAgent());
+        } catch (_) { }
+        popupWindow.webContents.on('ipc-message', (event, channel, ...args) => {
+            if (channel !== 'google-oauth-relay') {
+                return;
+            }
+            try {
+                const { data, targetOrigin, sourceOrigin } = JSON.parse(args[0]);
+                const relaySourceOrigin = sourceOrigin || getTikTokPopupRelayOrigin(popupWindow);
+                const relayKey = JSON.stringify([relaySourceOrigin, targetOrigin || '*', typeof data, data]);
+                if (relayedGoogleMessages.has(relayKey)) {
+                    return;
+                }
+                relayedGoogleMessages.add(relayKey);
+                setTimeout(() => {
+                    if (!win || win.isDestroyed() || !win.webContents) return;
+                    win.webContents.executeJavaScript(
+                        buildTikTokGoogleOAuthRelayScript(data, targetOrigin, relaySourceOrigin),
+                        true
+                    ).catch(() => { });
+                }, 150);
+            } catch (_) { }
+        });
+    });
+}
+
 async function ensureTikTokSigningWindow(targetUrl, options = {}) {
     console.log('[TikTok] ensureTikTokSigningWindow called. targetUrl:', targetUrl, 'options:', options);
+    configureTikTokAuthPartition();
     const normalizedTarget = typeof targetUrl === 'string' && targetUrl.trim()
         ? normalizeTikTokLandingUrl(targetUrl.trim())
         : null;
@@ -15651,6 +15818,7 @@ async function ensureTikTokSigningWindow(targetUrl, options = {}) {
                 nodeIntegration: false,
                 contextIsolation: true,
                 partition: TIKTOK_AUTH_PARTITION,
+                nativeWindowOpen: true,
                 backgroundThrottling: false // Critical for headless signing
             }
         });
@@ -15658,8 +15826,10 @@ async function ensureTikTokSigningWindow(targetUrl, options = {}) {
             tiktokSigningWindow.setMenuBarVisibility(false);
         } catch (_) { }
         attachSigningWindow(tiktokSigningWindow);
+        installTikTokSigningWindowPopupHandling(tiktokSigningWindow);
         await tiktokSigningWindow.loadURL(landingUrl);
     } else {
+        installTikTokSigningWindowPopupHandling(tiktokSigningWindow);
         // If window exists, check if we need to navigate
         const currentUrl = tiktokSigningWindow.webContents.getURL();
         console.log('[TikTok] Existing window currentUrl:', currentUrl);
@@ -15820,6 +15990,8 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     if (args && args.replyOnly === true) {
         manager.replyOnly = true;
     }
+    manager.accountRole = normalizeSourceAccountRole(args?.accountRole);
+    manager.customSession = args?.customSession || null;
     manager.sourceId = sourceIdFromRenderer || null;
     websocketConnections[wssID] = manager;
 
@@ -15839,7 +16011,10 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
         sourceId: sourceIdFromRenderer || null,
         username: username,
         args: {
-            url: `https://www.tiktok.com/@${username}/live`
+            url: `https://www.tiktok.com/@${username}/live`,
+            sourceId: sourceIdFromRenderer || null,
+            accountRole: normalizeSourceAccountRole(args?.accountRole),
+            customSession: args?.customSession || null
         },
         webContents: {
             getURL: () => `https://www.tiktok.com/@${username}/live`,

@@ -177,8 +177,10 @@
                             src="https://socialstream.ninja/sources/images/arenasocial.png" class="icon" />Arena Social</button></span>
                 <span class="hidden"><button onclick="newSourcePrompt('pilled');"><img
                             src="https://socialstream.ninja/sources/images/pilled.png" class="icon" />Pilled</button></span>
-                <span><button onclick="newSourcePrompt('bilibili');"><img
-                            src="https://socialstream.ninja/sources/images/bilibili.png" class="icon" />BiliBili</button></span>
+                <span><button onclick="newSourcePrompt('bilibilicom');"><img
+                            src="https://socialstream.ninja/sources/images/bilibili.png" class="icon" />BiliBili.com</button></span>
+                <span><button onclick="newSourcePrompt('bilibilitv');"><img
+                            src="https://socialstream.ninja/sources/images/bilibili.png" class="icon" />BiliBili.tv</button></span>
                 <span><button onclick="newOtherSourcePrompt('peertube');"><img
                             src="https://socialstream.ninja/sources/images/peertube.png" class="icon" />Peertube</button></span>
                 <span><button title="Add a chat source that isn't listed by providing the chat URL"
@@ -272,6 +274,9 @@
                     <span data-replyonly-badge class="badge-chip badge-warning" style="display: none;">
                         📨 Reply only
                     </span>
+                    <span data-accountrole-badge class="badge-chip badge-muted" style="display: none;">
+                        Role: Host
+                    </span>
                     <span data-session-badge class="badge-chip badge-muted">
                         Session: AUTO
                     </span>
@@ -321,6 +326,9 @@
                 </div>
                 <div class="settings-menu-item" onclick="toggleReplyOnly(this)" data-reply-only>
                     🤖 Bot reply-only (no capture)
+                </div>
+                <div class="settings-menu-item" onclick="cycleAccountRole(this)" data-account-role>
+                    Account role: Normal
                 </div>
                 <div class="settings-menu-item" onclick="toggleTikTokAutoFallback(this)" data-tiktok-fallback>
                     🔁 TikTok auto-fallback enabled
@@ -1208,11 +1216,39 @@
             return url;
         }
 
+        function extractKickSlugFromInput(value) {
+            if (!value || typeof value !== "string") return "";
+            const trimmed = value.trim();
+            if (!trimmed) return "";
+            try {
+                const parsed = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+                if (!/(^|\.)kick\.com$/i.test(parsed.hostname)) {
+                    return "";
+                }
+                const pathParts = parsed.pathname.split('/').filter(Boolean);
+                if (!pathParts.length) {
+                    return "";
+                }
+                const lowerParts = pathParts.map(part => part.toLowerCase());
+                const popoutIndex = lowerParts.lastIndexOf('popout');
+                if (popoutIndex !== -1 && pathParts[popoutIndex + 1]) {
+                    return decodeURIComponent(pathParts[popoutIndex + 1]).trim();
+                }
+                const chatroomIndex = lowerParts.lastIndexOf('chatroom');
+                if (chatroomIndex > 0 && pathParts[chatroomIndex - 1]) {
+                    return decodeURIComponent(pathParts[chatroomIndex - 1]).trim();
+                }
+                return decodeURIComponent(pathParts[0]).trim();
+            } catch (_) {
+                return "";
+            }
+        }
+
         // Helper: should sign-in be disabled for this source based on config?
         function isSigninDisabledForSource(source) {
             try {
                 if (!source || !config) return false;
-                const platform = source.target;
+                const platform = getConfigTarget(source.target);
                 const pconf = config[platform];
                 if (!pconf) return false;
                 // Support both boolean and object forms
@@ -1226,8 +1262,15 @@
             return target === 'youtube' || target === 'youtubeshorts';
         }
 
+        function getConfigTarget(target) {
+            if (target === 'bilibilicom') return 'bilibili';
+            return target;
+        }
+
         function getWebSocketManifestTarget(target) {
             if (target === 'youtubeshorts') return 'youtube';
+            if (target === 'bilibilicom') return 'bilibili';
+            if (target === 'bilibilitv') return '';
             return target;
         }
 
@@ -1324,6 +1367,27 @@
             }
         }
 
+        function normalizeAccountRole(role) {
+            const value = String(role || 'normal').trim().toLowerCase();
+            return ['host', 'bot', 'relay'].includes(value) ? value : 'normal';
+        }
+
+        function getAccountRoleLabel(role) {
+            const labels = {
+                normal: 'Normal',
+                host: 'Host',
+                bot: 'Bot',
+                relay: 'Relay'
+            };
+            return labels[normalizeAccountRole(role)] || labels.normal;
+        }
+
+        function getSourceIconUrl(target) {
+            if (target === 'velora') return 'https://velora.tv/favicon.ico';
+            const iconTarget = (target === 'bilibilicom' || target === 'bilibilitv') ? 'bilibili' : (target || 'unknown');
+            return `https://socialstream.ninja/sources/images/${iconTarget}.png`;
+        }
+
         // --- Core UI Update Functions ---
         function updateSourceUI(element, source) {
             if (!element || !source) return;
@@ -1332,9 +1396,7 @@
             // Update data-target attribute
             element.dataset.target = source.target;
 
-            element.querySelector("[data-sourceicon]").src = source.target === 'velora'
-                ? 'https://velora.tv/favicon.ico'
-                : `https://socialstream.ninja/sources/images/${source.target || "unknown"}.png`;
+            element.querySelector("[data-sourceicon]").src = getSourceIconUrl(source.target);
             element.querySelector("[data-sourceicon]").title = source.target || "unknown";
             element.querySelector("[data-channelname]").textContent = source.username || "";
             element.querySelector("[data-sourcename]").textContent = source.videoId || "";
@@ -1361,6 +1423,13 @@
                     const label = getSessionDisplayNameForSource(source);
                     sessionBadge.textContent = `Session: ${label}`;
                     sessionBadge.title = `Current browser session: ${label}.\nChange via ⚙️ → Browser Session Settings.`;
+                }
+                const accountRoleBadge = element.querySelector('[data-accountrole-badge]');
+                if (accountRoleBadge) {
+                    const role = normalizeAccountRole(source.accountRole);
+                    accountRoleBadge.style.display = role === 'normal' ? 'none' : 'inline-block';
+                    accountRoleBadge.textContent = `Role: ${getAccountRoleLabel(role)}`;
+                    accountRoleBadge.title = 'Source account role used for relay and bot reply routing.';
                 }
 
             } catch (_) { }
@@ -1622,9 +1691,7 @@
         function updateGroupUI(element, group) {
             if (!element || !group) return;
 
-            element.querySelector("[data-sourceicon]").src = group.target === 'velora'
-                ? 'https://velora.tv/favicon.ico'
-                : `https://socialstream.ninja/sources/images/${group.target || "unknown"}.png`;
+            element.querySelector("[data-sourceicon]").src = getSourceIconUrl(group.target);
             element.querySelector("[data-sourceicon]").title = group.target;
             element.querySelector("[data-channelname]").textContent = group.username || "";
             element.querySelector("[data-targetname]").textContent = group.target || "";
@@ -1714,9 +1781,7 @@
                     target === 'velora' ||
                     target === 'vpzone' ||
                     target === 'tiktok' ||
-                    (manifest?.content_scripts?.some(cs =>
-                        cs.js?.some(jsFile => jsFile.includes(`websocket/${target}.js`))
-                    ) || false);
+                    platformSupportsWebSocket(target);
 
                 if (hasWebSocketSupport) {
                     modeSelector.classList.remove('hidden');
@@ -1853,11 +1918,14 @@
             let lastInvalidToast = null;
             const promptTargetLabels = {
                 chzzk: "CHZZK channel ID",
+                kick: "Kick channel URL or slug",
                 mixcloud: "Mixcloud username",
                 nimo: "Nimo username",
                 sooplive: "SOOP broadcaster ID/name",
                 twitcasting: "TwitCasting username",
                 younow: "YouNow username",
+                bilibilicom: "Bilibili.com room ID or URL",
+                bilibilitv: "Bilibili.tv live path or URL",
                 vpzone: "VPZONE username"
             };
             const promptTargetLabel = promptTargetLabels[target] || `${target} user name`;
@@ -1946,9 +2014,14 @@
                 } else {
                     const messageParts = [];
                     if (errorMessage) messageParts.push(errorMessage);
-                    messageParts.push('Note: Usernames cannot contain spaces.');
+                    if (target === "kick") {
+                        messageParts.push('Paste the Kick channel URL, like https://kick.com/koos-kaap, or enter only the URL slug, like koos-kaap.');
+                        messageParts.push('Do not use the display name if it differs from the URL. Kick display names can use underscores while the URL slug uses hyphens.');
+                    } else {
+                        messageParts.push('Note: Usernames cannot contain spaces.');
+                    }
                     const promptOptions = {
-                        title: `Enter the ${target} user name`,
+                        title: `Enter the ${promptTargetLabel}`,
                         message: messageParts.join('\n\n'),
                         value: typeof username === 'string' ? username : '',
                         errorMessage,
@@ -2007,7 +2080,31 @@
                     continue;
                 }
 
-                username = trimmedInput;
+                let normalizedInput = trimmedInput;
+                if (target === 'kick') {
+                    const kickSlug = extractKickSlugFromInput(trimmedInput);
+                    if (kickSlug) {
+                        normalizedInput = kickSlug;
+                    }
+                } else if (target === 'bilibilicom' && /bilibili\.com/i.test(trimmedInput)) {
+                    try {
+                        const roomUrl = new URL(/^https?:\/\//i.test(trimmedInput) ? trimmedInput : `https://${trimmedInput}`);
+                        const roomMatch = roomUrl.pathname.match(/\/(\d+)/);
+                        if (roomMatch && roomMatch[1]) {
+                            normalizedInput = roomMatch[1];
+                        }
+                    } catch (e) { }
+                } else if (target === 'bilibilitv' && (/bilibili\.tv/i.test(trimmedInput) || /\/live\//i.test(trimmedInput))) {
+                    try {
+                        const liveUrl = new URL(/^https?:\/\//i.test(trimmedInput) ? trimmedInput : `https://www.bilibili.tv/${trimmedInput.replace(/^\/+/, '')}`);
+                        const pathParts = liveUrl.pathname.split('/').filter(Boolean);
+                        if (pathParts.length) {
+                            normalizedInput = pathParts[pathParts.length - 1];
+                        }
+                    } catch (e) { }
+                }
+
+                username = normalizedInput;
                 break;
             }
 
@@ -2144,6 +2241,13 @@
                     if (!typeGuess) {
                         typeGuess = deriveTargetFromScriptPath(uniqueMatchedScripts[0]);
                     }
+                    if (/live\.bilibili\.com/i.test(URL)) {
+                        typeGuess = 'bilibilicom';
+                        initialState.sourceFile = 'sources/bilibilicom.js';
+                    } else if (/bilibili\.tv/i.test(URL)) {
+                        typeGuess = 'bilibilitv';
+                        initialState.sourceFile = 'sources/bilibili.js';
+                    }
                 } else if (!typeGuess) {
                     const allSources = [...new Set(
                         (Array.isArray(manifest?.content_scripts) ? manifest.content_scripts : [])
@@ -2254,6 +2358,30 @@
                             }
                         }
                     }
+                    else if (target === 'vpzone' && /(^|\.)vpzone\.tv$/i.test(hostname)) {
+                        const pathParts = url.pathname.split('/').filter(Boolean);
+                        const channel = url.searchParams.get('channel') || ((pathParts[0] === 'watch' || pathParts[0] === 'stream') ? pathParts[1] : '');
+                        return newOtherSource('vpzone', url.toString(), startup, {
+                            ...initialState,
+                            username: channel || initialState.username || 'VPZONE',
+                            sourceFile: 'sources/vpzone.js',
+                            connectionMode: initialState.connectionMode || 'classic'
+                        });
+                    }
+                    else if (target === 'kick' && /(^|\.)kick\.com$/i.test(hostname)) {
+                        const kickSlug = extractKickSlugFromInput(url.toString());
+                        if (kickSlug) {
+                            username = kickSlug;
+                        }
+                    }
+                    else if (target === 'bilibilicom' && /(^|\.)bilibili\.com$/i.test(hostname)) {
+                        const roomMatch = url.pathname.match(/\/(\d+)/);
+                        username = roomMatch && roomMatch[1] ? roomMatch[1] : username;
+                    }
+                    else if (target === 'bilibilitv' && /(^|\.)bilibili\.tv$/i.test(hostname)) {
+                        const pathParts = url.pathname.split('/').filter(Boolean);
+                        username = pathParts.length ? pathParts[pathParts.length - 1] : username;
+                    }
                 }
             }
 
@@ -2283,7 +2411,7 @@
                 if (!sourceUrl) {
                     if (target === "twitch") sourceUrl = `https://www.twitch.tv/popout/${username}/chat?popout=`;
                     else if (target === "kick") sourceUrl = `https://kick.com/popout/${username}/chat`;
-                    else if (target === "vpzone") sourceUrl = `https://vpzone.tv/stream/${username}`;
+                    else if (target === "vpzone") sourceUrl = `https://vpzone.tv/watch/${username}`;
                     else if (target === "velora") sourceUrl = `https://velora.tv/${username}`;
                     else if (target === "parti") sourceUrl = `https://parti.com/popout-chat?id=${username}`;
                     else if (target === "rumble") {
@@ -2305,7 +2433,8 @@
                     else if (target === "sooplive") sourceUrl = `https://play.sooplive.com/${username}/`;
                     else if (target === "beamstream") sourceUrl = `https://beamstream.gg/${username}/chat`;
                     else if (target === "vimm") sourceUrl = `https://www.vimm.tv/c/${username}`;
-                    else if (target === "bilibili") sourceUrl = `https://live.bilibili.com/${username}`;
+                    else if (target === "bilibilicom" || target === "bilibili") sourceUrl = `https://live.bilibili.com/${username}`;
+                    else if (target === "bilibilitv") sourceUrl = `https://www.bilibili.tv/en/live/${username}`;
                     else if (target === "facebook") sourceUrl = `https://www.facebook.com/${username}/videos`;
                     else if (target === "arenasocial") sourceUrl = `https://arena.social/live/${username}`;
                     // Add other URL constructions as needed
@@ -2317,6 +2446,8 @@
                     else if (target === "picarto") sourceFile = "sources/picarto.js";
                     else if (target === "x") sourceFile = "sources/x.js";
                     else if (target === "beamstream") sourceFile = "sources/beamstream.js";
+                    else if (target === "bilibilicom") sourceFile = "sources/bilibilicom.js";
+                    else if (target === "bilibilitv") sourceFile = "sources/bilibili.js";
                     // Add other platform-specific script files here if necessary
                 }
 
@@ -2516,6 +2647,10 @@
                 // This logic needs to be robust based on your platform-to-script mapping
                 if (target === "instagramlive") {
                     sourceFile = "sources/instagram.js";
+                } else if (target === "bilibilicom") {
+                    sourceFile = "sources/bilibilicom.js";
+                } else if (target === "bilibilitv") {
+                    sourceFile = "sources/bilibili.js";
                 } else {
                     // Default assumption: target maps directly to script name
                     sourceFile = `sources/${target}.js`;
@@ -4278,9 +4413,15 @@
                     try {
                         const s = sourceId ? stateManager.getSource(sourceId) : null;
                         const roItem = settingsMenu.querySelector('.settings-menu-item[data-reply-only]');
+                        const roleItem = settingsMenu.querySelector('.settings-menu-item[data-account-role]');
                         if (roItem && s) {
                             roItem.classList.toggle('active', !!s.replyOnly);
                             roItem.textContent = (s.replyOnly ? '✅ ' : '🤖 ') + 'Bot reply-only (no capture)';
+                        }
+                        if (roleItem && s) {
+                            const role = normalizeAccountRole(s.accountRole);
+                            roleItem.classList.toggle('active', role !== 'normal');
+                            roleItem.textContent = `Account role: ${getAccountRoleLabel(role)}`;
                         }
                     } catch (_) { }
                     try {
@@ -4426,6 +4567,49 @@
             }
         }
 
+        async function cycleAccountRole(menuItem) {
+            const entry = menuItem.closest('.entry');
+            if (!entry) return;
+            const sourceId = entry.dataset.sourceId;
+            const source = stateManager.getSource(sourceId);
+            if (!source) return;
+
+            const roles = ['normal', 'host', 'bot', 'relay'];
+            const currentIndex = roles.indexOf(normalizeAccountRole(source.accountRole));
+            const nextRole = roles[(currentIndex + 1) % roles.length];
+            stateManager.updateSource(sourceId, { accountRole: nextRole });
+
+            const latest = stateManager.getSource(sourceId);
+            updateSourceUI(entry, latest);
+            menuItem.classList.toggle('active', nextRole !== 'normal');
+            menuItem.textContent = `Account role: ${getAccountRoleLabel(nextRole)}`;
+
+            const wasActive = hasConnectionHandles(source);
+            if (wasActive) {
+                Toast.info('Restarting', 'Applying account role...');
+                try {
+                    const stopBtn = entry.querySelector('[data-stophtml]');
+                    const actBtn = entry.querySelector('[data-activatehtml]');
+                    if (actBtn && actBtn.dataset.connecting === 'true') {
+                        await stopThis(actBtn);
+                    } else if (stopBtn) {
+                        await stopThis(stopBtn);
+                    }
+                } catch (e) { console.warn('Failed to stop before account role restart:', e); }
+                await new Promise(r => setTimeout(r, 150));
+                try {
+                    const activateBtn = entry.querySelector('[data-activatehtml]');
+                    if (activateBtn) await createWindow(activateBtn);
+                    Toast.success('Updated', `Account role set to ${getAccountRoleLabel(nextRole)}`);
+                } catch (e) {
+                    console.error('Failed to restart after account role change:', e);
+                    Toast.error('Error', 'Failed to restart source. Try activating it again.');
+                }
+            } else {
+                Toast.success('Updated', `Account role set to ${getAccountRoleLabel(nextRole)}`);
+            }
+        }
+
         function toggleTikTokAutoFallback(menuItem) {
             const entry = menuItem.closest('.entry');
             if (!entry) return;
@@ -4534,6 +4718,7 @@
                     if (wantsBot) {
                         // Enable reply-only and assign a bot session
                         sourceData.replyOnly = true;
+                        sourceData.accountRole = 'bot';
                         ensureBotSession();
                         sourceData.customSession = 'bot-account';
                     }
@@ -6361,7 +6546,8 @@
             }
 
             let conf = config.global ? { ...config.global } : {};
-            if (config[source.target]) conf = { ...conf, ...config[source.target] };
+            const configTarget = getConfigTarget(source.target);
+            if (config[configTarget]) conf = { ...conf, ...config[configTarget] };
 
             // Apply custom user agent if set
             if (source.userAgent && source.userAgent !== 'AUTO') {
@@ -6381,7 +6567,20 @@
                 ? source.sourceFiles.map((value) => normalizeSourceScriptPath(value)).filter(Boolean)
                 : [];
             sourceFiles = [...new Set(sourceFiles)];
-            const scriptPath = normalizeSourceScriptPath(source.sourceFile || "") || `sources/${targetSourceFile}.js`;
+            let scriptPath = normalizeSourceScriptPath(source.sourceFile || "") || `sources/${targetSourceFile}.js`;
+            if (source.target === "bilibilicom" || (source.target === "bilibili" && /^https?:\/\/live\.bilibili\.com\//i.test(source.url || ""))) {
+                if (scriptPath === "sources/bilibili.js") {
+                    scriptPath = "sources/bilibilicom.js";
+                }
+                sourceFiles = sourceFiles.map((path) => path === "sources/bilibili.js" ? "sources/bilibilicom.js" : path);
+                sourceFiles = [...new Set(sourceFiles)];
+            } else if (source.target === "bilibilitv") {
+                if (scriptPath === "sources/bilibilitv.js") {
+                    scriptPath = "sources/bilibili.js";
+                }
+                sourceFiles = sourceFiles.map((path) => path === "sources/bilibilitv.js" ? "sources/bilibili.js" : path);
+                sourceFiles = [...new Set(sourceFiles)];
+            }
             const selectedScriptPaths = sourceFiles.length ? sourceFiles : [scriptPath];
             const sourceManifestEntries = (Array.isArray(manifest?.content_scripts) ? manifest.content_scripts : [])
                 .filter((entry) => {
@@ -6411,6 +6610,7 @@
                     tab: tabid,
                     sourceId: source.id,
                     customSession: source.customSession || 'AUTO',
+                    accountRole: normalizeAccountRole(source.accountRole),
                     replyOnly: !!source.replyOnly,
                     sourceManifestEntries: sourceManifestEntries,
                     isBetaMode: isBetaMode,
@@ -6443,7 +6643,8 @@
         async function createWindowWSSFromSource(source, tabid = false) {
             if (!ipcRenderer) return false;
             let conf = config.global ? { ...config.global } : {};
-            if (config[source.target]) conf = { ...conf, ...config[source.target] };
+            const configTarget = getConfigTarget(source.target);
+            if (config[configTarget]) conf = { ...conf, ...config[configTarget] };
             if (conf.wss) conf = { ...conf, ...conf.wss };
 
             if (source.target === 'facebook' || source.target === 'vpzone') {
@@ -6469,7 +6670,8 @@
             // Signal to the WSS page that we're running in ssapp (Electron)
             queryParams.ssapp = '1';
 
-            const resolvedHtml = await resolveWebSocketHtml(source.target, queryParams, { branch: isBetaMode ? 'beta' : 'main' });
+            const websocketTarget = getWebSocketManifestTarget(source.target) || source.target;
+            const resolvedHtml = await resolveWebSocketHtml(websocketTarget, queryParams, { branch: isBetaMode ? 'beta' : 'main' });
             if (!resolvedHtml) {
                 Toast.error("WebSocket Error", "Unable to resolve the WebSocket page. Try again or check your network.");
                 return false;
@@ -6499,7 +6701,9 @@
                 recordFallbackAsset(resolvedHtml.relativePath, 'beta', 'main');
             }
 
-            const scriptPath = source.sourceFile || `sources/websocket/${source.target}.js`;
+            const scriptPath = (source.target === "bilibili" || source.target === "bilibilicom")
+                ? "sources/websocket/bilibili.js"
+                : (source.sourceFile || `sources/websocket/${websocketTarget}.js`);
 
 
             try {
@@ -6515,6 +6719,7 @@
                     tab: tabid,
                     sourceId: source.id,
                     customSession: source.customSession || 'AUTO',
+                    accountRole: normalizeAccountRole(source.accountRole),
                     wss: true,
                     replyOnly: !!source.replyOnly,
                     config: conf,
@@ -6533,7 +6738,8 @@
         async function createYoutubeWebSocketWindowFromSource(source, tabid = false) {
             if (!ipcRenderer) return false;
             let conf = config.global ? { ...config.global } : {};
-            if (config[source.target]) conf = { ...conf, ...config[source.target] };
+            const configTarget = getConfigTarget(source.target);
+            if (config[configTarget]) conf = { ...conf, ...config[configTarget] };
             if (conf.wss) conf = { ...conf, ...conf.wss };
 
             // Apply custom user agent if set
@@ -6606,6 +6812,7 @@
                     tab: tabid,
                     sourceId: source.id,
                     customSession: source.customSession || 'AUTO',
+                    accountRole: normalizeAccountRole(source.accountRole),
                     wss: true,
                     replyOnly: !!source.replyOnly,
                     config: conf,
@@ -6675,6 +6882,8 @@
                     sessionId: sessionId,
                     ttTargetIdc: ttTargetIdc,
                     replyOnly: !!source.replyOnly,
+                    accountRole: normalizeAccountRole(source.accountRole),
+                    customSession: source.customSession || 'AUTO',
                     strategy: strategy,
                     sourceId: source.id,
                     signing,
