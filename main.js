@@ -10822,7 +10822,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 (function(){
                                   try {
                                     var href = '' + (location && location.href);
-                                    var isYT = /(?:^|\/)websocket\/youtube(?:\.html)?(?:[?#]|$)/.test(href);
+                                    var isYT = href.indexOf('/websocket/youtube.html') !== -1 || href.indexOf('/websocket/youtube?') !== -1;
                                     if (!isYT) return;
                                     function __ss_wssNotify(status, message){
                                       try {
@@ -11090,7 +11090,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                             ;(function(){
                                               try {
                                                 var href = '' + (location && location.href);
-                                                var isYT = /(?:^|\/)websocket\/youtube(?:\.html)?(?:[?#]|$)/.test(href);
+                                                var isYT = href.indexOf('/websocket/youtube.html') !== -1 || href.indexOf('/websocket/youtube?') !== -1;
                                                 if (!isYT) return;
                                                 function __ss_wssNotify(status, message){
                                                   try {
