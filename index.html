@@ -3264,10 +3264,11 @@
             }
 
             // Check for new streams
-            const foundNewStreams = await checkYouTubeGroupForNewStreams(groupId);
+            const discoveryResult = await checkYouTubeGroupForNewStreams(groupId);
+            const hadTransientNetworkError = discoveryResult && discoveryResult.type === 'network_error';
 
             // If we found NEW streams, stop checking (not just any streams)
-            if (foundNewStreams) {
+            if (discoveryResult === true) {
                 stopYouTubeGroupAutoCheck(groupId);
                 return;
             }
@@ -3278,7 +3279,10 @@
 
             // Determine next check interval
             let nextInterval;
-            if (backoffState.checkCount < backoffState.intervals.length) {
+            if (hadTransientNetworkError) {
+                const retryIndex = Math.min(backoffState.checkCount, backoffState.intervals.length - 1);
+                nextInterval = backoffState.intervals[retryIndex];
+            } else if (backoffState.checkCount < backoffState.intervals.length) {
                 nextInterval = backoffState.intervals[backoffState.checkCount];
                 backoffState.checkCount++;
             } else {
@@ -3289,7 +3293,11 @@
             const group = stateManager.getGroup(groupId);
             if (group) {
                 const minutes = Math.floor(nextInterval / 60000);
-                console.log(`No new streams found for YouTube group ${group.username}, checking again in ${minutes} minute(s)`);
+                if (hadTransientNetworkError) {
+                    console.log(`Temporary YouTube network issue for group ${group.username}, checking again in ${minutes} minute(s)`);
+                } else {
+                    console.log(`No new streams found for YouTube group ${group.username}, checking again in ${minutes} minute(s)`);
+                }
             }
 
             // Schedule next check
@@ -3327,6 +3335,9 @@
                 }
             } catch (error) {
                 console.error("YouTube group discovery failed:", error);
+                if (typeof isYouTubeDiscoveryNetworkError === 'function' && isYouTubeDiscoveryNetworkError(error)) {
+                    return { type: 'network_error', message: error.message };
+                }
                 return false;
             }
 

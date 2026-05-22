@@ -8371,6 +8371,17 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     });
 
+    function normalizeNodeFetchError(error) {
+        return {
+            status: 500,
+            error: error?.message || String(error || "Unknown fetch error"),
+            code: error?.code || null,
+            errno: error?.errno || null,
+            type: error?.type || null,
+            name: error?.name || null
+        };
+    }
+
     // Keep the synchronous version for backward compatibility
     ipcMain.on("nodefetch", function (eventRet, args) {
         log("NODE FETCHING! (sync)");
@@ -8392,10 +8403,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             })
             .catch((error) => {
                 console.error("Fetch error:", error);
-                eventRet.returnValue = {
-                    status: 500,
-                    error: error.message
-                };
+                eventRet.returnValue = normalizeNodeFetchError(error);
             });
     });
 
@@ -8417,10 +8425,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             };
         } catch (error) {
             console.error("Fetch error:", error);
-            return {
-                status: 500,
-                error: error.message
-            };
+            return normalizeNodeFetchError(error);
         }
     });
 

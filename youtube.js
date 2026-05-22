@@ -55,6 +55,42 @@ function sortYouTubeStreams(streams) {
     return sorted;
 }
 
+function isYouTubeTransientNetworkError(value) {
+    const text = [
+        value?.error,
+        value?.message,
+        value?.code,
+        value?.errno,
+        value?.type,
+        typeof value === 'string' ? value : ''
+    ].filter(Boolean).join(' ').toLowerCase();
+
+    if (!text) return false;
+    return [
+        'err_name_not_resolved',
+        'enotfound',
+        'eai_again',
+        'etimedout',
+        'econnreset',
+        'econnrefused',
+        'network timeout',
+        'socket hang up'
+    ].some(token => text.includes(token));
+}
+
+function createYouTubeDiscoveryNetworkError(fetchUrl, response) {
+    const message = response?.error || response?.message || 'Unable to reach YouTube';
+    const error = new Error(`YouTube network/DNS error while fetching ${fetchUrl}: ${message}`);
+    error.code = 'SSAPP_YOUTUBE_DISCOVERY_NETWORK';
+    error.fetchUrl = fetchUrl;
+    error.response = response || null;
+    return error;
+}
+
+function isYouTubeDiscoveryNetworkError(error) {
+    return error && error.code === 'SSAPP_YOUTUBE_DISCOVERY_NETWORK';
+}
+
 function mergeYouTubeStreams(primaryStreams = [], fallbackStreams = [], isShortDefault = false) {
     const combined = [];
     const seenVideoIds = new Set();
@@ -583,6 +619,10 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
         }
     } catch (error) {
         console.error("Error in handleYouTubeActivation for " + username + ":", error);
+        if (isYouTubeDiscoveryNetworkError(error)) {
+            Toast.warning("YouTube Network", `Could not reach YouTube while checking ${username}. This looks like a temporary DNS/network issue; try again shortly.`);
+            return { type: 'network_error', message: error.message };
+        }
         if (showPrompts && error.message && !error.message.includes("No video ID found") && !error.message.includes("User cancelled")) {
             // Check if ipcRenderer and window.confirm are available
             if (typeof ipcRenderer !== 'undefined' && ipcRenderer && typeof window.confirm === 'function') {
@@ -1129,6 +1169,9 @@ async function fetchYouTubeDiscoveryHtml(fetchUrl) {
         headers: getYouTubeDiscoveryFetchHeaders(),
         timeout: 15000
     });
+    if (isYouTubeTransientNetworkError(response)) {
+        throw createYouTubeDiscoveryNetworkError(fetchUrl, response);
+    }
     if (response?.status && response.status >= 400) {
         console.warn(`YouTube discovery fetch returned HTTP ${response.status}:`, fetchUrl);
     }
@@ -1339,6 +1382,9 @@ async function fetchYoutube(username, alt = false, options = {}) {
 			return false;
 		} catch (e) {
 			console.error(`Error during YouTube scrape for ${username}:`, e);
+            if (isYouTubeDiscoveryNetworkError(e)) {
+                throw e;
+            }
 			return false;
 		}
 }
