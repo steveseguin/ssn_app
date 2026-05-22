@@ -367,11 +367,11 @@ function renderMessages() {
     const html = messages.map(message => `
         <div class="message-wrapper" id="message-${message.id}">
             <div class="message">
-                <img src="${message.chatimg || 'https://socialstream.ninja/sources/images/unknown.png'}" alt="Avatar" class="avatar" data-error-hide="message">
+                <img src="${message.chatimg || 'https://cache.socialstream.ninja/sources/images/unknown.png'}" alt="Avatar" class="avatar" data-error-hide="message">
                 <div class="message-content">
                     <div class="message-header">
                         <span class="user-name">${message.chatname || 'Anonymous'}</span>
-                        ${message.type ? `<img src="https://socialstream.ninja/sources/images/${message.type}.png" alt="${message.type}" class="type-image" data-error-hide="self">` : ''}
+                        ${message.type ? `<img src="https://cache.socialstream.ninja/sources/images/${message.type}.png" alt="${message.type}" class="type-image" data-error-hide="self">` : ''}
                         <span class="timestamp">${formatTimestamp(message.timestamp)}</span>
                     </div>
                     <p class="message-text">${message.chatmessage || ''}</p>
@@ -459,7 +459,7 @@ function handleImageError(event) {
     const img = event.target;
     img.style.display = 'none';
     if (img.classList.contains('avatar')) {
-        img.src = 'https://socialstream.ninja/sources/images/unknown.png';
+        img.src = 'https://cache.socialstream.ninja/sources/images/unknown.png';
         img.style.display = 'block';
     }
 }

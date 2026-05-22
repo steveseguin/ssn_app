@@ -78,6 +78,37 @@ const { setupKickOAuthHandler } = require('./resources/electron-kick-handler');
 const { setupVpzoneOAuthHandler } = require('./resources/electron-vpzone-handler');
 const { KickWsClient } = require('./resources/kick-ws-client');
 
+const SOCIAL_STREAM_REMOTE_HOSTS = new Set([
+    'socialstream.ninja',
+    'beta.socialstream.ninja',
+    'cache.socialstream.ninja'
+]);
+
+function getUrlPathForMatch(urlValue) {
+    const raw = String(urlValue || '');
+    if (!raw) return '';
+    try {
+        return new URL(raw).pathname.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    } catch (_) {
+        return raw.split(/[?#]/)[0].replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    }
+}
+
+function matchesSocialStreamPagePath(urlValue, pagePath) {
+    const pathName = getUrlPathForMatch(urlValue);
+    const normalized = String(pagePath || '').replace(/^\/+/, '').replace(/\.html$/i, '').toLowerCase();
+    if (!pathName || !normalized) return false;
+    return pathName.endsWith(`/${normalized}`) || pathName.endsWith(`/${normalized}.html`) || pathName === normalized || pathName === `${normalized}.html`;
+}
+
+function isSocialStreamRemoteUrl(urlValue) {
+    try {
+        return SOCIAL_STREAM_REMOTE_HOSTS.has(new URL(String(urlValue || '')).hostname.toLowerCase());
+    } catch (_) {
+        return false;
+    }
+}
+
 const {
     fetch: undiciFetch
 } = require('undici');
@@ -1747,7 +1778,7 @@ function findYouTubeOAuthView() {
                 continue;
             }
             const url = wc.getURL && wc.getURL();
-            if (url && url.includes('websocket/youtube.html')) {
+            if (url && matchesSocialStreamPagePath(url, 'sources/websocket/youtube')) {
                 return view;
             }
         }
@@ -3456,12 +3487,12 @@ function getWindowStateKey(window) {
     // Generate a unique key based on the window's URL
     // This prevents different types of windows from overwriting each other's saved dimensions
     const url = window.webContents.getURL();
-    if (url.includes("index.html")) return "windowState_main";
-    if (url.includes("dock.html")) return "windowState_dock";
-    if (url.includes("input.html")) return "windowState_input";
-    if (url.includes("popup.html")) return "windowState_popup";
-    if (url.includes("chathistory.html")) return "windowState_history";
-    if (url.includes("sampleoverlay.html")) return "windowState_overlay";
+    if (matchesSocialStreamPagePath(url, "index")) return "windowState_main";
+    if (matchesSocialStreamPagePath(url, "dock")) return "windowState_dock";
+    if (matchesSocialStreamPagePath(url, "input")) return "windowState_input";
+    if (matchesSocialStreamPagePath(url, "popup")) return "windowState_popup";
+    if (matchesSocialStreamPagePath(url, "chathistory")) return "windowState_history";
+    if (matchesSocialStreamPagePath(url, "sampleoverlay")) return "windowState_overlay";
     // For other windows, use a hash of the base URL
     const baseUrl = url.split('?')[0].split('#')[0];
     return "windowState_" + baseUrl.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
@@ -3492,12 +3523,12 @@ function loadWindowState(url) {
     }
 
     let stateKey;
-    if (url.includes("index.html")) stateKey = "windowState_main";
-    else if (url.includes("dock.html")) stateKey = "windowState_dock";
-    else if (url.includes("input.html")) stateKey = "windowState_input";
-    else if (url.includes("popup.html")) stateKey = "windowState_popup";
-    else if (url.includes("chathistory.html")) stateKey = "windowState_history";
-    else if (url.includes("sampleoverlay.html")) stateKey = "windowState_overlay";
+    if (matchesSocialStreamPagePath(url, "index")) stateKey = "windowState_main";
+    else if (matchesSocialStreamPagePath(url, "dock")) stateKey = "windowState_dock";
+    else if (matchesSocialStreamPagePath(url, "input")) stateKey = "windowState_input";
+    else if (matchesSocialStreamPagePath(url, "popup")) stateKey = "windowState_popup";
+    else if (matchesSocialStreamPagePath(url, "chathistory")) stateKey = "windowState_history";
+    else if (matchesSocialStreamPagePath(url, "sampleoverlay")) stateKey = "windowState_overlay";
     else {
         const baseUrl = url.split('?')[0].split('#')[0];
         stateKey = "windowState_" + baseUrl.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
@@ -6854,7 +6885,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 frame = false;
             }
             log(url);
-            if (url.startsWith("https://socialstream.ninja/chathistory.html") || (url == "./chathistory.html")) {
+            if ((isSocialStreamRemoteUrl(url) && matchesSocialStreamPagePath(url, "chathistory")) || (url == "./chathistory.html")) {
                 url = path.join(__dirname, "chathistory.html");
             }
 
@@ -6869,7 +6900,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
             const forceWin10Compatibility = shouldUseWin10TransparencyCompat(frame, useTransparency);
 
-            if (url.startsWith("https://socialstream.ninja/cohost") || url.startsWith("https://beta.socialstream.ninja/cohost") || (url.startsWith("file://") && url.includes("/cohost"))) {
+            if ((isSocialStreamRemoteUrl(url) && matchesSocialStreamPagePath(url, "cohost")) || (url.startsWith("file://") && url.includes("/cohost"))) {
                 var config = {
                     webPreferences: {
                         preload: path.join(__dirname, "preload.js"),
@@ -7250,7 +7281,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         //log(cachedState);
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (frame.url.split("?")[0].endsWith("popup.html")) {
+                if (matchesSocialStreamPagePath(frame.url, "popup")) {
                     frame.postMessage("fromMain", cachedState);
                     log("SENT TO POP UP SCUCESSFULLY");
                 }
@@ -7295,7 +7326,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         try {
             if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
                 mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                    if (frame.url.split("?")[0].endsWith("popup.html")) {
+                    if (matchesSocialStreamPagePath(frame.url, "popup")) {
                         frame.postMessage("fromMain", cachedState);
                     }
                 });
@@ -7420,7 +7451,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             try {
                 if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
                     mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                        if (frame.url.split("?")[0].endsWith("popup.html")) {
+                        if (matchesSocialStreamPagePath(frame.url, "popup")) {
                             frame.postMessage("fromMain", cachedState);
                         }
                     });
@@ -7508,7 +7539,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         // Forward response to popup frame
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (frame.url.split("?")[0].endsWith("popup.html")) {
+                if (matchesSocialStreamPagePath(frame.url, "popup")) {
                     frame.postMessage("fromMain", value);
                 }
             });
@@ -7577,7 +7608,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         try {
             if (mainWindow && mainWindow.webContents) {
                 mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                    if (frame.url.split("?")[0].endsWith("background.html")) {
+                    if (matchesSocialStreamPagePath(frame.url, "background")) {
                         frame.postMessage("fromPopup", value); // pass it along to the actual background
                     }
                 });
@@ -7590,7 +7621,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
     ipcMain.on("fromPopupResponse", function (eventRet, value) {
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (frame.url.split("?")[0].endsWith("background.html")) {
+                if (matchesSocialStreamPagePath(frame.url, "background")) {
                     frame.postMessage("fromMain", value);
                 }
             });
@@ -8203,11 +8234,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
         let dockResponsePayload = undefined;
         try {
             senderUrl = eventRet.sender.getURL().toLowerCase();
-            if (senderUrl.startsWith("https://socialstream.ninja/featured.html?") || senderUrl.startsWith("https://beta.socialstream.ninja/featured.html?") || (senderUrl.startsWith("file://") && senderUrl.includes("/featured.html?"))) {
+            if (((isSocialStreamRemoteUrl(senderUrl) || senderUrl.startsWith("file://")) && matchesSocialStreamPagePath(senderUrl, "featured") && senderUrl.includes("?"))) {
                 return;
             }
 
-            if (senderUrl.includes('/dock.html') || senderUrl.includes('/background.html')) {
+            if (matchesSocialStreamPagePath(senderUrl, "dock") || matchesSocialStreamPagePath(senderUrl, "background")) {
                 const payload = args && args[0] ? args[0] : null;
                 if (payload && payload.overlayNinja && payload.overlayNinja.response !== undefined) {
                     dockResponsePayload = normalizeDockResponseForBackground(payload.overlayNinja);
@@ -8324,7 +8355,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             backgroundPayload = attachSourceAccountMetaToPayload(backgroundPayload, tabID);
             if (backgroundPayload !== null) {
                 mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                    if (frame.url.split("?")[0].endsWith("background.html")) {
+                    if (matchesSocialStreamPagePath(frame.url, "background")) {
                         frame.postMessage("fromMainSender", [backgroundPayload, {
                             ...sender
                         }]);
@@ -8886,7 +8917,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             // setupKasadaInterceptor(persistentSession);
 
             // Check if this is a trusted domain
-            const trustedDomains = ['socialstream.ninja', 'beta.socialstream.ninja'];
+            const trustedDomains = ['socialstream.ninja', 'beta.socialstream.ninja', 'cache.socialstream.ninja'];
             const isTrustedDomain = trustedDomains.some(trusted =>
                 args.url.includes(trusted) || domain === trusted
             );
@@ -10791,7 +10822,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 (function(){
                                   try {
                                     var href = '' + (location && location.href);
-                                    var isYT = href.indexOf('websocket/youtube.html') !== -1;
+                                    var isYT = /(?:^|\/)websocket\/youtube(?:\.html)?(?:[?#]|$)/.test(href);
                                     if (!isYT) return;
                                     function __ss_wssNotify(status, message){
                                       try {
@@ -11059,7 +11090,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                             ;(function(){
                                               try {
                                                 var href = '' + (location && location.href);
-                                                var isYT = href.indexOf('websocket/youtube.html') !== -1;
+                                                var isYT = /(?:^|\/)websocket\/youtube(?:\.html)?(?:[?#]|$)/.test(href);
                                                 if (!isYT) return;
                                                 function __ss_wssNotify(status, message){
                                                   try {

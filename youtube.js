@@ -346,7 +346,7 @@ class YouTubeStreamSelector {
             console.log(`Stream ${stream.videoId} initial isShort: ${initialIsShort} (detected: ${stream.isShort}, default: ${this.currentIsShortDefault})`);
 
 
-            const thumbnailUrl = stream.thumbnails?.medium?.url || stream.thumbnails?.default?.url || 'https://socialstream.ninja/sources/images/youtube.png';
+            const thumbnailUrl = stream.thumbnails?.medium?.url || stream.thumbnails?.default?.url || 'https://cache.socialstream.ninja/sources/images/youtube.png';
             const status = this.getVideoStatus(stream.status, stream.viewers);
             stream.statusDisplay = status; // Store for later use if needed
 
@@ -1794,7 +1794,7 @@ async function fetchRumble(username, alt = false, diagnostics = null) {
 }
 
 function detectVideoOrientation(imgElement) { 
-    if (!imgElement || (imgElement.src && imgElement.src.includes("socialstream.ninja/sources/images/"))) { 
+    if (!imgElement || (imgElement.src && imgElement.src.includes("/sources/images/"))) {
         return false; 
     }
     const naturalWidth = imgElement.naturalWidth;
