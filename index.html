@@ -6081,7 +6081,7 @@
 
                     const sourceAfterCreate = stateManager.getSource(sourceId);
                     const alreadyConnectedTikTok = resolvedTarget === 'tiktok'
-                        && (sourceAfterCreate?.status === 'active' || !!sourceAfterCreate?.tiktokConnectionMethod);
+                        && sourceAfterCreate?.status === 'active';
                     const statusValue = alreadyConnectedTikTok
                         ? 'active'
                         : ((normalizedMode === 'websocket' || normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')
