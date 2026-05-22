@@ -167,6 +167,9 @@
         "certificateFile": "certs/socialstream.pfx",
         "publisherName": "Steve Seguin",
         "timeStampServer": "http://timestamp.digicert.com",
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
         "sign": "./customSign.js"
       }
     },
