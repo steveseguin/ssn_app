@@ -6079,9 +6079,14 @@
                         actualWssId = windowId;
                     }
 
-                    const statusValue = (normalizedMode === 'websocket' || normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')
-                        ? 'activating'
-                        : 'active';
+                    const sourceAfterCreate = stateManager.getSource(sourceId);
+                    const alreadyConnectedTikTok = resolvedTarget === 'tiktok'
+                        && (sourceAfterCreate?.status === 'active' || !!sourceAfterCreate?.tiktokConnectionMethod);
+                    const statusValue = alreadyConnectedTikTok
+                        ? 'active'
+                        : ((normalizedMode === 'websocket' || normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')
+                            ? 'activating'
+                            : 'active');
 
                     const resolvedActiveMode = resolvedTarget === 'tiktok'
                         ? normalizedMode
@@ -6102,6 +6107,9 @@
 
                     if (entry && resolvedTarget === 'tiktok') {
                         updateConnectionStatus(entry, statusValue === 'active' ? 'connected' : 'connecting');
+                        if (statusValue === 'active') {
+                            restoreActivateButton(entry);
+                        }
                     }
 
                     return { success: true, windowId };
@@ -7881,6 +7889,20 @@
                         const label = message || derivedLabel || 'Connected';
                         statusElement.innerHTML = `<i class="las la-check-circle"></i> ${label}`;
                     }
+                    try {
+                        const activateButton = element.querySelector('[data-activatehtml]');
+                        if (activateButton) {
+                            delete activateButton.dataset.connecting;
+                            const mode = getEffectiveConnectionMode(sourceCtx) || sourceCtx?.connectionMode || null;
+                            const isTikTokApiMode = sourceCtx?.target === 'tiktok'
+                                && (mode === 'tiktok-websocket' || mode === 'tiktok-legacy');
+                            if (isTikTokApiMode) {
+                                activateButton.classList.remove('hidden');
+                                activateButton.textContent = '\u23f9\ufe0f Disconnect';
+                                activateButton.onclick = function () { stopThis(this); };
+                            }
+                        }
+                    } catch (_) { }
                     break;
                 case 'error':
                     lockProvider(false);
