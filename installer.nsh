@@ -5,6 +5,8 @@
 
 Var AddToPathCheckbox
 Var AddToPathSelection
+Var InstallAiTtsModelsCheckbox
+Var InstallAiTtsModelsSelection
 
 !macro customInit
     ; Default to "do not modify PATH" unless the user opted in before.
@@ -15,10 +17,19 @@ Var AddToPathSelection
         StrCpy $0 ""
     StrCmp $0 "" +2 0
         StrCpy $AddToPathSelection 1
+
+    ; Default to installing local AI/TTS models unless the user opted out before.
+    StrCpy $InstallAiTtsModelsSelection 1
+    ClearErrors
+    ReadRegStr $0 HKCU "${SSAPP_REG_KEY}" "InstallAiTtsModels"
+    IfErrors +3 0
+    StrCmp $0 "0" 0 +2
+        StrCpy $InstallAiTtsModelsSelection 0
 !macroend
 
 !macro customPageAfterChangeDir
     Page custom AddToPathPageCreate AddToPathPageLeave
+    Page custom AiTtsModelsPageCreate AiTtsModelsPageLeave
 !macroend
 
 Function AddToPathPageCreate
@@ -41,6 +52,29 @@ Function AddToPathPageLeave
     ${NSD_GetState} $AddToPathCheckbox $AddToPathSelection
 FunctionEnd
 
+Function AiTtsModelsPageCreate
+    nsDialogs::Create 1018
+    Pop $0
+    StrCmp $0 error 0 +2
+        Abort
+
+    ${NSD_CreateLabel} 0 0 100% 24u "Optional setup step: install the local AI / TTS voice models."
+    Pop $0
+
+    ${NSD_CreateCheckbox} 0 32u 100% 12u "Install local AI / TTS models (recommended; uses extra disk space)"
+    Pop $InstallAiTtsModelsCheckbox
+    ${NSD_SetState} $InstallAiTtsModelsCheckbox $InstallAiTtsModelsSelection
+
+    ${NSD_CreateLabel} 0 54u 100% 28u "Uncheck this to save space. Local text-to-speech voices will not work until you reinstall with this enabled."
+    Pop $0
+
+    nsDialogs::Show
+FunctionEnd
+
+Function AiTtsModelsPageLeave
+    ${NSD_GetState} $InstallAiTtsModelsCheckbox $InstallAiTtsModelsSelection
+FunctionEnd
+
 !macro AddPathHelperFile
     Push $0
     StrCpy $0 $OUTDIR
@@ -60,6 +94,12 @@ FunctionEnd
 
 !macro customFiles_arm64
     !insertmacro AddPathHelperFile
+!macroend
+
+!macro RemoveAiTtsModelFiles
+    RMDir /r "$INSTDIR\resources\app.asar.unpacked\Kokoro-82M-ONNX"
+    RMDir /r "$INSTDIR\resources\app\Kokoro-82M-ONNX"
+    RMDir /r "$INSTDIR\resources\Kokoro-82M-ONNX"
 !macroend
 
 Function RunPathHelper
@@ -110,6 +150,10 @@ FunctionEnd
         StrCpy $AddToPathSelection 1
     Push "install"
     Call RunPathHelper
+    WriteRegStr HKCU "${SSAPP_REG_KEY}" "InstallAiTtsModels" "$InstallAiTtsModelsSelection"
+    StrCmp $InstallAiTtsModelsSelection 1 ai_tts_models_done 0
+        !insertmacro RemoveAiTtsModelFiles
+    ai_tts_models_done:
 !macroend
 
 !macro customUnInstall
