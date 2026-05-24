@@ -5999,14 +5999,10 @@ function broadcastCustomJsFileState(state = getCustomJsFileState()) {
     } catch (_) { }
 }
 
-ipcMain.handle("ssapp:get-custom-js-file-state", async () => {
-    return getCustomJsFileState();
-});
-
-ipcMain.handle("ssapp:select-custom-js-file", async () => {
+async function selectCustomJsFileWithDialog() {
     try {
         const result = await dialog.showOpenDialog({
-            title: "Select custom.js",
+            title: "Load a custom.js file",
             properties: ["openFile"],
             filters: [
                 { name: "JavaScript Files", extensions: ["js"] },
@@ -6024,23 +6020,84 @@ ipcMain.handle("ssapp:select-custom-js-file", async () => {
         rememberDialogApprovedPath(filePath);
         const state = setCustomJsFilePath(filePath);
         broadcastCustomJsFileState(state);
+        createMenu();
         return {
             canceled: false,
             state
         };
     } catch (error) {
-        console.error("[SSAPP] Failed to select custom.js file:", error);
+        console.error("[SSAPP] Failed to load custom.js file:", error);
         return {
             canceled: true,
-            error: error?.message || "Unable to select custom.js file.",
+            error: error?.message || "Unable to load custom.js file.",
             state: getCustomJsFileState()
         };
     }
+}
+
+async function showCustomJsMenuMessage(options) {
+    const parent = BrowserWindow.getFocusedWindow() || mainWindow;
+    if (parent && !parent.isDestroyed()) {
+        return dialog.showMessageBox(parent, options);
+    }
+    return dialog.showMessageBox(options);
+}
+
+async function handleLoadCustomJsFileMenu() {
+    const result = await selectCustomJsFileWithDialog();
+    if (!result || result.canceled) {
+        return result;
+    }
+
+    const state = result.state || getCustomJsFileState();
+    if (state.error) {
+        await showCustomJsMenuMessage({
+            type: "warning",
+            title: "Custom JS",
+            message: "The selected custom.js file could not be loaded.",
+            detail: state.error,
+            buttons: ["OK"]
+        });
+        return result;
+    }
+
+    await showCustomJsMenuMessage({
+        type: "info",
+        title: "Custom JS",
+        message: "custom.js file loaded.",
+        detail: state.filePath || state.fileName || "Selected file",
+        buttons: ["OK"]
+    });
+    return result;
+}
+
+async function handleClearCustomJsFileMenu() {
+    const previousState = getCustomJsFileState();
+    const state = setCustomJsFilePath("");
+    broadcastCustomJsFileState(state);
+    createMenu();
+    await showCustomJsMenuMessage({
+        type: "info",
+        title: "Custom JS",
+        message: "custom.js file cleared.",
+        detail: previousState.filePath ? "Reload any open dock, featured, or bot windows to fully clear already-run custom code." : undefined,
+        buttons: ["OK"]
+    });
+    return state;
+}
+
+ipcMain.handle("ssapp:get-custom-js-file-state", async () => {
+    return getCustomJsFileState();
+});
+
+ipcMain.handle("ssapp:select-custom-js-file", async () => {
+    return selectCustomJsFileWithDialog();
 });
 
 ipcMain.handle("ssapp:clear-custom-js-file", async () => {
     const state = setCustomJsFilePath("");
     broadcastCustomJsFileState(state);
+    createMenu();
     return {
         success: true,
         state
@@ -15195,6 +15252,7 @@ function createMenu() {
     const hasTransferBackupFolder = !!(transferBackupConfig.folderPath && String(transferBackupConfig.folderPath).trim());
     const transferBackupFilePath = buildTransferBackupFilePath(transferBackupConfig);
     const autoBackupConfigured = !!(transferBackupConfig.enabled && transferBackupFilePath && transferBackupConfig.password && transferBackupConfig.password.method);
+    const customJsFileState = getCustomJsFileState();
 
     const template = [
         // Mac specific top menu
@@ -15326,6 +15384,20 @@ function createMenu() {
                     { label: 'Open Local Source Folder', click: async () => { const p = store.get('localSourcePath'); if (p) await shell.openPath(fsPathFromMaybeFileUrl(p)); } },
                     { label: 'Stop Using Local Social Stream Source', click: () => clearLocalSourceAndReload() },
                 ] : []),
+                { type: 'separator' },
+                {
+                    label: 'Load a custom.js file...',
+                    click: async () => {
+                        await handleLoadCustomJsFileMenu();
+                    }
+                },
+                {
+                    label: customJsFileState.fileName ? `Clear custom.js file (${customJsFileState.fileName})` : 'Clear custom.js file',
+                    enabled: !!customJsFileState.filePath,
+                    click: async () => {
+                        await handleClearCustomJsFileMenu();
+                    }
+                },
                 { type: 'separator' },
                 {
                     label: 'Edit URL',
