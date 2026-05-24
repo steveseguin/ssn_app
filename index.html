@@ -195,6 +195,16 @@
                     <a id="downloadlink" data-i18n="app.download">Download new version here</a>
                 </span>
                 <div id="fallback-indicator" class="hidden fallback-indicator"></div>
+                <div id="custom-js-file-panel" class="custom-js-file-panel" data-enabled="false">
+                    <div class="custom-js-file-status">
+                        <span class="custom-js-file-label">Custom JS</span>
+                        <span id="custom-js-file-status-text" class="custom-js-file-path">No file selected</span>
+                    </div>
+                    <div class="custom-js-file-actions">
+                        <button type="button" onclick="selectStandaloneCustomJsFile()" title="Select custom.js file"><i class="las la-file-code"></i> Select</button>
+                        <button type="button" id="custom-js-clear-button" onclick="clearStandaloneCustomJsFile()" title="Clear custom.js file" disabled><i class="las la-times"></i></button>
+                    </div>
+                </div>
                 <p class="sources-label">Added Sources</p>
             </div>
 
@@ -629,6 +639,80 @@
             updateFallbackIndicator();
         }
 
+        function getCustomJsBridge() {
+            if (window.ssappCustomJs) {
+                return window.ssappCustomJs;
+            }
+            if (!ipcRenderer || typeof ipcRenderer.invoke !== 'function') {
+                return null;
+            }
+            return {
+                getState: () => ipcRenderer.invoke('ssapp:get-custom-js-file-state'),
+                selectFile: () => ipcRenderer.invoke('ssapp:select-custom-js-file'),
+                clear: () => ipcRenderer.invoke('ssapp:clear-custom-js-file')
+            };
+        }
+
+        function updateCustomJsPanel(state = {}) {
+            const panel = document.getElementById('custom-js-file-panel');
+            const statusText = document.getElementById('custom-js-file-status-text');
+            const clearButton = document.getElementById('custom-js-clear-button');
+            if (!panel || !statusText) return;
+
+            const fileName = state.fileName || '';
+            const filePath = state.filePath || '';
+            const hasError = !!state.error;
+            const isActive = !!(state.enabled && state.exists && !hasError);
+            panel.dataset.enabled = hasError ? 'error' : (isActive ? 'true' : 'false');
+            statusText.textContent = hasError ? state.error : (fileName || 'No file selected');
+            statusText.title = filePath || '';
+            if (clearButton) {
+                clearButton.disabled = !filePath;
+            }
+        }
+
+        async function refreshCustomJsFileStatus() {
+            const bridge = getCustomJsBridge();
+            if (!bridge || typeof bridge.getState !== 'function') {
+                updateCustomJsPanel({});
+                return;
+            }
+            try {
+                updateCustomJsPanel(await bridge.getState());
+            } catch (error) {
+                updateCustomJsPanel({ error: error?.message || 'Unable to read custom.js status.' });
+            }
+        }
+
+        async function selectStandaloneCustomJsFile() {
+            const bridge = getCustomJsBridge();
+            if (!bridge || typeof bridge.selectFile !== 'function') {
+                Toast.error('Custom JS', 'File picker is unavailable.');
+                return;
+            }
+            const result = await bridge.selectFile();
+            if (result && result.state) {
+                updateCustomJsPanel(result.state);
+            }
+            if (!result || result.canceled) return;
+            if (result.state && result.state.error) {
+                Toast.warning('Custom JS', result.state.error);
+                return;
+            }
+            Toast.success('Custom JS', 'Selected custom.js. Open dock, featured, or bot pages will load it automatically.');
+        }
+
+        async function clearStandaloneCustomJsFile() {
+            const bridge = getCustomJsBridge();
+            if (!bridge || typeof bridge.clear !== 'function') {
+                Toast.error('Custom JS', 'Custom JS settings are unavailable.');
+                return;
+            }
+            const result = await bridge.clear();
+            updateCustomJsPanel(result && result.state ? result.state : {});
+            Toast.info('Custom JS', 'Custom.js selection cleared. Reload any open dock, featured, or bot windows.');
+        }
+
         function getBasePath() {
             if (cachedBasePath !== null) {
                 return cachedBasePath;
@@ -985,6 +1069,9 @@
                 if (!payload || typeof payload !== 'object') return;
                 const { relativePath, fromBranch, toBranch } = payload;
                 recordFallbackAsset(relativePath, fromBranch, toBranch);
+            });
+            ipcRenderer.on('ssapp:custom-js-updated', (_event, state) => {
+                updateCustomJsPanel(state || {});
             });
             ipcRendererListenersBound = true;
         }
@@ -9187,6 +9274,7 @@
 
 
             initializeFeatures();
+            await refreshCustomJsFileStatus();
             await checkForUpdates();
 
             let ready = await initializeApplication();

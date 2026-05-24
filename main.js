@@ -125,6 +125,8 @@ const store = new Store();
 const reporter = require('./error-reporter');
 reporter.init(store);
 const POPUP_UNCLICKABLE_ALL_KEY = 'popupUnclickableAll';
+const CUSTOM_JS_FILE_STORE_KEY = 'customJsFile';
+const CUSTOM_JS_MAX_BYTES = 1024 * 1024;
 let popupUnclickableEnabled = false;
 try {
     popupUnclickableEnabled = store.get(POPUP_UNCLICKABLE_ALL_KEY) === true;
@@ -5923,6 +5925,158 @@ ipcMain.handle('read-from-file', async (event, filePath) => {
     } catch (error) {
         console.error('Error reading file:', error);
         return null;
+    }
+});
+
+function getStoredCustomJsFilePath() {
+    try {
+        const raw = store.get(CUSTOM_JS_FILE_STORE_KEY, {});
+        if (raw && typeof raw === "object" && typeof raw.filePath === "string") {
+            return raw.filePath;
+        }
+    } catch (_) { }
+    return "";
+}
+
+function getCustomJsFileState() {
+    const filePath = getStoredCustomJsFilePath();
+    const enabled = !!filePath;
+    const state = {
+        enabled,
+        filePath,
+        fileName: filePath ? path.basename(filePath) : "",
+        exists: false,
+        size: 0,
+        mtimeMs: 0,
+        maxBytes: CUSTOM_JS_MAX_BYTES,
+        error: ""
+    };
+
+    if (!filePath) {
+        return state;
+    }
+
+    if (!isPathAllowed(filePath)) {
+        state.error = "The selected custom.js file needs to be selected again.";
+        return state;
+    }
+
+    try {
+        const stat = fs.statSync(filePath);
+        state.exists = stat.isFile();
+        state.size = stat.size;
+        state.mtimeMs = Number(stat.mtimeMs) || 0;
+        if (!state.exists) {
+            state.error = "The selected custom.js path is not a file.";
+        } else if (state.size > CUSTOM_JS_MAX_BYTES) {
+            state.error = "The selected custom.js file is larger than 1 MB.";
+        }
+    } catch (error) {
+        state.error = error?.message || "Unable to access the selected custom.js file.";
+    }
+
+    return state;
+}
+
+function setCustomJsFilePath(filePath) {
+    const normalizedPath = typeof filePath === "string" ? filePath : "";
+    store.set(CUSTOM_JS_FILE_STORE_KEY, {
+        filePath: normalizedPath,
+        updatedAt: Date.now()
+    });
+    return getCustomJsFileState();
+}
+
+function broadcastCustomJsFileState(state = getCustomJsFileState()) {
+    try {
+        BrowserWindow.getAllWindows().forEach((window) => {
+            try {
+                if (window && !window.isDestroyed()) {
+                    window.webContents.send("ssapp:custom-js-updated", state);
+                }
+            } catch (_) { }
+        });
+    } catch (_) { }
+}
+
+ipcMain.handle("ssapp:get-custom-js-file-state", async () => {
+    return getCustomJsFileState();
+});
+
+ipcMain.handle("ssapp:select-custom-js-file", async () => {
+    try {
+        const result = await dialog.showOpenDialog({
+            title: "Select custom.js",
+            properties: ["openFile"],
+            filters: [
+                { name: "JavaScript Files", extensions: ["js"] },
+                { name: "All Files", extensions: ["*"] }
+            ]
+        });
+        if (result.canceled || !result.filePaths || !result.filePaths.length) {
+            return {
+                canceled: true,
+                state: getCustomJsFileState()
+            };
+        }
+
+        const filePath = result.filePaths[0];
+        rememberDialogApprovedPath(filePath);
+        const state = setCustomJsFilePath(filePath);
+        broadcastCustomJsFileState(state);
+        return {
+            canceled: false,
+            state
+        };
+    } catch (error) {
+        console.error("[SSAPP] Failed to select custom.js file:", error);
+        return {
+            canceled: true,
+            error: error?.message || "Unable to select custom.js file.",
+            state: getCustomJsFileState()
+        };
+    }
+});
+
+ipcMain.handle("ssapp:clear-custom-js-file", async () => {
+    const state = setCustomJsFilePath("");
+    broadcastCustomJsFileState(state);
+    return {
+        success: true,
+        state
+    };
+});
+
+ipcMain.handle("ssapp:read-custom-js-file", async () => {
+    const state = getCustomJsFileState();
+    if (!state.enabled) {
+        return {
+            success: false,
+            disabled: true,
+            state
+        };
+    }
+    if (state.error || !state.exists) {
+        return {
+            success: false,
+            error: state.error || "The selected custom.js file is unavailable.",
+            state
+        };
+    }
+
+    try {
+        const code = await fsp.readFile(state.filePath, "utf8");
+        return {
+            success: true,
+            code,
+            state
+        };
+    } catch (error) {
+        return {
+            success: false,
+            error: error?.message || "Unable to read custom.js file.",
+            state
+        };
     }
 });
 

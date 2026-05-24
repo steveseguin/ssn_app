@@ -78,6 +78,95 @@ const ssappEnvironmentBridge = {
 	}
 };
 
+const ssappCustomJsBridge = {
+	getState: async () => {
+		try {
+			return await ipcRenderer.invoke('ssapp:get-custom-js-file-state');
+		} catch (error) {
+			console.error('[Preload] Failed to get custom.js state:', error);
+			return { enabled: false, error: error?.message || 'Unable to read custom.js state.' };
+		}
+	},
+	selectFile: async () => {
+		try {
+			return await ipcRenderer.invoke('ssapp:select-custom-js-file');
+		} catch (error) {
+			console.error('[Preload] Failed to select custom.js file:', error);
+			return { canceled: true, error: error?.message || 'Unable to select custom.js file.' };
+		}
+	},
+	clear: async () => {
+		try {
+			return await ipcRenderer.invoke('ssapp:clear-custom-js-file');
+		} catch (error) {
+			console.error('[Preload] Failed to clear custom.js file:', error);
+			return { success: false, error: error?.message || 'Unable to clear custom.js file.' };
+		}
+	},
+	reload: async () => injectStandaloneCustomJs('manual')
+};
+
+function getStandaloneCustomJsPageType() {
+	try {
+		const pathName = window.location && window.location.pathname ? window.location.pathname.toLowerCase() : '';
+		const match = pathName.match(/(?:^|\/)(dock|featured|bot)\.html$/i);
+		return match ? match[1].toLowerCase() : '';
+	} catch (_) {
+		return '';
+	}
+}
+
+function injectScriptIntoPage(code, sourceName) {
+	const target = document.head || document.documentElement || document.body;
+	if (!target || !code) return false;
+	const existingScript = document.getElementById('ssapp-standalone-custom-js');
+	if (existingScript) {
+		existingScript.remove();
+	}
+	const script = document.createElement('script');
+	script.id = 'ssapp-standalone-custom-js';
+	script.dataset.source = sourceName || 'custom.js';
+	script.textContent = `${code}\n//# sourceURL=ssapp-custom-js/${encodeURIComponent(sourceName || 'custom.js')}`;
+	target.appendChild(script);
+	return true;
+}
+
+async function injectStandaloneCustomJs(reason = 'load') {
+	const pageType = getStandaloneCustomJsPageType();
+	if (!pageType) return { skipped: true, reason: 'unsupported-page' };
+
+	try {
+		const result = await ipcRenderer.invoke('ssapp:read-custom-js-file');
+		if (!result || !result.success || !result.code) {
+			if (result && result.error) {
+				console.warn('[Preload] custom.js not loaded:', result.error);
+			}
+			return result || { success: false };
+		}
+		const state = result.state || {};
+		const injected = injectScriptIntoPage(result.code, state.fileName || 'custom.js');
+		if (injected) {
+			console.log(`[SSAPP] Loaded custom.js for ${pageType} (${reason}): ${state.filePath || state.fileName || 'selected file'}`);
+		}
+		return { success: injected, state };
+	} catch (error) {
+		console.error('[Preload] Failed to inject custom.js:', error);
+		return { success: false, error: error?.message || 'Unable to inject custom.js.' };
+	}
+}
+
+function scheduleStandaloneCustomJsInjection() {
+	if (document.readyState === 'loading') {
+		window.addEventListener('DOMContentLoaded', () => {
+			injectStandaloneCustomJs('page-load');
+		}, { once: true });
+	} else {
+		setTimeout(() => {
+			injectStandaloneCustomJs('page-load');
+		}, 0);
+	}
+}
+
 const WARN_FILTER_PATTERNS = [
     /Potential permissions policy violation/i,
     /Unrecognized feature/i,
@@ -449,6 +538,7 @@ function configureContextBridge(){
 		});
 		contextBridge.exposeInMainWorld('ssappFallback', ssappFallbackBridge);
 		contextBridge.exposeInMainWorld('ssappEnvironment', ssappEnvironmentBridge);
+		contextBridge.exposeInMainWorld('ssappCustomJs', ssappCustomJsBridge);
 	} catch(e){
 		// Silently fail if context isolation is disabled - this is expected
 		if (!e.message || !e.message.includes('contextBridge API can only be used when contextIsolation is enabled')) {
@@ -586,10 +676,17 @@ try {
 		};
 		window.ssappFallback = ssappFallbackBridge;
 		window.ssappEnvironment = ssappEnvironmentBridge;
+		window.ssappCustomJs = ssappCustomJsBridge;
 	} else {
 		console.error('[Preload] Unexpected error configuring context bridge:', e);
 	}
 }
+
+ipcRenderer.on('ssapp:custom-js-updated', () => {
+	injectStandaloneCustomJs('updated');
+});
+
+scheduleStandaloneCustomJsInjection();
 
 function injectDockBridge() {
 	try {

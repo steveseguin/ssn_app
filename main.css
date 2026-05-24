@@ -2890,3 +2890,80 @@ input:checked + .slider:before {
   color: #e88;
   font-size: 0.85em;
 }
+
+.custom-js-file-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 10px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.04);
+}
+
+.custom-js-file-panel[data-enabled="true"] {
+  border-color: rgba(34,197,94,0.35);
+  background: rgba(34,197,94,0.08);
+}
+
+.custom-js-file-status {
+  min-width: 0;
+}
+
+.custom-js-file-label {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.custom-js-file-path {
+  display: block;
+  max-width: 360px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-js-file-panel[data-enabled="true"] .custom-js-file-path {
+  color: var(--text-primary);
+}
+
+.custom-js-file-panel[data-enabled="error"] .custom-js-file-path {
+  color: #fca5a5;
+}
+
+.custom-js-file-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.custom-js-file-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.custom-js-file-actions button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.custom-js-file-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
