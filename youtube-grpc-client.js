@@ -4,16 +4,8 @@ const { randomUUID } = require('crypto');
 const grpc = require('@grpc/grpc-js');
 const protoLoader = require('@grpc/proto-loader');
 
-const PROTO_PATH = path.join(
-  __dirname,
-  'resources',
-  'social_stream_fallback',
-  'main',
-  'providers',
-  'youtube',
-  'proto',
-  'stream_list.proto'
-);
+const PROTO_RELATIVE_PATH = path.join('providers', 'youtube', 'proto', 'stream_list.proto');
+const APP_PROTO_RELATIVE_PATH = path.join('resources', 'youtube', 'proto', 'stream_list.proto');
 
 const loaderOptions = {
   keepCase: false,
@@ -24,30 +16,76 @@ const loaderOptions = {
 };
 
 let liveChatServiceCtor = null;
+let loadedProtoPath = null;
 
-function loadServiceConstructor() {
-  if (liveChatServiceCtor) {
+function normalizeSourceRoot(sourceRoot) {
+  if (typeof sourceRoot !== 'string' || !sourceRoot.trim()) {
+    return '';
+  }
+  let normalized = sourceRoot.trim();
+  if (normalized.startsWith('file://')) {
+    try {
+      normalized = new URL(normalized).pathname;
+      if (process.platform === 'win32' && normalized.startsWith('/')) {
+        normalized = normalized.slice(1);
+      }
+      normalized = decodeURIComponent(normalized);
+    } catch (_) {
+      return '';
+    }
+  }
+  return normalized;
+}
+
+function resolveProtoPath(options = {}) {
+  if (typeof options.protoPath === 'string' && options.protoPath.trim()) {
+    return options.protoPath.trim();
+  }
+
+  const sourceRoot = normalizeSourceRoot(options.socialStreamRoot);
+  if (sourceRoot) {
+    const sourceProtoPath = path.join(sourceRoot, PROTO_RELATIVE_PATH);
+    if (fs.existsSync(sourceProtoPath)) {
+      return sourceProtoPath;
+    }
+  }
+
+  const appProtoCandidates = [
+    path.join(__dirname, APP_PROTO_RELATIVE_PATH),
+    process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked', APP_PROTO_RELATIVE_PATH) : '',
+    process.resourcesPath ? path.join(process.resourcesPath, APP_PROTO_RELATIVE_PATH) : ''
+  ].filter(Boolean);
+
+  return appProtoCandidates.find((candidate) => fs.existsSync(candidate)) || '';
+}
+
+function loadServiceConstructor(options = {}) {
+  const protoPath = resolveProtoPath(options);
+  if (liveChatServiceCtor && protoPath === loadedProtoPath) {
     return liveChatServiceCtor;
   }
 
-  if (!fs.existsSync(PROTO_PATH)) {
-    console.warn('[YouTube][gRPC] Proto definitions missing. Run `npm run update:fallback` or bundle Social Stream fallback assets.');
+  if (!protoPath || !fs.existsSync(protoPath)) {
+    console.warn('[YouTube][gRPC] Proto definitions missing. Expected active Social Stream source proto at:', protoPath || '(not configured)');
     liveChatServiceCtor = null;
+    loadedProtoPath = null;
     return null;
   }
 
   try {
-    const packageDefinition = protoLoader.loadSync(PROTO_PATH, loaderOptions);
+    const packageDefinition = protoLoader.loadSync(protoPath, loaderOptions);
     const descriptor = grpc.loadPackageDefinition(packageDefinition);
     const service = descriptor?.youtube?.api?.v3?.V3DataLiveChatMessageService;
     if (!service) {
       throw new Error('Failed to load YouTube live chat gRPC service definition.');
     }
     liveChatServiceCtor = service;
+    loadedProtoPath = protoPath;
     return liveChatServiceCtor;
   } catch (error) {
     console.error('[YouTube][gRPC] Failed to load proto definitions:', error && error.message ? error.message : error);
     liveChatServiceCtor = null;
+    loadedProtoPath = null;
     return null;
   }
 }
@@ -96,22 +134,34 @@ function normalizeGrpcError(error) {
 
 class YouTubeGrpcStreamManager {
   constructor() {
-    const Service = loadServiceConstructor();
-    this.client = Service
-      ? new Service('youtube.googleapis.com:443', grpc.credentials.createSsl())
-      : null;
+    this.client = null;
+    this.clientProtoPath = null;
     this.streams = new Map();
   }
 
+  getClient(options) {
+    const protoPath = resolveProtoPath(options);
+    if (this.client && protoPath === this.clientProtoPath) {
+      return this.client;
+    }
+    const Service = loadServiceConstructor(options);
+    this.client = Service
+      ? new Service('youtube.googleapis.com:443', grpc.credentials.createSsl())
+      : null;
+    this.clientProtoPath = this.client ? protoPath : null;
+    return this.client;
+  }
+
   startStream(rawOptions, webContents) {
-    if (!this.client) {
+    const options = rawOptions || {};
+    const client = this.getClient(options);
+    if (!client) {
       throw new Error('YouTube live chat gRPC support is unavailable (proto files missing).');
     }
     if (!webContents || webContents.isDestroyed()) {
       throw new Error('Invalid renderer target for YouTube live chat stream.');
     }
 
-    const options = rawOptions || {};
     const accessToken = typeof options.accessToken === 'string' ? options.accessToken : '';
     const liveChatId = typeof options.liveChatId === 'string' ? options.liveChatId : '';
 
@@ -151,7 +201,7 @@ class YouTubeGrpcStreamManager {
       request.maxResults = options.maxResults;
     }
 
-    const call = this.client.streamList(request, metadata);
+    const call = client.streamList(request, metadata);
     const streamState = { call, webContents };
     this.streams.set(streamId, streamState);
 

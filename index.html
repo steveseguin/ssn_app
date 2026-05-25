@@ -6766,6 +6766,7 @@
             const configTarget = getConfigTarget(source.target);
             if (config[configTarget]) conf = { ...conf, ...config[configTarget] };
             if (conf.wss) conf = { ...conf, ...conf.wss };
+            conf.preload = 'full';
 
             // Apply custom user agent if set
             if (source.userAgent && source.userAgent !== 'AUTO') {

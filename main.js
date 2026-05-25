@@ -3371,7 +3371,12 @@ ipcMain.handle('ssapp:get-environment', async () => {
 
 ipcMain.handle('youtube-livechat-grpc:start', async (event, options = {}) => {
     try {
-        const result = youTubeGrpcStreamManager.startStream(options, event.sender);
+        const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+        const sourceArgs = sourceWindow && sourceWindow.args ? sourceWindow.args : {};
+        const result = youTubeGrpcStreamManager.startStream({
+            ...options,
+            socialStreamRoot: options.socialStreamRoot || sourceArgs.filesource || Argv.filesource || ''
+        }, event.sender);
         return { success: true, streamId: result.streamId };
     } catch (error) {
         console.warn('[YouTube][gRPC] Failed to start live chat stream:', error && error.message ? error.message : error);

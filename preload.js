@@ -419,7 +419,9 @@ function configureContextBridge(){
 			  
 			  'updatePPT' : function (PPTHotkey) {},
 			  
-			  noCORSFetch: (args) => {},
+			  noCORSFetch: async (args) => {
+				return await ipcRenderer.invoke("nodefetch", args || {});
+			  },
 			  
 			  readStreamChunk: (streamId) => {},
 			  
@@ -600,6 +602,10 @@ try {
 				console.log("Version: "+version);
 			},
 
+			noCORSFetch: async (args) => {
+				return await ipcRenderer.invoke("nodefetch", args || {});
+			},
+
 			startYouTubeOAuth: async (payload) => {
 				return await ipcRenderer.invoke('youtube-oauth', payload);
 			},
@@ -664,7 +670,33 @@ try {
 						callback(data);
 					});
 				};
-			})()
+			})(),
+
+			startYouTubeLiveChatGrpcStream: async (options) => {
+				return await ipcRenderer.invoke('youtube-livechat-grpc:start', options);
+			},
+
+			stopYouTubeLiveChatGrpcStream: async (streamId) => {
+				return await ipcRenderer.invoke('youtube-livechat-grpc:stop', streamId);
+			},
+
+			onYouTubeLiveChatGrpcEvent: (callback) => {
+				if (typeof callback !== 'function') {
+					return () => {};
+				}
+				const channel = 'youtube-livechat-grpc:event';
+				const handler = (_event, payload) => {
+					try {
+						callback(payload);
+					} catch (error) {
+						console.warn('[Preload] YouTube gRPC event handler failed', error);
+					}
+				};
+				ipcRenderer.on(channel, handler);
+				return () => {
+					ipcRenderer.removeListener(channel, handler);
+				};
+			}
 		};
 		window.ssappLocale = {
 			locale: process.env.SSAPP_LOCALE_EFFECTIVE || 'en-US',
