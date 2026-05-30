@@ -76,6 +76,7 @@ const { setupFacebookOAuthHandler } = require('./resources/electron-facebook-han
 const { setupVeloraOAuthHandler } = require('./resources/electron-velora-handler');
 const { setupKickOAuthHandler } = require('./resources/electron-kick-handler');
 const { setupVpzoneOAuthHandler } = require('./resources/electron-vpzone-handler');
+const { setupMediaUploadHandler } = require('./resources/electron-media-upload-handler');
 const { KickWsClient } = require('./resources/kick-ws-client');
 
 const SOCIAL_STREAM_REMOTE_HOSTS = new Set([
@@ -1617,6 +1618,7 @@ setupFacebookOAuthHandler();
 setupVeloraOAuthHandler();
 setupKickOAuthHandler();
 setupVpzoneOAuthHandler();
+setupMediaUploadHandler();
 
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
 
@@ -3367,6 +3369,24 @@ ipcMain.handle('ssapp:get-environment', async () => {
         preferLocalAssets: !!(preferLocalAssetsFlag && hasFallback),
         hasFallbackBundle: hasFallback
     };
+});
+
+ipcMain.handle('ssapp:get-source-window-config', async (event) => {
+    try {
+        const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+        const args = sourceWindow && sourceWindow.args ? sourceWindow.args : {};
+        return {
+            ok: true,
+            rumbleApiTracker: !!args.rumbleApiTracker,
+            rumbleApiUrl: typeof args.rumbleApiUrl === 'string' ? args.rumbleApiUrl : '',
+            rumbleFollowerCountMode: typeof args.rumbleFollowerCountMode === 'string' ? args.rumbleFollowerCountMode : ''
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            error: error?.message || 'Unable to read source window config.'
+        };
+    }
 });
 
 ipcMain.handle('youtube-livechat-grpc:start', async (event, options = {}) => {
@@ -8628,6 +8648,70 @@ async function createWindow(args, reuse = false, mainApp = false) {
             name: error?.name || null
         };
     }
+
+    function normalizeRumbleApiUrlValue(value) {
+        let raw = typeof value === "string" ? value.trim() : "";
+        let parsed;
+        if (!raw) return "";
+        if (!/^[a-z]+:\/\//i.test(raw) && raw.indexOf("rumble.com") >= 0) {
+            raw = "https://" + raw.replace(/^\/+/, "");
+        }
+        try {
+            parsed = new URL(raw);
+        } catch (_) {
+            return "";
+        }
+        parsed.hash = "";
+        return parsed.toString();
+    }
+
+    async function fetchRumbleJsonResponse(url) {
+        const normalizedUrl = normalizeRumbleApiUrlValue(url);
+        const parsedUrl = normalizedUrl ? new URL(normalizedUrl) : null;
+        if (!parsedUrl || parsedUrl.protocol !== "https:" || !["rumble.com", "www.rumble.com"].includes(parsedUrl.hostname)) {
+            throw new Error("Rumble fetch URL not allowed");
+        }
+
+        const response = await fetch(parsedUrl.toString(), {
+            method: "GET",
+            cache: "no-store",
+            headers: {
+                Accept: "application/json,text/plain;q=0.9,*/*;q=0.8"
+            }
+        });
+        const text = await response.text();
+        let data = null;
+        try {
+            data = text ? JSON.parse(text) : {};
+        } catch (_) {
+            if (text && /^\s*</.test(text)) {
+                throw new Error("Rumble returned an HTML page instead of JSON data.");
+            }
+            throw new Error("Rumble did not return valid JSON.");
+        }
+        if (!response.ok) {
+            const error = new Error((data && (data.error || data.message)) || ("HTTP " + response.status));
+            error.status = response.status;
+            throw error;
+        }
+        return {
+            status: response.status,
+            data
+        };
+    }
+
+    ipcMain.handle("rumble-fetch-json", async (_event, args = {}) => {
+        try {
+            const rumbleResponse = await fetchRumbleJsonResponse(args.url);
+            return { ok: true, status: rumbleResponse.status, data: rumbleResponse.data };
+        } catch (error) {
+            return {
+                ok: false,
+                status: error && typeof error.status !== "undefined" ? error.status : undefined,
+                error: error?.message || "Rumble fetch failed"
+            };
+        }
+    });
 
     // Keep the synchronous version for backward compatibility
     ipcMain.on("nodefetch", function (eventRet, args) {

@@ -169,6 +169,8 @@
                             src="https://cache.socialstream.ninja/sources/images/rumble.png" class="icon" />Rumble</button></span>
                 <span><button onclick="newSourceVideoIDPrompt('rumble');"><img
                             src="https://cache.socialstream.ninja/sources/images/rumble.png" class="icon" />Rumble Video</button></span>
+                <span><button onclick="newRumbleApiTrackerPrompt();"><img
+                            src="https://cache.socialstream.ninja/sources/images/rumble.png" class="icon" />Rumble API Tracker</button></span>
                 <span><button onclick="newSourcePrompt('beamstream');"><img
                             src="https://cache.socialstream.ninja/sources/images/beamstream.png" class="icon" />Beamstream</button></span>
                 <span><button onclick="newSourcePrompt('parti');"><img
@@ -1327,6 +1329,7 @@
 
         function getEffectiveConnectionMode(source) {
             if (!source) return null;
+            if (source.rumbleApiTracker) return 'websocket';
             if (source.activeConnectionMode) return source.activeConnectionMode;
             return source.connectionMode || null;
         }
@@ -1562,7 +1565,7 @@
                         stateManager.updateSource(source.id, { autoActivate: autoActivateCheckbox.checked });
 
                         // Start or stop auto-checking for Rumble sources
-                        if (source.target === 'rumble') {
+                        if (source.target === 'rumble' && !source.rumbleApiTracker) {
                             if (autoActivateCheckbox.checked) {
                                 startRumbleAutoCheck(source.id);
                             } else {
@@ -2195,6 +2198,44 @@
             if (videoID) {
                 await newSourceVideoID(target, videoID.trim(), false, { isAutoDiscovered: false });
             }
+        }
+
+        async function newRumbleApiTrackerPrompt() {
+            document.getElementById('welcomeFrame')?.remove();
+
+            const input = window.prompt("Paste the Rumble Live Stream API URL.\n\nYou can get it from https://rumble.com/account/livestream-api\n\nThis URL includes a private key. Keep it private.");
+            if (!input) return;
+
+            const apiUrl = String(input || '').trim();
+            if (!/^https?:\/\/(?:www\.)?rumble\.com\/-livestream-api\/get-data\?/i.test(apiUrl)) {
+                Toast.warning('Rumble API Tracker', 'That does not look like a Rumble Live Stream API URL.');
+                return;
+            }
+
+            const sourceData = await handleDuplicateForSource({
+                target: 'rumble',
+                username: 'Rumble API Tracker',
+                url: '',
+                videoId: '',
+                connectionMode: 'websocket',
+                isVisible: true,
+                isMuted: true,
+                autoActivate: false,
+                supportsWSS: true,
+                isChannel: true,
+                rumbleApiTracker: true,
+                rumbleApiUrl: apiUrl,
+                rumbleFollowerCountMode: 'total',
+                sourceFile: 'sources/websocket/rumble.js'
+            });
+
+            const sourceId = stateManager.addSource(sourceData);
+            manageWelcomePage();
+            await Promise.resolve();
+
+            const sourceElement = document.querySelector(`[data-source-id="${sourceId}"]`);
+            Toast.info('Rumble API Tracker', 'Tracker added. Activate it to connect.');
+            return sourceElement;
         }
 
         async function cleanUpURL(url) {
@@ -3066,7 +3107,7 @@
             });
         }
 
-        function handleYouTubeGroupActivationPrompt(buttonElement) {
+        async function handleYouTubeGroupActivationPrompt(buttonElement) {
             const groupElement = buttonElement.closest('[data-is-group-header="true"]');
             const groupId = groupElement?.dataset.groupId;
             if (!groupId) return;
@@ -3074,10 +3115,11 @@
             if (!group || (group.target !== "youtube" && group.target !== "youtubeshorts")) return;
 
             resetYouTubeGroupApiBootstrap(groupId, 'manual discovery');
-            handleYouTubeActivation(group.username, group.target === "youtubeshorts", true, false, group.isChannel, { manualTrigger: true });
+            const result = await handleYouTubeActivation(group.username, group.target === "youtubeshorts", true, false, group.isChannel, { manualTrigger: true });
+            showYouTubeManualDiscoveryStatus(groupId, result);
         }
 
-        function handleYouTubeGroupAutoActivation(buttonElement) {
+        async function handleYouTubeGroupAutoActivation(buttonElement) {
             const groupElement = buttonElement.closest('[data-is-group-header="true"]');
             const groupId = groupElement?.dataset.groupId;
             if (!groupId) return;
@@ -3085,11 +3127,13 @@
             if (!group || (group.target !== "youtube" && group.target !== "youtubeshorts")) return;
 
             resetYouTubeGroupApiBootstrap(groupId, 'manual auto-activate');
-            handleYouTubeActivation(group.username, group.target === "youtubeshorts", false, true, group.isChannel, { manualTrigger: true });
+            const result = await handleYouTubeActivation(group.username, group.target === "youtubeshorts", false, true, group.isChannel, { manualTrigger: true });
+            showYouTubeManualDiscoveryStatus(groupId, result);
         }
 
         // Store interval IDs for YouTube group checking
         const youtubeGroupIntervals = new Map();
+        const youtubeGroupCountdownIntervals = new Map();
 
         // Store backoff state for YouTube groups
         const youtubeGroupBackoffState = new Map();
@@ -3097,6 +3141,8 @@
 
         // Store interval IDs for Rumble auto-checking
         const rumbleIntervals = new Map();
+        const rumbleCountdownIntervals = new Map();
+        const RUMBLE_AUTO_CHECK_INTERVAL_MS = 60000;
 
         // Track recent manual activation attempts so we can distinguish them from auto-activations
         const MANUAL_ACTIVATION_WINDOW_MS = 15000;
@@ -3225,6 +3271,99 @@
             return oldHadConnection && !newHasConnection;
         }
 
+        function translateTemplateSafe(key, values = {}) {
+            const template = typeof translateTemplate === 'function' ? translateTemplate(key, values) : translate(key);
+            return String(template || '').replace(/\{(\w+)\}/g, (_match, name) => {
+                return Object.prototype.hasOwnProperty.call(values, name) ? values[name] : `{${name}}`;
+            });
+        }
+
+        function getYouTubeGroupElement(groupId) {
+            return groupId ? document.querySelector(`[data-group-id="${groupId}"]`) : null;
+        }
+
+        function formatAutoCheckDelay(ms) {
+            const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+            if (totalSeconds < 60) {
+                return translateTemplateSafe('youtube.discovery.seconds', { seconds: totalSeconds });
+            }
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            return translateTemplateSafe('youtube.discovery.minutesSeconds', { minutes, seconds });
+        }
+
+        function formatYouTubeAutoCheckDelay(ms) {
+            return formatAutoCheckDelay(ms);
+        }
+
+        function getYouTubeDiscoveryStatusText(discoveryResult) {
+            const resultType = discoveryResult && typeof discoveryResult === 'object' ? discoveryResult.type : '';
+            if (resultType === 'network_error') {
+                return translate('youtube.discovery.networkRetry');
+            }
+            if (resultType === 'only_ended_streams') {
+                return translate('youtube.discovery.onlyEndedStreams');
+            }
+            if (resultType === 'no_new_streams') {
+                return translate('youtube.discovery.noNewStreams');
+            }
+            return translate('youtube.discovery.noEligibleStreams');
+        }
+
+        function showYouTubeManualDiscoveryStatus(groupId, result) {
+            if (!result || result.count > 0 || result.type === 'multiple_selected') return;
+            const shouldShow =
+                result.type === 'no_streams_found' ||
+                result.type === 'multiple_auto' ||
+                result.type === 'network_error';
+            if (!shouldShow) return;
+
+            const groupElement = getYouTubeGroupElement(groupId);
+            if (!groupElement) return;
+            const message = result.message || getYouTubeDiscoveryStatusText(result);
+            updateConnectionStatus(groupElement, result.type === 'network_error' ? 'error' : 'info', message);
+        }
+
+        function clearYouTubeGroupCountdown(groupId, clearStatus = false) {
+            const intervalId = youtubeGroupCountdownIntervals.get(groupId);
+            if (intervalId) {
+                clearInterval(intervalId);
+                youtubeGroupCountdownIntervals.delete(groupId);
+            }
+            if (clearStatus) {
+                const groupElement = getYouTubeGroupElement(groupId);
+                if (groupElement) updateConnectionStatus(groupElement, 'clear');
+            }
+        }
+
+        function renderYouTubeGroupCountdown(groupId, discoveryResult, nextCheckAt) {
+            const groupElement = getYouTubeGroupElement(groupId);
+            const group = stateManager.getGroup(groupId);
+            if (!groupElement || !group || !group.autoActivate || !isYouTubeTarget(group.target)) {
+                clearYouTubeGroupCountdown(groupId, true);
+                return;
+            }
+            if (groupHasActiveConnection(group)) {
+                clearYouTubeGroupCountdown(groupId, true);
+                return;
+            }
+
+            const time = formatYouTubeAutoCheckDelay(nextCheckAt - Date.now());
+            const baseMessage = getYouTubeDiscoveryStatusText(discoveryResult);
+            const nextMessage = translateTemplateSafe('youtube.discovery.nextCheck', { time });
+            updateConnectionStatus(groupElement, 'info', `${baseMessage} ${nextMessage}`, { persistent: true });
+        }
+
+        function startYouTubeGroupCountdown(groupId, nextInterval, discoveryResult) {
+            clearYouTubeGroupCountdown(groupId, false);
+            const nextCheckAt = Date.now() + nextInterval;
+            renderYouTubeGroupCountdown(groupId, discoveryResult, nextCheckAt);
+            const intervalId = setInterval(() => {
+                renderYouTubeGroupCountdown(groupId, discoveryResult, nextCheckAt);
+            }, 1000);
+            youtubeGroupCountdownIntervals.set(groupId, intervalId);
+        }
+
         function startYouTubeGroupAutoCheck(groupId) {
             // Clear any existing interval for this group
             stopYouTubeGroupAutoCheck(groupId);
@@ -3258,15 +3397,23 @@
                 youtubeGroupBackoffState.delete(groupId);
                 console.log(`Stopped auto-check for YouTube group: ${groupId}`);
             }
+            clearYouTubeGroupCountdown(groupId, true);
         }
 
         async function checkYouTubeGroupForNewStreamsWithBackoff(groupId) {
+            clearYouTubeGroupCountdown(groupId, false);
+
             // If any stream is already active, stop checking and return
             const groupPre = stateManager.getGroup(groupId);
             if (groupPre && groupHasActiveConnection(groupPre)) {
                 console.log(`YouTube group ${groupPre.username} has an active stream; stopping auto-check.`);
                 stopYouTubeGroupAutoCheck(groupId);
                 return;
+            }
+
+            const groupElement = getYouTubeGroupElement(groupId);
+            if (groupElement) {
+                updateConnectionStatus(groupElement, 'info', translate('youtube.discovery.checkingNow'), { persistent: true });
             }
 
             // Check for new streams
@@ -3312,6 +3459,7 @@
             }, nextInterval);
 
             youtubeGroupIntervals.set(groupId, timeoutId);
+            startYouTubeGroupCountdown(groupId, nextInterval, discoveryResult);
         }
 
         async function checkYouTubeGroupForNewStreams(groupId) {
@@ -3383,6 +3531,15 @@
 
             // Find new streams among eligible list only
             const newStreams = eligibleStreams.filter(stream => !existingVideoIds.has(stream.videoId));
+            const discoveryEmptyResult = (() => {
+                if (eligibleStreams.length > 0) return { type: 'no_new_streams' };
+                const hasEndedStreams = filteredStreams.some(stream => {
+                    if (!stream || typeof stream !== 'object') return false;
+                    return stream.status === 'ended';
+                });
+                const hasOnlyEndedStreams = hasEndedStreams && filteredStreams.every(stream => stream && stream.status === 'ended');
+                return { type: hasOnlyEndedStreams ? 'only_ended_streams' : 'no_eligible_streams' };
+            })();
 
             if (newStreams.length > 0) {
                 console.log(`Found ${newStreams.length} new streams for group ${group.username}`);
@@ -3468,10 +3625,53 @@
             }
 
             // Return true only if we found NEW streams (not just any streams)
-            return newStreams.length > 0;
+            return newStreams.length > 0 ? true : discoveryEmptyResult;
         }
 
         // Rumble auto-check functions
+        function getRumbleSourceElement(sourceId) {
+            return sourceId ? document.querySelector(`[data-source-id="${sourceId}"]`) : null;
+        }
+
+        function clearRumbleCountdown(sourceId, clearStatus = false) {
+            const intervalId = rumbleCountdownIntervals.get(sourceId);
+            if (intervalId) {
+                clearInterval(intervalId);
+                rumbleCountdownIntervals.delete(sourceId);
+            }
+            if (clearStatus) {
+                const sourceElement = getRumbleSourceElement(sourceId);
+                if (sourceElement) updateConnectionStatus(sourceElement, 'clear');
+            }
+        }
+
+        function renderRumbleCountdown(sourceId, nextCheckAt, messageKey = 'rumble.discovery.noLiveStream') {
+            const source = stateManager.getSource(sourceId);
+            const sourceElement = getRumbleSourceElement(sourceId);
+            if (!sourceElement || !source || !source.autoActivate || source.target !== 'rumble' || source.rumbleApiTracker) {
+                clearRumbleCountdown(sourceId, true);
+                return;
+            }
+            if (source.status === 'active' && source.vid) {
+                clearRumbleCountdown(sourceId, false);
+                return;
+            }
+
+            const time = formatAutoCheckDelay(nextCheckAt - Date.now());
+            const baseMessage = translate(messageKey);
+            const nextMessage = translateTemplateSafe('youtube.discovery.nextCheck', { time });
+            updateConnectionStatus(sourceElement, 'info', `${baseMessage} ${nextMessage}`, { persistent: true });
+        }
+
+        function startRumbleCountdown(sourceId, nextCheckAt, messageKey = 'rumble.discovery.noLiveStream') {
+            clearRumbleCountdown(sourceId, false);
+            renderRumbleCountdown(sourceId, nextCheckAt, messageKey);
+            const intervalId = setInterval(() => {
+                renderRumbleCountdown(sourceId, nextCheckAt, messageKey);
+            }, 1000);
+            rumbleCountdownIntervals.set(sourceId, intervalId);
+        }
+
         function startRumbleAutoCheck(sourceId) {
             // Clear any existing interval for this source
             stopRumbleAutoCheck(sourceId);
@@ -3482,33 +3682,36 @@
             console.log(`Starting auto-check for Rumble source: ${source.username}`);
 
             // Check immediately
-            checkRumbleForStream(sourceId);
+            let nextCheckAt = Date.now() + RUMBLE_AUTO_CHECK_INTERVAL_MS;
+            checkRumbleForStream(sourceId, nextCheckAt);
 
             // Then check every minute until a stream is found
             const intervalId = setInterval(() => {
-                checkRumbleForStream(sourceId);
-            }, 60000); // 60 seconds
+                nextCheckAt = Date.now() + RUMBLE_AUTO_CHECK_INTERVAL_MS;
+                checkRumbleForStream(sourceId, nextCheckAt);
+            }, RUMBLE_AUTO_CHECK_INTERVAL_MS); // 60 seconds
 
             rumbleIntervals.set(sourceId, intervalId);
         }
 
-        function stopRumbleAutoCheck(sourceId) {
+        function stopRumbleAutoCheck(sourceId, clearStatus = true) {
             const intervalId = rumbleIntervals.get(sourceId);
             if (intervalId) {
                 clearInterval(intervalId);
                 rumbleIntervals.delete(sourceId);
                 console.log(`Stopped auto-check for Rumble source: ${sourceId}`);
             }
+            clearRumbleCountdown(sourceId, clearStatus);
         }
 
-        async function checkRumbleForStream(sourceId) {
+        async function checkRumbleForStream(sourceId, nextCheckAt = Date.now() + RUMBLE_AUTO_CHECK_INTERVAL_MS) {
             const source = stateManager.getSource(sourceId);
             if (!source || source.target !== 'rumble') return;
 
             // Don't check if already activated
             if (source.status === 'active' && source.vid) {
                 console.log(`Rumble source ${source.username} already active, stopping auto-check`);
-                stopRumbleAutoCheck(sourceId);
+                stopRumbleAutoCheck(sourceId, false);
                 return;
             }
 
@@ -3517,6 +3720,10 @@
             try {
                 // Try to activate the source
                 const sourceElement = document.querySelector(`[data-source-id="${sourceId}"]`);
+                if (sourceElement) {
+                    clearRumbleCountdown(sourceId, false);
+                    updateConnectionStatus(sourceElement, 'info', translate('rumble.discovery.checkingNow'), { persistent: true });
+                }
                 const activateButton = sourceElement?.querySelector('[data-activatehtml]');
 
                 if (activateButton) {
@@ -3528,13 +3735,17 @@
                         Toast.success("Rumble Stream Live", `${source.username} is now live on Rumble!`);
 
                         // Stop checking since Rumble only allows one stream per user
-                        stopRumbleAutoCheck(sourceId);
+                        stopRumbleAutoCheck(sourceId, false);
                     } else {
                         console.log(`No live stream found for Rumble user ${source.username}, will check again in 1 minute`);
+                        startRumbleCountdown(sourceId, nextCheckAt, 'rumble.discovery.noLiveStream');
                     }
+                } else {
+                    startRumbleCountdown(sourceId, nextCheckAt, 'rumble.discovery.noLiveStream');
                 }
             } catch (error) {
                 console.error("Error checking Rumble for stream:", error);
+                startRumbleCountdown(sourceId, nextCheckAt, 'rumble.discovery.checkError');
                 // Keep checking on error
             }
         }
@@ -5253,12 +5464,12 @@
                 entry._tiktokFallback = null;
 
                 // For Rumble sources, clear video ID and chat ID for username-based sources
-                if (source.target === 'rumble' && source.username && (source.videoId || source.chatId)) {
+                if (source.target === 'rumble' && !source.rumbleApiTracker && source.username && (source.videoId || source.chatId)) {
                     stateManager.updateSource(sourceId, { videoId: null, chatId: null, url: null });
                 }
 
                 // Restart auto-check for Rumble sources with auto-activate
-                if (source.target === 'rumble' && source.autoActivate) {
+                if (source.target === 'rumble' && !source.rumbleApiTracker && source.autoActivate) {
                     console.log(`Restarting auto-check for deactivated Rumble source: ${source.username}`);
                     setTimeout(() => {
                         startRumbleAutoCheck(sourceId);
@@ -6689,6 +6900,12 @@
             if (source.username) {
                 queryParams.channel = source.username;
             }
+            if (source.rumbleApiTracker || source.rumbleFollowerCountMode === 'total') {
+                queryParams.followerMode = 'total';
+            }
+            if (source.rumbleApiTracker) {
+                queryParams.tracker = '1';
+            }
             if (devmode) {
                 queryParams.devmode = '';
             }
@@ -6745,6 +6962,9 @@
                     sourceId: source.id,
                     customSession: source.customSession || 'AUTO',
                     accountRole: normalizeAccountRole(source.accountRole),
+                    rumbleApiTracker: !!source.rumbleApiTracker,
+                    rumbleApiUrl: source.rumbleApiUrl || '',
+                    rumbleFollowerCountMode: source.rumbleFollowerCountMode || '',
                     wss: true,
                     replyOnly: !!source.replyOnly,
                     config: conf,
@@ -7849,7 +8069,7 @@
             };
         }
 
-        function updateConnectionStatus(element, status, message = null) {
+        function updateConnectionStatus(element, status, message = null, options = {}) {
             if (!element) return;
             let statusElement = element.querySelector('.ws-status');
             if (!statusElement) {
@@ -7861,6 +8081,10 @@
                 } else {
                     element.appendChild(statusElement);
                 }
+            }
+            if (statusElement._autoHideTimer) {
+                clearTimeout(statusElement._autoHideTimer);
+                statusElement._autoHideTimer = null;
             }
             statusElement.classList.remove('hidden', 'error', 'connecting', 'connected', 'retry', 'stopped', 'info');
             statusElement.style.display = 'inline-flex';
@@ -7925,17 +8149,21 @@
                     lockProvider(false);
                     statusElement.classList.add('stopped');
                     statusElement.innerHTML = `<i class="las la-hand-paper"></i> ${message || 'Connection stopped'}`;
-                    setTimeout(() => {
+                    statusElement._autoHideTimer = setTimeout(() => {
                         if (statusElement.classList.contains('stopped')) statusElement.style.display = 'none';
+                        statusElement._autoHideTimer = null;
                     }, 5000);
                     break;
                 case 'info':
                     lockProvider(false);
                     statusElement.classList.add('info');
                     statusElement.innerHTML = `<i class="las la-info-circle"></i> ${message || ''}`;
-                    setTimeout(() => {
-                        if (statusElement.classList.contains('info')) statusElement.style.display = 'none';
-                    }, 30000); // keep visible ~30s (3-5x longer)
+                    if (!options.persistent) {
+                        statusElement._autoHideTimer = setTimeout(() => {
+                            if (statusElement.classList.contains('info')) statusElement.style.display = 'none';
+                            statusElement._autoHideTimer = null;
+                        }, 30000); // keep visible ~30s (3-5x longer)
+                    }
                     break;
                 case 'clear':
                 default:
@@ -8722,7 +8950,7 @@
                 }
 
                 // Clear video IDs and chat IDs for username-based Rumble sources
-                if (source.target === 'rumble' && source.username && (source.videoId || source.chatId)) {
+                if (source.target === 'rumble' && !source.rumbleApiTracker && source.username && (source.videoId || source.chatId)) {
                     stateManager.updateSource(source.id, { videoId: null, chatId: null, url: null });
                 }
             }
@@ -8849,7 +9077,7 @@
                     }
 
                     // Only auto-check username-based Rumble sources
-                    if (source.autoActivate && source.target === 'rumble' && source.username && source.status !== 'active') {
+                    if (source.autoActivate && source.target === 'rumble' && !source.rumbleApiTracker && source.username && source.status !== 'active') {
                         console.log(`Starting auto-check for Rumble source on startup: ${source.username}`);
                         startRumbleAutoCheck(source.id);
                     }
@@ -10994,6 +11222,17 @@
                 'group.stopall': 'Stop All Streams',
                 'group.reloadall': 'Reload All Streams',
                 'group.remove': '🗑️ Remove group & its sources',
+                'youtube.discovery.noEligibleStreams': 'No public live or upcoming YouTube streams were found. Auto-find only detects streams that are live/upcoming and public. If the stream is unlisted, add it with YouTube Video URL / ID. If you just went live, wait a minute and try again.',
+                'youtube.discovery.onlyEndedStreams': 'Only ended YouTube streams were found. Auto-find only detects streams that are live/upcoming and public. If the stream is unlisted, add it with YouTube Video URL / ID. If you just went live, wait a minute and try again.',
+                'youtube.discovery.noNewStreams': 'No new public live or upcoming YouTube streams were found.',
+                'youtube.discovery.networkRetry': 'Temporary YouTube network issue.',
+                'youtube.discovery.nextCheck': 'Next auto-check in {time}.',
+                'youtube.discovery.checkingNow': 'Checking YouTube for public live streams...',
+                'youtube.discovery.minutesSeconds': '{minutes} min {seconds} sec',
+                'youtube.discovery.seconds': '{seconds} sec',
+                'rumble.discovery.noLiveStream': 'No live Rumble stream found.',
+                'rumble.discovery.checkingNow': 'Checking Rumble for a live stream...',
+                'rumble.discovery.checkError': 'Rumble check failed. It will retry automatically.',
             },
 
             'pt-BR': {
@@ -11068,6 +11307,17 @@
                 'group.stopall': 'Parar Todas as Transmissões',
                 'group.reloadall': 'Recarregar Todas as Transmissões',
                 'group.remove': '🗑️ Remover grupo e suas fontes',
+                'youtube.discovery.noEligibleStreams': 'Nenhuma transmissão ao vivo ou futura pública do YouTube foi encontrada. A busca automática só detecta transmissões ao vivo/futuras e públicas. Se a transmissão for não listada, adicione-a com URL / ID do vídeo do YouTube. Se você acabou de entrar ao vivo, espere um minuto e tente novamente.',
+                'youtube.discovery.onlyEndedStreams': 'Apenas transmissões encerradas do YouTube foram encontradas. A busca automática só detecta transmissões ao vivo/futuras e públicas. Se a transmissão for não listada, adicione-a com URL / ID do vídeo do YouTube. Se você acabou de entrar ao vivo, espere um minuto e tente novamente.',
+                'youtube.discovery.noNewStreams': 'Nenhuma nova transmissão pública ao vivo ou futura do YouTube foi encontrada.',
+                'youtube.discovery.networkRetry': 'Problema temporário de rede do YouTube.',
+                'youtube.discovery.nextCheck': 'Próxima verificação automática em {time}.',
+                'youtube.discovery.checkingNow': 'Verificando transmissões públicas ao vivo no YouTube...',
+                'youtube.discovery.minutesSeconds': '{minutes} min {seconds} s',
+                'youtube.discovery.seconds': '{seconds} s',
+                'rumble.discovery.noLiveStream': 'Nenhuma transmissão ao vivo do Rumble encontrada.',
+                'rumble.discovery.checkingNow': 'Verificando transmissão ao vivo no Rumble...',
+                'rumble.discovery.checkError': 'A verificação do Rumble falhou. Tentará novamente automaticamente.',
             },
 
             'es': {
@@ -11142,6 +11392,17 @@
                 'group.stopall': 'Detener Todas las Transmisiones',
                 'group.reloadall': 'Recargar Todas las Transmisiones',
                 'group.remove': '🗑️ Eliminar grupo y sus fuentes',
+                'youtube.discovery.noEligibleStreams': 'No se encontraron transmisiones públicas en vivo o próximas de YouTube. La búsqueda automática solo detecta transmisiones en vivo/próximas y públicas. Si la transmisión no está listada, agrégala con la URL / ID del video de YouTube. Si acabas de iniciar el directo, espera un minuto e inténtalo de nuevo.',
+                'youtube.discovery.onlyEndedStreams': 'Solo se encontraron transmisiones finalizadas de YouTube. La búsqueda automática solo detecta transmisiones en vivo/próximas y públicas. Si la transmisión no está listada, agrégala con la URL / ID del video de YouTube. Si acabas de iniciar el directo, espera un minuto e inténtalo de nuevo.',
+                'youtube.discovery.noNewStreams': 'No se encontraron nuevas transmisiones públicas en vivo o próximas de YouTube.',
+                'youtube.discovery.networkRetry': 'Problema temporal de red con YouTube.',
+                'youtube.discovery.nextCheck': 'Próxima verificación automática en {time}.',
+                'youtube.discovery.checkingNow': 'Buscando transmisiones públicas en vivo en YouTube...',
+                'youtube.discovery.minutesSeconds': '{minutes} min {seconds} s',
+                'youtube.discovery.seconds': '{seconds} s',
+                'rumble.discovery.noLiveStream': 'No se encontró ninguna transmisión en vivo de Rumble.',
+                'rumble.discovery.checkingNow': 'Buscando una transmisión en vivo en Rumble...',
+                'rumble.discovery.checkError': 'Falló la comprobación de Rumble. Se reintentará automáticamente.',
             },
 
             'cs': {
@@ -11209,6 +11470,17 @@
                 'group.stopall': 'Zastavit všechny streamy',
                 'group.reloadall': 'Znovu načíst všechny streamy',
                 'group.remove': '🗑️ Odebrat skupinu a její zdroje',
+                'youtube.discovery.noEligibleStreams': 'Nebyly nalezeny žádné veřejné živé ani naplánované streamy YouTube. Automatické vyhledávání najde jen živé/naplánované a veřejné streamy. Pokud je stream neveřejný, přidejte ho pomocí URL / ID videa YouTube. Pokud jste právě začali vysílat, počkejte minutu a zkuste to znovu.',
+                'youtube.discovery.onlyEndedStreams': 'Byly nalezeny pouze ukončené streamy YouTube. Automatické vyhledávání najde jen živé/naplánované a veřejné streamy. Pokud je stream neveřejný, přidejte ho pomocí URL / ID videa YouTube. Pokud jste právě začali vysílat, počkejte minutu a zkuste to znovu.',
+                'youtube.discovery.noNewStreams': 'Nebyly nalezeny žádné nové veřejné živé ani naplánované streamy YouTube.',
+                'youtube.discovery.networkRetry': 'Dočasný problém se sítí YouTube.',
+                'youtube.discovery.nextCheck': 'Další automatická kontrola za {time}.',
+                'youtube.discovery.checkingNow': 'Kontrolují se veřejné živé streamy na YouTube...',
+                'youtube.discovery.minutesSeconds': '{minutes} min {seconds} s',
+                'youtube.discovery.seconds': '{seconds} s',
+                'rumble.discovery.noLiveStream': 'Nebyl nalezen žádný živý stream Rumble.',
+                'rumble.discovery.checkingNow': 'Kontroluje se živý stream na Rumble...',
+                'rumble.discovery.checkError': 'Kontrola Rumble selhala. Automaticky se zopakuje.',
             },
 
             'fr': {
@@ -11276,6 +11548,17 @@
                 'group.stopall': 'Arrêter Tous les Flux',
                 'group.reloadall': 'Recharger Tous les Flux',
                 'group.remove': '🗑️ Supprimer le groupe et ses sources',
+                'youtube.discovery.noEligibleStreams': 'Aucun live YouTube public en direct ou à venir n\'a été trouvé. La recherche automatique détecte seulement les lives en direct/à venir et publics. Si le live est non répertorié, ajoutez-le avec l\'URL / ID de la vidéo YouTube. Si vous venez de passer en direct, attendez une minute puis réessayez.',
+                'youtube.discovery.onlyEndedStreams': 'Seuls des lives YouTube terminés ont été trouvés. La recherche automatique détecte seulement les lives en direct/à venir et publics. Si le live est non répertorié, ajoutez-le avec l\'URL / ID de la vidéo YouTube. Si vous venez de passer en direct, attendez une minute puis réessayez.',
+                'youtube.discovery.noNewStreams': 'Aucun nouveau live YouTube public en direct ou à venir n\'a été trouvé.',
+                'youtube.discovery.networkRetry': 'Problème réseau temporaire avec YouTube.',
+                'youtube.discovery.nextCheck': 'Prochaine vérification automatique dans {time}.',
+                'youtube.discovery.checkingNow': 'Recherche de lives YouTube publics en direct...',
+                'youtube.discovery.minutesSeconds': '{minutes} min {seconds} s',
+                'youtube.discovery.seconds': '{seconds} s',
+                'rumble.discovery.noLiveStream': 'Aucun live Rumble en direct n\'a été trouvé.',
+                'rumble.discovery.checkingNow': 'Recherche d\'un live Rumble en direct...',
+                'rumble.discovery.checkError': 'La vérification Rumble a échoué. Elle réessaiera automatiquement.',
             },
 
             'de': {
@@ -11343,6 +11626,17 @@
                 'group.stopall': 'Alle Streams stoppen',
                 'group.reloadall': 'Alle Streams neu laden',
                 'group.remove': '🗑️ Gruppe und ihre Quellen entfernen',
+                'youtube.discovery.noEligibleStreams': 'Es wurden keine öffentlichen Live- oder geplanten YouTube-Streams gefunden. Die automatische Suche erkennt nur Live/geplante und öffentliche Streams. Wenn der Stream nicht gelistet ist, fügen Sie ihn mit YouTube-Video-URL / ID hinzu. Wenn Sie gerade live gegangen sind, warten Sie eine Minute und versuchen Sie es erneut.',
+                'youtube.discovery.onlyEndedStreams': 'Es wurden nur beendete YouTube-Streams gefunden. Die automatische Suche erkennt nur Live/geplante und öffentliche Streams. Wenn der Stream nicht gelistet ist, fügen Sie ihn mit YouTube-Video-URL / ID hinzu. Wenn Sie gerade live gegangen sind, warten Sie eine Minute und versuchen Sie es erneut.',
+                'youtube.discovery.noNewStreams': 'Es wurden keine neuen öffentlichen Live- oder geplanten YouTube-Streams gefunden.',
+                'youtube.discovery.networkRetry': 'Vorübergehendes YouTube-Netzwerkproblem.',
+                'youtube.discovery.nextCheck': 'Nächste automatische Prüfung in {time}.',
+                'youtube.discovery.checkingNow': 'Öffentliche YouTube-Livestreams werden geprüft...',
+                'youtube.discovery.minutesSeconds': '{minutes} Min. {seconds} Sek.',
+                'youtube.discovery.seconds': '{seconds} Sek.',
+                'rumble.discovery.noLiveStream': 'Es wurde kein Rumble-Livestream gefunden.',
+                'rumble.discovery.checkingNow': 'Rumble wird auf einen Livestream geprüft...',
+                'rumble.discovery.checkError': 'Die Rumble-Prüfung ist fehlgeschlagen. Sie wird automatisch wiederholt.',
             },
 
             'it': {
@@ -11410,6 +11704,17 @@
                 'group.stopall': 'Ferma Tutti i Flussi',
                 'group.reloadall': 'Ricarica Tutti i Flussi',
                 'group.remove': '🗑️ Rimuovi gruppo e le sue fonti',
+                'youtube.discovery.noEligibleStreams': 'Non sono state trovate dirette YouTube pubbliche live o imminenti. La ricerca automatica rileva solo dirette live/imminenti e pubbliche. Se la diretta è non in elenco, aggiungila con URL / ID del video YouTube. Se sei appena andato live, aspetta un minuto e riprova.',
+                'youtube.discovery.onlyEndedStreams': 'Sono state trovate solo dirette YouTube terminate. La ricerca automatica rileva solo dirette live/imminenti e pubbliche. Se la diretta è non in elenco, aggiungila con URL / ID del video YouTube. Se sei appena andato live, aspetta un minuto e riprova.',
+                'youtube.discovery.noNewStreams': 'Non sono state trovate nuove dirette YouTube pubbliche live o imminenti.',
+                'youtube.discovery.networkRetry': 'Problema temporaneo di rete con YouTube.',
+                'youtube.discovery.nextCheck': 'Prossimo controllo automatico tra {time}.',
+                'youtube.discovery.checkingNow': 'Controllo delle dirette pubbliche su YouTube...',
+                'youtube.discovery.minutesSeconds': '{minutes} min {seconds} s',
+                'youtube.discovery.seconds': '{seconds} s',
+                'rumble.discovery.noLiveStream': 'Non è stata trovata alcuna diretta Rumble.',
+                'rumble.discovery.checkingNow': 'Controllo di una diretta su Rumble...',
+                'rumble.discovery.checkError': 'Il controllo Rumble non è riuscito. Verrà riprovato automaticamente.',
             },
 
             'ja': {
@@ -11477,6 +11782,17 @@
                 'group.stopall': 'すべてのストリームを停止',
                 'group.reloadall': 'すべてのストリームをリロード',
                 'group.remove': '🗑️ グループとそのソースを削除',
+                'youtube.discovery.noEligibleStreams': '公開されているライブ中または配信予定の YouTube ストリームが見つかりませんでした。自動検索で検出できるのは、ライブ中/配信予定で公開設定のストリームだけです。限定公開のストリームは、YouTube 動画 URL / ID で追加してください。配信を開始したばかりの場合は、1分待ってからもう一度お試しください。',
+                'youtube.discovery.onlyEndedStreams': '終了済みの YouTube ストリームだけが見つかりました。自動検索で検出できるのは、ライブ中/配信予定で公開設定のストリームだけです。限定公開のストリームは、YouTube 動画 URL / ID で追加してください。配信を開始したばかりの場合は、1分待ってからもう一度お試しください。',
+                'youtube.discovery.noNewStreams': '新しい公開ライブ中または配信予定の YouTube ストリームは見つかりませんでした。',
+                'youtube.discovery.networkRetry': '一時的な YouTube ネットワークの問題です。',
+                'youtube.discovery.nextCheck': '次の自動チェックまで {time}。',
+                'youtube.discovery.checkingNow': '公開 YouTube ライブストリームを確認しています...',
+                'youtube.discovery.minutesSeconds': '{minutes}分 {seconds}秒',
+                'youtube.discovery.seconds': '{seconds}秒',
+                'rumble.discovery.noLiveStream': 'Rumble のライブ配信が見つかりませんでした。',
+                'rumble.discovery.checkingNow': 'Rumble のライブ配信を確認しています...',
+                'rumble.discovery.checkError': 'Rumble の確認に失敗しました。自動的に再試行します。',
             },
 
             'zh-CN': {
@@ -11544,6 +11860,17 @@
                 'group.stopall': '停止所有流',
                 'group.reloadall': '重新加载所有流',
                 'group.remove': '🗑️ 删除组及其来源',
+                'youtube.discovery.noEligibleStreams': '未找到公开的 YouTube 直播或即将开始的直播。自动查找只能检测正在直播/即将开始且公开的直播。如果直播是不公开列出的，请使用 YouTube 视频 URL / ID 添加。如果你刚刚开播，请等待一分钟后重试。',
+                'youtube.discovery.onlyEndedStreams': '只找到了已结束的 YouTube 直播。自动查找只能检测正在直播/即将开始且公开的直播。如果直播是不公开列出的，请使用 YouTube 视频 URL / ID 添加。如果你刚刚开播，请等待一分钟后重试。',
+                'youtube.discovery.noNewStreams': '未找到新的公开 YouTube 直播或即将开始的直播。',
+                'youtube.discovery.networkRetry': 'YouTube 临时网络问题。',
+                'youtube.discovery.nextCheck': '下次自动检查将在 {time} 后进行。',
+                'youtube.discovery.checkingNow': '正在检查公开的 YouTube 直播...',
+                'youtube.discovery.minutesSeconds': '{minutes} 分 {seconds} 秒',
+                'youtube.discovery.seconds': '{seconds} 秒',
+                'rumble.discovery.noLiveStream': '未找到 Rumble 直播。',
+                'rumble.discovery.checkingNow': '正在检查 Rumble 直播...',
+                'rumble.discovery.checkError': 'Rumble 检查失败。将自动重试。',
             },
 
             'zh-TW': {
@@ -11611,6 +11938,17 @@
                 'group.stopall': '停止所有串流',
                 'group.reloadall': '重新載入所有串流',
                 'group.remove': '🗑️ 移除群組及其來源',
+                'youtube.discovery.noEligibleStreams': '找不到公開的 YouTube 直播或即將開始的直播。自動尋找只能偵測正在直播/即將開始且公開的直播。如果直播是非公開列出的，請使用 YouTube 影片 URL / ID 新增。如果你剛開始直播，請等一分鐘後再試一次。',
+                'youtube.discovery.onlyEndedStreams': '只找到已結束的 YouTube 直播。自動尋找只能偵測正在直播/即將開始且公開的直播。如果直播是非公開列出的，請使用 YouTube 影片 URL / ID 新增。如果你剛開始直播，請等一分鐘後再試一次。',
+                'youtube.discovery.noNewStreams': '找不到新的公開 YouTube 直播或即將開始的直播。',
+                'youtube.discovery.networkRetry': 'YouTube 暫時性網路問題。',
+                'youtube.discovery.nextCheck': '下次自動檢查將在 {time} 後進行。',
+                'youtube.discovery.checkingNow': '正在檢查公開的 YouTube 直播...',
+                'youtube.discovery.minutesSeconds': '{minutes} 分 {seconds} 秒',
+                'youtube.discovery.seconds': '{seconds} 秒',
+                'rumble.discovery.noLiveStream': '找不到 Rumble 直播。',
+                'rumble.discovery.checkingNow': '正在檢查 Rumble 直播...',
+                'rumble.discovery.checkError': 'Rumble 檢查失敗。將自動重試。',
             },
 
             'ko': {
@@ -11678,6 +12016,17 @@
                 'group.stopall': '모든 스트림 중지',
                 'group.reloadall': '모든 스트림 새로고침',
                 'group.remove': '🗑️ 그룹 및 소스 제거',
+                'youtube.discovery.noEligibleStreams': '공개된 YouTube 라이브 또는 예정된 스트림을 찾지 못했습니다. 자동 찾기는 라이브/예정 상태이고 공개된 스트림만 감지합니다. 스트림이 일부 공개라면 YouTube 동영상 URL / ID로 추가하세요. 방금 라이브를 시작했다면 1분 정도 기다린 뒤 다시 시도하세요.',
+                'youtube.discovery.onlyEndedStreams': '종료된 YouTube 스트림만 찾았습니다. 자동 찾기는 라이브/예정 상태이고 공개된 스트림만 감지합니다. 스트림이 일부 공개라면 YouTube 동영상 URL / ID로 추가하세요. 방금 라이브를 시작했다면 1분 정도 기다린 뒤 다시 시도하세요.',
+                'youtube.discovery.noNewStreams': '새 공개 YouTube 라이브 또는 예정된 스트림을 찾지 못했습니다.',
+                'youtube.discovery.networkRetry': '일시적인 YouTube 네트워크 문제입니다.',
+                'youtube.discovery.nextCheck': '다음 자동 확인까지 {time}.',
+                'youtube.discovery.checkingNow': '공개 YouTube 라이브 스트림 확인 중...',
+                'youtube.discovery.minutesSeconds': '{minutes}분 {seconds}초',
+                'youtube.discovery.seconds': '{seconds}초',
+                'rumble.discovery.noLiveStream': 'Rumble 라이브 스트림을 찾지 못했습니다.',
+                'rumble.discovery.checkingNow': 'Rumble 라이브 스트림 확인 중...',
+                'rumble.discovery.checkError': 'Rumble 확인에 실패했습니다. 자동으로 다시 시도합니다.',
             },
 
             'ru': {
@@ -11745,6 +12094,17 @@
                 'group.stopall': 'Остановить все потоки',
                 'group.reloadall': 'Перезагрузить все потоки',
                 'group.remove': '🗑️ Удалить группу и её источники',
+                'youtube.discovery.noEligibleStreams': 'Публичные прямые или запланированные трансляции YouTube не найдены. Автопоиск находит только трансляции, которые уже идут или запланированы и являются публичными. Если трансляция доступна по ссылке, добавьте её через URL / ID видео YouTube. Если вы только что вышли в эфир, подождите минуту и попробуйте снова.',
+                'youtube.discovery.onlyEndedStreams': 'Найдены только завершённые трансляции YouTube. Автопоиск находит только трансляции, которые уже идут или запланированы и являются публичными. Если трансляция доступна по ссылке, добавьте её через URL / ID видео YouTube. Если вы только что вышли в эфир, подождите минуту и попробуйте снова.',
+                'youtube.discovery.noNewStreams': 'Новые публичные прямые или запланированные трансляции YouTube не найдены.',
+                'youtube.discovery.networkRetry': 'Временная проблема с сетью YouTube.',
+                'youtube.discovery.nextCheck': 'Следующая автопроверка через {time}.',
+                'youtube.discovery.checkingNow': 'Проверяем публичные прямые трансляции YouTube...',
+                'youtube.discovery.minutesSeconds': '{minutes} мин {seconds} сек',
+                'youtube.discovery.seconds': '{seconds} сек',
+                'rumble.discovery.noLiveStream': 'Прямая трансляция Rumble не найдена.',
+                'rumble.discovery.checkingNow': 'Проверяем прямую трансляцию на Rumble...',
+                'rumble.discovery.checkError': 'Проверка Rumble не удалась. Повтор будет выполнен автоматически.',
             },
 
             'tr': {
@@ -11812,6 +12172,17 @@
                 'group.stopall': 'Tüm Yayınları Durdur',
                 'group.reloadall': 'Tüm Yayınları Yenile',
                 'group.remove': '🗑️ Grubu ve kaynaklarını kaldır',
+                'youtube.discovery.noEligibleStreams': 'Herkese açık canlı veya yaklaşan YouTube yayını bulunamadı. Otomatik bulma yalnızca canlı/yaklaşan ve herkese açık yayınları algılar. Yayın liste dışıysa YouTube Video URL / ID ile ekleyin. Yeni canlı yayına geçtiyseniz bir dakika bekleyip tekrar deneyin.',
+                'youtube.discovery.onlyEndedStreams': 'Yalnızca bitmiş YouTube yayınları bulundu. Otomatik bulma yalnızca canlı/yaklaşan ve herkese açık yayınları algılar. Yayın liste dışıysa YouTube Video URL / ID ile ekleyin. Yeni canlı yayına geçtiyseniz bir dakika bekleyip tekrar deneyin.',
+                'youtube.discovery.noNewStreams': 'Yeni herkese açık canlı veya yaklaşan YouTube yayını bulunamadı.',
+                'youtube.discovery.networkRetry': 'Geçici YouTube ağ sorunu.',
+                'youtube.discovery.nextCheck': 'Sonraki otomatik kontrol {time} içinde.',
+                'youtube.discovery.checkingNow': 'Herkese açık YouTube canlı yayınları kontrol ediliyor...',
+                'youtube.discovery.minutesSeconds': '{minutes} dk {seconds} sn',
+                'youtube.discovery.seconds': '{seconds} sn',
+                'rumble.discovery.noLiveStream': 'Canlı Rumble yayını bulunamadı.',
+                'rumble.discovery.checkingNow': 'Rumble canlı yayını kontrol ediliyor...',
+                'rumble.discovery.checkError': 'Rumble kontrolü başarısız oldu. Otomatik olarak tekrar denenecek.',
             },
 
             'uk': {
@@ -11887,6 +12258,17 @@
                 'group.stopall': 'Зупинити всі потоки',
                 'group.reloadall': 'Перезавантажити всі потоки',
                 'group.remove': '🗑️ Видалити групу та її джерела',
+                'youtube.discovery.noEligibleStreams': 'Не знайдено публічних прямих або запланованих трансляцій YouTube. Автопошук знаходить лише трансляції, які вже йдуть або заплановані та є публічними. Якщо трансляція доступна за посиланням, додайте її через URL / ID відео YouTube. Якщо ви щойно почали ефір, зачекайте хвилину й спробуйте знову.',
+                'youtube.discovery.onlyEndedStreams': 'Знайдено лише завершені трансляції YouTube. Автопошук знаходить лише трансляції, які вже йдуть або заплановані та є публічними. Якщо трансляція доступна за посиланням, додайте її через URL / ID відео YouTube. Якщо ви щойно почали ефір, зачекайте хвилину й спробуйте знову.',
+                'youtube.discovery.noNewStreams': 'Нові публічні прямі або заплановані трансляції YouTube не знайдені.',
+                'youtube.discovery.networkRetry': 'Тимчасова проблема з мережею YouTube.',
+                'youtube.discovery.nextCheck': 'Наступна автоперевірка через {time}.',
+                'youtube.discovery.checkingNow': 'Перевіряємо публічні прямі трансляції YouTube...',
+                'youtube.discovery.minutesSeconds': '{minutes} хв {seconds} с',
+                'youtube.discovery.seconds': '{seconds} с',
+                'rumble.discovery.noLiveStream': 'Пряму трансляцію Rumble не знайдено.',
+                'rumble.discovery.checkingNow': 'Перевіряємо пряму трансляцію на Rumble...',
+                'rumble.discovery.checkError': 'Перевірка Rumble не вдалася. Повтор буде виконано автоматично.',
             }
         };
 
@@ -11921,6 +12303,16 @@
         function translate(key) {
             return translations[currentLanguage]?.[key] || translations['en'][key] || key;
         }
+
+        function translateTemplate(key, values = {}) {
+            const template = translate(key);
+            return String(template || '').replace(/\{(\w+)\}/g, (_match, name) => {
+                return Object.prototype.hasOwnProperty.call(values, name) ? values[name] : `{${name}}`;
+            });
+        }
+
+        window.translate = translate;
+        window.translateTemplate = translateTemplate;
 
         function changeLanguage(lang) {
             const normalized = normalizeLanguage(lang);

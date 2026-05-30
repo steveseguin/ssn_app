@@ -7,6 +7,65 @@ const MANUAL_YOUTUBE_DISCOVERY_CACHE_TTL_MS = 5000;
 const manualYouTubeDiscoveryCache = new Map();
 const manualYouTubeDiscoveryInflight = new Map();
 
+function translateYouTubeMessage(key, fallback, values = {}) {
+    let text = fallback || key;
+    try {
+        if (typeof window !== 'undefined' && typeof window.translateTemplate === 'function') {
+            text = window.translateTemplate(key, values);
+        } else if (typeof translateTemplate === 'function') {
+            text = translateTemplate(key, values);
+        } else if (typeof window !== 'undefined' && typeof window.translate === 'function') {
+            text = window.translate(key);
+        } else if (typeof translate === 'function') {
+            text = translate(key);
+        }
+    } catch (_) { }
+
+    Object.keys(values || {}).forEach(name => {
+        text = String(text).replace(new RegExp(`\\{${name}\\}`, 'g'), values[name]);
+    });
+
+    return text;
+}
+
+function getYouTubeStreamStatusForMessaging(stream) {
+    if (!stream || typeof stream !== 'object') return '';
+    if (stream.status === 'live' || stream.status === 'upcoming' || stream.status === 'ended') return stream.status;
+    if (stream.viewers && stream.viewers > 0) return 'live';
+    return stream.status || '';
+}
+
+function getYouTubeDiscoveryMessageKey(streams = []) {
+    const list = Array.isArray(streams) ? streams : [];
+    if (list.length && list.every(stream => getYouTubeStreamStatusForMessaging(stream) === 'ended')) {
+        return 'youtube.discovery.onlyEndedStreams';
+    }
+    return 'youtube.discovery.noEligibleStreams';
+}
+
+function getYouTubeDiscoveryMessage(streams = []) {
+    const key = getYouTubeDiscoveryMessageKey(streams);
+    const fallback = key === 'youtube.discovery.onlyEndedStreams'
+        ? 'Only ended YouTube streams were found. Auto-find only detects streams that are live/upcoming and public. If the stream is unlisted, add it with YouTube Video URL / ID. If you just went live, wait a minute and try again.'
+        : 'No public live or upcoming YouTube streams were found. Auto-find only detects streams that are live/upcoming and public. If the stream is unlisted, add it with YouTube Video URL / ID. If you just went live, wait a minute and try again.';
+    return translateYouTubeMessage(key, fallback);
+}
+
+function getYouTubeNoAutoActivationMessage(streams = []) {
+    const list = Array.isArray(streams) ? streams : [];
+    const hasLiveOrUpcomingStream = list.some(stream => {
+        const status = getYouTubeStreamStatusForMessaging(stream);
+        return status === 'live' || status === 'upcoming';
+    });
+    if (hasLiveOrUpcomingStream) {
+        return translateYouTubeMessage(
+            'youtube.discovery.noNewStreams',
+            'No new public live or upcoming YouTube streams were found.'
+        );
+    }
+    return getYouTubeDiscoveryMessage(list);
+}
+
 function cloneYouTubeStreams(streams) {
     if (!Array.isArray(streams)) return [];
     return streams.map(stream => (stream && typeof stream === 'object') ? { ...stream } : stream);
@@ -332,6 +391,17 @@ class YouTubeStreamSelector {
 
     async createStreamElements(streams, username) {
         if (!this.streamList) return;
+        const allStreamsEnded = streams.length && streams.every(stream => {
+            const status = this.getVideoStatus(stream?.status, stream?.viewers);
+            return status === 'ended';
+        });
+        if (allStreamsEnded) {
+            const message = getYouTubeDiscoveryMessage(streams);
+            const messageElement = document.createElement('div');
+            messageElement.className = 'yt-stream-discovery-message';
+            messageElement.textContent = message;
+            this.streamList.appendChild(messageElement);
+        }
         for (const stream of streams) {
             const isExisting = stateManager.isVideoIdAdded(stream.videoId);
             if (isExisting) {
@@ -481,10 +551,12 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
             });
         
         if (!combinedStreams.length) {
-            Toast.warning("YouTube", `No live or upcoming streams found for ${username}.`);
+            if (showPrompts || manualTrigger) {
+                Toast.warning("YouTube", getYouTubeDiscoveryMessage(combinedStreams));
+            }
             // Removed throw new Error to allow proceeding if user wants to manually add.
             // The function will return, and if showPrompts is true, it might offer manual add.
-            return { type: 'no_streams_found' }; 
+            return { type: 'no_streams_found', message: getYouTubeDiscoveryMessage(combinedStreams) };
         }
         
         const groupTargetType = isShortDefault ? 'youtubeshorts' : 'youtube';
@@ -614,14 +686,23 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
                     }
                 }
             }
-            if (activatedCount === 0) Toast.info("YouTube", `No new streams found to auto-activate for ${username}.`);
-            return { type: 'multiple_auto', count: activatedCount };
+            const emptyAutoMessage = activatedCount === 0 ? getYouTubeNoAutoActivationMessage(combinedStreams) : '';
+            if (activatedCount === 0 && (showPrompts || manualTrigger)) {
+                Toast.info("YouTube", emptyAutoMessage);
+            }
+            return { type: 'multiple_auto', count: activatedCount, message: emptyAutoMessage };
         }
     } catch (error) {
         console.error("Error in handleYouTubeActivation for " + username + ":", error);
         if (isYouTubeDiscoveryNetworkError(error)) {
-            Toast.warning("YouTube Network", `Could not reach YouTube while checking ${username}. This looks like a temporary DNS/network issue; try again shortly.`);
-            return { type: 'network_error', message: error.message };
+            const networkMessage = translateYouTubeMessage(
+                'youtube.discovery.networkRetry',
+                'Temporary YouTube network issue.'
+            );
+            if (showPrompts || manualTrigger) {
+                Toast.warning("YouTube Network", networkMessage);
+            }
+            return { type: 'network_error', message: networkMessage };
         }
         if (showPrompts && error.message && !error.message.includes("No video ID found") && !error.message.includes("User cancelled")) {
             // Check if ipcRenderer and window.confirm are available

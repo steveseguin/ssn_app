@@ -215,7 +215,7 @@
     "afterAllArtifactBuild": "./afterPack.js"
   },
   "devDependencies": {
-    "electron": "^42.2.0",
+    "electron": "^42.3.0",
     "electron-builder": "^26.5.0",
     "electron-notarize": "git+https://github.com/electron/notarize.git",
     "fs-extra": "^11.3.4",

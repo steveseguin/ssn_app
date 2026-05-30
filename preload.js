@@ -167,6 +167,16 @@ function scheduleStandaloneCustomJsInjection() {
 	}
 }
 
+async function getSourceWindowConfig() {
+	try {
+		const result = await ipcRenderer.invoke('ssapp:get-source-window-config');
+		return result || {};
+	} catch (error) {
+		console.error('[Preload] Failed to retrieve source window config:', error);
+		return {};
+	}
+}
+
 const WARN_FILTER_PATTERNS = [
     /Potential permissions policy violation/i,
     /Unrecognized feature/i,
@@ -368,6 +378,8 @@ function configureContextBridge(){
 		  
 		  // Expose the injected script flag
 		  getInjectedScriptFlag: () => INJECTED_SCRIPT_FLAG,
+
+		  getSourceWindowConfig: getSourceWindowConfig,
 			  
 			  closeFileStream: async () => {
 				await ipcRenderer.invoke('close-file-stream');
@@ -422,6 +434,10 @@ function configureContextBridge(){
 			  noCORSFetch: async (args) => {
 				return await ipcRenderer.invoke("nodefetch", args || {});
 			  },
+
+			  fetchRumbleJson: async (url) => {
+				return await ipcRenderer.invoke('rumble-fetch-json', { url });
+			  },
 			  
 			  readStreamChunk: (streamId) => {},
 			  
@@ -437,6 +453,10 @@ function configureContextBridge(){
 
 			  refreshYouTubeOAuthToken: async (payload) => {
 				return await ipcRenderer.invoke('youtube-oauth-refresh', payload);
+			  },
+
+			  startMediaUpload: async (payload) => {
+				return await ipcRenderer.invoke('media-upload', payload || {});
 			  },
 
 			  startTwitchOAuth: async (payload) => {
@@ -616,6 +636,10 @@ try {
 
 			refreshYouTubeOAuthToken: async (payload) => {
 				return await ipcRenderer.invoke('youtube-oauth-refresh', payload);
+			},
+
+			startMediaUpload: async (payload) => {
+				return await ipcRenderer.invoke('media-upload', payload || {});
 			},
 
 			startTwitchOAuth: async (payload) => {

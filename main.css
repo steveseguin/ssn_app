@@ -1080,6 +1080,17 @@ button.group-control {
   margin: 20px 0;
 }
 
+.yt-stream-discovery-message {
+  margin: 0 0 12px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 152, 0, 0.45);
+  border-radius: 4px;
+  background: rgba(255, 152, 0, 0.12);
+  color: #ffd18a;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .yt-stream-item {
   position: relative;
   display: flex;
