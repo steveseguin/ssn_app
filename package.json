@@ -256,6 +256,11 @@
     "ws": "^8.18.1",
     "yargs": "^17.7.2"
   },
+  "overrides": {
+    "tiktok-live-connector": {
+      "protobufjs": "7.6.1"
+    }
+  },
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=8.0.0"
