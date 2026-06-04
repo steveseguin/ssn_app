@@ -2311,9 +2311,7 @@ try {
                             enriched.tt_target_idc = ttCookie.value;
                         }
                     }
-                    if (!enriched.allCookies) {
-                        enriched.allCookies = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-                    }
+                    enriched.allCookies = cookies.map(c => `${c.name}=${c.value}`).join('; ');
                 }
             } catch (cookieError) {
                 console.warn('[TikTok] Failed to collect cookies for local signer payload:', cookieError);

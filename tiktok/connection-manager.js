@@ -44,14 +44,22 @@ const {
 const { WebcastEventMap, WebcastEvent } = require('tiktok-live-connector/dist/types/events');
 const { ControlAction, GiftMessageIgnoreConfig } = require('tiktok-live-connector/dist/types/tiktok/enums');
 
-(function applyAnchorIdentityPatch() {
+(function syncWebcastIdentityPatch() {
     try {
         const wsClientPath = require.resolve('tiktok-live-connector/dist/lib/ws/lib/ws-client.js');
         const content = fs.readFileSync(wsClientPath, 'utf8');
-        if (content.includes("identity: 'audience',") && !content.includes("identity: 'anchor',")) {
-            const patched = content.replace("identity: 'audience',", "identity: 'anchor',");
+        const forceAnchorIdentity = process.env.SSAPP_TIKTOK_FORCE_ANCHOR_IDENTITY === '1';
+        const expected = forceAnchorIdentity ? "identity: 'anchor'," : "identity: 'audience',";
+        const unwanted = forceAnchorIdentity ? "identity: 'audience'," : "identity: 'anchor',";
+        if (content.includes(expected) || !content.includes(unwanted)) {
+            return;
+        }
+        const patched = content.replace(unwanted, expected);
+        if (patched !== content) {
             fs.writeFileSync(wsClientPath, patched, 'utf8');
-            console.log('[TikTok] Applied runtime anchor identity patch to ws-client.js');
+            console.log(forceAnchorIdentity
+                ? '[TikTok] Applied opt-in anchor identity patch to ws-client.js'
+                : '[TikTok] Restored default audience identity in ws-client.js');
         }
     } catch (_) { }
 })();
@@ -3699,6 +3707,12 @@ class ConnectionManager {
 	            options.fetchRoomInfoOnConnect = false;
 	            options.enableExtendedGiftInfo = false;
 	            options.connectWithUniqueId = true;
+	            options.disableEulerFallbacks = true;
+	            options.wsClientParams = {
+	                ...options.wsClientParams,
+	                host: 'https://webcast.tiktok.com',
+	                debug: 'false'
+	            };
 	        }
 	        if (this.signingConfig?.apiKey && !usingLocalSigner && this.signingProvider !== 'local') {
 	            options.signApiKey = this.signingConfig.apiKey;
@@ -3863,11 +3877,14 @@ class ConnectionManager {
 	        };
 	        let signerPayload;
 	        try {
+	            const localFetchUrl = process.env.SSAPP_TIKTOK_FORCE_ANCHOR_IDENTITY === '1'
+	                ? 'https://webcast.tiktok.com/webcast/im/fetch/?identity=anchor'
+	                : 'https://webcast.tiktok.com/webcast/im/fetch/';
 	            signerPayload = await runWithLocalSignerSessionGate(
 	                this,
 	                uniqueId || this.username,
 	                'local_signer_im_fetch',
-	                async () => this.localSigner.sign('https://webcast.tiktok.com/webcast/im/fetch/?identity=anchor', signOptions)
+	                async () => this.localSigner.sign(localFetchUrl, signOptions)
 	            );
 	        } catch (error) {
 	            if (error?.code !== 'SSAPP_TIKTOK_STOPPED') {
@@ -3886,6 +3903,7 @@ class ConnectionManager {
 
 	        // Update credentials immediately so we persist the session even if we return early
 	        this.updateSessionCredentialsFromSigner(signerPayload);
+	        this.applyLocalSignerWebsocketHeaders(signerPayload);
 
 	        const fetchResult = signerPayload.fetchResult && typeof signerPayload.fetchResult === 'object'
 	            ? signerPayload.fetchResult
@@ -3955,9 +3973,28 @@ class ConnectionManager {
                             proto = connectorDeserializeMessage('ProtoMessageFetchResult', bytes);
                         }
 
+                        const wsUrlSummary = (() => {
+                            const wsUrl = proto && typeof proto.wsUrl === 'string' ? proto.wsUrl.trim() : '';
+                            if (!wsUrl) {
+                                return null;
+                            }
+                            try {
+                                const parsed = new URL(wsUrl);
+                                return {
+                                    protocol: parsed.protocol,
+                                    host: parsed.host,
+                                    pathname: parsed.pathname,
+                                    hasSearch: !!parsed.search,
+                                    searchKeys: Array.from(parsed.searchParams.keys()).slice(0, 20)
+                                };
+                            } catch (_) {
+                                return { invalid: true, length: wsUrl.length };
+                            }
+                        })();
                         this.logDebug('sign.local.fetchResult', {
                             hasCursor: Boolean(proto?.cursor),
                             wsUrl: proto?.wsUrl ? '[present]' : '[missing]',
+                            wsUrlSummary,
                             internalExtLength: proto?.internalExt ? String(proto.internalExt).length : 0,
                             wsParamKeys: proto?.wsParams ? Object.keys(proto.wsParams) : null,
                             messageCount: Array.isArray(proto?.messages) ? proto.messages.length : null
@@ -4320,6 +4357,29 @@ class ConnectionManager {
             cookies.push(`tt_target_idc=${ttTargetIdc}`);
         }
         return cookies.length ? cookies.join('; ') : null;
+    }
+
+    applyLocalSignerWebsocketHeaders(payload) {
+        if (!this.connection || !this.connection.options) {
+            return;
+        }
+        const headers = this.buildLocalSignerHeaders(payload);
+        if (!headers || typeof headers !== 'object') {
+            return;
+        }
+        const existing = this.connection.options.wsClientHeaders && typeof this.connection.options.wsClientHeaders === 'object'
+            ? this.connection.options.wsClientHeaders
+            : {};
+        this.connection.options.wsClientHeaders = {
+            ...existing,
+            ...headers
+        };
+        this.logDebug('sign.local.websocketHeaders.applied', {
+            hasUserAgent: !!headers['User-Agent'],
+            hasReferer: !!headers.Referer,
+            hasOrigin: !!headers.Origin,
+            hasCookie: !!headers.Cookie
+        });
     }
 
     getEulerChatClient() {
@@ -4772,6 +4832,14 @@ class ConnectionManager {
     }
 
     async tryFallbackToPolling(primaryError, stage = 'connect') {
+        if (this.signingProvider === 'local' && !this.autoLocalSignerFallbackActive) {
+            this.logDebug('lifecycle.fallback.polling.skipped', {
+                reason: 'explicit_local_signer',
+                stage,
+                message: primaryError?.message || null
+            });
+            return false;
+        }
         if (!this.pollingFallbackSupported || this.pollingFallbackActivated || this.preferredStrategy === 'legacy') {
             this.logDebug('lifecycle.fallback.polling.skipped', {
                 reason: !this.pollingFallbackSupported ? 'unsupported' : (this.preferredStrategy === 'legacy' ? 'legacy_forced' : 'already_activated'),

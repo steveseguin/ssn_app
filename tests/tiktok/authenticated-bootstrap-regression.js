@@ -201,8 +201,29 @@ async function run() {
 
 		manager.initializeConnectionInstance();
 		assert.strictEqual(typeof manager.connection.options.signedWebSocketProvider, 'function');
+		assert.strictEqual(manager.connection.options.disableEulerFallbacks, true);
 		assert.notStrictEqual(manager.connection.options.authenticateWs, true);
 		assert.strictEqual(manager.resolveAuthenticatedWebsocketBootstrapHost(), null);
+	});
+
+	await test('explicit local signer does not activate polling fallback', async () => {
+		const { manager } = createManager({
+			signingProvider: 'local',
+			localSigner: {
+				async sign() {
+					return { url: 'wss://example.invalid/tiktok' };
+				}
+			}
+		});
+		const error = new Error('TikTok did not return a WebSocket URL (wsUrl) during bootstrap.');
+		error.name = 'TikTokWsUrlError';
+		error.code = 'SSAPP_TIKTOK_WSURL_MISSING';
+
+		const handled = await manager.tryFallbackToPolling(error, 'unit_local_signer');
+
+		assert.strictEqual(handled, false);
+		assert.strictEqual(manager.pollingFallbackActivated, false);
+		assert.strictEqual(manager.preferredStrategy, 'websocket');
 	});
 }
 

@@ -292,17 +292,15 @@ test('empty string session IDs are normalized to null', () => {
 });
 
 console.log('\n==========================================================');
-console.log('E2E: anchor identity runtime patch');
+console.log('E2E: websocket identity default');
 console.log('==========================================================\n');
 
-test('ws-client.js has identity:anchor after module load', () => {
+test('ws-client.js keeps default audience identity unless anchor override is opted in', () => {
 	const fs = require('fs');
 	const wsClientPath = require.resolve('tiktok-live-connector/dist/lib/ws/lib/ws-client.js');
 	const content = fs.readFileSync(wsClientPath, 'utf8');
-	const anchorMatch = content.match(/identity:\s*'anchor'/g);
-	assert.ok(anchorMatch && anchorMatch.length > 0, 'ws-client.js should contain identity: anchor');
 	const audienceMatch = content.match(/identity:\s*'audience'/g);
-	assert.strictEqual(audienceMatch, null, 'ws-client.js should NOT contain identity: audience');
+	assert.ok(audienceMatch && audienceMatch.length > 0, 'ws-client.js should contain identity: audience');
 });
 
 console.log('\n==========================================================');
