@@ -37,11 +37,21 @@ function createFakeConnector(attempts) {
 			attempts.push({
 				authenticateWs: this.options && this.options.authenticateWs === true,
 				whitelistHost: process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST || null,
-				signedWebSocketProvider: typeof this.options?.signedWebSocketProvider === 'function'
+				signedWebSocketProvider: typeof this.options?.signedWebSocketProvider === 'function',
+				wsIdentity: this.options?.wsClientParams?.identity || null
 			});
 			this.isConnected = true;
 			this.emit('websocketConnected');
 			return true;
+		}
+
+		async setupWebsocket(_wsUrl, wsParams) {
+			this.lastSetupWebsocketParams = wsParams;
+			return {
+				sendBytes() { return true; },
+				sendHeartbeat() { },
+				webSocketPingIntervalMs: 10000
+			};
 		}
 
 		async disconnect() {
@@ -202,8 +212,32 @@ async function run() {
 		manager.initializeConnectionInstance();
 		assert.strictEqual(typeof manager.connection.options.signedWebSocketProvider, 'function');
 		assert.strictEqual(manager.connection.options.disableEulerFallbacks, true);
+		assert.strictEqual(manager.connection.options.wsClientParams.identity, 'audience');
 		assert.notStrictEqual(manager.connection.options.authenticateWs, true);
 		assert.strictEqual(manager.resolveAuthenticatedWebsocketBootstrapHost(), null);
+	});
+
+	await test('host local signer uses anchor identity per connection', async () => {
+		const { manager, attempts } = createManager({
+			sessionId: 'session123',
+			ttTargetIdc: 'useast1a',
+			signingProvider: 'local',
+			localSigner: {
+				async sign() {
+					return { url: 'wss://example.invalid/tiktok' };
+				}
+			}
+		});
+		manager.accountRole = 'host';
+
+		manager.initializeConnectionInstance();
+		assert.strictEqual(manager.connection.options.wsClientParams.identity, 'anchor');
+		assert.strictEqual(manager.connection.__ssappWebcastIdentityOverride, 'anchor');
+
+		await manager.connect();
+
+		assert.strictEqual(attempts.length, 1);
+		assert.strictEqual(attempts[0].wsIdentity, 'anchor');
 	});
 
 	await test('explicit local signer does not activate polling fallback', async () => {

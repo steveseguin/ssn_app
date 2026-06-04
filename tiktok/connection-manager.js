@@ -17,10 +17,15 @@ const giftMapping = require('./gift-mapping.json');
 const reporter = require('../error-reporter');
 
 let connectorDeserializeMessage = null;
+let connectorCreateBaseWebcastPushFrame = null;
 try {
-    ({ deserializeMessage: connectorDeserializeMessage } = require('tiktok-live-connector/dist/lib/utilities'));
+    ({
+        deserializeMessage: connectorDeserializeMessage,
+        createBaseWebcastPushFrame: connectorCreateBaseWebcastPushFrame
+    } = require('tiktok-live-connector/dist/lib/utilities'));
 } catch (_) {
     connectorDeserializeMessage = null;
+    connectorCreateBaseWebcastPushFrame = null;
 }
 
 let SendRoomChatRoute = null;
@@ -43,26 +48,12 @@ const {
 } = require('@eulerstream/euler-websocket-sdk');
 const { WebcastEventMap, WebcastEvent } = require('tiktok-live-connector/dist/types/events');
 const { ControlAction, GiftMessageIgnoreConfig } = require('tiktok-live-connector/dist/types/tiktok/enums');
-
-(function syncWebcastIdentityPatch() {
-    try {
-        const wsClientPath = require.resolve('tiktok-live-connector/dist/lib/ws/lib/ws-client.js');
-        const content = fs.readFileSync(wsClientPath, 'utf8');
-        const forceAnchorIdentity = process.env.SSAPP_TIKTOK_FORCE_ANCHOR_IDENTITY === '1';
-        const expected = forceAnchorIdentity ? "identity: 'anchor'," : "identity: 'audience',";
-        const unwanted = forceAnchorIdentity ? "identity: 'audience'," : "identity: 'anchor',";
-        if (content.includes(expected) || !content.includes(unwanted)) {
-            return;
-        }
-        const patched = content.replace(unwanted, expected);
-        if (patched !== content) {
-            fs.writeFileSync(wsClientPath, patched, 'utf8');
-            console.log(forceAnchorIdentity
-                ? '[TikTok] Applied opt-in anchor identity patch to ws-client.js'
-                : '[TikTok] Restored default audience identity in ws-client.js');
-        }
-    } catch (_) { }
-})();
+let ConnectorWebcastImEnterRoomMessage = null;
+try {
+    ({ WebcastImEnterRoomMessage: ConnectorWebcastImEnterRoomMessage } = require('tiktok-live-connector/dist/types'));
+} catch (_) {
+    ConnectorWebcastImEnterRoomMessage = null;
+}
 
 const env = {
     shouldEnableTikTokLogging: false,
@@ -3702,6 +3693,7 @@ class ConnectionManager {
 	        };
 	        const usingLocalSigner = this.shouldUseLocalSigner();
 	        if (usingLocalSigner) {
+	            const webcastIdentity = this.resolveLocalSignerWebcastIdentity();
 	            // Local signer connections should be as gentle as possible: avoid extra preflight
 	            // calls (room info, gift catalog) and rely on the signing window to resolve room_id.
 	            options.fetchRoomInfoOnConnect = false;
@@ -3711,7 +3703,8 @@ class ConnectionManager {
 	            options.wsClientParams = {
 	                ...options.wsClientParams,
 	                host: 'https://webcast.tiktok.com',
-	                debug: 'false'
+	                debug: 'false',
+	                identity: webcastIdentity
 	            };
 	        }
 	        if (this.signingConfig?.apiKey && !usingLocalSigner && this.signingProvider !== 'local') {
@@ -3730,6 +3723,80 @@ class ConnectionManager {
         }
 
         return options;
+    }
+
+    resolveLocalSignerWebcastIdentity() {
+        return normalizeSourceAccountRole(this.accountRole) === 'host' ? 'anchor' : 'audience';
+    }
+
+    applyLocalSignerWebcastIdentityOverride(connection, identity = this.resolveLocalSignerWebcastIdentity()) {
+        if (!connection || typeof connection.setupWebsocket !== 'function') {
+            return false;
+        }
+        const normalizedIdentity = identity === 'anchor' ? 'anchor' : 'audience';
+        if (connection.__ssappWebcastIdentityOverride === normalizedIdentity) {
+            return true;
+        }
+
+        const originalSetupWebsocket = connection.setupWebsocket;
+        const manager = this;
+        connection.setupWebsocket = async function setupWebsocketWithSsappIdentity(wsUrl, wsParams) {
+            const nextWsParams = {
+                ...(wsParams && typeof wsParams === 'object' ? wsParams : {}),
+                identity: normalizedIdentity
+            };
+            const wsClient = await originalSetupWebsocket.call(this, wsUrl, nextWsParams);
+            manager.applyWebcastRoomEnterIdentityOverride(wsClient, normalizedIdentity);
+            return wsClient;
+        };
+        connection.__ssappWebcastIdentityOverride = normalizedIdentity;
+        this.logDebug('sign.local.identity.override_installed', { identity: normalizedIdentity });
+        return true;
+    }
+
+    applyWebcastRoomEnterIdentityOverride(wsClient, identity) {
+        const normalizedIdentity = identity === 'anchor' ? 'anchor' : 'audience';
+        if (normalizedIdentity === 'audience') {
+            return false;
+        }
+        if (
+            !wsClient ||
+            typeof wsClient !== 'object' ||
+            typeof wsClient.sendBytes !== 'function' ||
+            typeof wsClient.sendHeartbeat !== 'function' ||
+            typeof connectorCreateBaseWebcastPushFrame !== 'function' ||
+            !ConnectorWebcastImEnterRoomMessage ||
+            typeof ConnectorWebcastImEnterRoomMessage.encode !== 'function'
+        ) {
+            this.logDebug('sign.local.identity.roomEnterOverrideUnavailable', { identity: normalizedIdentity });
+            return false;
+        }
+
+        wsClient.switchRooms = function switchRoomsWithSsappIdentity(roomId) {
+            this.seqId = 1;
+            const imEnterRoomMessage = ConnectorWebcastImEnterRoomMessage.encode({
+                roomId,
+                roomTag: '',
+                liveRegion: '',
+                liveId: '12',
+                identity: normalizedIdentity,
+                cursor: '',
+                accountType: '0',
+                enterUniqueId: '',
+                filterWelcomeMsg: '0',
+                isAnchorContinueKeepMsg: false
+            });
+            const webcastPushFrame = connectorCreateBaseWebcastPushFrame({
+                payloadEncoding: 'pb',
+                payloadType: 'im_enter_room',
+                payload: imEnterRoomMessage.finish()
+            });
+            this.sendBytes(Buffer.from(webcastPushFrame.finish()));
+            clearInterval(this.pingInterval);
+            this.pingInterval = setInterval(() => this.sendHeartbeat(), this.webSocketPingIntervalMs);
+        };
+        wsClient.__ssappRoomEnterIdentity = normalizedIdentity;
+        return true;
     }
 
     shouldUseLocalSigner() {
@@ -3877,9 +3944,8 @@ class ConnectionManager {
 	        };
 	        let signerPayload;
 	        try {
-	            const localFetchUrl = process.env.SSAPP_TIKTOK_FORCE_ANCHOR_IDENTITY === '1'
-	                ? 'https://webcast.tiktok.com/webcast/im/fetch/?identity=anchor'
-	                : 'https://webcast.tiktok.com/webcast/im/fetch/';
+	            const webcastIdentity = this.resolveLocalSignerWebcastIdentity();
+	            const localFetchUrl = `https://webcast.tiktok.com/webcast/im/fetch/?identity=${encodeURIComponent(webcastIdentity)}`;
 	            signerPayload = await runWithLocalSignerSessionGate(
 	                this,
 	                uniqueId || this.username,
@@ -3903,6 +3969,13 @@ class ConnectionManager {
 
 	        // Update credentials immediately so we persist the session even if we return early
 	        this.updateSessionCredentialsFromSigner(signerPayload);
+	        if (this.resolveLocalSignerWebcastIdentity() === 'anchor' && (!this.sessionId || !this.ttTargetIdc)) {
+	            this.logDebug('sign.local.identity.anchor_without_session', {
+	                hasSessionId: !!this.sessionId,
+	                hasTtTargetIdc: !!this.ttTargetIdc,
+	                accountRole: normalizeSourceAccountRole(this.accountRole)
+	            });
+	        }
 	        this.applyLocalSignerWebsocketHeaders(signerPayload);
 
 	        const fetchResult = signerPayload.fetchResult && typeof signerPayload.fetchResult === 'object'
@@ -4556,6 +4629,9 @@ class ConnectionManager {
         }
         this.applyResumeCursorToConnection();
         this.applySignRequestTimeout(this.signRequestTimeoutMs);
+        if (!useLegacyConnector && this.shouldUseLocalSigner()) {
+            this.applyLocalSignerWebcastIdentityOverride(this.connection);
+        }
         this.logDebug('lifecycle.initialize.signTimeoutConfigured', {
             timeoutMs: this.signRequestTimeoutMs,
             maxTimeoutMs: this.signRequestTimeoutMaxMs,
