@@ -690,6 +690,10 @@
             return (input.endsWith('/') || input.endsWith('\\')) ? input : `${input}/`;
         }
 
+        function getDevSocialStreamBase() {
+            return 'file:///C:/Users/steve/Code/social_stream/';
+        }
+
         function getSsappStaticBase(branch = 'main') {
             return branch === 'beta' ? `${SSAPP_STATIC_ORIGIN}/beta` : SSAPP_STATIC_ORIGIN;
         }
@@ -882,12 +886,13 @@
             }
 
             if (devmode) {
-                const base = `http://localhost:8080/${relativePath}`;
+                const base = `${getDevSocialStreamBase()}${relativePath}`;
                 return {
                     url: appendQuery(base),
                     origin: 'dev',
                     branch,
-                    relativePath
+                    relativePath,
+                    baseUrl: getDevSocialStreamBase()
                 };
             }
 
@@ -4208,7 +4213,7 @@
             if (val === 'auto') {
                 html = 'Recommended: WebSocket with automatic signing. If signing fails, fallback can switch to compatibility modes.';
             } else if (val === 'local') {
-                html = '<strong>Local Signer:</strong> Uses a local TikTok window for signing. Supports replies. Keep signer window open.';
+                html = '<strong>Local Signer:</strong> Uses a lightweight TikTok signing window. Anonymous mode is best effort; signed-in Host mode is recommended for full chat capture.';
             } else if (val === 'polling') {
                 html = '<strong>Polling:</strong> HTTP compatibility mode. No signing needed. No replies.';
             } else if (val === 'standard') {
@@ -7042,9 +7047,10 @@
             }
 
             // For YouTube WSS, the script path is specific
-            const scriptPath = devmode || sourcemode ?
-                (sourcemode ? `${sourcemode}sources/websocket/youtube.js` : `http://localhost:8080/sources/websocket/youtube.js`) :
-                'sources/websocket/youtube.js';
+            const youtubeSourceBase = sourcemode || (devmode ? getDevSocialStreamBase() : '');
+            const scriptPath = youtubeSourceBase
+                ? `${ensureTrailingSlash(youtubeSourceBase)}sources/websocket/youtube.js`
+                : 'sources/websocket/youtube.js';
 
             try {
                 const response = ipcRenderer.sendSync('createWindow', {
@@ -7054,7 +7060,7 @@
                     muted: source.isMuted,
                     visible: source.isVisible,
                     source: scriptPath,
-                    filesource: sourcemode || undefined,
+                    filesource: youtubeSourceBase || undefined,
                     tab: tabid,
                     sourceId: source.id,
                     customSession: source.customSession || 'AUTO',
@@ -7103,7 +7109,7 @@
                 // Safety check: If sessionId is present but ttTargetIdc is missing, we must not send sessionId
                 // or the connector will crash. We should warn the user.
                 if (sessionId && !ttTargetIdc) {
-                    Toast.warning('TikTok Authentication Incomplete', 'Missing tt_target_idc cookie. Connecting anonymously. Please regenerate signing keys.');
+                    Toast.warning('TikTok Authentication Incomplete', 'Missing tt_target_idc cookie. Connecting anonymously. Please collect the session again.');
                     console.warn('[TikTok] Missing tt_target_idc cookie despite having sessionId. Falling back to anonymous connection.');
                     sessionId = null;
                 }
@@ -7199,27 +7205,30 @@
             if (!statusEl) return;
 
             try {
+                const source = stateManager?.getSource?.(sourceId) || null;
+                const hasSavedSession = !!(typeof source?.tiktokSessionId === 'string' && source.tiktokSessionId.trim());
+                const hasSavedIdc = !!(typeof source?.tiktokTtTargetIdc === 'string' && source.tiktokTtTargetIdc.trim());
                 const result = await ipcRenderer.invoke('getTikTokSignInStatus');
-                if (result && result.signedIn) {
-                    if (result.hasTtTargetIdc === false) {
+                if ((result && result.signedIn) || hasSavedSession) {
+                    if ((result && result.signedIn && result.hasTtTargetIdc === false) || (hasSavedSession && !hasSavedIdc)) {
                         statusEl.innerHTML = `
                             <div style="display: flex; flex-direction: column; gap: 4px;">
                                 <div style="display: flex; align-items: center; gap: 8px;">
-                                    <span style="color: #fbbf24; font-size: 16px;">●</span>
-                                    <span style="color: #f8fafc; font-weight: 500;">Partially Signed In</span>
+                                    <span style="color: #fbbf24; font-size: 16px;">&bull;</span>
+                                    <span style="color: #f8fafc; font-weight: 500;">Session Saved</span>
                                 </div>
                                 <span style="color: #fbbf24; font-size: 11px;">Missing tt_target_idc cookie. Reload page?</span>
                             </div>
                         `;
                     } else {
                         statusEl.innerHTML = `
-                            <span style="color: #4ade80; font-size: 16px;">●</span>
-                            <span style="color: #f8fafc; font-weight: 500;">Signed In</span>
+                            <span style="color: #4ade80; font-size: 16px;">&bull;</span>
+                            <span style="color: #f8fafc; font-weight: 500;">${hasSavedSession ? 'Session Saved' : 'Signed In'}</span>
                         `;
                     }
                 } else {
                     statusEl.innerHTML = `
-                        <span style="color: #94a3b8; font-size: 16px;">○</span>
+                        <span style="color: #94a3b8; font-size: 16px;">&#9675;</span>
                         <span style="color: #cbd5f5;">Not Signed In</span>
                     `;
                 }
@@ -7235,6 +7244,36 @@
             if (tiktokStatusInterval) clearInterval(tiktokStatusInterval);
             checkTikTokSignInStatus(sourceId);
             tiktokStatusInterval = setInterval(() => checkTikTokSignInStatus(sourceId), 2000);
+        }
+
+        function cleanTikTokSigningMenuContent(content) {
+            return String(content || '')
+                .replace(/>\s*[^<>]*Clear Authentication\s*</g, '>Clear Authentication<')
+                .replace(/>\s*[^<>]*Enter Session ID manually\s*</g, '>Enter Session ID manually<')
+                .replace(/>\s*[^<>]*Enter Session ID\s*</g, '>Enter Session ID<')
+                .replace(/>\s*[^<>]*Copy Payload\s*</g, '>Copy Payload<')
+                .replace(/>\s*[^<>]*Sign in to TikTok\s*</g, '>Sign in to TikTok<')
+                .replace(/>\s*[^<>]*Signed in to TikTok\s*</g, '>Signed in to TikTok<')
+                .replace(/>\s*[^<>]*Save\s*</g, '>Save<')
+                .replace(/>\s*[^<>]*Clear\s*</g, '>Clear<');
+        }
+
+        async function setTikTokSourceHostRole(sourceId) {
+            if (!stateManager || !sourceId) return;
+            const source = stateManager.getSource(sourceId);
+            if (!source || source.target !== 'tiktok') return;
+            const wasActive = hasConnectionHandles(source);
+            stateManager.updateSource(sourceId, { accountRole: 'host' });
+            const entry = document.querySelector(`[data-source-id="${sourceId}"]`);
+            if (entry) {
+                updateSourceUI(entry, stateManager.getSource(sourceId));
+            }
+            showTikTokSignInMenu(sourceId);
+            if (wasActive) {
+                await restartTikTokSourceAfterAuthIfActive(sourceId, 'Host role');
+            } else {
+                Toast.success('TikTok Source', 'Role set to Host.');
+            }
         }
 
         // Hook into modal close to stop polling
@@ -7313,43 +7352,56 @@
             // 2. Local Signer Block
             const localSignerBlock = `
                 <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
-                    <h4 style="margin: 0 0 10px 0; font-size: 15px;">Local Signer Status</h4>
-                    <div style="background: rgba(245, 158, 11, 0.12); border-left: 3px solid #f59e0b; padding: 10px 12px; border-radius: 6px; margin: 0 0 12px 0; font-size: 12px; color: #ffedd5;">
-                        <strong>Experimental:</strong> Local signer support is new and may be unstable. Use Polling if you hit issues.
+                    <h4 style="margin: 0 0 10px 0; font-size: 15px;">Local Signer</h4>
+                    <div style="background: rgba(59, 130, 246, 0.12); border-left: 3px solid #3b82f6; padding: 10px 12px; border-radius: 6px; margin: 0 0 12px 0; font-size: 12px; color: #dbeafe; line-height: 1.45;">
+                        Uses a lightweight TikTok signing window instead of Euler. Anonymous mode can connect, but signed-in Host mode is recommended for full chat capture.
                     </div>
                     <div id="tiktok-signin-status-${sourceId}" style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px;">
                         <span style="color: #94a3b8;">Checking status...</span>
                     </div>
+                    <div style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(148, 163, 184, 0.25); padding: 10px 12px; border-radius: 6px; margin: 0 0 12px 0; font-size: 12px; color: #cbd5f5; line-height: 1.45;">
+                        Current role: <strong>${getAccountRoleLabel(normalizeAccountRole(source.accountRole))}</strong>.
+                        ${normalizeAccountRole(source.accountRole) === 'host'
+                            ? 'Host role uses TikTok anchor identity when Local Signer connects.'
+                            : 'For full capture from your own stream, use Set role to Host below.'}
+                        ${normalizeAccountRole(source.accountRole) === 'host' ? '' : `
+                            <div style="margin-top: 8px;">
+                                <button onclick="setTikTokSourceHostRole('${sourceId}')" class="button" style="background: #475569; font-size: 12px; padding: 6px 10px;">
+                                    Set role to Host
+                                </button>
+                            </div>
+                        `}
+                    </div>
                     <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;">
                         <button onclick="tiktokShowSigningWindow('${sourceId}')" class="button" style="background: #2563eb; flex: 1; justify-content: center;">
-                            Open Sign-in Window
+                            Open TikTok Sign-in
                         </button>
                         <button id="tiktok-signing-generate-${sourceId}" onclick="tiktokGenerateSigningParameters('${sourceId}')" class="button" style="background: #0ea5e9; flex: 1; justify-content: center;">
-                            🔐 Generate Keys
+                            Collect Session
                         </button>
                     </div>
                     <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
                         <button id="tiktok-signing-reveal-${sourceId}" onclick="tiktokSigningWindowControl('${sourceId}', 'toggle-visibility')" class="button" style="background: #334155; flex: 1; justify-content: center;">
-                            👁️ Show window
+                            Show window
                         </button>
                         <button id="tiktok-signing-refresh-${sourceId}" onclick="tiktokSigningWindowControl('${sourceId}', 'refresh')" class="button" style="background: #1e293b; flex: 1; justify-content: center;">
-                            🔄 Refresh
+                            Refresh
                         </button>
                         <button id="tiktok-signing-mute-${sourceId}" onclick="tiktokSigningWindowControl('${sourceId}', 'toggle-mute')" class="button" style="background: #334155; flex: 1; justify-content: center;">
-                            🔇 Mute
+                            Mute
                         </button>
                         <button id="tiktok-signing-stop-${sourceId}" onclick="tiktokSigningWindowControl('${sourceId}', 'stop')" class="button" style="background: #ef4444; flex: 1; justify-content: center;">
-                            ⏹️ Close window
+                            Close window
                         </button>
                     </div>
                     <div style="background: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6; padding: 8px 12px; margin: 12px 0; font-size: 13px; color: #dbeafe;">
-                        <strong>Important:</strong> Keep the sign-in window OPEN to allow the app to send chat replies.
+                        <strong>Replies:</strong> Keep the signing window open if you want the app to send TikTok chat replies.
                     </div>
-                    <p style="margin: 8px 0 0 0; font-size: 12px; color: #94a3b8;">
-                        1. <strong>Open Sign-in Window</strong> &rarr; Sign in to TikTok.<br>
-                        2. Navigate to the live room (optional but recommended).<br>
-                        3. Click <strong>Generate Keys</strong> to capture the session.
-                    </p>
+                    <ol style="margin: 8px 0 0 18px; padding: 0; font-size: 12px; color: #94a3b8; line-height: 1.5;">
+                        <li>Open TikTok Sign-in and sign in if full capture is needed.</li>
+                        <li>Collect Session to save the current TikTok cookies.</li>
+                        <li>Activate or restart the source so the websocket uses the saved session.</li>
+                    </ol>
                     <div id="tiktok-signing-result-${sourceId}" style="margin-top: 12px; font-size: 12px; color: #e2e8f0;"></div>
                 </div>`;
 
@@ -7376,7 +7428,7 @@
                     <div style="margin-bottom: 10px;">
                         <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #e2e8f0;">
                             <input id="${autoValidateInputId}" type="checkbox" ${autoValidateEnabled ? 'checked' : ''} style="accent-color: #0ea5e9;">
-                            Ping TikTok's fetch endpoint after generating
+                            Ping TikTok's fetch endpoint after collecting the session
                         </label>
                     </div>
                     <div style="display: flex; gap: 10px; flex-wrap: wrap;">
@@ -7485,7 +7537,7 @@
                 </div>
             `;
 
-            showModal(menuContent);
+            showModal(cleanTikTokSigningMenuContent(menuContent));
             renderTikTokSigningResults(sourceId);
             startTikTokStatusPolling(sourceId);
             if (providerValue === 'local') {
@@ -7558,7 +7610,7 @@
             const source = stateManager.getSource(sourceId);
             const payload = source?.tiktokSigningParameters?.payload;
             if (!payload) {
-                Toast.warning("TikTok Signing", "Generate signing keys first.");
+                Toast.warning("TikTok Signing", "Collect the session first.");
                 return;
             }
             const text = JSON.stringify(payload, null, 2);
@@ -7651,6 +7703,10 @@
 
                 stateManager.updateSource(sourceId, updates);
                 renderTikTokSigningResults(sourceId);
+                const shouldRestartAfterSessionUpdate = !!(updates.tiktokSessionId || updates.tiktokTtTargetIdc || source.tiktokSigningProvider !== 'local');
+                const restarted = shouldRestartAfterSessionUpdate
+                    ? await restartTikTokSourceAfterAuthIfActive(sourceId, 'TikTok session')
+                    : false;
                 const validationResult = response.validation;
                 if (validationResult && validationResult.attempted) {
                     if (validationResult.ok) {
@@ -7659,14 +7715,16 @@
                         Toast.warning("TikTok Signing", validationResult.error || 'TikTok fetch validation failed.');
                     }
                 }
-                Toast.success("TikTok Signing", "Signing parameters collected.");
+                if (!restarted) {
+                    Toast.success("TikTok Signing", "Session collected.");
+                }
             } catch (error) {
                 console.error('Failed to collect TikTok signing parameters:', error);
                 Toast.error("TikTok Signing", error.message || 'Failed to collect signing parameters.');
             } finally {
                 if (actionButton) {
                     actionButton.disabled = false;
-                    actionButton.innerHTML = originalLabel || '🔐 Generate signing keys';
+                    actionButton.innerHTML = originalLabel || 'Collect Session';
                 }
             }
         }
@@ -7681,7 +7739,7 @@
                     return;
                 }
                 tiktokSigningWindowControl(sourceId, 'state', { silent: true });
-                Toast.info('TikTok Signing', 'TikTok window opened. Navigate to the live room, then click Generate signing keys.');
+                Toast.info('TikTok Signing', 'TikTok sign-in window opened. Sign in if needed, then click Collect Session.');
             } catch (error) {
                 console.error('Failed to show TikTok signing window:', error);
                 Toast.error('TikTok Signing', error.message || 'Unable to show the TikTok window.');
@@ -7697,7 +7755,7 @@
 
             if (revealBtn) {
                 const visible = !!state?.visible;
-                revealBtn.innerHTML = visible ? '🙈 Hide window' : '👁️ Show window';
+                revealBtn.innerHTML = visible ? 'Hide window' : 'Show window';
                 revealBtn.title = visible ? 'Hide the TikTok signing window' : 'Show the TikTok signing window';
             }
             if (refreshBtn) {
@@ -7707,7 +7765,7 @@
             if (muteBtn) {
                 muteBtn.disabled = !hasWindow;
                 const muted = !!state?.muted;
-                muteBtn.innerHTML = muted ? '🔊 Unmute' : '🔇 Mute';
+                muteBtn.innerHTML = muted ? 'Unmute' : 'Mute';
                 muteBtn.title = muted ? 'Unmute the signing window' : 'Mute the signing window';
             }
             if (stopBtn) {
@@ -7769,6 +7827,39 @@
             }
         }
 
+        async function restartTikTokSourceAfterAuthIfActive(sourceId, reason = 'TikTok sign-in') {
+            if (!stateManager || !sourceId) return false;
+            const source = stateManager.getSource(sourceId);
+            if (!source || source.target !== 'tiktok') return false;
+            const mode = source.activeConnectionMode || source.connectionMode || '';
+            const isTikTokApiMode = mode === 'tiktok-websocket' || mode === 'tiktok-legacy';
+            if (!isTikTokApiMode || !hasConnectionHandles(source)) return false;
+
+            const entry = document.querySelector(`[data-source-id="${sourceId}"]`);
+            if (!entry) return false;
+            Toast.info('Restarting TikTok', `${reason} saved. Restarting this source so the active connection uses it.`);
+            try {
+                const stopBtn = entry.querySelector('[data-stophtml]');
+                const actBtn = entry.querySelector('[data-activatehtml]');
+                if (actBtn && actBtn.dataset.connecting === 'true') {
+                    await stopThis(actBtn);
+                } else if (stopBtn) {
+                    await stopThis(stopBtn);
+                }
+                await new Promise((resolve) => setTimeout(resolve, 250));
+                const activateBtn = entry.querySelector('[data-activatehtml]');
+                if (activateBtn) {
+                    await createWindow(activateBtn);
+                    Toast.success('TikTok Sign-in', 'Session saved and connection restarted.');
+                    return true;
+                }
+            } catch (error) {
+                console.error('Failed to restart TikTok source after sign-in:', error);
+                Toast.error('TikTok Sign-in', 'Session saved, but restart failed. Stop and activate the source again.');
+            }
+            return false;
+        }
+
         async function tiktokSignIn(sourceId, options = {}) {
             closeModal();
             try {
@@ -7789,7 +7880,6 @@
                             tiktokSessionId: rawSession,
                             tiktokTtTargetIdc: rawIdc || null
                         });
-                        Toast.success("TikTok Sign-in", "Successfully signed in to TikTok!");
 
                         // Update UI to show authenticated status
                         const entry = document.querySelector(`[data-source-id="${sourceId}"]`);
@@ -7799,6 +7889,7 @@
                                 if (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy') {
                                     signInBtn.innerHTML = '✓ TikTok Session Saved';
                                     signInBtn.classList.add('authenticated');
+                                    signInBtn.innerHTML = 'TikTok Session Saved';
                                     signInBtn.title = 'TikTok session cookie stored for this source.';
                                 } else {
                                     const defaultLabel = typeof translate === 'function' ? translate('btn.signin') : '🔑 Sign-in';
@@ -7807,6 +7898,10 @@
                                     signInBtn.title = '';
                                 }
                             }
+                        }
+                        const restarted = await restartTikTokSourceAfterAuthIfActive(sourceId, 'TikTok sign-in');
+                        if (!restarted) {
+                            Toast.success("TikTok Sign-in", "Successfully signed in to TikTok!");
                         }
                     }
                 } else {
@@ -7836,7 +7931,6 @@
                             tiktokSessionId: rawSession,
                             tiktokTtTargetIdc: rawIdc || null
                         });
-                        Toast.success("TikTok Sign-in", "Successfully added TikTok credentials!");
 
                         // Update UI to show authenticated status
                         const entry = document.querySelector(`[data-source-id="${sourceId}"]`);
@@ -7846,6 +7940,7 @@
                                 if (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy') {
                                     signInBtn.innerHTML = '✓ TikTok Session Saved';
                                     signInBtn.classList.add('authenticated');
+                                    signInBtn.innerHTML = 'TikTok Session Saved';
                                     signInBtn.title = 'TikTok session cookie stored for this source.';
                                 } else {
                                     const defaultLabel = typeof translate === 'function' ? translate('btn.signin') : '🔑 Sign-in';
@@ -7854,6 +7949,10 @@
                                     signInBtn.title = '';
                                 }
                             }
+                        }
+                        const restarted = await restartTikTokSourceAfterAuthIfActive(sourceId, 'TikTok credentials');
+                        if (!restarted) {
+                            Toast.success("TikTok Sign-in", "Successfully added TikTok credentials!");
                         }
                     }
                 }
@@ -8219,7 +8318,7 @@
                     }
 
                     const customSession = source ? (source.customSession || 'AUTO') : (group ? (group.customSession || 'AUTO') : 'AUTO');
-                    const response = ipcRenderer.sendSync('signIn', {
+                    const response = await ipcRenderer.invoke('signIn', {
                         url: rewriteKickUrl(resolvedHtml.url.trim()),
                         platform: effectivePlatform,
                         wss: true,
@@ -8278,7 +8377,7 @@
             const customSession = source ? (source.customSession || 'AUTO') : (group ? (group.customSession || 'AUTO') : 'AUTO');
             console.log(`[SIGN-IN DEBUG] Platform: ${rawTargetPlatform}, Sign-in Platform: ${effectivePlatform}, URL: ${signinUrl}, CustomSession: ${customSession}`);
             try {
-                const response = ipcRenderer.sendSync('signIn', {
+                const response = await ipcRenderer.invoke('signIn', {
                     url: signinUrl.trim(),
                     platform: effectivePlatform,
                     muted: true, visible: true, source: false, tab: tabid,

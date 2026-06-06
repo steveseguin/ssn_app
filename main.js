@@ -46,7 +46,22 @@ const url = require('url');
 const contextMenu = require("electron-context-menu");
 const Yargs = require("yargs");
 
+function getExplicitUserDataDir() {
+    const rawValue = (process.env.SSAPP_USER_DATA_DIR || "").trim();
+    if (!rawValue) return "";
+    return path.resolve(rawValue);
+}
 
+let explicitUserDataDir = getExplicitUserDataDir();
+if (explicitUserDataDir) {
+    try {
+        fs.mkdirSync(explicitUserDataDir, { recursive: true });
+        app.setPath("userData", explicitUserDataDir);
+    } catch (error) {
+        console.warn("[SSAPP] Failed to apply SSAPP_USER_DATA_DIR override:", error && error.message ? error.message : error);
+        explicitUserDataDir = "";
+    }
+}
 
 const fetch = require("electron-fetch").default;
 const TikTokAuthModule = require('./tiktok-auth');
@@ -65,7 +80,6 @@ try {
     console.warn('[TikTok] Signing helper unavailable:', error && error.message ? error.message : error);
 }
 const { setupWebSocketMonitor } = require('./websocket-monitor');
-const youTubeGrpcStreamManager = require('./youtube-grpc-client');
 const {
     setupSpotifyOAuthWithLocalServer,
     setupSpotifyOAuthWithIntercept
@@ -2139,6 +2153,41 @@ function setupRemoteControlServer() {
             return;
         }
 
+        if (parsed.pathname === '/view-exec' && req.method === 'POST') {
+            readBodyLimited(req).then(async (body) => {
+                try {
+                    const { key, code } = JSON.parse(body);
+                    if (!key || !code || typeof code !== 'string') {
+                        res.writeHead(400, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ ok: false, error: 'key and code are required' }));
+                        return;
+                    }
+                    const view = browserViews[key];
+                    if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
+                        res.writeHead(404, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ ok: false, error: 'view_not_found' }));
+                        return;
+                    }
+                    const wc = view.webContents;
+                    if (!wc || (typeof wc.isDestroyed === 'function' && wc.isDestroyed())) {
+                        res.writeHead(404, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ ok: false, error: 'webcontents_not_found' }));
+                        return;
+                    }
+                    const result = await wc.executeJavaScript(code, true);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: true, result }));
+                } catch (err) {
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: err.message }));
+                }
+            }).catch(err => {
+                res.writeHead(413, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: err.message }));
+            });
+            return;
+        }
+
         if (parsed.pathname === '/windows') {
             const windows = BrowserWindow.getAllWindows().map((win, i) => ({
                 id: win.id,
@@ -2997,6 +3046,21 @@ function normalizeSocialStreamRelativePath(input) {
     return normalized.join(path.sep);
 }
 
+function extractSocialStreamRelativePath(input) {
+    if (!input || typeof input !== 'string') return null;
+    let rawPath = input;
+    try {
+        rawPath = new URL(input).pathname || '';
+    } catch (_) { }
+    rawPath = rawPath.replace(/\\/g, '/').replace(/^\/+/, '');
+    const marker = 'sources/';
+    const markerIndex = rawPath.indexOf(marker);
+    if (markerIndex !== -1) {
+        rawPath = rawPath.slice(markerIndex);
+    }
+    return normalizeSocialStreamRelativePath(rawPath);
+}
+
 async function ensureDirectoryFor(filePath) {
     try {
         const dir = path.dirname(filePath);
@@ -3375,6 +3439,8 @@ ipcMain.handle('ssapp:get-source-window-config', async (event) => {
         const args = sourceWindow && sourceWindow.args ? sourceWindow.args : {};
         return {
             ok: true,
+            platform: typeof args.domain === 'string' ? args.domain : '',
+            config: args.config && typeof args.config === 'object' ? args.config : {},
             rumbleApiTracker: !!args.rumbleApiTracker,
             rumbleApiUrl: typeof args.rumbleApiUrl === 'string' ? args.rumbleApiUrl : '',
             rumbleFollowerCountMode: typeof args.rumbleFollowerCountMode === 'string' ? args.rumbleFollowerCountMode : ''
@@ -3385,35 +3451,6 @@ ipcMain.handle('ssapp:get-source-window-config', async (event) => {
             error: error?.message || 'Unable to read source window config.'
         };
     }
-});
-
-ipcMain.handle('youtube-livechat-grpc:start', async (event, options = {}) => {
-    try {
-        const sourceWindow = BrowserWindow.fromWebContents(event.sender);
-        const sourceArgs = sourceWindow && sourceWindow.args ? sourceWindow.args : {};
-        const result = youTubeGrpcStreamManager.startStream({
-            ...options,
-            socialStreamRoot: options.socialStreamRoot || sourceArgs.filesource || Argv.filesource || ''
-        }, event.sender);
-        return { success: true, streamId: result.streamId };
-    } catch (error) {
-        console.warn('[YouTube][gRPC] Failed to start live chat stream:', error && error.message ? error.message : error);
-        return {
-            success: false,
-            error: {
-                message: error && error.message ? error.message : 'Failed to start YouTube live chat gRPC stream.',
-                code: typeof error?.code === 'number' ? error.code : null
-            }
-        };
-    }
-});
-
-ipcMain.handle('youtube-livechat-grpc:stop', async (_event, streamId) => {
-    if (typeof streamId !== 'string' || !streamId) {
-        return { success: false, error: { message: 'streamId is required.' } };
-    }
-    const stopped = youTubeGrpcStreamManager.stopStream(streamId);
-    return { success: stopped };
 });
 
 function queueInjectorToast(level, title, message) {
@@ -6183,6 +6220,60 @@ function getVirtualScreenBounds() {
     }
 }
 
+function sourceWindowIntersectsVirtualScreen(bounds) {
+    try {
+        if (!bounds || typeof bounds !== 'object') return true;
+        const vb = getVirtualScreenBounds();
+        const overlapX = Math.max(0, Math.min(bounds.x + bounds.width, vb.x + vb.width) - Math.max(bounds.x, vb.x));
+        const overlapY = Math.max(0, Math.min(bounds.y + bounds.height, vb.y + vb.height) - Math.max(bounds.y, vb.y));
+        return overlapX > 0 && overlapY > 0;
+    } catch (_) {
+        return true;
+    }
+}
+
+function getSourceWindowOffscreenCandidates(view) {
+    let currentBounds = null;
+    try {
+        currentBounds = view && view.__prevBounds ? view.__prevBounds : view.getBounds();
+    } catch (_) {
+        currentBounds = null;
+    }
+
+    const width = Math.max(parseInt(currentBounds && currentBounds.width, 10) || 800, 100);
+    const height = Math.max(parseInt(currentBounds && currentBounds.height, 10) || 600, 100);
+    const vb = getVirtualScreenBounds();
+    const margin = Math.max(10000, width + height + 1000);
+
+    return [
+        { x: Math.floor(vb.x - width - margin), y: Math.floor(vb.y - height - margin), width, height },
+        { x: Math.floor(vb.x + vb.width + margin), y: Math.floor(vb.y + vb.height + margin), width, height },
+        { x: Math.floor(vb.x - width - margin), y: Math.floor(vb.y + vb.height + margin), width, height },
+        { x: Math.floor(vb.x + vb.width + margin), y: Math.floor(vb.y - height - margin), width, height }
+    ];
+}
+
+function parkSourceWindowOffscreen(view) {
+    if (!view || view.isDestroyed()) return false;
+
+    let lastBounds = null;
+    const candidates = getSourceWindowOffscreenCandidates(view);
+    for (const candidate of candidates) {
+        try {
+            view.setBounds(candidate);
+            lastBounds = view.getBounds();
+            if (!sourceWindowIntersectsVirtualScreen(lastBounds)) {
+                return true;
+            }
+        } catch (_) { }
+    }
+
+    try {
+        console.warn('[SourceWindow] Failed to park source window fully off-screen:', lastBounds);
+    } catch (_) { }
+    return false;
+}
+
 function notifySourceWindowVisibilityChange(view, visible) {
     try {
         if (!mainWindow || mainWindow.isDestroyed() || !view || view.isDestroyed()) return;
@@ -6231,23 +6322,15 @@ function stealthHideView(view) {
         if (wasVisible || !view.__prevBounds) {
             try { view.__prevBounds = view.getBounds(); } catch (_) { view.__prevBounds = null; }
         }
-        if (process.platform === 'linux') {
-            try { view.setSkipTaskbar(true); } catch (_) { }
-            try { view.minimize(); } catch (_) { }
-            return false;
-        }
-        // Compute an off-screen coordinate
-        const vb = getVirtualScreenBounds();
-        // Place far to the left/top but keep original size to avoid triggering
-        // viewport-based throttling in pages like TikTok
-        const offX = Math.floor(vb.x - 10000);
-        const offY = Math.floor(vb.y - 10000);
-        const currentBounds = view.__prevBounds || { width: 800, height: 600 };
-        view.setBounds({ x: offX, y: offY, width: currentBounds.width, height: currentBounds.height });
+
         // Avoid taskbar clutter while hidden
         try { view.setSkipTaskbar(true); } catch (_) { }
+
+        // Keep the window visible to Chromium, but park it outside the virtual desktop.
+        const parked = parkSourceWindowOffscreen(view);
+
         // Keep window technically visible; do not call hide()/minimize()
-        return false;
+        return parked;
     } catch (_) {
         return false;
     }
@@ -8922,7 +9005,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         return platform;
     }
 
-    ipcMain.on("signIn", function (eventRet, args2) {
+    async function handleSignInRequest(args2) {
         log("IPC CREATE WINDOW - SIGN IN");
         var args = Object.assign({}, Argv, args2);
 
@@ -8950,8 +9033,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         if (!args.url) {
             log("No URL; can't load");
-            eventRet.returnValue = null;
-            return;
+            return null;
         }
 
         args.url = args.url.trim();
@@ -8992,20 +9074,29 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     } else {
                         existingView.webContents.loadURL(args.url);
                     }
-                    eventRet.returnValue = args.tab;
-                    return;
+                    return args.tab;
                 } catch (e) {
                     console.error(e);
                 }
             }
         }
 
-        // Create new window
-        createSignInWindow(args).then(windowId => {
-            eventRet.returnValue = windowId;
-        }).catch(error => {
+        try {
+            return await createSignInWindow(args);
+        } catch (error) {
             console.error('Failed to create sign-in window:', error);
-            eventRet.returnValue = null;
+            return null;
+        }
+    }
+
+    ipcMain.handle("signIn", async (_event, args2) => {
+        return await handleSignInRequest(args2);
+    });
+
+    ipcMain.on("signIn", function (eventRet, args2) {
+        eventRet.returnValue = null;
+        handleSignInRequest(args2).catch(error => {
+            console.error('Failed to create sign-in window:', error);
         });
     });
 
@@ -9047,6 +9138,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const platform = resolveSessionPlatform(args, domain);
 
             const signInHeaderOverrides = resolveHeaderOverridesFromConfig(args.config, args.url);
+            const isLocalSocialStreamSignIn = /^file:/i.test(String(args.url || ""))
+                && /[\\/]sources[\\/]websocket[\\/]/i.test(String(args.url || "").replace(/\//g, path.sep));
 
             // Always use in-app sign-in (never system browser)
 
@@ -9085,7 +9178,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             let shouldClearSession = false;
 
-            if (hasExistingSession) {
+            if (hasExistingSession && !isLocalSocialStreamSignIn) {
                 // Show confirmation dialog
                 const result = await dialog.showMessageBox(mainWindow, {
                     type: 'question',
@@ -9190,6 +9283,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                 // Small delay to ensure clearing operations complete
                 await new Promise(resolve => setTimeout(resolve, 100));
+            } else if (hasExistingSession && isLocalSocialStreamSignIn) {
+                log(`Keeping existing local Social Stream sign-in session for ${domain}`);
             } else {
                 log(`User chose to keep existing session for ${domain}`);
             }
@@ -10054,6 +10149,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
     const originalCreateWindowHandler = function (eventRet, args2) {
         log("IPC CREATE WINDOW");
         var args = Object.assign({}, Argv, args2);
+        let runningLocally = args.filesource || "";
+        if (runningLocally && !runningLocally.endsWith("/") && !runningLocally.endsWith("\\")) {
+            runningLocally += "/";
+        }
         if (!args.url) {
             log("No URL; can't load");
             eventRet.returnValue = null;
@@ -10217,17 +10316,36 @@ async function createWindow(args, reuse = false, mainApp = false) {
             view.tabID = generateUniqueWindowId();;
             browserViews[view.tabID] = view;
             const sourceWindowMode = args.wss ? "wss" : "classic";
-            view.setBounds(loadRememberedSourceWindowBounds(args, sourceWindowMode));
+            const rememberedSourceWindowBounds = loadRememberedSourceWindowBounds(args, sourceWindowMode);
+            view.__prevBounds = rememberedSourceWindowBounds;
+            view.setBounds(rememberedSourceWindowBounds);
             installRememberedSourceWindowBoundsTracking(view, sourceWindowMode);
             installWindowsSourceWindowMinimizeGuard(view);
 
             // Show without stealing focus if visibility is enabled
             if (visibibility) {
+                view.__ss_visible = true;
+                try { view.setSkipTaskbar(false); } catch (_) { }
                 view.showInactive();
-            } else if (process.platform === 'win32') {
+            } else {
+                view.__ss_visible = false;
                 try { view.setSkipTaskbar(true); } catch (_) { }
-                try { view.showInactive(); } catch (_) { }
                 stealthHideView(view);
+                try { view.showInactive(); } catch (_) { }
+                const reparkHiddenWindow = () => {
+                    try {
+                        if (view && !view.isDestroyed() && view.__ss_visible === false) {
+                            stealthHideView(view);
+                        }
+                    } catch (_) { }
+                };
+                view.once('ready-to-show', reparkHiddenWindow);
+                if (view.webContents) {
+                    view.webContents.once('did-finish-load', () => {
+                        setTimeout(reparkHiddenWindow, 0);
+                    });
+                }
+                setTimeout(reparkHiddenWindow, 100);
             }
 
             if (view.webContents) {
@@ -10903,6 +11021,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     if (!value || typeof value !== "string") return "";
                     return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
                 };
+                const isAbsoluteScriptUrl = (value) => /^https?:\/\//i.test(String(value || ""));
                 let explicitSourceFiles = Array.isArray(args.sourceFiles)
                     ? args.sourceFiles.map((value) => normalizeSelectedSourcePath(value)).filter(Boolean)
                     : [];
@@ -10912,7 +11031,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     : (args.source ? [normalizeSelectedSourcePath(args.source)] : []);
                 let sourceInjectionHandled = false;
 
-                if (runningLocally && selectedSourceFiles.length && selectedSourceFiles.every((value) => value && !value.startsWith("https://"))) {
+                if (runningLocally && selectedSourceFiles.length && selectedSourceFiles.every((value) => value && !isAbsoluteScriptUrl(value))) {
                     const normalizeRoot = (value) => {
                         if (!value || typeof value !== "string") return "";
                         return (value.endsWith("/") || value.endsWith("\\")) ? value : `${value}/`;
@@ -11234,8 +11353,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                             for (const sourceValue of selectedSourceFiles) {
                                 try {
-                                    const jsSource = sourceValue.startsWith("https://") ? sourceValue : `https://raw.githubusercontent.com/steveseguin/social_stream/${branch}/${sourceValue}`;
-                                    const relativeSource = sourceValue.startsWith("https://") ? '' : sourceValue;
+                                    const isUrlSource = isAbsoluteScriptUrl(sourceValue);
+                                    const relativeSource = extractSocialStreamRelativePath(sourceValue) || '';
+                                    const remoteSourcePath = (relativeSource || sourceValue).replace(/\\/g, '/');
+                                    const jsSource = isUrlSource ? sourceValue : `https://raw.githubusercontent.com/steveseguin/social_stream/${branch}/${remoteSourcePath}`;
 
                                     log(jsSource);
 
@@ -11572,9 +11693,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
                 });
             }
-            // Initialize logical visibility flag for stealth-hide/show
-            view.__ss_visible = true;
-            try { view.setSkipTaskbar(false); } catch (_) { }
+            // Preserve the logical visibility decided during window creation.
+            if (view.__ss_visible === false) {
+                try { view.setSkipTaskbar(true); } catch (_) { }
+                const reparkHiddenWindow = () => {
+                    try {
+                        if (view && !view.isDestroyed() && view.__ss_visible === false) {
+                            stealthHideView(view);
+                        }
+                    } catch (_) { }
+                };
+                setTimeout(reparkHiddenWindow, 0);
+                setTimeout(reparkHiddenWindow, 250);
+            } else {
+                view.__ss_visible = true;
+                try { view.setSkipTaskbar(false); } catch (_) { }
+            }
             eventRet.returnValue = view.tabID;
             log(`Window created successfully with ID: ${view.tabID}`);
         } catch (e) {
@@ -13228,7 +13362,7 @@ app.on("will-quit", () => {
     safeUnregisterGlobalShortcuts('will-quit');
 });
 
-const folder = path.join(app.getPath("appData"), `${app.name}`);
+const folder = explicitUserDataDir || path.join(app.getPath("appData"), `${app.name}`);
 if (!fs.existsSync(folder)) {
     fs.mkdirSync(folder, {
         recursive: true
