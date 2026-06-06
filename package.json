@@ -97,6 +97,7 @@
       "!certs/**",
       "!old-certs-backup/**",
       "!dist/**",
+      "!sso-worker/**",
       "!aur/**",
       "!aur-repo/**",
       "!tests/**",

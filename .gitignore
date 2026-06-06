@@ -40,3 +40,6 @@ resources/social_stream_fallback/
 # Cloudflare / Wrangler
 cloudflare/.wrangler/
 cloudflare/node_modules/
+
+# Local Social Stream SSO Worker
+/sso-worker/
