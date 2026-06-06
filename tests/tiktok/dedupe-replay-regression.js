@@ -366,7 +366,7 @@ test('legacy-mode connect clears transient connector cursor before connect', () 
         'utf8'
     );
     assert.ok(
-        /if \(this\.pollingFallbackActivated \|\| this\.preferredStrategy === 'legacy' \|\| this\.connectionStrategy === 'legacy'\) \{\s*this\.resetConnectionBootstrapState\(\);\s*\}[\s\S]{0,120}await activeConnection\.connect\(\);/.test(src),
+        /if \(this\.pollingFallbackActivated \|\| this\.preferredStrategy === 'legacy' \|\| this\.connectionStrategy === 'legacy'\) \{\s*this\.resetConnectionBootstrapState\(\);\s*\}[\s\S]{0,260}await activeConnection\.connect\(\);/.test(src),
         'legacy-mode connect should clear transient cursor/internal_ext before connecting'
     );
 });

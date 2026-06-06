@@ -448,9 +448,21 @@ const localSignerSessionGate = {
     perUniqueIdNextAllowedAt: new Map()
 };
 
+const tiktokConnectAttemptGate = {
+    tail: Promise.resolve(),
+    nextAllowedAt: 0,
+    perKeyNextAllowedAt: new Map(),
+    cooldowns: new Map()
+};
+
 function getLocalSignerMinAttemptIntervalMs() {
     const raw = Number(CONFIG?.CONNECTION?.LOCAL_SIGNER_MIN_ATTEMPT_INTERVAL_MS);
     return Number.isFinite(raw) && raw > 0 ? raw : 10000;
+}
+
+function getLocalSignerCooldownRemainingMs(now = Date.now()) {
+    const until = Number(localSignerSessionGate.cooldownUntil) || 0;
+    return Math.max(0, until - now);
 }
 
 function setLocalSignerCooldown(untilEpochMs, reason) {
@@ -461,6 +473,119 @@ function setLocalSignerCooldown(untilEpochMs, reason) {
     if (until > localSignerSessionGate.cooldownUntil) {
         localSignerSessionGate.cooldownUntil = until;
         localSignerSessionGate.cooldownReason = typeof reason === 'string' && reason.trim() ? reason.trim() : null;
+    }
+}
+
+function getTikTokConnectAttemptIntervalMs(manager = null) {
+    const managerValue = Number(manager?.connectAttemptMinIntervalMs);
+    if (Number.isFinite(managerValue) && managerValue >= 0) {
+        return managerValue;
+    }
+    const raw = Number(CONFIG?.CONNECTION?.CONNECT_ATTEMPT_MIN_INTERVAL_MS);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 1500;
+}
+
+function getTikTokConnectAttemptProviderIntervalMs(manager = null) {
+    const managerValue = Number(manager?.connectAttemptProviderIntervalMs);
+    if (Number.isFinite(managerValue) && managerValue >= 0) {
+        return managerValue;
+    }
+    const raw = Number(CONFIG?.CONNECTION?.CONNECT_ATTEMPT_PROVIDER_INTERVAL_MS);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 2500;
+}
+
+function getTikTokConnectAttemptGateKey(manager = null) {
+    if (!manager || typeof manager !== 'object') {
+        return 'unknown';
+    }
+    if (manager.pollingFallbackActivated || manager.preferredStrategy === 'legacy' || manager.connectionStrategy === 'legacy') {
+        return 'legacy';
+    }
+    if (manager.signingProvider === 'local' || manager.autoLocalSignerFallbackActive) {
+        return 'local';
+    }
+    if (manager.signingProvider === EULER_WS_PROVIDER || manager.autoEulerProxyFallbackActive) {
+        return manager.hasUserProvidedSigningApiKey?.() ? 'euler-ws:user-key' : 'euler-ws:shared';
+    }
+    if (manager.signingProvider === 'custom') {
+        return 'custom';
+    }
+    return manager.hasUserProvidedSigningApiKey?.() ? 'auto:user-key' : 'auto:shared';
+}
+
+function setTikTokConnectAttemptCooldown(key, untilEpochMs, reason) {
+    const normalizedKey = typeof key === 'string' && key.trim() ? key.trim() : null;
+    const until = Number(untilEpochMs);
+    if (!normalizedKey || !Number.isFinite(until) || until <= 0) {
+        return;
+    }
+    const existing = tiktokConnectAttemptGate.cooldowns.get(normalizedKey);
+    if (!existing || until > existing.until) {
+        tiktokConnectAttemptGate.cooldowns.set(normalizedKey, {
+            until,
+            reason: typeof reason === 'string' && reason.trim() ? reason.trim() : null
+        });
+    }
+}
+
+async function waitForTikTokConnectAttemptSlot(manager, taskName = 'connect') {
+    const minIntervalMs = getTikTokConnectAttemptIntervalMs(manager);
+    const providerIntervalMs = getTikTokConnectAttemptProviderIntervalMs(manager);
+    if (minIntervalMs <= 0 && providerIntervalMs <= 0) {
+        return;
+    }
+
+    const previous = tiktokConnectAttemptGate.tail;
+    let release = null;
+    tiktokConnectAttemptGate.tail = new Promise((resolve) => { release = resolve; });
+    await previous;
+
+    try {
+        if (manager && manager.isStopped) {
+            const stoppedError = new Error('Connection stopped');
+            stoppedError.code = 'SSAPP_TIKTOK_STOPPED';
+            throw stoppedError;
+        }
+
+        const now = Date.now();
+        const key = getTikTokConnectAttemptGateKey(manager);
+        const cooldown = tiktokConnectAttemptGate.cooldowns.get(key);
+        if (cooldown && cooldown.until <= now) {
+            tiktokConnectAttemptGate.cooldowns.delete(key);
+        }
+
+        const globalAllowedAt = Number(tiktokConnectAttemptGate.nextAllowedAt) || 0;
+        const keyAllowedAt = Number(tiktokConnectAttemptGate.perKeyNextAllowedAt.get(key)) || 0;
+        const cooldownUntil = cooldown && cooldown.until > now ? cooldown.until : 0;
+        const allowedAt = Math.max(globalAllowedAt, keyAllowedAt, cooldownUntil);
+        const waitMs = allowedAt - now;
+
+        if (waitMs > 0) {
+            manager?.logDebug?.('lifecycle.connect.gate_wait', {
+                task: taskName || null,
+                key,
+                waitMs,
+                cooldownReason: cooldown?.reason || null
+            });
+            await sleepWithStop(manager, waitMs);
+        }
+
+        const nextAt = Date.now();
+        tiktokConnectAttemptGate.nextAllowedAt = Math.max(
+            Number(tiktokConnectAttemptGate.nextAllowedAt) || 0,
+            nextAt + minIntervalMs
+        );
+        if (key) {
+            if (tiktokConnectAttemptGate.perKeyNextAllowedAt.size > 500) {
+                const pruneAt = Date.now();
+                for (const [entryKey, allowedAtMs] of tiktokConnectAttemptGate.perKeyNextAllowedAt) {
+                    if (allowedAtMs < pruneAt) tiktokConnectAttemptGate.perKeyNextAllowedAt.delete(entryKey);
+                }
+            }
+            tiktokConnectAttemptGate.perKeyNextAllowedAt.set(key, nextAt + providerIntervalMs);
+        }
+    } finally {
+        try { release && release(); } catch (_) { /* noop */ }
     }
 }
 
@@ -512,6 +637,54 @@ async function runWithLocalSignerSessionGate(manager, uniqueId, taskName, fn) {
             localSignerSessionGate.perUniqueIdNextAllowedAt.set(key, Math.max(existing, nextAt));
         }
         try { release && release(); } catch (_) { /* noop */ }
+    }
+}
+
+function getLocalSignerAttemptTimeoutMs(manager = null) {
+    const managerValue = Number(manager?.localSignerAttemptTimeoutMs);
+    if (Number.isFinite(managerValue) && managerValue >= 0) {
+        return managerValue;
+    }
+    const raw = Number(CONFIG?.CONNECTION?.LOCAL_SIGNER_ATTEMPT_TIMEOUT_MS);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 45000;
+}
+
+async function runLocalSignerTaskWithTimeout(manager, taskName, fn) {
+    const timeoutMs = getLocalSignerAttemptTimeoutMs(manager);
+    const sourcePromise = Promise.resolve().then(fn);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        return sourcePromise;
+    }
+
+    let timeoutId = null;
+    let timedOut = false;
+    sourcePromise.catch((error) => {
+        if (timedOut && error?.code !== 'SSAPP_TIKTOK_STOPPED') {
+            manager?.logDebug?.('sign.local.late_failure', {
+                task: taskName || null,
+                error: normalizeForLogging(error)
+            });
+        }
+    });
+
+    const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+            timedOut = true;
+            const err = new Error(`TikTok local signer timed out after ${timeoutMs}ms`);
+            err.name = 'TikTokLocalSignerTimeoutError';
+            err.code = 'SSAPP_TIKTOK_LOCAL_SIGNER_TIMEOUT';
+            err.source = 'local_signer_timeout';
+            err.timeoutMs = timeoutMs;
+            reject(err);
+        }, timeoutMs);
+    });
+
+    try {
+        return await Promise.race([sourcePromise, timeoutPromise]);
+    } finally {
+        if (timeoutId) {
+            clearTimeout(timeoutId);
+        }
     }
 }
 
@@ -2161,6 +2334,15 @@ const CONFIG = {
 	        RATE_LIMIT_FALLBACK_THRESHOLD: 2,
 	        // Local signer connect throttle (reduces 429s caused by session-start storms)
 	        LOCAL_SIGNER_MIN_ATTEMPT_INTERVAL_MS: 10000, // 10 seconds
+	        // Local signer must fail fast so AUTO can continue to Euler fallback paths
+	        LOCAL_SIGNER_ATTEMPT_TIMEOUT_MS: 45000,
+	        // Skip auto local-signer fallback briefly after a signer timeout/failure
+	        LOCAL_SIGNER_FAILURE_COOLDOWN_MS: 300000, // 5 minutes
+	        // Shared guard to avoid simultaneous TikTok connect/fallback bursts
+	        CONNECT_ATTEMPT_MIN_INTERVAL_MS: 1500,
+	        CONNECT_ATTEMPT_PROVIDER_INTERVAL_MS: 2500,
+	        // Short pause before recursive fallback restarts
+	        FALLBACK_RESTART_MIN_DELAY_MS: 2500,
 	        // Maximum time to wait for the Euler sign server before failing fast
 	        SIGN_REQUEST_TIMEOUT_MS: 25000,
 	        // Increase timeout if the first attempt times out (added incrementally to avoid long hangs)
@@ -3486,6 +3668,10 @@ class ConnectionManager {
         this.autoEulerProxyFallbackActive = false;
         this.autoLocalSignerFallbackAttempted = false;
         this.autoLocalSignerFallbackActive = false;
+        this.autoLocalSignerFallbackPreviousProvider = null;
+        this.autoLocalSignerFallbackPreviousSigningConfig = null;
+        this.autoLocalSignerFallbackPreviousEulerProxyActive = false;
+        this.autoLocalSignerFallbackStartedAt = 0;
         this.localSigner = env.localSigner || null;
 	        this.signServerFailureCount = 0;
 	        this.tiktokRateLimitCount = 0;
@@ -3503,6 +3689,26 @@ class ConnectionManager {
         this.signRequestImmediateRetryDelayMs = CONFIG.CONNECTION.SIGN_REQUEST_IMMEDIATE_RETRY_DELAY_MS;
         if (!Number.isFinite(this.signRequestImmediateRetryDelayMs) || this.signRequestImmediateRetryDelayMs < 0) {
             this.signRequestImmediateRetryDelayMs = 750;
+        }
+        this.localSignerAttemptTimeoutMs = CONFIG.CONNECTION.LOCAL_SIGNER_ATTEMPT_TIMEOUT_MS;
+        if (!Number.isFinite(this.localSignerAttemptTimeoutMs) || this.localSignerAttemptTimeoutMs < 0) {
+            this.localSignerAttemptTimeoutMs = 45000;
+        }
+        this.localSignerFailureCooldownMs = CONFIG.CONNECTION.LOCAL_SIGNER_FAILURE_COOLDOWN_MS;
+        if (!Number.isFinite(this.localSignerFailureCooldownMs) || this.localSignerFailureCooldownMs < 0) {
+            this.localSignerFailureCooldownMs = 300000;
+        }
+        this.connectAttemptMinIntervalMs = CONFIG.CONNECTION.CONNECT_ATTEMPT_MIN_INTERVAL_MS;
+        if (!Number.isFinite(this.connectAttemptMinIntervalMs) || this.connectAttemptMinIntervalMs < 0) {
+            this.connectAttemptMinIntervalMs = 1500;
+        }
+        this.connectAttemptProviderIntervalMs = CONFIG.CONNECTION.CONNECT_ATTEMPT_PROVIDER_INTERVAL_MS;
+        if (!Number.isFinite(this.connectAttemptProviderIntervalMs) || this.connectAttemptProviderIntervalMs < 0) {
+            this.connectAttemptProviderIntervalMs = 2500;
+        }
+        this.fallbackRestartMinDelayMs = CONFIG.CONNECTION.FALLBACK_RESTART_MIN_DELAY_MS;
+        if (!Number.isFinite(this.fallbackRestartMinDelayMs) || this.fallbackRestartMinDelayMs < 0) {
+            this.fallbackRestartMinDelayMs = 2500;
         }
         this.lastSignerPayload = null;
         this.eulerChatClient = null;
@@ -3950,7 +4156,11 @@ class ConnectionManager {
 	                this,
 	                uniqueId || this.username,
 	                'local_signer_im_fetch',
-	                async () => this.localSigner.sign(localFetchUrl, signOptions)
+	                async () => runLocalSignerTaskWithTimeout(
+	                    this,
+	                    'local_signer_im_fetch',
+	                    () => this.localSigner.sign(localFetchUrl, signOptions)
+	                )
 	            );
 	        } catch (error) {
 	            if (error?.code !== 'SSAPP_TIKTOK_STOPPED') {
@@ -4889,6 +5099,14 @@ class ConnectionManager {
 
     restartConnectionAttempt(primaryError = null, context = 'fallback_restart') {
         const reconnectPromise = (async () => {
+            const delayMs = this.getFallbackRestartDelayMs();
+            if (delayMs > 0) {
+                this.logDebug('lifecycle.connect.restart.delay', {
+                    context,
+                    delayMs
+                });
+                await sleepWithStop(this, delayMs);
+            }
             try {
                 this.ensureConnectionInstance(context);
             } catch (error) {
@@ -5082,28 +5300,113 @@ class ConnectionManager {
         return true;
     }
 
+    getAutoLocalSignerFailureCooldownMs() {
+        const raw = Number(this.localSignerFailureCooldownMs);
+        return Number.isFinite(raw) && raw >= 0 ? raw : 300000;
+    }
+
+    getFallbackRestartDelayMs() {
+        const raw = Number(this.fallbackRestartMinDelayMs);
+        return Number.isFinite(raw) && raw >= 0 ? raw : 2500;
+    }
+
+    isAutoLocalSignerFallbackFailure(primaryError = null) {
+        if (!this.autoLocalSignerFallbackActive || this.signingProvider !== 'local') {
+            return false;
+        }
+        if (primaryError?.code === 'SSAPP_TIKTOK_STOPPED') {
+            return false;
+        }
+        return true;
+    }
+
+    async restoreAutoFlowAfterLocalSignerFailure(primaryError, stage = 'local_signer_failed') {
+        if (!this.autoLocalSignerFallbackActive) {
+            return false;
+        }
+
+        const failureMessage = typeof primaryError?.message === 'string' && primaryError.message.trim()
+            ? primaryError.message.trim()
+            : 'Local signer failed.';
+        const previousProvider = this.autoLocalSignerFallbackPreviousProvider || 'auto';
+        const previousSigningConfig = this.autoLocalSignerFallbackPreviousSigningConfig
+            ? { ...this.autoLocalSignerFallbackPreviousSigningConfig }
+            : null;
+        const previousEulerProxyActive = !!this.autoLocalSignerFallbackPreviousEulerProxyActive;
+        const cooldownMs = this.getAutoLocalSignerFailureCooldownMs();
+        if (cooldownMs > 0) {
+            setLocalSignerCooldown(Date.now() + cooldownMs, failureMessage);
+        }
+
+        this.logDebug('lifecycle.fallback.localSigner.failed_restore', {
+            stage,
+            message: failureMessage,
+            previousProvider,
+            cooldownMs
+        });
+        console.warn(`[TikTok] Local signer fallback failed for ${this.username}; returning to Euler flow: ${failureMessage}`);
+
+        this.signingProvider = previousProvider;
+        this.signingConfig = previousSigningConfig;
+        this.autoLocalSignerFallbackActive = false;
+        this.autoEulerProxyFallbackActive = previousEulerProxyActive;
+        this.autoLocalSignerFallbackPreviousProvider = null;
+        this.autoLocalSignerFallbackPreviousSigningConfig = null;
+        this.autoLocalSignerFallbackPreviousEulerProxyActive = false;
+        this.autoLocalSignerFallbackStartedAt = 0;
+
+        try {
+            await this.teardownConnection({ silent: true });
+        } catch (error) {
+            this.logDebug('lifecycle.fallback.localSigner.restoreTeardownError', normalizeForLogging(error));
+        }
+
+        try {
+            this.initializeConnectionInstance({ forceLegacy: false, context: 'local_signer_failed_restore' });
+        } catch (error) {
+            this.logDebug('lifecycle.fallback.localSigner.restoreInstantiateError', normalizeForLogging(error));
+            console.error('[TikTok] Failed to restore Euler flow after local signer failure:', error);
+            return false;
+        }
+
+        try {
+            emitStatus({
+                wssID: this.wssID,
+                status: 'reconnecting',
+                reason: 'Local signer failed. Trying Euler signing.',
+                signServer: true,
+                localSignerFallbackFailed: true
+            });
+        } catch (_) { /* renderer may be gone */ }
+
+        return true;
+    }
+
     async tryFallbackToLocalSigner(primaryError, stage = 'connect') {
         const isAutoFlow = this.signingProvider === 'auto'
             || this.autoEulerProxyFallbackActive
             || this.autoLocalSignerFallbackActive;
+        const localCooldownRemainingMs = getLocalSignerCooldownRemainingMs();
+        const localSignerUnavailable = !this.localSigner || typeof this.localSigner.sign !== 'function';
+        const legacyActive = this.pollingFallbackActivated || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy';
+        const skipReason = !isAutoFlow
+            ? 'provider_not_auto_flow'
+            : (this.autoLocalSignerFallbackAttempted
+                ? 'already_activated'
+                : (localSignerUnavailable
+                    ? 'local_signer_unavailable'
+                    : (localCooldownRemainingMs > 0
+                        ? 'local_signer_cooldown'
+                        : (legacyActive ? 'legacy_active' : 'unknown'))));
         if (!isAutoFlow ||
             this.autoLocalSignerFallbackAttempted ||
-            !this.localSigner ||
-            typeof this.localSigner.sign !== 'function' ||
-            this.pollingFallbackActivated ||
-            this.preferredStrategy === 'legacy' ||
-            this.connectionStrategy === 'legacy') {
+            localSignerUnavailable ||
+            localCooldownRemainingMs > 0 ||
+            legacyActive) {
             this.logDebug('lifecycle.fallback.localSigner.skipped', {
-                reason: !isAutoFlow
-                    ? 'provider_not_auto_flow'
-                    : (this.autoLocalSignerFallbackAttempted
-                        ? 'already_activated'
-                        : (!this.localSigner || typeof this.localSigner.sign !== 'function'
-                            ? 'local_signer_unavailable'
-                            : (this.pollingFallbackActivated || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy'
-                                ? 'legacy_active'
-                                : 'unknown'))),
+                reason: skipReason,
                 stage,
+                cooldownRemainingMs: localCooldownRemainingMs || null,
                 message: primaryError?.message || null
             });
             return false;
@@ -5131,10 +5434,15 @@ class ConnectionManager {
         } catch (_) { /* renderer may be gone */ }
 
         const previousProvider = this.signingProvider;
+        const previousSigningConfig = this.signingConfig ? { ...this.signingConfig } : null;
         const previousAutoEulerProxyFallbackActive = this.autoEulerProxyFallbackActive;
         this.signingProvider = 'local';
         this.autoLocalSignerFallbackActive = true;
         this.autoEulerProxyFallbackActive = false;
+        this.autoLocalSignerFallbackPreviousProvider = previousProvider;
+        this.autoLocalSignerFallbackPreviousSigningConfig = previousSigningConfig;
+        this.autoLocalSignerFallbackPreviousEulerProxyActive = previousAutoEulerProxyFallbackActive;
+        this.autoLocalSignerFallbackStartedAt = Date.now();
 
         try {
             await this.teardownConnection({ silent: true });
@@ -5146,8 +5454,13 @@ class ConnectionManager {
             this.initializeConnectionInstance({ forceLegacy: false, context: 'local_signer_fallback' });
         } catch (error) {
             this.signingProvider = previousProvider;
+            this.signingConfig = previousSigningConfig;
             this.autoEulerProxyFallbackActive = previousAutoEulerProxyFallbackActive;
             this.autoLocalSignerFallbackActive = false;
+            this.autoLocalSignerFallbackPreviousProvider = null;
+            this.autoLocalSignerFallbackPreviousSigningConfig = null;
+            this.autoLocalSignerFallbackPreviousEulerProxyActive = false;
+            this.autoLocalSignerFallbackStartedAt = 0;
             this.clearFallbackTransitionStarted(primaryError, 'local');
             this.logDebug('lifecycle.fallback.localSigner.instantiateError', normalizeForLogging(error));
             console.error('[TikTok] Failed to instantiate local signer fallback connection:', error);
@@ -6563,6 +6876,7 @@ class ConnectionManager {
                     this.resetConnectionBootstrapState();
                 }
 
+                await waitForTikTokConnectAttemptSlot(this, usingLocalSigner ? 'local_signer_connect' : 'connect');
                 await activeConnection.connect();
                 if (typeof restoreAuthenticatedWsBootstrapEnv === 'function') {
                     restoreAuthenticatedWsBootstrapEnv();
@@ -6618,6 +6932,12 @@ class ConnectionManager {
                         message: errorMessage || null
                     });
                     return handledReconnectPromise || false;
+                }
+                if (this.isAutoLocalSignerFallbackFailure(primaryError)) {
+                    const restored = await this.restoreAutoFlowAfterLocalSignerFailure(primaryError, 'connect');
+                    if (restored) {
+                        return this.restartConnectionAttempt(primaryError, 'local_signer_failed_restore');
+                    }
                 }
                 if (primaryError?.ssappFallback) {
                     const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, 'connect_ssapp_local_fallback');
@@ -7612,6 +7932,12 @@ class ConnectionManager {
             });
             return handledReconnectPromise || null;
         }
+        if (this.isAutoLocalSignerFallbackFailure(primaryError)) {
+            const restored = await this.restoreAutoFlowAfterLocalSignerFailure(primaryError, 'control_error');
+            if (restored) {
+                return this.restartConnectionAttempt(primaryError, 'local_signer_failed_restore');
+            }
+        }
         const errorMessageCandidates = [
             msg,
             infoText,
@@ -8009,6 +8335,12 @@ class ConnectionManager {
 	            retryAfterSeconds: retryAfterSeconds ?? null,
 	            delayMs
 	        });
+
+	        setTikTokConnectAttemptCooldown(
+	            getTikTokConnectAttemptGateKey(this),
+	            now + delayMs,
+	            'rate_limit'
+	        );
 
 	        if (this.shouldUseLocalSigner()) {
 	            setLocalSignerCooldown(now + delayMs, 'tiktok_rate_limit');

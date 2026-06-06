@@ -94,6 +94,11 @@ function createManager(options = {}) {
 	manager.startViewerUpdateInterval = () => { };
 	manager.closeLogWriter = () => { };
 	manager.handleConnect = () => { };
+	manager.connectAttemptMinIntervalMs = 0;
+	manager.connectAttemptProviderIntervalMs = 0;
+	manager.fallbackRestartMinDelayMs = 0;
+	manager.localSignerAttemptTimeoutMs = 0;
+	manager.localSignerFailureCooldownMs = 0;
 	return { manager, attempts };
 }
 

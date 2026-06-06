@@ -35,6 +35,14 @@ function createRateLimitError(options = {}) {
 	return error;
 }
 
+function createLocalSignerTimeoutError() {
+	const error = new Error('TikTok local signer timed out after 10ms');
+	error.name = 'TikTokLocalSignerTimeoutError';
+	error.code = 'SSAPP_TIKTOK_LOCAL_SIGNER_TIMEOUT';
+	error.source = 'local_signer_timeout';
+	return error;
+}
+
 function createUserNotFoundLookupError() {
 	const error = new Error();
 	error.errors = [
@@ -154,6 +162,11 @@ function createHarness(outcomesByMode, options = {}) {
 		signingProvider: 'auto',
 		signing
 	});
+	manager.connectAttemptMinIntervalMs = 0;
+	manager.connectAttemptProviderIntervalMs = 0;
+	manager.fallbackRestartMinDelayMs = 0;
+	manager.localSignerAttemptTimeoutMs = 0;
+	manager.localSignerFailureCooldownMs = 0;
 
 	manager.sharedEulerApiKeyPool = [];
 	manager.sharedEulerApiKeyAttempts = new Set();
@@ -269,9 +282,38 @@ async function testAutoFallsBackToLocalSigner() {
 	assert.strictEqual(connected.connectionLabel, 'Websocket connected via local signer');
 }
 
+async function testInstalledConnectorHasNoRuntimePollingPath() {
+	const clientPath = path.join(__dirname, '..', '..', 'node_modules', 'tiktok-live-connector', 'dist', 'lib', 'client.js');
+	const legacyPath = path.join(__dirname, '..', '..', 'node_modules', 'tiktok-live-connector', 'dist', 'lib', '_legacy', 'legacy-client.js');
+	const clientSrc = fs.readFileSync(clientPath, 'utf8');
+	const legacySrc = fs.readFileSync(legacyPath, 'utf8');
+
+	const connectStart = clientSrc.indexOf('async _connect');
+	const disconnectStart = clientSrc.indexOf('\n    async disconnect', connectStart);
+	assert.ok(connectStart >= 0 && disconnectStart > connectStart, 'expected to find TikTokLiveConnection._connect body');
+
+	const connectBody = clientSrc.slice(connectStart, disconnectStart);
+	assert.ok(
+		connectBody.includes('signedWebSocketProvider') && connectBody.includes('fetchSignedWebSocketFromEuler'),
+		'expected installed connector to bootstrap through signed websocket provider/Euler'
+	);
+	assert.ok(
+		connectBody.includes('setupWebsocket'),
+		'expected installed connector runtime path to open a websocket'
+	);
+	assert.ok(
+		!/enableRequestPolling|requestPollingIntervalMs/.test(connectBody),
+		'installed connector _connect should not have a runtime request-polling branch'
+	);
+	assert.ok(
+		/extends\s+lib_1\.TikTokLiveConnection/.test(legacySrc),
+		'legacy WebcastPushConnection should be a wrapper over TikTokLiveConnection'
+	);
+}
+
 async function testAutoFallsBackFromLocalSignerToEulerProxy() {
 	const { manager, plan } = createHarness({
-		auto: [{ error: createRateLimitError() }],
+		auto: [{ error: createRateLimitError() }, { error: createRateLimitError() }],
 		local: [{ error: createRateLimitError({ name: 'TikTokRateLimitError', source: 'local_signer' }) }],
 		proxy: [{ ok: true }]
 	});
@@ -279,9 +321,10 @@ async function testAutoFallsBackFromLocalSignerToEulerProxy() {
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
 
 	assert.strictEqual(result, true);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'proxy']);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy']);
 	assert.deepStrictEqual(getReconnectingReasons(plan), [
 		'Sign server unavailable. Trying local signer.',
+		'Local signer failed. Trying Euler signing.',
 		'Sign server unavailable. Trying Euler Proxy with shared Euler proxy key.'
 	]);
 	assert.strictEqual(plan.reconnects.length, 0);
@@ -290,6 +333,55 @@ async function testAutoFallsBackFromLocalSignerToEulerProxy() {
 	assert(connected, 'expected a connected status');
 	assert.strictEqual(connected.connectionMethod, 'Euler WS relay (API key)');
 	assert.strictEqual(connected.connectionLabel, 'Websocket connected via Euler WS relay (API key)');
+}
+
+async function testAutoRestoresEulerSigningAfterLocalSignerFailure() {
+	const { manager, plan } = createHarness({
+		auto: [{ error: createRateLimitError() }, { ok: true }],
+		local: [{ error: createLocalSignerTimeoutError() }]
+	}, {
+		allowProxy: false
+	});
+
+	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
+
+	assert.strictEqual(result, true);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto']);
+	assert.strictEqual(manager.signingProvider, 'auto');
+	assert.strictEqual(manager.autoLocalSignerFallbackActive, false);
+	assert.strictEqual(manager.autoLocalSignerFallbackAttempted, true);
+	assert.strictEqual(plan.reconnects.length, 0);
+
+	const reasons = getReconnectingReasons(plan);
+	assert.ok(reasons.includes('Sign server unavailable. Trying local signer.'));
+	assert.ok(reasons.includes('Local signer failed. Trying Euler signing.'));
+
+	const connected = getLastStatus(plan, 'connected');
+	assert(connected, 'expected a connected status');
+	assert.strictEqual(connected.connectionMethod, 'Euler signing (auto)');
+}
+
+async function testAutoCanUseSharedEulerAfterLocalSignerFailure() {
+	const { manager, plan } = createHarness({
+		auto: [
+			{ error: createRateLimitError() },
+			{ error: createRateLimitError() },
+			{ ok: true }
+		],
+		local: [{ error: createLocalSignerTimeoutError() }]
+	}, {
+		allowProxy: false
+	});
+	manager.sharedEulerApiKeyPool = [
+		{ key: 'shared-signing-key', label: 'shared Euler signing key', scope: 'signing' }
+	];
+
+	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
+
+	assert.strictEqual(result, true);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'auto']);
+	assert.strictEqual(countStatuses(plan, entry => entry.sharedKeyRetry === true), 1);
+	assert.strictEqual(manager.signingConfig.apiKey, 'shared-signing-key');
 }
 
 async function testConfiguredEulerApiKeyIsReusedForProxyFallback() {
@@ -320,7 +412,7 @@ async function testConfiguredEulerApiKeyIsReusedForProxyFallback() {
 async function testAutoFallsBackFromProxyToPolling() {
 	const proxyRateLimit = createRateLimitError();
 	const { manager, plan } = createHarness({
-		auto: [{ error: createRateLimitError() }],
+		auto: [{ error: createRateLimitError() }, { error: createRateLimitError() }],
 		local: [{ error: createRateLimitError({ name: 'TikTokRateLimitError', source: 'local_signer' }) }],
 		proxy: [{ error: proxyRateLimit }],
 		polling: [{ ok: true }]
@@ -329,9 +421,10 @@ async function testAutoFallsBackFromProxyToPolling() {
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
 
 	assert.strictEqual(result, true);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'proxy', 'polling']);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy', 'polling']);
 	assert.deepStrictEqual(getReconnectingReasons(plan), [
 		'Sign server unavailable. Trying local signer.',
+		'Local signer failed. Trying Euler signing.',
 		'Sign server unavailable. Trying Euler Proxy with shared Euler proxy key.'
 	]);
 	assert.strictEqual(plan.reconnects.length, 0);
@@ -349,7 +442,7 @@ async function testAutoFallsBackFromProxyToPolling() {
 async function testAutoExhaustionSurfacesFailureMessage() {
 	const pollingRateLimit = createRateLimitError();
 	const { manager, plan } = createHarness({
-		auto: [{ error: createRateLimitError() }],
+		auto: [{ error: createRateLimitError() }, { error: createRateLimitError() }],
 		local: [{ error: createRateLimitError({ name: 'TikTokRateLimitError', source: 'local_signer' }) }],
 		proxy: [{ error: createRateLimitError() }],
 		polling: [{ error: pollingRateLimit }]
@@ -358,7 +451,7 @@ async function testAutoExhaustionSurfacesFailureMessage() {
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
 
 	assert.strictEqual(result, false);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'proxy', 'polling']);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy', 'polling']);
 
 	const failed = getLastStatus(plan, 'failed');
 	assert(failed, 'expected a failed status');
@@ -567,8 +660,46 @@ async function testHandleConnectIgnoresDuplicateConnectedEmission() {
 	assert.strictEqual(countStatuses(plan, entry => entry.status === 'connected'), 1);
 }
 
+async function testFallbackRestartDelayIsApplied() {
+	const { manager, plan } = createHarness({
+		auto: [{ ok: true }]
+	}, {
+		allowProxy: false,
+		localSignerEnabled: false
+	});
+	manager.fallbackRestartMinDelayMs = 25;
+
+	const startedAt = Date.now();
+	const result = await manager.restartConnectionAttempt(null, 'unit_restart_delay');
+	const elapsedMs = Date.now() - startedAt;
+
+	assert.strictEqual(result, true);
+	assert.ok(elapsedMs >= 20, `expected restart delay, got ${elapsedMs}ms`);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto']);
+}
+
+async function testLocalSignerProviderTimesOut() {
+	const { manager } = createHarness({}, {
+		allowProxy: false,
+		localSignerEnabled: true
+	});
+	manager.localSigner = {
+		sign: () => new Promise(() => {})
+	};
+	manager.localSignerAttemptTimeoutMs = 10;
+
+	await assert.rejects(
+		() => manager.fetchSignedWebSocketViaLocalSigner({ uniqueId: 'tester' }),
+		(error) => error && error.code === 'SSAPP_TIKTOK_LOCAL_SIGNER_TIMEOUT'
+	);
+}
+
 async function run() {
 	const tests = [
+		{
+			name: 'installed connector has no runtime polling path',
+			fn: testInstalledConnectorHasNoRuntimePollingPath
+		},
 		{
 			name: 'auto falls back to local signer',
 			fn: testAutoFallsBackToLocalSigner
@@ -576,6 +707,14 @@ async function run() {
 		{
 			name: 'auto falls back from local signer to Euler proxy',
 			fn: testAutoFallsBackFromLocalSignerToEulerProxy
+		},
+		{
+			name: 'auto restores Euler signing after local signer failure',
+			fn: testAutoRestoresEulerSigningAfterLocalSignerFailure
+		},
+		{
+			name: 'auto can use shared Euler after local signer failure',
+			fn: testAutoCanUseSharedEulerAfterLocalSignerFailure
 		},
 		{
 			name: 'configured Euler API key is reused for proxy fallback',
@@ -628,6 +767,14 @@ async function run() {
 		{
 			name: 'handleConnect ignores duplicate connected emission',
 			fn: testHandleConnectIgnoresDuplicateConnectedEmission
+		},
+		{
+			name: 'fallback restart delay is applied',
+			fn: testFallbackRestartDelayIsApplied
+		},
+		{
+			name: 'local signer provider times out',
+			fn: testLocalSignerProviderTimesOut
 		}
 	];
 
