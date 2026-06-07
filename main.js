@@ -231,12 +231,15 @@ if (process.platform === 'win32' && WINDOWS_BUILD_NUMBER) {
 const STABILITY_RUNTIME_STORE_KEY = 'stabilityRuntime';
 const STABILITY_CRASH_WINDOW_MS = 15 * 60 * 1000;
 const STABILITY_REVERT_UPTIME_MS = 45 * 60 * 1000;
-const STABILITY_MAX_GPU_FALLBACK_LEVEL = 3;
+const STABILITY_GPU_RASTERIZATION_FALLBACK_LEVEL = 3;
+const STABILITY_GPU_SANDBOX_FALLBACK_LEVEL = 4;
+const STABILITY_MAX_GPU_FALLBACK_LEVEL = STABILITY_GPU_SANDBOX_FALLBACK_LEVEL;
 const STABILITY_GPU_PROFILE_LABELS = {
     0: 'Default GPU profile',
     1: 'Stability profile L1 (WebGPU disabled)',
     2: 'Stability profile L2 (blocklist respected)',
-    3: 'Stability profile L3 (rasterization relaxed)'
+    3: 'Stability profile L3 (rasterization relaxed)',
+    4: 'Stability profile L4 (GPU sandbox relaxed)'
 };
 const STABILITY_CRASH_REASONS = new Set(['abnormal-exit', 'crashed', 'oom', 'launch-failed', 'integrity-failure']);
 
@@ -314,6 +317,10 @@ function isStabilityCrashReason(reason) {
     return STABILITY_CRASH_REASONS.has(normalized);
 }
 
+function isGpuChildProcessCrashReason(reason) {
+    return String(reason || '').trim().toLowerCase() === 'child-process-gone:gpu:crashed';
+}
+
 function isStabilityGracefulExitReason(reason) {
     const normalized = String(reason || '').trim().toLowerCase();
     if (!normalized || normalized === 'unknown') return false;
@@ -327,7 +334,8 @@ function buildGpuProfileFromFallbackLevel(level) {
         level: normalizedLevel,
         disableUnsafeWebGpu: process.platform === 'win32' && normalizedLevel >= 1,
         disableIgnoreGpuBlocklist: process.platform === 'win32' && normalizedLevel >= 2,
-        disableGpuRasterization: process.platform === 'win32' && normalizedLevel >= 3
+        disableGpuRasterization: process.platform === 'win32' && normalizedLevel >= STABILITY_GPU_RASTERIZATION_FALLBACK_LEVEL,
+        disableGpuSandbox: process.platform === 'win32' && normalizedLevel >= STABILITY_GPU_SANDBOX_FALLBACK_LEVEL
     };
 }
 
@@ -344,6 +352,7 @@ function initializeStabilityRuntimeForStartup() {
 
     let crashEvents = pruneCrashEvents(state.crashEvents, now);
     let level = clampGpuFallbackLevel(state.gpuFallbackLevel);
+    let latestCrashReason = null;
     const notices = [];
 
     if (previousSessionActive) {
@@ -352,6 +361,7 @@ function initializeStabilityRuntimeForStartup() {
             : (previousSessionStartAt || now);
         crashEvents.push(inferredCrashAt);
         const crashReason = state.lastCrashReason || 'unclean-exit';
+        latestCrashReason = crashReason;
         state.lastExitReason = crashReason;
         state.lastExitAt = inferredCrashAt;
         notices.push(`[Stability] Unclean exit detected (${crashReason}).`);
@@ -367,7 +377,9 @@ function initializeStabilityRuntimeForStartup() {
     }
 
     crashEvents = pruneCrashEvents(crashEvents, now);
-    if (crashEvents.length >= 2 && level < STABILITY_MAX_GPU_FALLBACK_LEVEL) {
+    const canEscalateStandardGpuFallback = level < STABILITY_GPU_RASTERIZATION_FALLBACK_LEVEL;
+    const canEscalateGpuSandboxFallback = level === STABILITY_GPU_RASTERIZATION_FALLBACK_LEVEL && isGpuChildProcessCrashReason(latestCrashReason);
+    if (crashEvents.length >= 2 && (canEscalateStandardGpuFallback || canEscalateGpuSandboxFallback)) {
         level += 1;
         state.lastFallbackChangeAt = now;
         state.pendingNotice = {
@@ -2710,6 +2722,10 @@ if (!IS_MAC_BALANCED_MODE) {
     } else {
         console.warn('[Stability] Respecting GPU blocklist due to fallback level', stabilityGpuProfile.level);
     }
+    if (stabilityGpuProfile.disableGpuSandbox) {
+        app.commandLine.appendSwitch('disable-gpu-sandbox');
+        console.warn('[Stability] Disabled GPU sandbox due to repeated GPU child process crashes.');
+    }
 }
 
 // User data directory for persistent profile
@@ -2830,7 +2846,8 @@ app.on('child-process-gone', (_event, details) => {
         reason,
         type: details && details.type ? details.type : null,
         serviceName: details && details.serviceName ? details.serviceName : null,
-        name: details && details.name ? details.name : null
+        name: details && details.name ? details.name : null,
+        exitCode: details && Number.isFinite(details.exitCode) ? details.exitCode : null
     });
 });
 

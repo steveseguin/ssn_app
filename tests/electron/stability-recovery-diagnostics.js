@@ -34,8 +34,22 @@ function run() {
 			id: 'stability_gpu_profile_applied',
 			ok: /if \(!stabilityGpuProfile\.disableGpuRasterization\)/.test(source) &&
 				/if \(!stabilityGpuProfile\.disableIgnoreGpuBlocklist\)/.test(source) &&
-				/if \(!IS_MAC_BALANCED_MODE && !stabilityGpuProfile\.disableUnsafeWebGpu\)/.test(source),
+				/if \(!IS_MAC_BALANCED_MODE && !stabilityGpuProfile\.disableUnsafeWebGpu\)/.test(source) &&
+				/disableGpuSandbox: process\.platform === 'win32' && normalizedLevel >= STABILITY_GPU_SANDBOX_FALLBACK_LEVEL/.test(source),
 			note: 'GPU fallback profile gates aggressive flags'
+		},
+		{
+			id: 'stability_gpu_sandbox_fallback_targeted',
+			ok: /const STABILITY_GPU_SANDBOX_FALLBACK_LEVEL = 4;/.test(source) &&
+				/function isGpuChildProcessCrashReason\(reason\)/.test(source) &&
+				/level === STABILITY_GPU_RASTERIZATION_FALLBACK_LEVEL && isGpuChildProcessCrashReason\(latestCrashReason\)/.test(source) &&
+				/app\.commandLine\.appendSwitch\('disable-gpu-sandbox'\)/.test(source),
+			note: 'GPU sandbox fallback only activates from L3 after GPU child crash loops'
+		},
+		{
+			id: 'child_process_crash_exit_code_logged',
+			ok: /app\.on\('child-process-gone'[\s\S]*?exitCode: details && Number\.isFinite\(details\.exitCode\) \? details\.exitCode : null/.test(source),
+			note: 'Child-process crash logs include exit code'
 		},
 		{
 			id: 'crash_hooks_present',
