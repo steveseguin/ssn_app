@@ -9768,6 +9768,13 @@ class ConnectionManager {
             };
         }
 
+        if (!this.canForwardEvents('chat_send_direct')) {
+            return {
+                success: false,
+                error: 'Connection is no longer active'
+            };
+        }
+
         if (!this.sessionId) {
             console.warn('Skipping TikTok chat send: sessionid cookie missing');
             return {

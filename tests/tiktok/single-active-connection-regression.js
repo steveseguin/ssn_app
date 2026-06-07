@@ -153,16 +153,44 @@ function runStaleQueueFlushAssertion() {
   assert.deepStrictEqual(first.messageProcessor.pendingBatch, [], 'stale pending batch should be cleared');
 }
 
-function run() {
+async function runDirectChatSendBlocksStaleManagerAssertion() {
+  const harness = createHarness();
+  const first = harness.makeManager(1);
+  registerManager(harness, first);
+
+  const second = harness.makeManager(2);
+  harness.env.registerActiveTikTokSourceConnection(second, 'test_replacement');
+  harness.websocketConnections[2] = second;
+
+  first.isStopped = false;
+  first.sessionId = 'sessionid';
+  first.connection = { isConnected: true };
+  harness.websocketConnections[1] = first;
+
+  const result = await first.sendChatMessage('should not send');
+
+  assert.strictEqual(result.success, false, 'stale manager direct chat send should be blocked');
+  assert.strictEqual(result.error, 'Connection is no longer active');
+}
+
+async function run() {
   runReplacementSuppressesOldEventsAssertion();
   runFinalForwarderDropsStaleVirtualTabsAssertion();
   runStaleQueueFlushAssertion();
+  await runDirectChatSendBlocksStaleManagerAssertion();
   console.log('single-active-connection-regression: all checks passed');
 }
 
 try {
-  run();
-  process.exit(0);
+  run()
+    .then(() => {
+      process.exit(0);
+    })
+    .catch((error) => {
+      console.error('single-active-connection-regression: failed');
+      console.error(error && error.stack ? error.stack : error);
+      process.exit(1);
+    });
 } catch (error) {
   console.error('single-active-connection-regression: failed');
   console.error(error && error.stack ? error.stack : error);
