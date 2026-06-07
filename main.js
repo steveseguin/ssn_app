@@ -2273,6 +2273,7 @@ let TikTokPollingFallbackClass = null;
 let usingLegacyTikTokConnector = false;
 let ConnectionManager = null;
 let cleanupConnection = () => { };
+let registerActiveTikTokSourceConnection = () => [];
 let sendToBackground = () => { };
 let sendBatchToBackground = () => { };
 let logTikTokForwardedMessage = () => { };
@@ -2392,6 +2393,7 @@ try {
 
     ConnectionManager = tikTokEnv.ConnectionManager;
     cleanupConnection = tikTokEnv.cleanupConnection;
+    registerActiveTikTokSourceConnection = tikTokEnv.registerActiveTikTokSourceConnection;
     sendToBackground = tikTokEnv.sendToBackground;
     sendBatchToBackground = tikTokEnv.sendBatchToBackground;
     logTikTokForwardedMessage = tikTokEnv.logTikTokForwardedMessage;
@@ -2408,6 +2410,7 @@ try {
     console.warn('[TikTok] tiktok-live-connector not available:', e && e.message ? e.message : e);
     TikTokLiveConnectionClass = null; // Allow app to boot; TikTok features disabled until module present
     ConnectionManager = null;
+    registerActiveTikTokSourceConnection = () => [];
 }
 
 // --- AUTOMATED TEST HARNESS ---
@@ -16485,6 +16488,16 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     manager.accountRole = normalizeSourceAccountRole(args?.accountRole);
     manager.customSession = args?.customSession || null;
     manager.sourceId = sourceIdFromRenderer || null;
+    if (manager.sourceId) {
+        const retiredWssIds = registerActiveTikTokSourceConnection(manager, 'createTikTokConnection');
+        if (retiredWssIds && retiredWssIds.length) {
+            console.info('[TikTok] Retired stale connection(s) for source before creating replacement:', {
+                sourceId: manager.sourceId,
+                replacementWssID: wssID,
+                retiredWssIds
+            });
+        }
+    }
     websocketConnections[wssID] = manager;
 
     connectionStates.set(wssID, {
@@ -16555,6 +16568,11 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
         await manager.initialize();
     } catch (e) {
         console.error('Error creating TikTok connection:', e);
+        try {
+            cleanupConnection(wssID);
+        } catch (cleanupError) {
+            console.warn('[TikTok] Failed to clean up failed connection:', cleanupError?.message || cleanupError);
+        }
         // Propagate the error to the renderer so the UI can react accordingly
         throw e;
     }

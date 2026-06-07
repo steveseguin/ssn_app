@@ -91,6 +91,7 @@ const SHARED_EULER_PROXY_FALLBACK_KEY = (process.env.SSAPP_TIKTOK_SHARED_EULER_P
 const TIKTOK_LOG_SUBDIR = 'tiktok-logs';
 let cachedTikTokLogDir = null;
 let connectionStates = new Map();
+let activeTikTokConnectionBySourceId = new Map();
 let TikTokLiveConnectionClass = null;
 let TikTokPollingFallbackClass = null;
 let usingLegacyTikTokConnector = false;
@@ -1281,6 +1282,8 @@ function installTikTokProtoFetchTap(connector) {
  * @returns {{
  *   ConnectionManager: typeof ConnectionManager,
  *   connectionStates: Map,
+ *   registerActiveTikTokSourceConnection: function,
+ *   retireTikTokConnectionsForSource: function,
  *   usingLegacyConnector: boolean,
  *   TikTokLiveConnectionClass: any,
  *   TikTokPollingFallbackClass: any
@@ -1381,10 +1384,13 @@ function createTikTokEnvironment(options = {}) {
     } else {
         connectionStates = new Map();
     }
+    activeTikTokConnectionBySourceId = new Map();
 
     return {
         ConnectionManager,
         cleanupConnection,
+        registerActiveTikTokSourceConnection,
+        retireTikTokConnectionsForSource,
         sendToBackground,
         sendBatchToBackground,
         sendToTikTok,
@@ -2261,6 +2267,258 @@ function sendChatMessage(data, virtualTabId) {
 
 let wssID = 0;
 
+function normalizeTikTokConnectionId(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    }
+    if (typeof value === 'string' && value.trim()) {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+}
+
+function normalizeTikTokSourceId(value) {
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function getTikTokWssIdFromMessage(msg) {
+    const tid = normalizeTikTokConnectionId(msg?.tid);
+    if (!tid || tid < 900001) {
+        return null;
+    }
+    return tid - 900000;
+}
+
+function getRegisteredTikTokConnection(wssID) {
+    const normalizedWssID = normalizeTikTokConnectionId(wssID);
+    if (!normalizedWssID || !env.websocketConnections) {
+        return null;
+    }
+    return env.websocketConnections[normalizedWssID] || null;
+}
+
+function getLatestRegisteredWssIdForSource(sourceId) {
+    const normalizedSourceId = normalizeTikTokSourceId(sourceId);
+    if (!normalizedSourceId || !env.websocketConnections) {
+        return null;
+    }
+
+    let latestWssID = null;
+    for (const [rawWssID, manager] of Object.entries(env.websocketConnections)) {
+        const candidateWssID = normalizeTikTokConnectionId(rawWssID);
+        if (!candidateWssID || !manager || manager.isStopped) {
+            continue;
+        }
+        if (normalizeTikTokSourceId(manager.sourceId) !== normalizedSourceId) {
+            continue;
+        }
+        if (latestWssID === null || candidateWssID > latestWssID) {
+            latestWssID = candidateWssID;
+        }
+    }
+    return latestWssID;
+}
+
+function getActiveTikTokWssIdForSource(sourceId) {
+    const normalizedSourceId = normalizeTikTokSourceId(sourceId);
+    if (!normalizedSourceId) {
+        return null;
+    }
+
+    const mappedWssID = normalizeTikTokConnectionId(activeTikTokConnectionBySourceId.get(normalizedSourceId));
+    const mappedManager = mappedWssID ? getRegisteredTikTokConnection(mappedWssID) : null;
+    if (mappedManager && !mappedManager.isStopped && normalizeTikTokSourceId(mappedManager.sourceId) === normalizedSourceId) {
+        return mappedWssID;
+    }
+
+    if (mappedWssID) {
+        activeTikTokConnectionBySourceId.delete(normalizedSourceId);
+    }
+
+    const latestWssID = getLatestRegisteredWssIdForSource(normalizedSourceId);
+    if (latestWssID) {
+        activeTikTokConnectionBySourceId.set(normalizedSourceId, latestWssID);
+    }
+    return latestWssID;
+}
+
+function getTikTokConnectionEligibility(manager) {
+    if (!manager || typeof manager !== 'object') {
+        return {
+            allowed: false,
+            reason: 'missing_manager'
+        };
+    }
+
+    let normalizedWssID = normalizeTikTokConnectionId(manager.wssID);
+    if (!normalizedWssID && manager.virtualTabId) {
+        normalizedWssID = getTikTokWssIdFromMessage({ tid: manager.virtualTabId });
+    }
+    if (!normalizedWssID) {
+        return {
+            allowed: false,
+            reason: 'missing_wss_id'
+        };
+    }
+
+    if (manager.isStopped) {
+        return {
+            allowed: false,
+            reason: 'stopped',
+            wssID: normalizedWssID
+        };
+    }
+
+    const sourceId = normalizeTikTokSourceId(manager.sourceId);
+    const registered = getRegisteredTikTokConnection(normalizedWssID);
+    if (registered !== manager) {
+        if (!sourceId && !registered) {
+            return {
+                allowed: true,
+                wssID: normalizedWssID,
+                sourceId: null,
+                unregisteredStandalone: true
+            };
+        }
+        return {
+            allowed: false,
+            reason: registered ? 'replaced_manager' : 'unregistered_manager',
+            wssID: normalizedWssID
+        };
+    }
+
+    if (sourceId) {
+        const activeWssID = getActiveTikTokWssIdForSource(sourceId);
+        if (activeWssID && activeWssID !== normalizedWssID) {
+            return {
+                allowed: false,
+                reason: 'stale_source_connection',
+                wssID: normalizedWssID,
+                activeWssID,
+                sourceId
+            };
+        }
+    }
+
+    return {
+        allowed: true,
+        wssID: normalizedWssID,
+        sourceId
+    };
+}
+
+function logTikTokInactiveForwardDrop(manager, context, eligibility) {
+    if (!manager || typeof manager.logDebug !== 'function') {
+        return;
+    }
+    const now = Date.now();
+    const reason = eligibility?.reason || 'inactive';
+    const cacheKey = `${context || 'event'}:${reason}:${eligibility?.activeWssID || ''}`;
+    if (!manager._inactiveForwardDropLogState) {
+        manager._inactiveForwardDropLogState = {
+            key: null,
+            at: 0
+        };
+    }
+    const previous = manager._inactiveForwardDropLogState;
+    if (previous.key === cacheKey && now - previous.at < 10000) {
+        return;
+    }
+    manager._inactiveForwardDropLogState = {
+        key: cacheKey,
+        at: now
+    };
+    manager.logDebug('event.forwarded.skipped', {
+        reason,
+        context: context || 'event',
+        sourceId: manager.sourceId || null,
+        wssID: normalizeTikTokConnectionId(manager.wssID),
+        activeWssID: eligibility?.activeWssID || null
+    });
+}
+
+function canForwardFromTikTokConnection(manager, context = 'event') {
+    const eligibility = getTikTokConnectionEligibility(manager);
+    if (eligibility.allowed) {
+        return true;
+    }
+    logTikTokInactiveForwardDrop(manager, context, eligibility);
+    return false;
+}
+
+function retireTikTokConnectionsForSource(sourceId, exceptWssID = null, reason = 'source_replaced') {
+    const normalizedSourceId = normalizeTikTokSourceId(sourceId);
+    if (!normalizedSourceId || !env.websocketConnections) {
+        return [];
+    }
+
+    const except = normalizeTikTokConnectionId(exceptWssID);
+    const retired = [];
+    for (const [rawWssID, manager] of Object.entries(env.websocketConnections)) {
+        const candidateWssID = normalizeTikTokConnectionId(rawWssID);
+        if (!candidateWssID || candidateWssID === except) {
+            continue;
+        }
+        if (!manager || normalizeTikTokSourceId(manager.sourceId) !== normalizedSourceId) {
+            continue;
+        }
+        try {
+            if (typeof manager.logDebug === 'function') {
+                manager.logDebug('lifecycle.retired', {
+                    reason,
+                    sourceId: normalizedSourceId,
+                    replacementWssID: except || null
+                });
+            }
+            cleanupConnection(candidateWssID);
+            retired.push(candidateWssID);
+        } catch (error) {
+            console.warn('[TikTok] Failed to retire stale source connection:', {
+                sourceId: normalizedSourceId,
+                wssID: candidateWssID,
+                error: error?.message || String(error)
+            });
+        }
+    }
+    return retired;
+}
+
+function registerActiveTikTokSourceConnection(manager, reason = 'source_activation') {
+    if (!manager || typeof manager !== 'object') {
+        return [];
+    }
+    const sourceId = normalizeTikTokSourceId(manager.sourceId);
+    const normalizedWssID = normalizeTikTokConnectionId(manager.wssID);
+    if (!sourceId || !normalizedWssID) {
+        return [];
+    }
+
+    activeTikTokConnectionBySourceId.set(sourceId, normalizedWssID);
+    const retired = retireTikTokConnectionsForSource(sourceId, normalizedWssID, reason);
+    if (typeof manager.logDebug === 'function') {
+        manager.logDebug('lifecycle.source.active_registered', {
+            sourceId,
+            wssID: normalizedWssID,
+            retiredWssIDs: retired
+        });
+    }
+    return retired;
+}
+
+function shouldDropTikTokMessageForInactiveConnection(msg, context = 'single') {
+    const wssID = getTikTokWssIdFromMessage(msg);
+    if (!wssID) {
+        return false;
+    }
+
+    const manager = getRegisteredTikTokConnection(wssID);
+    if (!manager) {
+        return true;
+    }
+    return !canForwardFromTikTokConnection(manager, context);
+}
+
 // Function to send messages to TikTok chat
 async function sendToTikTok(args) {
     try {
@@ -2275,6 +2533,14 @@ async function sendToTikTok(args) {
             return {
                 success: false,
                 error: 'Connection not found'
+            };
+        }
+
+        if (!canForwardFromTikTokConnection(manager, 'chat_send')) {
+            log(`TikTok chat send blocked for inactive wssID: ${wssID}`);
+            return {
+                success: false,
+                error: 'Connection is no longer active'
             };
         }
 
@@ -2421,8 +2687,14 @@ global.intervals.push(connectionCleanupInterval);
 
 function cleanupConnection(wssID) {
     try {
-        const manager = env.websocketConnections[wssID];
+        const normalizedWssID = normalizeTikTokConnectionId(wssID);
+        const manager = env.websocketConnections[wssID] || (normalizedWssID ? env.websocketConnections[normalizedWssID] : null);
         if (manager) {
+            const sourceId = normalizeTikTokSourceId(manager.sourceId);
+            if (sourceId && activeTikTokConnectionBySourceId.get(sourceId) === normalizedWssID) {
+                activeTikTokConnectionBySourceId.delete(sourceId);
+            }
+            manager.isStopped = true;
             // If it's a ConnectionManager instance
             if (manager.connection) {
                 manager.connection.disconnect();
@@ -2443,6 +2715,12 @@ function cleanupConnection(wssID) {
             if (typeof manager.clearPendingStreamEndConfirmation === 'function') {
                 manager.clearPendingStreamEndConfirmation('cleanupConnection');
             }
+            if (manager.messageProcessor && typeof manager.messageProcessor.stop === 'function') {
+                manager.messageProcessor.stop('cleanupConnection');
+            }
+            if (manager.giftProcessor && typeof manager.giftProcessor.stop === 'function') {
+                manager.giftProcessor.stop('cleanupConnection');
+            }
             if (manager.activityBuckets instanceof Map) {
                 manager.activityBuckets.clear();
             }
@@ -2451,8 +2729,6 @@ function cleanupConnection(wssID) {
                     manager.resetGoalAggregates({ flush: false });
                 } catch (_) { /* noop */ }
             }
-            // Mark as stopped
-            manager.isStopped = true;
             if (typeof manager.logDebug === 'function') {
                 manager.logDebug('lifecycle.cleanup', { triggeredBy: 'cleanupConnection' });
             }
@@ -2467,8 +2743,14 @@ function cleanupConnection(wssID) {
             }
 
             delete env.websocketConnections[wssID];
+            if (normalizedWssID && normalizedWssID !== wssID) {
+                delete env.websocketConnections[normalizedWssID];
+            }
         }
         connectionStates.delete(wssID);
+        if (normalizedWssID && normalizedWssID !== wssID) {
+            connectionStates.delete(normalizedWssID);
+        }
         log("deleting connectionStates: " + wssID);
     } catch (e) {
         console.error('Error during connection cleanup:', e);
@@ -3049,6 +3331,9 @@ class MessageProcessor {
     }
 
     addToQueue(data) {
+        if (!canForwardFromTikTokConnection(this.manager, 'chat_queue')) {
+            return;
+        }
 
         // Dedupe: drop chat messages already seen (replay history is seeded
         // upstream in handleProtoFetch so reconnect overlaps are caught here
@@ -3187,6 +3472,10 @@ class MessageProcessor {
     }
 
     scheduleProcessing(interval) {
+        if (!canForwardFromTikTokConnection(this.manager, 'chat_schedule')) {
+            this.stop('inactive_schedule');
+            return;
+        }
         if (this.isProcessing) {
             return;
         }
@@ -3229,6 +3518,10 @@ class MessageProcessor {
             clearTimeout(this.processTimer);
             this.processTimer = null;
             this.pendingProcessInterval = null;
+        }
+        if (!canForwardFromTikTokConnection(this.manager, 'chat_process')) {
+            this.stop('inactive_process');
+            return;
         }
         // Check if queue is empty properly for both CircularBuffer and array
         const getSize = () => (this.queue.getSize ? this.queue.getSize() : this.queue.length);
@@ -3316,6 +3609,10 @@ class MessageProcessor {
     }
 
     addToPendingBatch(batch) {
+        if (!canForwardFromTikTokConnection(this.manager, 'chat_batch')) {
+            this.stop('inactive_batch');
+            return;
+        }
         // Add messages to pending batch
         batch.forEach(data => {
             const msg = this.formatChatMessage(data);
@@ -3348,10 +3645,40 @@ class MessageProcessor {
             this.batchTimer = null;
         }
 
+        if (!canForwardFromTikTokConnection(this.manager, 'chat_flush')) {
+            this.pendingBatch = [];
+            return;
+        }
+
         // Send the batch
         sendBatchToBackground(this.pendingBatch);
         this.pendingBatch = [];
         this.lastSendTime = Date.now();
+    }
+
+    stop(reason = 'stop') {
+        if (this.processTimer) {
+            clearTimeout(this.processTimer);
+            this.processTimer = null;
+        }
+        if (this.batchTimer) {
+            clearTimeout(this.batchTimer);
+            this.batchTimer = null;
+        }
+        this.pendingProcessInterval = null;
+        this.pendingBatch = [];
+        this.isProcessing = false;
+        if (this.queue && typeof this.queue.clear === 'function') {
+            this.queue.clear();
+        } else if (Array.isArray(this.queue)) {
+            this.queue.length = 0;
+        }
+        if (this.manager && typeof this.manager.logDebug === 'function') {
+            this.manager.logDebug('event.queue.cleared', {
+                reason,
+                queue: 'chat'
+            });
+        }
     }
 }
 
@@ -3361,10 +3688,14 @@ class GiftProcessor {
         this.queue = [];
         this.isProcessing = false;
         this.streaks = new Map();
+        this.processTimer = null;
     }
 
     addToQueue(data) {
         if (!data || typeof data !== 'object') {
+            return;
+        }
+        if (!canForwardFromTikTokConnection(this.manager, 'gift_queue')) {
             return;
         }
 
@@ -3461,6 +3792,11 @@ class GiftProcessor {
     flushStreak(streakKey) {
         const streak = this.streaks.get(streakKey);
         if (!streak) return;
+        if (!canForwardFromTikTokConnection(this.manager, 'gift_streak')) {
+            clearTimeout(streak.timer);
+            this.streaks.delete(streakKey);
+            return;
+        }
         clearTimeout(streak.timer);
         this.streaks.delete(streakKey);
         const safeCount = Math.max(1, streak.count || 1);
@@ -3472,12 +3808,24 @@ class GiftProcessor {
     }
 
     startProcessing() {
+        if (!canForwardFromTikTokConnection(this.manager, 'gift_schedule')) {
+            this.stop('inactive_schedule');
+            return;
+        }
         if (!this.isProcessing) {
             this.processQueue();
         }
     }
 
     async processQueue() {
+        if (this.processTimer) {
+            clearTimeout(this.processTimer);
+            this.processTimer = null;
+        }
+        if (!canForwardFromTikTokConnection(this.manager, 'gift_process')) {
+            this.stop('inactive_process');
+            return;
+        }
         if (this.queue.length === 0) {
             this.isProcessing = false;
             return;
@@ -3495,10 +3843,16 @@ class GiftProcessor {
             console.error('[GiftProcessor] sendGiftMessage failed:', error?.message || error);
         }
 
-        setTimeout(() => this.processQueue(), CONFIG.GIFT.PROCESSING_INTERVAL);
+        this.processTimer = setTimeout(() => {
+            this.processTimer = null;
+            this.processQueue();
+        }, CONFIG.GIFT.PROCESSING_INTERVAL);
     }
 
     sendGiftMessage(data, count) {
+        if (!canForwardFromTikTokConnection(this.manager, 'gift_send')) {
+            return;
+        }
         const giftData = isPlainObject(data?.gift) ? data.gift : {};
         const giftDetails = isPlainObject(data?.giftDetails) ? data.giftDetails : {};
         const extendedGiftInfo = isPlainObject(data?.extendedGiftInfo) ? data.extendedGiftInfo : {};
@@ -3621,6 +3975,27 @@ class GiftProcessor {
         }
 
         sendToBackground(msg);
+    }
+
+    stop(reason = 'stop') {
+        if (this.processTimer) {
+            clearTimeout(this.processTimer);
+            this.processTimer = null;
+        }
+        for (const streak of this.streaks.values()) {
+            if (streak && streak.timer) {
+                clearTimeout(streak.timer);
+            }
+        }
+        this.streaks.clear();
+        this.queue.length = 0;
+        this.isProcessing = false;
+        if (this.manager && typeof this.manager.logDebug === 'function') {
+            this.manager.logDebug('event.queue.cleared', {
+                reason,
+                queue: 'gift'
+            });
+        }
     }
 }
 
@@ -3748,6 +4123,14 @@ class ConnectionManager {
         this.WEBSOCKET_FAILURE_THRESHOLD = 3;
         this.lastConnectTimestamp = 0;
         this.rapidDisconnectCount = 0;
+    }
+
+    canForwardEvents(context = 'event') {
+        return canForwardFromTikTokConnection(this, context);
+    }
+
+    isActiveSourceConnection() {
+        return getTikTokConnectionEligibility(this).allowed;
     }
 
     getLogContext() {
@@ -6730,6 +7113,14 @@ class ConnectionManager {
         }
 
         this.healthCheckInterval = setInterval(() => {
+            if (!this.isActiveSourceConnection()) {
+                this.logDebug('lifecycle.health.skipped', {
+                    reason: 'inactive_source_connection',
+                    sourceId: this.sourceId || null
+                });
+                cleanupConnection(this.wssID);
+                return;
+            }
             const now = Date.now();
             const timeSinceLastMessage = now - this.lastMessageTime;
             const connectionDuration = now - this.connectionStartTime;
@@ -6755,6 +7146,14 @@ class ConnectionManager {
 
         // Send viewer count every 30 seconds
         this.viewerUpdateInterval = setInterval(() => {
+            if (!this.isActiveSourceConnection()) {
+                this.logDebug('lifecycle.viewer_update.skipped', {
+                    reason: 'inactive_source_connection',
+                    sourceId: this.sourceId || null
+                });
+                cleanupConnection(this.wssID);
+                return;
+            }
             if (this.connection && this.connection.isConnected) {
                 if (isViewerUpdateAllowed()) {
                     sendToBackground({
@@ -6771,6 +7170,14 @@ class ConnectionManager {
     async connect(options = {}) {
         const { bypassActivePromise = false } = options || {};
         if (this.isStopped) return false;
+        if (!this.isActiveSourceConnection()) {
+            this.logDebug('lifecycle.connect.skipped', {
+                reason: 'inactive_source_connection',
+                sourceId: this.sourceId || null
+            });
+            cleanupConnection(this.wssID);
+            return false;
+        }
 
         if (this.connection && this.connection.isConnected) {
             console.info('Already connected, skipping reconnect');
@@ -7705,6 +8112,13 @@ class ConnectionManager {
     }
 
     handleConnect() {
+        if (!this.isActiveSourceConnection()) {
+            this.logDebug('control.connected.staleIgnored', {
+                sourceId: this.sourceId || null
+            });
+            cleanupConnection(this.wssID);
+            return;
+        }
         const existingState = connectionStates.get(this.wssID);
         if (existingState?.isConnected && !existingState?.attemptInProgress) {
             this.logDebug('control.connected.duplicateIgnored', {
@@ -8427,6 +8841,14 @@ class ConnectionManager {
         const isOfflineFlow = !!(offline || this.offlineRetry);
 
         if (this.isStopped) return;
+        if (!this.isActiveSourceConnection()) {
+            this.logDebug('lifecycle.reconnect.skipped', {
+                reason: 'inactive_source_connection',
+                sourceId: this.sourceId || null
+            });
+            cleanupConnection(this.wssID);
+            return;
+        }
 
         // Guard: avoid scheduling duplicate reconnect timers
         const st = connectionStates.get(this.wssID);
@@ -8562,6 +8984,14 @@ class ConnectionManager {
 
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
+            if (!this.isActiveSourceConnection()) {
+                this.logDebug('lifecycle.reconnect.timer_skipped', {
+                    reason: 'inactive_source_connection',
+                    sourceId: this.sourceId || null
+                });
+                cleanupConnection(this.wssID);
+                return;
+            }
             // Mark the active attempt so cleanup logic does not dispose the manager mid-connect.
             try {
                 connectionStates.set(this.wssID, {
@@ -8656,6 +9086,9 @@ class ConnectionManager {
     }
 
     sendEventMessage(data, eventType, message, extraMeta = {}) {
+        if (!this.canForwardEvents('event_send')) {
+            return;
+        }
         // Per-connection reply-only guard
         if (this.replyOnly) {
             return; // do not forward captured events from this connection
@@ -9498,6 +9931,10 @@ function logTikTokForwardedMessage(msg, context = 'single', meta = {}) {
 }
 
 function sendToBackground(msg) {
+    if (shouldDropTikTokMessageForInactiveConnection(msg, 'single')) {
+        return;
+    }
+
     try {
         if (msg && typeof msg === 'object' && typeof msg.tid === 'number') {
             const tid = msg.tid;
@@ -9538,6 +9975,13 @@ function sendToBackground(msg) {
 }
 
 function sendBatchToBackground(messages) {
+    if (Array.isArray(messages)) {
+        messages = messages.filter((message) => !shouldDropTikTokMessageForInactiveConnection(message, 'batch'));
+        if (!messages.length) {
+            return;
+        }
+    }
+
     try {
         if (Array.isArray(messages)) {
             messages = messages.filter(m => {
@@ -9610,6 +10054,9 @@ module.exports = {
         MessageProcessor,
         ConnectionManager,
         buildChatDedupeKey,
-        buildGiftDedupeKey
+        buildGiftDedupeKey,
+        getTikTokConnectionEligibility,
+        registerActiveTikTokSourceConnection,
+        retireTikTokConnectionsForSource
     }
 };
