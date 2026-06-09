@@ -15,6 +15,7 @@
     "test:settings-rootcause": "node tests/electron/settings-rootcause-diagnostics.js",
     "test:settings-transfer": "node tests/electron/settings-transfer-e2e.js",
     "test:stability-recovery": "node tests/electron/stability-recovery-diagnostics.js",
+    "test:source-url-parsing": "node tests/electron/source-url-parsing-regression.js",
     "test:tiktok-auto-mode": "node tests/tiktok/auto-mode-regression.js",
     "test:tiktok-gift-regression": "node tests/tiktok/gift-count-regression.js",
     "test:tiktok-social-signals": "node tests/tiktok/social-signal-regression.js",

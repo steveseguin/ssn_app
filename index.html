@@ -1306,11 +1306,34 @@
         const GENERIC_SOURCE_ROUTE_SEGMENTS = new Set([
             "watch", "view", "play", "stream", "streams", "live",
             "popout", "popup", "chat", "chat-dock", "chatroom",
+            "event", "events", "broadcast", "broadcasts",
+            "profile", "profiles", "creator", "creators",
+            "livechat", "live-chat", "only-chat", "chat-only", "popout-chat",
             "v", "w", "s", "c", "u",
             "user", "users", "channel", "channels",
             "room", "rooms", "embed", "video", "videos",
-            "source", "sources", "websocket", "index"
+            "source", "sources", "websocket", "index",
+            "app", "studio", "dashboard", "player"
         ]);
+        const SOURCE_IDENTIFIER_QUERY_KEYS = [
+            "channel", "channelName", "channel_name",
+            "username", "userName", "user_name", "user",
+            "streamUsername", "streamer", "streamerName", "streamer_name",
+            "creator", "creatorName", "creator_name",
+            "room", "roomId", "room_id", "handle", "slug"
+        ];
+        const SOURCE_IDENTIFIER_FIELD_KEYS = [
+            "channel", "channelName", "channel_name",
+            "streamUsername", "streamer", "streamerName", "streamer_name",
+            "creator", "creatorName", "creator_name",
+            "room", "roomId", "room_id", "user", "userName", "user_name",
+            "handle", "slug", "username"
+        ];
+
+        function normalizeSourceScriptPath(value) {
+            if (!value || typeof value !== "string") return "";
+            return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
+        }
 
         function cleanSourceUrlIdentifier(value) {
             let candidate = String(value || "").trim();
@@ -1345,24 +1368,54 @@
             }
         }
 
+        function isUsefulSourceUrlIdentifier(candidate, urlValue) {
+            const cleaned = cleanSourceUrlIdentifier(candidate);
+            if (!cleaned) return false;
+            return !isHostnameDerivedSourceName(cleaned, urlValue);
+        }
+
         function extractSourceUrlIdentifier(value) {
             const raw = String(value || "").trim();
             if (!raw) return "";
             try {
                 const parsed = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
-                const queryKeys = ["channel", "username", "streamUsername", "user", "streamer", "creator", "room"];
-                for (const key of queryKeys) {
+                for (const key of SOURCE_IDENTIFIER_QUERY_KEYS) {
                     const candidate = cleanSourceUrlIdentifier(parsed.searchParams.get(key));
                     if (candidate) return candidate;
                 }
                 const pathParts = parsed.pathname.split("/").filter(Boolean);
-                for (const part of pathParts) {
-                    const candidate = cleanSourceUrlIdentifier(part);
-                    if (candidate && !isHostnameDerivedSourceName(candidate, parsed.href)) {
-                        return candidate;
+                const cleanedParts = pathParts.map((part) => ({
+                    raw: part,
+                    value: cleanSourceUrlIdentifier(part),
+                    lower: String(part || "").trim().toLowerCase()
+                }));
+
+                for (let i = 0; i < cleanedParts.length - 1; i += 1) {
+                    if (!GENERIC_SOURCE_ROUTE_SEGMENTS.has(cleanedParts[i].lower)) continue;
+                    for (let j = i + 1; j < cleanedParts.length; j += 1) {
+                        if (isUsefulSourceUrlIdentifier(cleanedParts[j].raw, parsed.href)) {
+                            return cleanSourceUrlIdentifier(cleanedParts[j].raw);
+                        }
+                    }
+                }
+
+                for (const part of cleanedParts) {
+                    if (part.value && isUsefulSourceUrlIdentifier(part.raw, parsed.href)) {
+                        return part.value;
                     }
                 }
             } catch (_) { }
+            return "";
+        }
+
+        function getExplicitSourceIdentifier(source, sourceUrl = "") {
+            if (!source || typeof source !== "object") return "";
+            for (const key of SOURCE_IDENTIFIER_FIELD_KEYS) {
+                const candidate = cleanSourceUrlIdentifier(source[key]);
+                if (candidate && !isHostnameDerivedSourceName(candidate, sourceUrl)) {
+                    return candidate;
+                }
+            }
             return "";
         }
 
@@ -1371,11 +1424,46 @@
             if (source.target === "vpzone") return getVpzoneChannelForSource(source);
             const sourceUrl = source.url || source.URL || "";
             const urlIdentifier = extractSourceUrlIdentifier(sourceUrl);
-            const storedIdentifier = cleanSourceUrlIdentifier(source.username);
+            const storedIdentifier = getExplicitSourceIdentifier(source, sourceUrl);
             if (urlIdentifier && (!storedIdentifier || isHostnameDerivedSourceName(storedIdentifier, sourceUrl))) {
                 return urlIdentifier;
             }
             return storedIdentifier || urlIdentifier;
+        }
+
+        function getWebSocketScriptPathForSource(source, websocketTarget) {
+            const target = websocketTarget || getWebSocketManifestTarget(source && source.target) || (source && source.target) || "";
+            const fallbackScriptPath = `sources/websocket/${target}.js`;
+            const savedScriptPath = normalizeSourceScriptPath(source && source.sourceFile);
+            if (!savedScriptPath.includes("/websocket/")) return fallbackScriptPath;
+
+            const savedFileName = savedScriptPath.split("/").pop().toLowerCase();
+            const expectedFileName = `${target}.js`.toLowerCase();
+            return savedFileName === expectedFileName ? savedScriptPath : fallbackScriptPath;
+        }
+
+        function buildWebSocketLaunchPlan(source, options = {}) {
+            const websocketTarget = getWebSocketManifestTarget(source && source.target) || (source && source.target) || "";
+            const queryParams = {};
+            const channel = getWebSocketChannelForSource(source);
+            if (channel) {
+                queryParams.channel = channel;
+            }
+            if (source && (source.rumbleApiTracker || source.rumbleFollowerCountMode === 'total')) {
+                queryParams.followerMode = 'total';
+            }
+            if (source && source.rumbleApiTracker) {
+                queryParams.tracker = '1';
+            }
+            if (options.devmode) {
+                queryParams.devmode = '';
+            }
+            queryParams.ssapp = '1';
+            return {
+                websocketTarget,
+                queryParams,
+                scriptPath: getWebSocketScriptPathForSource(source, websocketTarget)
+            };
         }
 
         // Helper: should sign-in be disabled for this source based on config?
@@ -2816,11 +2904,6 @@
             if (urlIdentifier && (!displayName || isHostnameDerivedSourceName(displayName, URL))) {
                 displayName = urlIdentifier;
             }
-
-            const normalizeSourceScriptPath = (value) => {
-                if (!value || typeof value !== "string") return "";
-                return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
-            };
 
             // Determine sourceFile based on target, similar to how newSource handles it
             let sourceFiles = Array.isArray(initialState.sourceFiles)
@@ -7038,24 +7121,9 @@
                 console.log('[CreateWindowWSS] Using AUTO user agent from config:', conf.userAgent);
             }
 
-            const queryParams = {};
-            const channel = getWebSocketChannelForSource(source);
-            if (channel) {
-                queryParams.channel = channel;
-            }
-            if (source.rumbleApiTracker || source.rumbleFollowerCountMode === 'total') {
-                queryParams.followerMode = 'total';
-            }
-            if (source.rumbleApiTracker) {
-                queryParams.tracker = '1';
-            }
-            if (devmode) {
-                queryParams.devmode = '';
-            }
-            // Signal to the WSS page that we're running in ssapp (Electron)
-            queryParams.ssapp = '1';
-
-            const websocketTarget = getWebSocketManifestTarget(source.target) || source.target;
+            const launchPlan = buildWebSocketLaunchPlan(source, { devmode });
+            const websocketTarget = launchPlan.websocketTarget;
+            const queryParams = launchPlan.queryParams;
             const resolvedHtml = await resolveWebSocketHtml(websocketTarget, queryParams, { branch: isBetaMode ? 'beta' : 'main' });
             if (!resolvedHtml) {
                 Toast.error("WebSocket Error", "Unable to resolve the WebSocket page. Try again or check your network.");
@@ -7086,18 +7154,6 @@
                 recordFallbackAsset(resolvedHtml.relativePath, 'beta', 'main');
             }
 
-            const normalizeSourceScriptPath = (value) => {
-                if (!value || typeof value !== "string") return "";
-                return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
-            };
-            const savedWssScriptPath = normalizeSourceScriptPath(source.sourceFile || "");
-            const scriptPath = (source.target === "bilibili" || source.target === "bilibilicom")
-                ? "sources/websocket/bilibili.js"
-                : (savedWssScriptPath.includes("/websocket/")
-                    ? savedWssScriptPath
-                    : `sources/websocket/${websocketTarget}.js`);
-
-
             try {
                 // For now, fall back to sync while we debug the async issue
                 const response = ipcRenderer.sendSync('createWindow', {
@@ -7106,7 +7162,7 @@
                     configs: config,
                     muted: source.isMuted,
                     visible: source.isVisible,
-                    source: scriptPath,
+                    source: launchPlan.scriptPath,
                     filesource: sourcemode || undefined,
                     tab: tabid,
                     sourceId: source.id,
