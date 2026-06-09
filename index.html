@@ -1257,6 +1257,127 @@
             }
         }
 
+        function isGenericVpzoneChannel(value) {
+            const normalized = String(value || "").trim().toLowerCase();
+            return normalized === "vpzone" || normalized === "vpzone.tv" || normalized === "www.vpzone.tv";
+        }
+
+        function normalizeVpzoneChannel(value) {
+            let raw = String(value || "").trim();
+            let parsedChannel = raw;
+            if (!raw) return "";
+
+            if (/^https?:\/\//i.test(raw) || /(^|\.)vpzone\.tv([/?#]|$)/i.test(raw)) {
+                try {
+                    const parsedUrl = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+                    if (/(^|\.)vpzone\.tv$/i.test(parsedUrl.hostname)) {
+                        parsedChannel = parsedUrl.searchParams.get("channel") || parsedUrl.searchParams.get("username") || parsedUrl.searchParams.get("streamUsername") || "";
+                        if (!parsedChannel) {
+                            const pathParts = parsedUrl.pathname.split("/").filter(Boolean);
+                            const firstPart = pathParts[0] ? pathParts[0].toLowerCase() : "";
+                            if ((firstPart === "watch" || firstPart === "stream" || firstPart === "chat-dock") && pathParts[1]) {
+                                parsedChannel = decodeURIComponent(pathParts[1]);
+                            }
+                        }
+                    } else if (/^https?:\/\//i.test(raw)) {
+                        parsedChannel = "";
+                    }
+                } catch (_) { }
+            }
+
+            const channel = String(parsedChannel || "")
+                .replace(/^[#/]+/, "")
+                .replace(/^@+/, "")
+                .replace(/^\/+/, "")
+                .replace(/[/?#].*$/, "")
+                .trim()
+                .toLowerCase();
+            return isGenericVpzoneChannel(channel) ? "" : channel;
+        }
+
+        function getVpzoneChannelForSource(source) {
+            if (!source || typeof source !== "object") return "";
+            return normalizeVpzoneChannel(source.username)
+                || normalizeVpzoneChannel(source.channel)
+                || normalizeVpzoneChannel(source.streamUsername)
+                || normalizeVpzoneChannel(source.url || source.URL);
+        }
+
+        const GENERIC_SOURCE_ROUTE_SEGMENTS = new Set([
+            "watch", "view", "play", "stream", "streams", "live",
+            "popout", "popup", "chat", "chat-dock", "chatroom",
+            "v", "w", "s", "c", "u",
+            "user", "users", "channel", "channels",
+            "room", "rooms", "embed", "video", "videos",
+            "source", "sources", "websocket", "index"
+        ]);
+
+        function cleanSourceUrlIdentifier(value) {
+            let candidate = String(value || "").trim();
+            if (!candidate) return "";
+            try {
+                candidate = decodeURIComponent(candidate);
+            } catch (_) { }
+            candidate = candidate
+                .replace(/^[#/@]+/, "")
+                .replace(/[?#].*$/, "")
+                .replace(/^\/+/, "")
+                .replace(/\/+$/, "")
+                .trim();
+            if (!candidate || candidate === "." || candidate === "..") return "";
+            if (/\.(?:html?|php|aspx?|jsp)$/i.test(candidate)) return "";
+            if (GENERIC_SOURCE_ROUTE_SEGMENTS.has(candidate.toLowerCase())) return "";
+            return candidate;
+        }
+
+        function isHostnameDerivedSourceName(value, urlValue) {
+            const candidate = String(value || "").trim().toLowerCase().replace(/^@+/, "");
+            if (!candidate || !urlValue) return false;
+            try {
+                const parsed = new URL(/^https?:\/\//i.test(urlValue) ? urlValue : `https://${urlValue}`);
+                const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+                const labels = host.split(".").filter(Boolean);
+                const primaryDomain = labels.length >= 2 ? labels.slice(-2).join(".") : host;
+                const siteName = labels.length >= 2 ? labels[labels.length - 2] : labels[0];
+                return candidate === host || candidate === primaryDomain || candidate === siteName;
+            } catch (_) {
+                return false;
+            }
+        }
+
+        function extractSourceUrlIdentifier(value) {
+            const raw = String(value || "").trim();
+            if (!raw) return "";
+            try {
+                const parsed = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+                const queryKeys = ["channel", "username", "streamUsername", "user", "streamer", "creator", "room"];
+                for (const key of queryKeys) {
+                    const candidate = cleanSourceUrlIdentifier(parsed.searchParams.get(key));
+                    if (candidate) return candidate;
+                }
+                const pathParts = parsed.pathname.split("/").filter(Boolean);
+                for (const part of pathParts) {
+                    const candidate = cleanSourceUrlIdentifier(part);
+                    if (candidate && !isHostnameDerivedSourceName(candidate, parsed.href)) {
+                        return candidate;
+                    }
+                }
+            } catch (_) { }
+            return "";
+        }
+
+        function getWebSocketChannelForSource(source) {
+            if (!source || typeof source !== "object") return "";
+            if (source.target === "vpzone") return getVpzoneChannelForSource(source);
+            const sourceUrl = source.url || source.URL || "";
+            const urlIdentifier = extractSourceUrlIdentifier(sourceUrl);
+            const storedIdentifier = cleanSourceUrlIdentifier(source.username);
+            if (urlIdentifier && (!storedIdentifier || isHostnameDerivedSourceName(storedIdentifier, sourceUrl))) {
+                return urlIdentifier;
+            }
+            return storedIdentifier || urlIdentifier;
+        }
+
         // Helper: should sign-in be disabled for this source based on config?
         function isSigninDisabledForSource(source) {
             try {
@@ -2411,14 +2532,16 @@
                         }
                     }
                     else if (target === 'vpzone' && /(^|\.)vpzone\.tv$/i.test(hostname)) {
-                        const pathParts = url.pathname.split('/').filter(Boolean);
-                        const channel = url.searchParams.get('channel') || ((pathParts[0] === 'watch' || pathParts[0] === 'stream') ? pathParts[1] : '');
-                        return newOtherSource('vpzone', url.toString(), startup, {
+                        const channel = normalizeVpzoneChannel(url.toString()) || normalizeVpzoneChannel(initialState.username);
+                        const vpzoneInitialState = {
                             ...initialState,
-                            username: channel || initialState.username || 'VPZONE',
                             sourceFile: 'sources/vpzone.js',
                             connectionMode: initialState.connectionMode || 'classic'
-                        });
+                        };
+                        if (channel) {
+                            vpzoneInitialState.username = channel;
+                        }
+                        return newOtherSource('vpzone', url.toString(), startup, vpzoneInitialState);
                     }
                     else if (target === 'kick' && /(^|\.)kick\.com$/i.test(hostname)) {
                         const kickSlug = extractKickSlugFromInput(url.toString());
@@ -2663,6 +2786,14 @@
 
             let displayName = initialState.username || '';
             let chatId = null;
+            const supportsWSS = platformSupportsWebSocket(target);
+            const vpzoneChannel = target === 'vpzone'
+                ? (normalizeVpzoneChannel(initialState.username)
+                    || normalizeVpzoneChannel(initialState.channel)
+                    || normalizeVpzoneChannel(initialState.streamUsername)
+                    || normalizeVpzoneChannel(URL))
+                : "";
+            const urlIdentifier = vpzoneChannel || (supportsWSS ? extractSourceUrlIdentifier(URL) : "");
 
             // Check if this is a Rumble chat popup URL
             if (URL.includes('rumble.com/chat/popup/')) {
@@ -2681,6 +2812,9 @@
                 } catch {
                     displayName = target || 'Unknown Source';
                 }
+            }
+            if (urlIdentifier && (!displayName || isHostnameDerivedSourceName(displayName, URL))) {
+                displayName = urlIdentifier;
             }
 
             const normalizeSourceScriptPath = (value) => {
@@ -2709,10 +2843,6 @@
                 }
             }
 
-
-            // Check if platform supports WebSockets
-            const supportsWSS = platformSupportsWebSocket(target);
-
             // Set default connection mode based on platform
             let defaultMode = 'classic';
             if (target === 'velora' || target === 'vpzone') {
@@ -2739,6 +2869,13 @@
                 supportsWSS,
                 ...initialState
             };
+            if (vpzoneChannel) {
+                sourceData.username = vpzoneChannel;
+                sourceData.channel = vpzoneChannel;
+                sourceData.streamUsername = vpzoneChannel;
+            } else if (supportsWSS && urlIdentifier) {
+                sourceData.username = urlIdentifier;
+            }
 
             // Add chatId if this is a Rumble chat popup
             if (chatId) {
@@ -6902,8 +7039,9 @@
             }
 
             const queryParams = {};
-            if (source.username) {
-                queryParams.channel = source.username;
+            const channel = getWebSocketChannelForSource(source);
+            if (channel) {
+                queryParams.channel = channel;
             }
             if (source.rumbleApiTracker || source.rumbleFollowerCountMode === 'total') {
                 queryParams.followerMode = 'total';
@@ -6948,9 +7086,16 @@
                 recordFallbackAsset(resolvedHtml.relativePath, 'beta', 'main');
             }
 
+            const normalizeSourceScriptPath = (value) => {
+                if (!value || typeof value !== "string") return "";
+                return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
+            };
+            const savedWssScriptPath = normalizeSourceScriptPath(source.sourceFile || "");
             const scriptPath = (source.target === "bilibili" || source.target === "bilibilicom")
                 ? "sources/websocket/bilibili.js"
-                : (source.sourceFile || `sources/websocket/${websocketTarget}.js`);
+                : (savedWssScriptPath.includes("/websocket/")
+                    ? savedWssScriptPath
+                    : `sources/websocket/${websocketTarget}.js`);
 
 
             try {
