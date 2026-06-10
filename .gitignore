@@ -29,7 +29,8 @@ src/
 pkg/
 *.log
 .tmp_head_index.html
-
+.codex-tmp
+.codex-tmp/
 # Build configuration
 build-config.env
 .env
