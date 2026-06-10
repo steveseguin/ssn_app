@@ -1408,6 +1408,70 @@
             return "";
         }
 
+        function normalizeTikTokUsernameInput(value) {
+            let candidate = String(value || "").trim();
+            if (!candidate) return "";
+
+            const looksLikeTikTokUrl = /^https?:\/\//i.test(candidate) || /(^|\.)tiktok\.com\//i.test(candidate);
+            if (looksLikeTikTokUrl) {
+                try {
+                    const parsed = new URL(/^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`);
+                    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+                    const isTikTokHost = host === "tiktok.com" || host.endsWith(".tiktok.com");
+                    if (isTikTokHost) {
+                        const pathParts = parsed.pathname.split("/").filter(Boolean);
+                        const handleIdentifier = pathParts
+                            .filter((part) => String(part || "").trim().startsWith("@"))
+                            .map((part) => cleanSourceUrlIdentifier(part))
+                            .find(Boolean);
+                        if (handleIdentifier) {
+                            return handleIdentifier;
+                        }
+
+                        const queryKeys = [
+                            "username", "userName", "user_name", "user",
+                            "streamUsername", "streamer", "streamerName", "streamer_name",
+                            "creator", "creatorName", "creator_name",
+                            "handle", "slug"
+                        ];
+                        for (const key of queryKeys) {
+                            const queryIdentifier = cleanSourceUrlIdentifier(parsed.searchParams.get(key));
+                            if (queryIdentifier) {
+                                return queryIdentifier;
+                            }
+                        }
+                        return "";
+                    }
+                } catch (_) { }
+            }
+
+            const urlIdentifier = extractSourceUrlIdentifier(candidate);
+            if (urlIdentifier) {
+                candidate = urlIdentifier;
+            }
+
+            candidate = candidate.replace(/^@+/, "").trim();
+            if (candidate.includes("/")) {
+                let pathParts = candidate.split("/");
+                if (looksLikeTikTokUrl) {
+                    try {
+                        const parsed = new URL(/^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`);
+                        pathParts = parsed.pathname.split("/");
+                    } catch (_) { }
+                }
+                const pathIdentifier = pathParts
+                    .map((part) => cleanSourceUrlIdentifier(part))
+                    .find((part) => part && !GENERIC_SOURCE_ROUTE_SEGMENTS.has(part.toLowerCase()));
+                if (pathIdentifier) {
+                    candidate = pathIdentifier;
+                } else if (looksLikeTikTokUrl) {
+                    return "";
+                }
+            }
+
+            return cleanSourceUrlIdentifier(candidate);
+        }
+
         function getExplicitSourceIdentifier(source, sourceUrl = "") {
             if (!source || typeof source !== "object") return "";
             for (const key of SOURCE_IDENTIFIER_FIELD_KEYS) {
@@ -2145,6 +2209,7 @@
                 mixcloud: "Mixcloud username",
                 nimo: "Nimo username",
                 sooplive: "SOOP broadcaster ID/name",
+                tiktok: "TikTok username or live URL",
                 twitcasting: "TwitCasting username",
                 younow: "YouNow username",
                 bilibilicom: "Bilibili.com room ID or URL",
@@ -2240,6 +2305,8 @@
                     if (target === "kick") {
                         messageParts.push('Paste the Kick channel URL, like https://kick.com/koos-kaap, or enter only the URL slug, like koos-kaap.');
                         messageParts.push('Do not use the display name if it differs from the URL. Kick display names can use underscores while the URL slug uses hyphens.');
+                    } else if (target === "tiktok") {
+                        messageParts.push('Paste the TikTok live URL, like https://www.tiktok.com/@username/live, or enter only the username.');
                     } else {
                         messageParts.push('Note: Usernames cannot contain spaces.');
                     }
@@ -2308,6 +2375,11 @@
                     const kickSlug = extractKickSlugFromInput(trimmedInput);
                     if (kickSlug) {
                         normalizedInput = kickSlug;
+                    }
+                } else if (target === 'tiktok') {
+                    const tiktokUsername = normalizeTikTokUsernameInput(trimmedInput);
+                    if (tiktokUsername) {
+                        normalizedInput = tiktokUsername;
                     }
                 } else if (target === 'bilibilicom' && /bilibili\.com/i.test(trimmedInput)) {
                     try {
@@ -2548,6 +2620,12 @@
                     // For YouTube, just trim whitespace but preserve @, UC, c/ prefixes
                     username = username.trim();
                 }
+                if (target === 'tiktok') {
+                    const tiktokUsername = normalizeTikTokUsernameInput(username);
+                    if (tiktokUsername) {
+                        username = tiktokUsername;
+                    }
+                }
                 if (!startup && /\s/.test(username) && !allowSpacesForChannel) {
                     Toast.warning('Invalid Username', 'Usernames cannot contain spaces. Please enter the username exactly as it appears on the platform.');
                     return;
@@ -2684,7 +2762,7 @@
                             sourceUrl = `https://rumble.com/user/${username}/live`;
                         }
                     }
-                    else if (target === "tiktok") sourceUrl = `https://www.tiktok.com/@${username.replace('@', '')}/live`;
+                    else if (target === "tiktok") sourceUrl = `https://www.tiktok.com/@${normalizeTikTokUsernameInput(username) || username.replace('@', '')}/live`;
                     else if (target === "instagram" || target === "instagramlive") sourceUrl = `https://www.instagram.com/${username}/live/`;
                     else if (target === "picarto") sourceUrl = `https://picarto.tv/chatpopout/${username}/public`;
                     else if (target === "x") sourceUrl = `https://x.com/${username}/livechat`;
@@ -2749,6 +2827,13 @@
                     isChannel: target === 'rumble' ? isChannelName : undefined,
                     ...initialState
                 };
+                if (target === 'tiktok') {
+                    const tiktokUsername = normalizeTikTokUsernameInput(sourceData.username || username || sourceData.url);
+                    if (tiktokUsername) {
+                        sourceData.username = tiktokUsername;
+                        sourceData.url = `https://www.tiktok.com/@${tiktokUsername}/live`;
+                    }
+                }
                 if (sourceFile) { // Add sourceFile to the data if it was determined
                     sourceData.sourceFile = sourceFile;
                 }
@@ -6278,6 +6363,40 @@
             return false;
         }
 
+        function isTikTokOfflineFailureStatus(statusPayload = null) {
+            if (!statusPayload || typeof statusPayload !== 'object') {
+                return false;
+            }
+
+            if (statusPayload.offline === true) {
+                return true;
+            }
+
+            const normalizedMessage = [
+                statusPayload.error,
+                statusPayload.reason,
+                statusPayload.message
+            ]
+                .filter(value => typeof value === 'string' && value.trim())
+                .join(' ')
+                .toLowerCase();
+
+            if (!normalizedMessage) {
+                return false;
+            }
+
+            return normalizedMessage.includes("isn't online")
+                || normalizedMessage.includes('isnt online')
+                || normalizedMessage.includes('is not online')
+                || normalizedMessage.includes('not currently live')
+                || normalizedMessage.includes('user is not live')
+                || normalizedMessage.includes('user is offline')
+                || normalizedMessage.includes('offline retries exhausted')
+                || normalizedMessage.includes('live stream has ended')
+                || normalizedMessage.includes('live has ended')
+                || normalizedMessage.includes('stream has ended');
+        }
+
         function shouldPreserveTikTokClassicHandles(source, statusPayload = null, hasRetryScheduled = false) {
             if (!source || source.target !== 'tiktok') {
                 return false;
@@ -6524,6 +6643,15 @@
                     const sourceAfterCreate = stateManager.getSource(sourceId);
                     const alreadyConnectedTikTok = resolvedTarget === 'tiktok'
                         && sourceAfterCreate?.status === 'active';
+                    const tiktokStatusAfterCreate = resolvedTarget === 'tiktok'
+                        ? sourceAfterCreate?.status
+                        : null;
+                    const tiktokErrorAfterCreate = resolvedTarget === 'tiktok'
+                        ? sourceAfterCreate?.error
+                        : null;
+                    const tiktokWaitingForConnect = resolvedTarget === 'tiktok'
+                        && (normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')
+                        && !alreadyConnectedTikTok;
                     const statusValue = alreadyConnectedTikTok
                         ? 'active'
                         : ((normalizedMode === 'websocket' || normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')
@@ -6540,7 +6668,7 @@
                         tiktokWssId: resolvedTarget === 'tiktok' ? actualWssId : null,
                         status: statusValue,
                         activeConnectionMode: resolvedActiveMode,
-                        error: null
+                        error: tiktokWaitingForConnect ? tiktokErrorAfterCreate : null
                     });
 
                     if (pendingTikTokToken) {
@@ -6548,7 +6676,13 @@
                     }
 
                     if (entry && resolvedTarget === 'tiktok') {
-                        updateConnectionStatus(entry, statusValue === 'active' ? 'connected' : 'connecting');
+                        if (statusValue === 'active') {
+                            updateConnectionStatus(entry, 'connected');
+                        } else if (tiktokStatusAfterCreate === 'error' && tiktokErrorAfterCreate) {
+                            updateConnectionStatus(entry, 'retry', tiktokErrorAfterCreate);
+                        } else if (!entry._tiktokRetryEndAt) {
+                            updateConnectionStatus(entry, 'connecting');
+                        }
                         if (statusValue === 'active') {
                             restoreActivateButton(entry);
                         }
@@ -10359,7 +10493,7 @@
                         case 'failed':
                             {
                                 const isSigningIssue = data.sessionRejected === true;
-                                const offlineExhausted = data.offline === true;
+                                const offlineFailure = isTikTokOfflineFailureStatus(data);
                                 const hasRetryScheduled = !!(entryElement && entryElement._tiktokRetryEndAt);
                                 const currentMode = normalizeTikTokMode(
                                     currentState.activeConnectionMode
@@ -10372,8 +10506,8 @@
                                     currentState
                                 );
                                 const hasAlternateMode = fallbackSequence.some((candidate) => normalizeTikTokMode(candidate) !== currentMode);
-                                const shouldAdvanceToNextMode = !offlineExhausted && !hasRetryScheduled && hasAlternateMode;
-                                if ((isSigningIssue || offlineExhausted) && entryElement) {
+                                const shouldAdvanceToNextMode = !offlineFailure && !hasRetryScheduled && hasAlternateMode;
+                                if ((isSigningIssue || offlineFailure) && entryElement) {
                                     if (entryElement._tiktokRetryTimer) {
                                         clearInterval(entryElement._tiktokRetryTimer);
                                         entryElement._tiktokRetryTimer = null;
@@ -10411,7 +10545,7 @@
                                     stateManager.updateSource(sourceId, updatePayload);
                                 }
                                 if (entryElement) {
-                                    if (!isSigningIssue && !offlineExhausted && entryElement._tiktokRetryEndAt) {
+                                    if (!isSigningIssue && !offlineFailure && entryElement._tiktokRetryEndAt) {
                                         const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
                                         const secs = Math.ceil(remainingMs / 1000);
                                         const attemptInfo = entryElement._tiktokRetryAttempt ? ` (attempt ${entryElement._tiktokRetryAttempt}${entryElement._tiktokRetryMax ? '/' + entryElement._tiktokRetryMax : ''})` : '';
@@ -10422,7 +10556,7 @@
                                         const isExhausted = errorMessage && /retries were exhausted/i.test(errorMessage);
                                         const provider = currentState.tiktokSigningProvider || 'auto';
                                         const showKeyPrompt = isExhausted
-                                            && !offlineExhausted
+                                            && !offlineFailure
                                             && (provider === 'auto' || provider === 'euler-ws')
                                             && !currentState.tiktokSigningApiKey;
                                         if (showKeyPrompt) {

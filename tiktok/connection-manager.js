@@ -7505,7 +7505,10 @@ class ConnectionManager {
                     emitStatus({
                         wssID: this.wssID,
                         status: 'failed',
-                        error: userFacingMessage
+                        error: userFacingMessage,
+                        offline: isOffline,
+                        rateLimited: isRateLimited,
+                        connectionMethod: this.getConnectionMethodForDisplay()
                     });
                 } catch (sendErr) {
                     console.warn('Failed to send TikTok connection failure status:', sendErr);

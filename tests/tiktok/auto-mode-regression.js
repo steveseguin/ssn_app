@@ -52,6 +52,12 @@ function createUserNotFoundLookupError() {
 	return error;
 }
 
+function createOfflineError() {
+	const error = new Error("The requested user isn't online :(");
+	error.name = 'UserOfflineError';
+	return error;
+}
+
 function createInvalidBootstrapUrlError() {
 	const error = new SyntaxError('Invalid URL: ?version_code=180800&aid=1988&room_id=1234567890');
 	error.code = 'SSAPP_TIKTOK_WSURL_INVALID';
@@ -466,6 +472,30 @@ async function testAutoExhaustionSurfacesFailureMessage() {
 	assert.strictEqual(plan.reconnects[0].immediate, true);
 }
 
+async function testOfflineFailureStatusCarriesOfflineFlag() {
+	const { manager, plan } = createHarness({
+		auto: [{ error: createOfflineError() }]
+	}, {
+		allowProxy: false,
+		localSignerEnabled: false
+	});
+
+	const result = await manager.initialize();
+
+	assert.strictEqual(result, false);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto']);
+	assert.strictEqual(plan.reconnects.length, 1);
+	assert.strictEqual(plan.reconnects[0].fixed, true);
+	assert.strictEqual(plan.reconnects[0].offline, true);
+
+	const failed = getLastStatus(plan, 'failed');
+	assert(failed, 'expected an offline failed status');
+	assert.strictEqual(failed.offline, true);
+	assert.strictEqual(failed.rateLimited, false);
+	assert.strictEqual(failed.connectionMethod, 'Euler signing (auto)');
+	assert.strictEqual(failed.error, "The requested user isn't online :(");
+}
+
 async function testBlankRoomLookupErrorsBecomeUsefulMessages() {
 	const { manager } = createHarness({}, {
 		allowProxy: false,
@@ -567,6 +597,28 @@ async function testUiDoesNotAutoFallbackAfterFatalUserNotFound() {
 	);
 }
 
+async function testUiDoesNotAutoFallbackAfterOfflineFailure() {
+	const indexPath = path.join(__dirname, '..', '..', 'index.html');
+	const src = fs.readFileSync(indexPath, 'utf8');
+
+	assert.ok(
+		src.includes('function isTikTokOfflineFailureStatus'),
+		'expected renderer-side offline failure guard helper'
+	);
+	assert.ok(
+		src.includes("normalizedMessage.includes(\"isn't online\")"),
+		'expected renderer to recognize TikTok offline text'
+	);
+	assert.ok(
+		src.includes('const offlineFailure = isTikTokOfflineFailureStatus(data)'),
+		'expected failed status handler to classify offline failures'
+	);
+	assert.ok(
+		src.includes('const shouldAdvanceToNextMode = !offlineFailure && !hasRetryScheduled && hasAlternateMode'),
+		'expected offline failures to suppress Auto fallback to the next mode'
+	);
+}
+
 async function testManualStandardFatalDoesNotAutoCloseClassicWindow() {
 	const indexPath = path.join(__dirname, '..', '..', 'index.html');
 	const src = fs.readFileSync(indexPath, 'utf8');
@@ -605,6 +657,28 @@ async function testClassicTerminalStatusesReleaseStaleHandles() {
 	assert.ok(
 		src.includes('updatePayload.tiktokWssId = null;'),
 		'expected stale TikTok websocket IDs to be cleared when releasing handles'
+	);
+}
+
+async function testTikTokActivationHandleDoesNotOverwritePendingStatus() {
+	const indexPath = path.join(__dirname, '..', '..', 'index.html');
+	const src = fs.readFileSync(indexPath, 'utf8');
+
+	assert.ok(
+		src.includes('const tiktokWaitingForConnect = resolvedTarget === \'tiktok\''),
+		'expected TikTok activation to distinguish virtual handles from connected status'
+	);
+	assert.ok(
+		src.includes('error: tiktokWaitingForConnect ? tiktokErrorAfterCreate : null'),
+		'expected pending TikTok activation to preserve offline/retry errors'
+	);
+	assert.ok(
+		src.includes("} else if (tiktokStatusAfterCreate === 'error' && tiktokErrorAfterCreate)"),
+		'expected pending TikTok activation to keep retry/error UI instead of showing connected'
+	);
+	assert.ok(
+		src.includes("} else if (!entry._tiktokRetryEndAt)"),
+		'expected retry countdown UI not to be overwritten by a generic connecting label'
 	);
 }
 
@@ -729,6 +803,10 @@ async function run() {
 			fn: testAutoExhaustionSurfacesFailureMessage
 		},
 		{
+			name: 'offline failure status carries offline flag',
+			fn: testOfflineFailureStatusCarriesOfflineFlag
+		},
+		{
 			name: 'blank room lookup errors become useful messages',
 			fn: testBlankRoomLookupErrorsBecomeUsefulMessages
 		},
@@ -749,12 +827,20 @@ async function run() {
 			fn: testUiDoesNotAutoFallbackAfterFatalUserNotFound
 		},
 		{
+			name: 'ui does not auto fallback after offline failure',
+			fn: testUiDoesNotAutoFallbackAfterOfflineFailure
+		},
+		{
 			name: 'manual standard fatal does not auto close classic window',
 			fn: testManualStandardFatalDoesNotAutoCloseClassicWindow
 		},
 		{
 			name: 'classic terminal statuses release stale handles',
 			fn: testClassicTerminalStatusesReleaseStaleHandles
+		},
+		{
+			name: 'TikTok activation handle does not overwrite pending status',
+			fn: testTikTokActivationHandleDoesNotOverwritePendingStatus
 		},
 		{
 			name: 'connect rehydrates a missing connection instance',

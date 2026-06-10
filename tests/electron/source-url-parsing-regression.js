@@ -57,6 +57,7 @@ vm.runInContext(`${helperBlock}\n${dependencyBlock}
 this.helpers = {
 	cleanSourceUrlIdentifier,
 	extractSourceUrlIdentifier,
+	normalizeTikTokUsernameInput,
 	getExplicitSourceIdentifier,
 	getWebSocketChannelForSource,
 	getWebSocketScriptPathForSource,
@@ -67,6 +68,7 @@ this.helpers = {
 const {
 	cleanSourceUrlIdentifier,
 	extractSourceUrlIdentifier,
+	normalizeTikTokUsernameInput,
 	getExplicitSourceIdentifier,
 	getWebSocketChannelForSource,
 	getWebSocketScriptPathForSource,
@@ -122,6 +124,8 @@ runCases("extractSourceUrlIdentifier", [
 	{ input: "https://example.com/profiles/hank/videos", expected: "hank" },
 	{ input: "https://example.com/live/room/ivy", expected: "ivy" },
 	{ input: "https://example.com/@jess/live", expected: "jess" },
+	{ input: "https://www.tiktok.com/@souzaxx.nx/live", expected: "souzaxx.nx" },
+	{ input: "www.tiktok.com/@Some.User/live", expected: "Some.User" },
 	{ input: "https://example.com/?streamUsername=kyle", expected: "kyle" },
 	{ input: "https://example.com/?room=room-42", expected: "room-42" },
 	{ input: "https://example.com/?handle=@lena", expected: "lena" },
@@ -140,6 +144,20 @@ runCases("extractSourceUrlIdentifier", [
 	{ input: "https://example.com/broadcast/oscar/live", expected: "oscar" },
 	{ input: "https://example.com/player/channel/pat", expected: "pat" }
 ], extractSourceUrlIdentifier);
+
+runCases("normalizeTikTokUsernameInput", [
+	{ input: "@souzaxx.nx", expected: "souzaxx.nx" },
+	{ input: "souzaxx.nx/live", expected: "souzaxx.nx" },
+	{ input: "@souzaxx.nx/live", expected: "souzaxx.nx" },
+	{ input: "https://www.tiktok.com/@souzaxx.nx/live", expected: "souzaxx.nx" },
+	{ input: "www.tiktok.com/@Some.User/live?lang=en", expected: "Some.User" },
+	{ input: "https://www.tiktok.com/@alice/live?room_id=123", expected: "alice" },
+	{ input: "https://www.tiktok.com/@alice/live?user=bob", expected: "alice" },
+	{ input: "www.tiktok.com/@Some.User/live?room_id=123&user=wrong", expected: "Some.User" },
+	{ input: "https://www.tiktok.com/live?room_id=123", expected: "" },
+	{ input: "https://www.tiktok.com/live?user=queryUser", expected: "queryUser" },
+	{ input: "https://www.tiktok.com/live", expected: "" }
+], normalizeTikTokUsernameInput);
 
 runCases("normalizeVpzoneChannel", [
 	{ input: "https://vpzone.tv/watch/Ashaelon", expected: "ashaelon" },
