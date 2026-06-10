@@ -4017,6 +4017,11 @@ class ConnectionManager {
         this.messageProcessor = new MessageProcessor(this);
         this.giftProcessor = new GiftProcessor(this);
         this.activityBuckets = new Map();
+        this.diagnosticStats = {
+            rawFrames: 0,
+            decodedFrames: 0,
+            forwardedEvents: 0
+        };
         this.recentShoppingEvents = new Map();
         this.recentEventDedupes = new Map();
         this.nextEventDedupePruneAt = 0;
@@ -4131,6 +4136,30 @@ class ConnectionManager {
 
     isActiveSourceConnection() {
         return getTikTokConnectionEligibility(this).allowed;
+    }
+
+    recordTikTokDiagnosticCounter(counterName, amount = 1) {
+        if (!this.diagnosticStats || typeof this.diagnosticStats !== 'object') {
+            this.diagnosticStats = {
+                rawFrames: 0,
+                decodedFrames: 0,
+                forwardedEvents: 0
+            };
+        }
+        if (!Object.prototype.hasOwnProperty.call(this.diagnosticStats, counterName)) {
+            return;
+        }
+        const increment = Number(amount);
+        this.diagnosticStats[counterName] += Number.isFinite(increment) && increment > 0 ? increment : 1;
+    }
+
+    getTikTokDiagnosticStats() {
+        const stats = this.diagnosticStats || {};
+        return {
+            rawFrames: Number(stats.rawFrames) || 0,
+            decodedFrames: Number(stats.decodedFrames) || 0,
+            forwardedEvents: Number(stats.forwardedEvents) || 0
+        };
     }
 
     getLogContext() {
@@ -6386,6 +6415,7 @@ class ConnectionManager {
             // Any raw websocket traffic proves the connection is alive.
             // Without this, quiet rooms with only heartbeat traffic look
             // "stale" to the health check and trigger unnecessary reconnects.
+            this.recordTikTokDiagnosticCounter('rawFrames');
             this.noteConnectionActivity('websocketData');
             let preview = null;
             let length = null;
@@ -6415,6 +6445,7 @@ class ConnectionManager {
             });
         });
         this.connection.on('decodedData', (messageType, decodedData, rawPayload) => {
+            this.recordTikTokDiagnosticCounter('decodedFrames');
             this.noteConnectionActivity(`decodedData:${messageType}`);
             const suppressed = suppressedDecodedLogTypes.has(messageType);
             const logEntry = {
@@ -9920,6 +9951,9 @@ function logTikTokForwardedMessage(msg, context = 'single', meta = {}) {
         if (!tid || tid < 900001) return;
         const wssID = tid - 900000;
         const manager = env.websocketConnections ? env.websocketConnections[wssID] : null;
+        if (manager && typeof manager.recordTikTokDiagnosticCounter === 'function') {
+            manager.recordTikTokDiagnosticCounter('forwardedEvents');
+        }
         if (!manager || typeof manager.logDebug !== 'function') return;
         const summary = {
             context,

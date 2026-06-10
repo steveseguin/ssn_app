@@ -496,6 +496,88 @@ async function testOfflineFailureStatusCarriesOfflineFlag() {
 	assert.strictEqual(failed.error, "The requested user isn't online :(");
 }
 
+async function testOfflineAutoActivateRetryCadenceBacksOff() {
+	const { manager } = createHarness({}, {
+		allowProxy: false,
+		localSignerEnabled: false
+	});
+	const sequence = manager.getOfflineRetrySequence();
+
+	manager.autoActivate = true;
+	const delays = [];
+	for (let attemptIndex = 0; attemptIndex < sequence.length + 2; attemptIndex += 1) {
+		manager.offlineRetryCount = attemptIndex;
+		const plan = manager.resolveOfflineReconnectPlan();
+		assert.strictEqual(plan.shouldRetry, true);
+		assert.strictEqual(plan.maxAttempts, null);
+		delays.push(plan.delay);
+	}
+
+	assert.deepStrictEqual(delays.slice(0, sequence.length), sequence);
+	assert.strictEqual(delays[sequence.length], sequence[sequence.length - 1]);
+	assert.strictEqual(delays[sequence.length + 1], sequence[sequence.length - 1]);
+
+	manager.autoActivate = false;
+	manager.offlineRetryCount = sequence.length;
+	const exhausted = manager.resolveOfflineReconnectPlan();
+	assert.strictEqual(exhausted.shouldRetry, false);
+	assert.strictEqual(exhausted.maxAttempts, sequence.length);
+}
+
+async function testOfflineRetryUiThrottlesLongCountdowns() {
+	const indexPath = path.join(__dirname, '..', '..', 'index.html');
+	const src = fs.readFileSync(indexPath, 'utf8');
+
+	assert.ok(
+		src.includes('const getTikTokRetryTimerDelay = (remainingMs, offlineRetry)'),
+		'expected renderer retry timer throttle helper'
+	);
+	assert.ok(
+		src.includes('if (remainingMs > 5 * 60 * 1000) return 30000;'),
+		'expected long offline waits to avoid one-second DOM updates'
+	);
+	assert.ok(
+		src.includes('entryElement._tiktokRetryTimer = setTimeout(update, delayMs);'),
+		'expected reconnect UI to reschedule with a dynamic timeout'
+	);
+}
+
+async function testTikTokDiagnosticCountersTrackDataFlow() {
+	const { manager } = createHarness({}, {
+		allowProxy: false,
+		localSignerEnabled: false
+	});
+
+	assert.deepStrictEqual(
+		manager.getTikTokDiagnosticStats(),
+		{ rawFrames: 0, decodedFrames: 0, forwardedEvents: 0 }
+	);
+
+	manager.recordTikTokDiagnosticCounter('rawFrames');
+	manager.recordTikTokDiagnosticCounter('decodedFrames', 2);
+	manager.recordTikTokDiagnosticCounter('forwardedEvents');
+	manager.recordTikTokDiagnosticCounter('unknownCounter');
+
+	assert.deepStrictEqual(
+		manager.getTikTokDiagnosticStats(),
+		{ rawFrames: 1, decodedFrames: 2, forwardedEvents: 1 }
+	);
+
+	const src = fs.readFileSync(path.join(__dirname, '..', '..', 'tiktok', 'connection-manager.js'), 'utf8');
+	assert.ok(
+		src.includes("this.recordTikTokDiagnosticCounter('rawFrames')"),
+		'expected raw websocket traffic to increment diagnostics'
+	);
+	assert.ok(
+		src.includes("this.recordTikTokDiagnosticCounter('decodedFrames')"),
+		'expected decoded payloads to increment diagnostics'
+	);
+	assert.ok(
+		src.includes("manager.recordTikTokDiagnosticCounter('forwardedEvents')"),
+		'expected forwarded overlay events to increment diagnostics'
+	);
+}
+
 async function testBlankRoomLookupErrorsBecomeUsefulMessages() {
 	const { manager } = createHarness({}, {
 		allowProxy: false,
@@ -614,6 +696,10 @@ async function testUiDoesNotAutoFallbackAfterOfflineFailure() {
 		'expected failed status handler to classify offline failures'
 	);
 	assert.ok(
+		src.includes('const offlineRetryExhausted = offlineFailure && isTikTokOfflineRetryExhaustedStatus(data)'),
+		'expected offline retry exhaustion to be treated as terminal'
+	);
+	assert.ok(
 		src.includes('const shouldAdvanceToNextMode = !offlineFailure && !hasRetryScheduled && hasAlternateMode'),
 		'expected offline failures to suppress Auto fallback to the next mode'
 	);
@@ -651,7 +737,7 @@ async function testClassicTerminalStatusesReleaseStaleHandles() {
 		'expected helper for clearing stale classic handles'
 	);
 	assert.ok(
-		src.includes("if (shouldReleaseTikTokClassicHandles(currentState, data, hasRetryScheduled))"),
+		src.includes("if (shouldReleaseTikTokClassicHandles(currentState, data, shouldPreserveRetryState))"),
 		'expected terminal status handlers to clear stale classic handles'
 	);
 	assert.ok(
@@ -669,7 +755,8 @@ async function testTikTokActivationHandleDoesNotOverwritePendingStatus() {
 		'expected TikTok activation to distinguish virtual handles from connected status'
 	);
 	assert.ok(
-		src.includes('error: tiktokWaitingForConnect ? tiktokErrorAfterCreate : null'),
+		src.includes('error: nonTikTokWssReportedError')
+			&& src.includes(': (tiktokWaitingForConnect ? tiktokErrorAfterCreate : null)'),
 		'expected pending TikTok activation to preserve offline/retry errors'
 	);
 	assert.ok(
@@ -677,7 +764,7 @@ async function testTikTokActivationHandleDoesNotOverwritePendingStatus() {
 		'expected pending TikTok activation to keep retry/error UI instead of showing connected'
 	);
 	assert.ok(
-		src.includes("} else if (!entry._tiktokRetryEndAt)"),
+		src.includes("} else if (!entry._tiktokRetryEndAt && !entry._tiktokRetryOffline)"),
 		'expected retry countdown UI not to be overwritten by a generic connecting label'
 	);
 }
@@ -805,6 +892,18 @@ async function run() {
 		{
 			name: 'offline failure status carries offline flag',
 			fn: testOfflineFailureStatusCarriesOfflineFlag
+		},
+		{
+			name: 'offline auto-activate retry cadence backs off',
+			fn: testOfflineAutoActivateRetryCadenceBacksOff
+		},
+		{
+			name: 'offline retry UI throttles long countdowns',
+			fn: testOfflineRetryUiThrottlesLongCountdowns
+		},
+		{
+			name: 'TikTok diagnostic counters track data flow',
+			fn: testTikTokDiagnosticCountersTrackDataFlow
 		},
 		{
 			name: 'blank room lookup errors become useful messages',

@@ -3602,6 +3602,21 @@
             return translateTemplateSafe('youtube.discovery.minutesSeconds', { minutes, seconds });
         }
 
+        function formatRetryDelay(ms) {
+            const totalSeconds = Math.max(1, Math.ceil((ms || 0) / 1000));
+            if (totalSeconds >= 3600) {
+                const hours = Math.floor(totalSeconds / 3600);
+                const minutes = Math.ceil((totalSeconds % 3600) / 60);
+                return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+            }
+            if (totalSeconds >= 60) {
+                const minutes = Math.floor(totalSeconds / 60);
+                const seconds = totalSeconds % 60;
+                return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+            }
+            return `${totalSeconds}s`;
+        }
+
         function formatYouTubeAutoCheckDelay(ms) {
             return formatAutoCheckDelay(ms);
         }
@@ -5745,6 +5760,8 @@
                 entry._tiktokRetryEndAt = null;
                 entry._tiktokRetryAttempt = null;
                 entry._tiktokRetryMax = null;
+                entry._tiktokRetryOffline = null;
+                entry._tiktokRetryBaseMessage = null;
                 stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, tiktokWssId: null, activeConnectionMode: null });
                 // Update UI status
                 updateConnectionStatus(entry, 'stopped', "Stopping...");
@@ -6363,6 +6380,25 @@
             return false;
         }
 
+        function getTikTokStatusMessageText(statusPayload = null) {
+            if (!statusPayload || typeof statusPayload !== 'object') {
+                return '';
+            }
+
+            return [
+                statusPayload.error,
+                statusPayload.reason,
+                statusPayload.message
+            ]
+                .filter(value => typeof value === 'string' && value.trim())
+                .join(' ')
+                .toLowerCase();
+        }
+
+        function isTikTokOfflineRetryExhaustedStatus(statusPayload = null) {
+            return getTikTokStatusMessageText(statusPayload).includes('offline retries exhausted');
+        }
+
         function isTikTokOfflineFailureStatus(statusPayload = null) {
             if (!statusPayload || typeof statusPayload !== 'object') {
                 return false;
@@ -6372,14 +6408,7 @@
                 return true;
             }
 
-            const normalizedMessage = [
-                statusPayload.error,
-                statusPayload.reason,
-                statusPayload.message
-            ]
-                .filter(value => typeof value === 'string' && value.trim())
-                .join(' ')
-                .toLowerCase();
+            const normalizedMessage = getTikTokStatusMessageText(statusPayload);
 
             if (!normalizedMessage) {
                 return false;
@@ -6652,11 +6681,19 @@
                     const tiktokWaitingForConnect = resolvedTarget === 'tiktok'
                         && (normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')
                         && !alreadyConnectedTikTok;
-                    const statusValue = alreadyConnectedTikTok
-                        ? 'active'
-                        : ((normalizedMode === 'websocket' || normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')
-                            ? 'activating'
-                            : 'active');
+                    const nonTikTokWssReportedError = resolvedTarget !== 'tiktok'
+                        && normalizedMode === 'websocket'
+                        && sourceAfterCreate?.status === 'error';
+                    let statusValue;
+                    if (nonTikTokWssReportedError) {
+                        statusValue = 'error';
+                    } else if (alreadyConnectedTikTok) {
+                        statusValue = 'active';
+                    } else if (normalizedMode === 'websocket' || normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy') {
+                        statusValue = 'activating';
+                    } else {
+                        statusValue = 'active';
+                    }
 
                     const resolvedActiveMode = resolvedTarget === 'tiktok'
                         ? normalizedMode
@@ -6668,7 +6705,9 @@
                         tiktokWssId: resolvedTarget === 'tiktok' ? actualWssId : null,
                         status: statusValue,
                         activeConnectionMode: resolvedActiveMode,
-                        error: tiktokWaitingForConnect ? tiktokErrorAfterCreate : null
+                        error: nonTikTokWssReportedError
+                            ? (sourceAfterCreate?.error || 'Connection error')
+                            : (tiktokWaitingForConnect ? tiktokErrorAfterCreate : null)
                     });
 
                     if (pendingTikTokToken) {
@@ -6680,7 +6719,7 @@
                             updateConnectionStatus(entry, 'connected');
                         } else if (tiktokStatusAfterCreate === 'error' && tiktokErrorAfterCreate) {
                             updateConnectionStatus(entry, 'retry', tiktokErrorAfterCreate);
-                        } else if (!entry._tiktokRetryEndAt) {
+                        } else if (!entry._tiktokRetryEndAt && !entry._tiktokRetryOffline) {
                             updateConnectionStatus(entry, 'connecting');
                         }
                         if (statusValue === 'active') {
@@ -10247,44 +10286,60 @@
                 ipcRenderer.on('wssStatus', (event, payload) => {
                     try {
                         const tabId = payload && payload.tabID;
-                        if (!tabId) return;
-                        const source = stateManager.getSources({ vid: tabId })[0];
+                        let source = null;
+                        if (payload && payload.sourceId) {
+                            source = stateManager.getSource(payload.sourceId);
+                        }
+                        if (!source && tabId !== undefined && tabId !== null) {
+                            source = stateManager.getSources({ vid: tabId })[0]
+                                || stateManager.getSources({ wssId: tabId })[0];
+                        }
                         if (!source) return;
                         const entryElement = document.querySelector(`[data-source-id="${source.id}"]`);
-                        if (!entryElement) return;
 
                         const status = payload.status;
                         const message = payload.message || null;
-                        if (status === 'error' && handleRecoverableYoutubeError(source, entryElement, payload, message)) {
+                        if (entryElement && status === 'error' && handleRecoverableYoutubeError(source, entryElement, payload, message)) {
                             return;
                         }
                         switch (status) {
                             case 'signin_required':
-                                stateManager.updateSource(source.id, { status: 'error' });
-                                updateConnectionStatus(entryElement, 'error', 'Please sign in');
+                                {
+                                    const signInMessage = message || 'Please sign in';
+                                    stateManager.updateSource(source.id, { status: 'error', error: signInMessage });
+                                    if (entryElement) updateConnectionStatus(entryElement, 'error', signInMessage);
+                                }
                                 // Auto-reveal the WSS window for sign-in
-                                if (ipcRenderer && source.vid) {
-                                    ipcRenderer.invoke('showWindow', { vid: source.vid, state: false, userInitiated: false }).then((visible) => {
+                                if (ipcRenderer && (source.vid || tabId)) {
+                                    ipcRenderer.invoke('showWindow', { vid: source.vid || tabId, state: false, userInitiated: false }).then((visible) => {
                                         stateManager.updateSource(source.id, { isVisible: (typeof visible === 'boolean') ? visible : true });
                                     }).catch(() => stateManager.updateSource(source.id, { isVisible: true }));
                                 }
                                 break;
                             case 'ready':
-                                updateConnectionStatus(entryElement, 'retry', message || 'Ready. Configure in popup.');
+                                if (entryElement) updateConnectionStatus(entryElement, 'retry', message || 'Ready. Configure in popup.');
                                 break;
                             case 'connected':
                                 stateManager.updateSource(source.id, { status: 'active' });
-                                updateConnectionStatus(entryElement, 'connected');
+                                if (entryElement) updateConnectionStatus(entryElement, 'connected');
+                                break;
+                            case 'warn':
+                                if (message) {
+                                    stateManager.updateSource(source.id, { error: message });
+                                }
+                                if (entryElement) updateConnectionStatus(entryElement, 'info', message || 'Connection warning');
                                 break;
                             case 'disconnected':
                             case 'signed_out':
                                 stateManager.updateSource(source.id, { status: 'inactive', activeConnectionMode: null });
-                                updateConnectionStatus(entryElement, 'stopped', message || 'Disconnected');
-                                setTimeout(() => updateConnectionStatus(entryElement, 'clear'), 2000);
+                                if (entryElement) {
+                                    updateConnectionStatus(entryElement, 'stopped', message || 'Disconnected');
+                                    setTimeout(() => updateConnectionStatus(entryElement, 'clear'), 2000);
+                                }
                                 break;
                             case 'error':
                                 stateManager.updateSource(source.id, { status: 'error', error: message || 'Error' });
-                                updateConnectionStatus(entryElement, 'error', message || 'Error');
+                                if (entryElement) updateConnectionStatus(entryElement, 'error', message || 'Error');
                                 break;
                         }
                     } catch (e) { console.warn('Failed to apply wssStatus:', e); }
@@ -10330,6 +10385,48 @@
                     const restoreActivateUI = () => {
                         if (entryElement) restoreActivateButton(entryElement);
                     };
+                    const clearTikTokRetryState = () => {
+                        if (!entryElement) return;
+                        if (entryElement._tiktokRetryTimer) {
+                            clearTimeout(entryElement._tiktokRetryTimer);
+                            clearInterval(entryElement._tiktokRetryTimer);
+                            entryElement._tiktokRetryTimer = null;
+                        }
+                        entryElement._tiktokRetryEndAt = null;
+                        entryElement._tiktokRetryAttempt = null;
+                        entryElement._tiktokRetryMax = null;
+                        entryElement._tiktokRetryOffline = null;
+                        entryElement._tiktokRetryBaseMessage = null;
+                    };
+                    const getTikTokRetryAttemptInfo = () => {
+                        if (!entryElement || !entryElement._tiktokRetryAttempt) return '';
+                        return ` (attempt ${entryElement._tiktokRetryAttempt}${entryElement._tiktokRetryMax ? '/' + entryElement._tiktokRetryMax : ''})`;
+                    };
+                    const renderScheduledTikTokRetryStatus = (fallbackMessage) => {
+                        if (!entryElement || (!entryElement._tiktokRetryEndAt && !entryElement._tiktokRetryOffline)) return false;
+                        const remainingMs = entryElement._tiktokRetryEndAt
+                            ? Math.max(0, entryElement._tiktokRetryEndAt - Date.now())
+                            : 0;
+                        const attemptInfo = getTikTokRetryAttemptInfo();
+                        if (entryElement._tiktokRetryOffline) {
+                            const baseMsg = entryElement._tiktokRetryBaseMessage || fallbackMessage || 'User is offline';
+                            const msg = entryElement._tiktokRetryEndAt
+                                ? `${baseMsg} - watching; next check in ${formatRetryDelay(remainingMs)}.${attemptInfo}`
+                                : `${baseMsg} - watching for the stream to go live.${attemptInfo}`;
+                            updateConnectionStatus(entryElement, 'info', msg, { persistent: true });
+                        } else {
+                            const msg = `${fallbackMessage || 'Connection error'} - retrying in ${formatRetryDelay(remainingMs)}...${attemptInfo}`;
+                            updateConnectionStatus(entryElement, 'retry', msg);
+                        }
+                        setConnectingStopUI();
+                        return true;
+                    };
+                    const getTikTokRetryTimerDelay = (remainingMs, offlineRetry) => {
+                        if (!offlineRetry) return 1000;
+                        if (remainingMs > 5 * 60 * 1000) return 30000;
+                        if (remainingMs > 60 * 1000) return 5000;
+                        return 1000;
+                    };
 
                     if (currentState.status === 'inactive' && !currentState.vid && !currentState.wssId && !currentState.tiktokWssId && (data.status === 'error' || data.status === 'failed' || data.status === 'disconnected')) {
                         return;
@@ -10355,13 +10452,7 @@
                                 stateManager.updateSource(sourceId, updatePayload);
                             }
                             if (entryElement) {
-                                if (entryElement._tiktokRetryTimer) {
-                                    clearInterval(entryElement._tiktokRetryTimer);
-                                    entryElement._tiktokRetryTimer = null;
-                                }
-                                entryElement._tiktokRetryEndAt = null;
-                                entryElement._tiktokRetryAttempt = null;
-                                entryElement._tiktokRetryMax = null;
+                                clearTikTokRetryState();
                                 updateConnectionStatus(entryElement, 'connecting', data.message || null);
                                 setConnectingStopUI();
                             }
@@ -10369,13 +10460,7 @@
                         case 'connected':
                             {
                                 if (entryElement) {
-                                    if (entryElement._tiktokRetryTimer) {
-                                        clearInterval(entryElement._tiktokRetryTimer);
-                                        entryElement._tiktokRetryTimer = null;
-                                    }
-                                    entryElement._tiktokRetryEndAt = null;
-                                    entryElement._tiktokRetryAttempt = null;
-                                    entryElement._tiktokRetryMax = null;
+                                    clearTikTokRetryState();
                                 }
                                 const connectionMethod = data.connectionMethod || data.effectiveMode || null;
                                 const classicTabId = normalizeNumericId(data.tabID);
@@ -10417,10 +10502,12 @@
                         case 'disconnected':
                             {
                                 const hasRetryScheduled = !!(entryElement && entryElement._tiktokRetryEndAt);
+                                const hasOfflineRetryScheduled = !!(entryElement && entryElement._tiktokRetryOffline);
+                                const shouldPreserveRetryState = hasRetryScheduled || hasOfflineRetryScheduled;
                                 const classicTabId = normalizeNumericId(data.tabID);
                                 const updatePayload = {
-                                    status: 'error',
-                                    error: data.error || 'Connection lost.',
+                                    status: hasOfflineRetryScheduled ? 'activating' : 'error',
+                                    error: hasOfflineRetryScheduled ? null : (data.error || 'Connection lost.'),
                                     tiktokFallbackMode: null,
                                     tiktokConnectionMethod: null
                                 };
@@ -10430,7 +10517,7 @@
                                     updatePayload.tiktokWssId = null;
                                     updatePayload.activeConnectionMode = 'classic';
                                 }
-                                if (shouldReleaseTikTokClassicHandles(currentState, data, hasRetryScheduled)) {
+                                if (shouldReleaseTikTokClassicHandles(currentState, data, shouldPreserveRetryState)) {
                                     updatePayload.vid = null;
                                     updatePayload.wssId = null;
                                     updatePayload.tiktokWssId = null;
@@ -10438,27 +10525,20 @@
                                 }
                                 stateManager.updateSource(sourceId, updatePayload);
                             }
-                            if (entryElement) {
-                                if (entryElement._tiktokRetryEndAt) {
-                                    const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
-                                    const secs = Math.ceil(remainingMs / 1000);
-                                    const attemptInfo = entryElement._tiktokRetryAttempt ? ` (attempt ${entryElement._tiktokRetryAttempt}${entryElement._tiktokRetryMax ? '/' + entryElement._tiktokRetryMax : ''})` : '';
-                                    const msg = `${data.error || 'Connection lost'} - retrying in ${secs}s...${attemptInfo}`;
-                                    updateConnectionStatus(entryElement, 'retry', msg);
-                                    setConnectingStopUI();
-                                } else {
-                                    updateConnectionStatus(entryElement, 'error', data.error || 'Connection lost. Will attempt to reconnect if configured.');
-                                    restoreActivateUI();
-                                }
+                            if (entryElement && !renderScheduledTikTokRetryStatus(data.error || 'Connection lost')) {
+                                updateConnectionStatus(entryElement, 'error', data.error || 'Connection lost. Will attempt to reconnect if configured.');
+                                restoreActivateUI();
                             }
                             break;
                         case 'error':
                             {
                                 const hasRetryScheduled = !!(entryElement && entryElement._tiktokRetryEndAt);
+                                const hasOfflineRetryScheduled = !!(entryElement && entryElement._tiktokRetryOffline);
+                                const shouldPreserveRetryState = hasRetryScheduled || hasOfflineRetryScheduled;
                                 const classicTabId = normalizeNumericId(data.tabID);
                                 const updatePayload = {
-                                    status: 'error',
-                                    error: data.error || 'Connection error',
+                                    status: hasOfflineRetryScheduled ? 'activating' : 'error',
+                                    error: hasOfflineRetryScheduled ? null : (data.error || 'Connection error'),
                                     tiktokFallbackMode: null,
                                     tiktokConnectionMethod: null
                                 };
@@ -10468,7 +10548,7 @@
                                     updatePayload.tiktokWssId = null;
                                     updatePayload.activeConnectionMode = 'classic';
                                 }
-                                if (shouldReleaseTikTokClassicHandles(currentState, data, hasRetryScheduled)) {
+                                if (shouldReleaseTikTokClassicHandles(currentState, data, shouldPreserveRetryState)) {
                                     updatePayload.vid = null;
                                     updatePayload.wssId = null;
                                     updatePayload.tiktokWssId = null;
@@ -10476,25 +10556,19 @@
                                 }
                                 stateManager.updateSource(sourceId, updatePayload);
                             }
-                            if (entryElement) {
-                                if (entryElement._tiktokRetryEndAt) {
-                                    const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
-                                    const secs = Math.ceil(remainingMs / 1000);
-                                    const attemptInfo = entryElement._tiktokRetryAttempt ? ` (attempt ${entryElement._tiktokRetryAttempt}${entryElement._tiktokRetryMax ? '/' + entryElement._tiktokRetryMax : ''})` : '';
-                                    const msg = `${data.error || 'Connection error'} - retrying in ${secs}s...${attemptInfo}`;
-                                    updateConnectionStatus(entryElement, 'retry', msg);
-                                    setConnectingStopUI();
-                                } else {
-                                    updateConnectionStatus(entryElement, 'error', data.error || 'Connection error');
-                                    restoreActivateUI();
-                                }
+                            if (entryElement && !renderScheduledTikTokRetryStatus(data.error || 'Connection error')) {
+                                updateConnectionStatus(entryElement, 'error', data.error || 'Connection error');
+                                restoreActivateUI();
                             }
                             break;
                         case 'failed':
                             {
                                 const isSigningIssue = data.sessionRejected === true;
                                 const offlineFailure = isTikTokOfflineFailureStatus(data);
+                                const offlineRetryExhausted = offlineFailure && isTikTokOfflineRetryExhaustedStatus(data);
                                 const hasRetryScheduled = !!(entryElement && entryElement._tiktokRetryEndAt);
+                                const hasOfflineRetryScheduled = !!(entryElement && entryElement._tiktokRetryOffline);
+                                const shouldPreserveRetryState = !offlineRetryExhausted && (hasRetryScheduled || hasOfflineRetryScheduled);
                                 const currentMode = normalizeTikTokMode(
                                     currentState.activeConnectionMode
                                     || currentState.connectionMode
@@ -10507,14 +10581,8 @@
                                 );
                                 const hasAlternateMode = fallbackSequence.some((candidate) => normalizeTikTokMode(candidate) !== currentMode);
                                 const shouldAdvanceToNextMode = !offlineFailure && !hasRetryScheduled && hasAlternateMode;
-                                if ((isSigningIssue || offlineFailure) && entryElement) {
-                                    if (entryElement._tiktokRetryTimer) {
-                                        clearInterval(entryElement._tiktokRetryTimer);
-                                        entryElement._tiktokRetryTimer = null;
-                                    }
-                                    entryElement._tiktokRetryEndAt = null;
-                                    entryElement._tiktokRetryAttempt = null;
-                                    entryElement._tiktokRetryMax = null;
+                                if ((isSigningIssue || offlineRetryExhausted || (offlineFailure && !hasOfflineRetryScheduled)) && entryElement) {
+                                    clearTikTokRetryState();
                                 }
                                 const defaultMessage = isSigningIssue
                                     ? 'TikTok sign-in failed. Provide your Euler API key.'
@@ -10523,8 +10591,8 @@
                                 const classicTabId = normalizeNumericId(data.tabID);
                                 {
                                     const updatePayload = {
-                                        status: 'error',
-                                        error: errorMessage,
+                                        status: shouldPreserveRetryState ? 'activating' : 'error',
+                                        error: shouldPreserveRetryState ? null : errorMessage,
                                         tiktokFallbackMode: null,
                                         tiktokConnectionMethod: null
                                     };
@@ -10536,7 +10604,7 @@
                                     } else {
                                         updatePayload.vid = null;
                                     }
-                                    if (shouldReleaseTikTokClassicHandles(currentState, data, hasRetryScheduled)) {
+                                    if (shouldReleaseTikTokClassicHandles(currentState, data, shouldPreserveRetryState)) {
                                         updatePayload.wssId = null;
                                         updatePayload.tiktokWssId = null;
                                         updatePayload.vid = null;
@@ -10545,13 +10613,8 @@
                                     stateManager.updateSource(sourceId, updatePayload);
                                 }
                                 if (entryElement) {
-                                    if (!isSigningIssue && !offlineFailure && entryElement._tiktokRetryEndAt) {
-                                        const remainingMs = Math.max(0, entryElement._tiktokRetryEndAt - Date.now());
-                                        const secs = Math.ceil(remainingMs / 1000);
-                                        const attemptInfo = entryElement._tiktokRetryAttempt ? ` (attempt ${entryElement._tiktokRetryAttempt}${entryElement._tiktokRetryMax ? '/' + entryElement._tiktokRetryMax : ''})` : '';
-                                        const msg = `${errorMessage} - retrying in ${secs}s...${attemptInfo}`;
-                                        updateConnectionStatus(entryElement, 'retry', msg);
-                                        setConnectingStopUI();
+                                    if (!isSigningIssue && !offlineRetryExhausted && renderScheduledTikTokRetryStatus(errorMessage)) {
+                                        // Keep the scheduled retry message visible.
                                     } else {
                                         const isExhausted = errorMessage && /retries were exhausted/i.test(errorMessage);
                                         const provider = currentState.tiktokSigningProvider || 'auto';
@@ -10600,13 +10663,7 @@
                                 }
 
                                 if (entryElement) {
-                                    if (entryElement._tiktokRetryTimer) {
-                                        clearInterval(entryElement._tiktokRetryTimer);
-                                        entryElement._tiktokRetryTimer = null;
-                                    }
-                                    entryElement._tiktokRetryEndAt = null;
-                                    entryElement._tiktokRetryAttempt = null;
-                                    entryElement._tiktokRetryMax = null;
+                                    clearTikTokRetryState();
                                 }
 
                                 const fatalUpdatePayload = {
@@ -10664,42 +10721,67 @@
                             }
                             break;
                         case 'reconnecting':
-                            stateManager.updateSource(sourceId, { status: 'activating' });
-                            if (entryElement) {
-                                if (entryElement._tiktokRetryTimer) {
-                                    clearInterval(entryElement._tiktokRetryTimer);
-                                    entryElement._tiktokRetryTimer = null;
+                            {
+                                const offlineRetry = isTikTokOfflineFailureStatus(data);
+                                const nextAttemptMs = Number(data.nextAttemptIn);
+                                const hasNextAttempt = Number.isFinite(nextAttemptMs) && nextAttemptMs > 0;
+                                stateManager.updateSource(sourceId, { status: 'activating', error: null });
+
+                                if (entryElement) {
+                                    clearTikTokRetryState();
+                                    const endAt = Date.now() + (hasNextAttempt ? nextAttemptMs : 0);
+                                    const attemptInfo = (data.attempt ? ` (attempt ${data.attempt}${data.maxAttempts ? '/' + data.maxAttempts : ''})` : '');
+                                    const baseMsg = offlineRetry
+                                        ? (data.reason || (data.connectionMethod ? `User is offline (${data.connectionMethod})` : 'User is offline'))
+                                        : data.reason
+                                            ? `Connection error: ${data.reason}`
+                                            : 'Connection failed';
+                                    entryElement._tiktokRetryEndAt = hasNextAttempt ? endAt : null;
+                                    entryElement._tiktokRetryAttempt = data.attempt || null;
+                                    entryElement._tiktokRetryMax = data.maxAttempts || null;
+                                    entryElement._tiktokRetryOffline = offlineRetry ? true : null;
+                                    entryElement._tiktokRetryBaseMessage = offlineRetry ? baseMsg : null;
+                                    const scheduleNextUpdate = (remainingMs) => {
+                                        if (!hasNextAttempt || remainingMs <= 0) return;
+                                        const delayMs = getTikTokRetryTimerDelay(remainingMs, offlineRetry);
+                                        entryElement._tiktokRetryTimer = setTimeout(update, delayMs);
+                                    };
+                                    const update = () => {
+                                        if (entryElement._tiktokRetryTimer) {
+                                            clearTimeout(entryElement._tiktokRetryTimer);
+                                            entryElement._tiktokRetryTimer = null;
+                                        }
+                                        const remainingMs = hasNextAttempt ? Math.max(0, endAt - Date.now()) : 0;
+                                        if (offlineRetry) {
+                                            const msg = hasNextAttempt
+                                                ? `${baseMsg} - watching; next check in ${formatRetryDelay(remainingMs)}.${attemptInfo}`
+                                                : `${baseMsg} - watching for the stream to go live.${attemptInfo}`;
+                                            updateConnectionStatus(entryElement, 'info', msg, { persistent: true });
+                                        } else {
+                                            const msg = hasNextAttempt
+                                                ? `${baseMsg} - retrying in ${formatRetryDelay(remainingMs)}...${attemptInfo}`
+                                                : `${baseMsg} - retrying...${attemptInfo}`;
+                                            updateConnectionStatus(entryElement, 'retry', msg);
+                                        }
+                                        if (remainingMs <= 0) {
+                                            entryElement._tiktokRetryEndAt = null;
+                                            if (!offlineRetry) {
+                                                entryElement._tiktokRetryAttempt = null;
+                                                entryElement._tiktokRetryMax = null;
+                                            }
+                                        } else {
+                                            scheduleNextUpdate(remainingMs);
+                                        }
+                                    };
+                                    update();
+                                    setConnectingStopUI();
                                 }
-                                const endAt = Date.now() + (data.nextAttemptIn || 0);
-                                const attemptInfo = (data.attempt ? ` (attempt ${data.attempt}${data.maxAttempts ? '/' + data.maxAttempts : ''})` : '');
-                                const baseMsg = data.offline
-                                    ? (data.reason || (data.connectionMethod ? `User is offline (${data.connectionMethod})` : 'User is offline'))
-                                    : data.reason
-                                        ? `Connection error: ${data.reason}`
-                                        : 'Connection failed';
-                                const update = () => {
-                                    const remainingMs = Math.max(0, endAt - Date.now());
-                                    const secs = Math.ceil(remainingMs / 1000);
-                                    const msg = (data.nextAttemptIn ? `${baseMsg} - retrying in ${secs}s...${attemptInfo}` : `${baseMsg} - retrying...${attemptInfo}`);
-                                    updateConnectionStatus(entryElement, 'retry', msg);
-                                    if (remainingMs <= 0) {
-                                        clearInterval(entryElement._tiktokRetryTimer);
-                                        entryElement._tiktokRetryTimer = null;
-                                    }
-                                };
-                                update();
-                                if (data.nextAttemptIn && data.nextAttemptIn > 0) {
-                                    entryElement._tiktokRetryTimer = setInterval(update, 1000);
-                                }
-                                entryElement._tiktokRetryEndAt = endAt;
-                                entryElement._tiktokRetryAttempt = data.attempt || null;
-                                entryElement._tiktokRetryMax = data.maxAttempts || null;
-                                setConnectingStopUI();
                             }
                             break;
                         case 'stopped_by_user':
                             stateManager.updateSource(sourceId, { status: 'inactive', vid: null, wssId: null, tiktokWssId: null, activeConnectionMode: null, tiktokConnectionMethod: null });
                             if (entryElement) {
+                                clearTikTokRetryState();
                                 updateConnectionStatus(entryElement, 'stopped', 'Connection stopped by user.');
                                 entryElement._tiktokFallback = null;
                             }

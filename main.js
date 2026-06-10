@@ -8587,9 +8587,24 @@ async function createWindow(args, reuse = false, mainApp = false) {
         // Handle generic WebSocket status signals (from WSS pages)
         try {
             if (args[0] && args[0].wssStatus) {
+                const statusPayload = args[0].wssStatus || {};
+                let sourceId = statusPayload.sourceId || null;
+                if (!sourceId && Number.isFinite(tabID)) {
+                    try {
+                        const sourceView = getActiveBrowserView(tabID) || browserViews[tabID];
+                        sourceId = sourceView?.args?.sourceId || null;
+                    } catch (_) { }
+                }
+                if (!sourceId) {
+                    try {
+                        const sourceWindow = BrowserWindow.fromWebContents(eventRet.sender);
+                        sourceId = sourceWindow?.args?.sourceId || null;
+                    } catch (_) { }
+                }
                 const payload = {
                     tabID,
-                    ...(args[0].wssStatus || {})
+                    ...statusPayload,
+                    sourceId
                 };
                 if (mainWindow && mainWindow.webContents) {
                     mainWindow.webContents.send('wssStatus', payload);
@@ -15391,6 +15406,30 @@ function showReporterMessageBox(options) {
     return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
 }
 
+function getTikTokDiagnosticReportContext() {
+    const connections = [];
+    try {
+        for (const [rawWssID, manager] of Object.entries(websocketConnections || {})) {
+            if (!manager || typeof manager.getTikTokDiagnosticStats !== 'function') {
+                continue;
+            }
+            const numericWssID = Number(rawWssID);
+            connections.push({
+                wssID: Number.isFinite(numericWssID) ? numericWssID : rawWssID,
+                sourceId: typeof manager.sourceId === 'string' ? manager.sourceId : null,
+                ...manager.getTikTokDiagnosticStats()
+            });
+        }
+    } catch (error) {
+        return {
+            error: error && error.message ? error.message : String(error)
+        };
+    }
+    return {
+        connections
+    };
+}
+
 async function uploadDiagnosticReport(type, message, context = {}) {
     return reporter.send(type, message, context, { bypassRateLimit: true });
 }
@@ -15412,7 +15451,8 @@ async function sendErrorReportingEnabledSnapshot() {
             'User enabled error reporting; sending current settings snapshot.',
             {
                 trigger: 'enable_error_reporting',
-                platform: process.platform
+                platform: process.platform,
+                tiktokDiagnostics: getTikTokDiagnosticReportContext()
             }
         );
         return true;
@@ -15473,7 +15513,8 @@ async function promptAndSendManualIssueReport() {
             {
                 trigger: 'manual_issue_report',
                 description: cleanedDescription,
-                platform: process.platform
+                platform: process.platform,
+                tiktokDiagnostics: getTikTokDiagnosticReportContext()
             }
         );
         await showReporterMessageBox({
