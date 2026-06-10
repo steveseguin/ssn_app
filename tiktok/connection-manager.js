@@ -9137,9 +9137,9 @@ class ConnectionManager {
         if (!canonicalEventType) {
             return;
         }
-        if (canonicalEventType === 'liked' && !isCaptureLikedEventEnabled()) {
-            return;
-        }
+        const directTarget = canonicalEventType === 'liked' && !isCaptureLikedEventEnabled()
+            ? 'reactions'
+            : null;
         if (this.shouldSuppressDuplicateEvent(canonicalEventType, data, message)) {
             return;
         }
@@ -9188,7 +9188,7 @@ class ConnectionManager {
             payload.meta = metaPayload;
         }
 
-        sendToBackground(payload);
+        sendToBackground(payload, directTarget);
     }
 
     shouldAllowEulerChatEndpoint() {
@@ -9974,10 +9974,12 @@ function logTikTokForwardedMessage(msg, context = 'single', meta = {}) {
     }
 }
 
-function sendToBackground(msg) {
+function sendToBackground(msg, target = null) {
     if (shouldDropTikTokMessageForInactiveConnection(msg, 'single')) {
         return;
     }
+
+    const directTarget = typeof target === 'string' && target.trim() ? target.trim() : null;
 
     try {
         if (msg && typeof msg === 'object' && typeof msg.tid === 'number') {
@@ -10000,7 +10002,9 @@ function sendToBackground(msg) {
 
     msg = attachSourceAccountMeta(msg);
     logTikTokForwardedMessage(msg);
-    try { env.onEvent(msg); } catch (error) { console.warn('onEvent callback failed:', error); }
+    if (!directTarget) {
+        try { env.onEvent(msg); } catch (error) { console.warn('onEvent callback failed:', error); }
+    }
 
     const mainWindow = getMainWindow();
     if (mainWindow && mainWindow.webContents && mainWindow.webContents.mainFrame) {
@@ -10008,7 +10012,8 @@ function sendToBackground(msg) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
                 if (frame.url.split('?')[0].endsWith('background.html')) {
                     frame.postMessage('fromMain', {
-                        message: msg
+                        message: msg,
+                        ...(directTarget ? { target: directTarget } : {})
                     });
                 }
             });

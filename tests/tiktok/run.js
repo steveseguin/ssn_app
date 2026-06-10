@@ -10,7 +10,8 @@ const args = process.argv.slice(2);
 const options = {
   mode: 'both',
   username: 'juanstreams',
-  duration: 20000
+  duration: 20000,
+  captureLikes: false
 };
 
 for (const arg of args) {
@@ -23,6 +24,11 @@ for (const arg of args) {
     if (Number.isFinite(parsed) && parsed > 0) {
       options.duration = parsed;
     }
+  } else if (arg === '--capture-likes' || arg === '--likes') {
+    options.captureLikes = true;
+  } else if (arg.startsWith('--capture-likes=')) {
+    const value = String(arg.split('=')[1] || '').trim().toLowerCase();
+    options.captureLikes = ['1', 'true', 'yes', 'on'].includes(value);
   }
 }
 
@@ -56,6 +62,7 @@ const env = createTikTokEnvironment({
   getCachedSettings: () => ({}),
   isCaptureEventsEnabled: () => true,
   isCaptureJoinedEventEnabled: () => true,
+  isCaptureLikedEventEnabled: () => options.captureLikes,
   isViewerUpdateAllowed: () => true,
   isTextOnlyModeEnabled: () => false,
   connectionStates
