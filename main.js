@@ -10254,6 +10254,75 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
 
 
+                // Set up WebSocket monitoring if configured in args or config
+                // Configuration can be set in config files (e.g., config_0.json) or passed via args
+                // Configuration options:
+                //   websocketMonitoring = true                           // Monitor all WebSockets
+                //   websocketMonitoring = "streamelements.com"           // Monitor WebSockets containing this domain
+                //   websocketMonitoring = { filter: "domain.com" }       // Object format with filter
+                const websocketMonitoring = args.websocketMonitoring || (args.config && args.config.websocketMonitoring);
+                if (websocketMonitoring) {
+                    try {
+
+                        let websocketFilter = null;
+
+                        // Handle different configuration formats
+                        if (typeof websocketMonitoring === 'object' && websocketMonitoring.filter) {
+                            // Object format: { filter: "domain.com" }
+                            const filterDomain = websocketMonitoring.filter;
+                            websocketFilter = (url) => url && url.includes(filterDomain);
+                        } else if (typeof websocketMonitoring === 'string') {
+                            // String format: "domain.com"
+                            const filterDomain = websocketMonitoring;
+                            websocketFilter = (url) => url && url.includes(filterDomain);
+                        } else if (websocketMonitoring === true) {
+                            // Boolean true: monitor all WebSockets
+                            websocketFilter = null;
+                        }
+
+                        const cleanup = setupWebSocketMonitor(view.webContents, {
+                            filter: websocketFilter,
+                            onMessage: (data) => {
+                                // Forward to content script via preload
+                                view.webContents.send('websocket-message', {
+                                    type: 'message',
+                                    data: data.data,
+                                    url: data.url,
+                                    timestamp: data.timestamp
+                                });
+                            },
+                            onOpen: (data) => {
+                                view.webContents.send('websocket-message', {
+                                    type: 'open',
+                                    url: data.url,
+                                    timestamp: Date.now()
+                                });
+                            },
+                            onClose: (data) => {
+                                view.webContents.send('websocket-message', {
+                                    type: 'close',
+                                    url: data.url,
+                                    timestamp: Date.now()
+                                });
+                            },
+                            onSend: (data) => {
+                                view.webContents.send('websocket-message', {
+                                    type: 'send',
+                                    data: data.data,
+                                    url: data.url,
+                                    timestamp: Date.now()
+                                });
+                            }
+                        });
+
+                        // Store cleanup function for later
+                        view.__websocketMonitorCleanup = cleanup;
+                        log(`WebSocket monitoring enabled${websocketFilter ? ' with filter' : ' for all WebSockets'}`);
+                    } catch (error) {
+                        log('Failed to set up WebSocket monitoring:', error);
+                    }
+                }
+
                 // Load URL
                 log(`Loading regular window URL: ${args.url}`);
                 log(`User agent config: ${args.config?.userAgent}`);
@@ -10333,74 +10402,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     view.webContents.setAudioMuted(true);
                 }
 
-                // Set up WebSocket monitoring if configured in args or config
-                // Configuration can be set in config files (e.g., config_0.json) or passed via args
-                // Configuration options:
-                //   websocketMonitoring = true                           // Monitor all WebSockets
-                //   websocketMonitoring = "streamelements.com"           // Monitor WebSockets containing this domain
-                //   websocketMonitoring = { filter: "domain.com" }       // Object format with filter
-                const websocketMonitoring = args.websocketMonitoring || (args.config && args.config.websocketMonitoring);
-                if (websocketMonitoring) {
-                    try {
-
-                        let websocketFilter = null;
-
-                        // Handle different configuration formats
-                        if (typeof websocketMonitoring === 'object' && websocketMonitoring.filter) {
-                            // Object format: { filter: "domain.com" }
-                            const filterDomain = websocketMonitoring.filter;
-                            websocketFilter = (url) => url.includes(filterDomain);
-                        } else if (typeof websocketMonitoring === 'string') {
-                            // String format: "domain.com"
-                            const filterDomain = websocketMonitoring;
-                            websocketFilter = (url) => url.includes(filterDomain);
-                        } else if (websocketMonitoring === true) {
-                            // Boolean true: monitor all WebSockets
-                            websocketFilter = null;
-                        }
-
-                        const cleanup = setupWebSocketMonitor(view.webContents, {
-                            filter: websocketFilter,
-                            onMessage: (data) => {
-                                // Forward to content script via preload
-                                view.webContents.send('websocket-message', {
-                                    type: 'message',
-                                    data: data.data,
-                                    url: data.url,
-                                    timestamp: data.timestamp
-                                });
-                            },
-                            onOpen: (data) => {
-                                view.webContents.send('websocket-message', {
-                                    type: 'open',
-                                    url: data.url,
-                                    timestamp: Date.now()
-                                });
-                            },
-                            onClose: (data) => {
-                                view.webContents.send('websocket-message', {
-                                    type: 'close',
-                                    url: data.url,
-                                    timestamp: Date.now()
-                                });
-                            },
-                            onSend: (data) => {
-                                view.webContents.send('websocket-message', {
-                                    type: 'send',
-                                    data: data.data,
-                                    url: data.url,
-                                    timestamp: Date.now()
-                                });
-                            }
-                        });
-
-                        // Store cleanup function for later
-                        view.__websocketMonitorCleanup = cleanup;
-                        log(`WebSocket monitoring enabled${websocketFilter ? ' with filter' : ' for all WebSockets'}`);
-                    } catch (error) {
-                        log('Failed to set up WebSocket monitoring:', error);
-                    }
-                }
 
                 //view.webContents.on("will-navigate", handleNavigation);
                 //view.webContents.on("new-window", handleNavigation);
