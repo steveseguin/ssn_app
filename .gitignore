@@ -31,6 +31,14 @@ pkg/
 .tmp_head_index.html
 .codex-tmp
 .codex-tmp/
+
+# Test and local run artifacts
+/test-results/
+/playwright-report/
+/coverage/
+/tmp-codex-logs/
+/tmp-login-test/
+
 # Build configuration
 build-config.env
 .env

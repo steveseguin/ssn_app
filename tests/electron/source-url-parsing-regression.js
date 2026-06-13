@@ -57,6 +57,7 @@ vm.runInContext(`${helperBlock}\n${dependencyBlock}
 this.helpers = {
 	cleanSourceUrlIdentifier,
 	extractSourceUrlIdentifier,
+	isValidTikTokUsername,
 	normalizeTikTokUsernameInput,
 	getExplicitSourceIdentifier,
 	getWebSocketChannelForSource,
@@ -68,6 +69,7 @@ this.helpers = {
 const {
 	cleanSourceUrlIdentifier,
 	extractSourceUrlIdentifier,
+	isValidTikTokUsername,
 	normalizeTikTokUsernameInput,
 	getExplicitSourceIdentifier,
 	getWebSocketChannelForSource,
@@ -146,18 +148,37 @@ runCases("extractSourceUrlIdentifier", [
 ], extractSourceUrlIdentifier);
 
 runCases("normalizeTikTokUsernameInput", [
+	{ input: "souzaxx", expected: "souzaxx" },
+	{ input: "@souzaxx", expected: "souzaxx" },
 	{ input: "@souzaxx.nx", expected: "souzaxx.nx" },
 	{ input: "souzaxx.nx/live", expected: "souzaxx.nx" },
 	{ input: "@souzaxx.nx/live", expected: "souzaxx.nx" },
+	{ input: "https://www.tiktok.com/@Some.User", expected: "Some.User" },
 	{ input: "https://www.tiktok.com/@souzaxx.nx/live", expected: "souzaxx.nx" },
+	{ input: "https://m.tiktok.com/@mobile_user/live", expected: "mobile_user" },
 	{ input: "www.tiktok.com/@Some.User/live?lang=en", expected: "Some.User" },
 	{ input: "https://www.tiktok.com/@alice/live?room_id=123", expected: "alice" },
 	{ input: "https://www.tiktok.com/@alice/live?user=bob", expected: "alice" },
 	{ input: "www.tiktok.com/@Some.User/live?room_id=123&user=wrong", expected: "Some.User" },
 	{ input: "https://www.tiktok.com/live?room_id=123", expected: "" },
 	{ input: "https://www.tiktok.com/live?user=queryUser", expected: "queryUser" },
-	{ input: "https://www.tiktok.com/live", expected: "" }
+	{ input: "https://www.tiktok.com/live", expected: "" },
+	{ input: "https://www.tiktok.com/t/ZPRandom/", expected: "" },
+	{ input: "https://kick.com/someone", expected: "" },
+	{ input: "kick.com/someone", expected: "" },
+	{ input: "https://www.tiktok.com/@https://www.tiktok.com/@nested/live", expected: "" },
+	{ input: "bad-user", expected: "" }
 ], normalizeTikTokUsernameInput);
+
+runCases("isValidTikTokUsername", [
+	{ input: "souzaxx", expected: true },
+	{ input: "@souzaxx", expected: true },
+	{ input: "souzaxx.nx", expected: true },
+	{ input: "some_user.123", expected: true },
+	{ input: "bad-user", expected: false },
+	{ input: "https://www.tiktok.com/@souzaxx", expected: false },
+	{ input: "www.tiktok.com", expected: false }
+], isValidTikTokUsername);
 
 runCases("normalizeVpzoneChannel", [
 	{ input: "https://vpzone.tv/watch/Ashaelon", expected: "ashaelon" },

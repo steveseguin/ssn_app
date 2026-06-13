@@ -15,6 +15,8 @@ Electron desktop application for aggregating social media live stream chat. Comm
 - `ssapp` loads Social Stream source files remotely from `C:\Users\steve\Code\social_stream` at app startup; treat that repo as the primary runtime source.
 - Do not treat `C:\Users\steve\Code\ssapp\resources\social_stream_fallback\main` as the source repo; it is a fallback mirror/bundle target.
 - The `resources/social_stream_fallback/main` folder is replaced at build/update time and should be treated only as a backup, not the primary source.
+- **Do not read, browse, edit, or add changes in `resources/social_stream_fallback` during normal app work.**  
+  This folder is disposable/rebuilt on every build/update (`npm run update:fallback`), so spending time on it is not productive.
 
 ## Build/Run Commands
 

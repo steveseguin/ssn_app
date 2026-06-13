@@ -6655,6 +6655,55 @@ ipcMain.handle('store-get', async (event, key) => {
 
 let tray = null;
 
+function isTikTokWindowArgs(args = {}) {
+    if (!args || typeof args !== 'object') return false;
+    const platform = String(args.platform || args.target || '').trim().toLowerCase();
+    if (platform === 'tiktok') return true;
+
+    const sourcePath = String(args.source || '').trim().replace(/\\/g, '/').toLowerCase();
+    if (sourcePath.endsWith('/tiktok.js') || sourcePath === 'sources/tiktok.js' || sourcePath === 'tiktok.js') {
+        return true;
+    }
+
+    const domain = String(args.domain || '').trim().toLowerCase().replace(/^www\./, '');
+    if (domain === 'tiktok.com' || domain.endsWith('.tiktok.com')) {
+        return true;
+    }
+
+    try {
+        const parsed = new URL(args.url);
+        const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+        return host === 'tiktok.com' || host.endsWith('.tiktok.com');
+    } catch (_) {
+        return false;
+    }
+}
+
+function shouldPreserveManualTikTokStandardNavigation(args = {}) {
+    if (!args || typeof args !== 'object') return false;
+    if (args.manualActivation !== true) return false;
+    if (args.wss) return false;
+    const mode = String(args.connectionMode || args.activeConnectionMode || 'classic').trim().toLowerCase();
+    const isStandardMode = !mode || mode === 'classic' || mode === 'standard';
+    return isStandardMode && isTikTokWindowArgs(args);
+}
+
+function sendWindowNavigationWarning(view, args = {}, navUrl = '', reason = 'navigate', mode = 'prefix') {
+    try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('window-navigation-warning', {
+                tabID: view && view.tabID,
+                sourceId: (view && view.args && view.args.sourceId) || args.sourceId,
+                reason,
+                mode,
+                initialUrl: args.url,
+                newUrl: navUrl,
+                platform: args.platform || args.target || args.domain || null
+            });
+        }
+    } catch (_) { }
+}
+
 async function createWindow(args, reuse = false, mainApp = false) {
     try {
         var webSecurity = true;
@@ -7413,6 +7462,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     const enforceCloseOnNavigate = (!args.wss && args.config && args.config.closeOnNavigate === true);
                     if (enforceCloseOnNavigate) {
                         const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact'
+                        const preserveManualTikTokStandard = shouldPreserveManualTikTokStandardNavigation(args);
+                        let navigationWarningSent = false;
                         let initialHref = '';
                         let initialOrigin = '';
                         let initialNoHash = '';
@@ -7447,6 +7498,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                         const maybeClose = (navUrl, reason) => {
                             if (!isAllowed(navUrl)) {
+                                if (preserveManualTikTokStandard) {
+                                    try { log(`Keeping manual TikTok Standard window open after navigation (${reason}): ${navUrl}`); } catch (_) { }
+                                    if (!navigationWarningSent) {
+                                        navigationWarningSent = true;
+                                        sendWindowNavigationWarning(view, args, navUrl, reason, mode);
+                                    }
+                                    return;
+                                }
                                 try { log(`Auto-closing activated window due to navigation (${reason}): ${navUrl}`); } catch (_) { }
                                 try {
                                     // Inform renderer (best-effort)
@@ -10389,6 +10448,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     const enforceCloseOnNavigate = (!args.wss && args.config && args.config.closeOnNavigate === true);
                     if (enforceCloseOnNavigate) {
                         const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact'
+                        const preserveManualTikTokStandard = shouldPreserveManualTikTokStandardNavigation(args);
+                        let navigationWarningSent = false;
                         let initialHref = '';
                         let initialOrigin = '';
                         let initialNoHash = '';
@@ -10423,6 +10484,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                         const maybeClose = (navUrl, reason) => {
                             if (!isAllowed(navUrl)) {
+                                if (preserveManualTikTokStandard) {
+                                    try { log(`Keeping manual TikTok Standard window open after navigation (${reason}): ${navUrl}`); } catch (_) { }
+                                    if (!navigationWarningSent) {
+                                        navigationWarningSent = true;
+                                        sendWindowNavigationWarning(view, args, navUrl, reason, mode);
+                                    }
+                                    return;
+                                }
                                 try { log(`Auto-closing activated window due to navigation (${reason}): ${navUrl}`); } catch (_) { }
 
                                 // Best-effort UI notification with details for toast
@@ -11172,16 +11241,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             var code =
                                 `
 								// Get the random flag from contextBridge if available
-								const injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
+								var __ssappInjectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 								window.__SSAPP_TAB_ID__ = ${view.tabID};
-								let __SSAPP_MESSAGE_TARGET__ = window;
+								var __SSAPP_MESSAGE_TARGET__ = window;
 								try {
 									if (window.top && window.top !== window) {
 										__SSAPP_MESSAGE_TARGET__ = window.top;
 									}
 								} catch(_) {}
 								// Per-tab reply-only mode (disable capture forwarding)
-								const __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
+								var __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
 								
 								// Create a more complete chrome.runtime mock
 								chrome.runtime = {};
@@ -11259,7 +11328,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 										const outgoingMessage = {
 											...messageData
 										};
-										outgoingMessage[injectedScriptFlag] = true;
+										outgoingMessage[__ssappInjectedScriptFlag] = true;
 										outgoingMessage.__tabID__ = window.__SSAPP_TAB_ID__;
 										__SSAPP_MESSAGE_TARGET__.postMessage(outgoingMessage, '*');
 										
@@ -11440,15 +11509,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
 										console.log("[Injection Remote] window.ninjafy._authToken:", window.ninjafy?._authToken);
                                             
                                             // Get the random flag from contextBridge if available
-										const injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
+										var __ssappInjectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 										window.__SSAPP_TAB_ID__ = ${view.tabID};
-										let __SSAPP_MESSAGE_TARGET__ = window;
+										var __SSAPP_MESSAGE_TARGET__ = window;
 										try {
 											if (window.top && window.top !== window) {
 												__SSAPP_MESSAGE_TARGET__ = window.top;
 											}
 										} catch(_) {}
-										const __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
+										var __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
 										
 										chrome.runtime = {};
 										chrome.runtime.id = 1;
@@ -11522,7 +11591,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 												const outgoingMessage = {
 													...messageData
 												};
-												outgoingMessage[injectedScriptFlag] = true;
+												outgoingMessage[__ssappInjectedScriptFlag] = true;
 												outgoingMessage.__tabID__ = window.__SSAPP_TAB_ID__;
 												__SSAPP_MESSAGE_TARGET__.postMessage(outgoingMessage, '*');
 												
@@ -11646,16 +11715,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     var code =
                         `
 					// Get the random flag from contextBridge if available
-					const injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
+					var __ssappInjectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 					window.__SSAPP_TAB_ID__ = ${view.tabID};
-					let __SSAPP_MESSAGE_TARGET__ = window;
+					var __SSAPP_MESSAGE_TARGET__ = window;
 					try {
 						if (window.top && window.top !== window) {
 							__SSAPP_MESSAGE_TARGET__ = window.top;
 						}
 					} catch(_) {}
 					// Per-tab reply-only mode
-					const __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
+					var __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
 					
 					chrome.runtime = {};
 					chrome.runtime.id = 1;
@@ -11686,7 +11755,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 						const outgoingMessage = {
 							...messageData
 						};
-						outgoingMessage[injectedScriptFlag] = true;
+						outgoingMessage[__ssappInjectedScriptFlag] = true;
 						outgoingMessage.__tabID__ = window.__SSAPP_TAB_ID__;
 						__SSAPP_MESSAGE_TARGET__.postMessage(outgoingMessage, '*');
 						

@@ -1924,6 +1924,35 @@ button[data-activatehtml].hidden {
   opacity: 1 !important;
 }
 
+.entry button.icon-button[data-togglehtml].tiktok-standard-action {
+  background: rgba(245, 158, 11, 0.32) !important;
+  border-color: rgba(245, 158, 11, 0.9) !important;
+  color: #fff7df !important;
+  opacity: 1 !important;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2), 0 2px 8px rgba(0, 0, 0, 0.35) !important;
+  animation: tiktok-standard-action-pulse 1.8s ease-in-out infinite;
+}
+
+.entry button.icon-button[data-togglehtml].tiktok-standard-action:hover {
+  background: rgba(245, 158, 11, 0.46) !important;
+  border-color: #fbbf24 !important;
+}
+
+.ws-status.error.action-needed {
+  background: rgba(245, 158, 11, 0.18);
+  color: #ffd98a;
+  border-color: rgba(245, 158, 11, 0.75) !important;
+}
+
+@keyframes tiktok-standard-action-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18), 0 2px 8px rgba(0, 0, 0, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.34), 0 2px 12px rgba(245, 158, 11, 0.2);
+  }
+}
+
 [data-togglehtml] {
   position: relative !important;
   overflow: visible !important;

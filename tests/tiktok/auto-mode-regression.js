@@ -674,7 +674,7 @@ async function testUiDoesNotAutoFallbackAfterFatalUserNotFound() {
 		'expected fatal user-not-found suppression rule'
 	);
 	assert.ok(
-		src.includes("if (!shouldSuppressTikTokUiAutoFallback('fatal_error', data.error || null))"),
+		src.includes("!shouldSuppressTikTokUiAutoFallback('fatal_error', data.error || null)"),
 		'expected fatal_error auto fallback call to be guarded'
 	);
 }
@@ -718,13 +718,73 @@ async function testManualStandardFatalDoesNotAutoCloseClassicWindow() {
 		'expected helper to key off explicit Standard mode'
 	);
 	assert.ok(
-		src.includes('source.autoActivate !== true'),
+		src.includes('source.autoActivate === true'),
 		'expected helper to keep auto-activate behavior separate from manual standard mode'
 	);
 	assert.ok(
 		src.includes("const classicTabId = normalizeNumericId(data.tabID) || normalizeNumericId(currentState.vid)")
 			&& src.includes("if (!keepClassicWindowOpen && !data.wssID && classicTabId && ipcRenderer)"),
 		'expected fatal_error closeWindow call to be skipped for manual classic mode'
+	);
+	assert.ok(
+		src.includes('function hasManualTikTokStandardCaptureWindow')
+			&& src.includes('const showManualTikTokStandardWindow = hasManualTikTokStandardCaptureWindow(source)')
+			&& src.includes('!showManualTikTokStandardWindow'),
+		'expected manual Standard classic windows to keep the Reveal capture button visible'
+	);
+}
+
+async function testManualStandardRecoverableFatalGuidesReveal() {
+	const indexPath = path.join(__dirname, '..', '..', 'index.html');
+	const cssPath = path.join(__dirname, '..', '..', 'main.css');
+	const src = fs.readFileSync(indexPath, 'utf8');
+	const css = fs.readFileSync(cssPath, 'utf8');
+
+	assert.ok(
+		src.includes('function getTikTokStandardActionStatusMessage')
+			&& src.includes('Reveal the capture page')
+			&& src.includes('complete the challenge or sign in'),
+		'expected recoverable Standard failures to tell the user to reveal/sign in/complete challenge'
+	);
+	assert.ok(
+		src.includes('applyTikTokStandardRevealPrompt')
+			&& src.includes('tiktok-standard-action')
+			&& css.includes('.entry button.icon-button[data-togglehtml].tiktok-standard-action'),
+		'expected recoverable Standard failures to highlight the Reveal capture button'
+	);
+	assert.ok(
+		src.includes('const shouldGuideTikTokStandard = shouldPromptTikTokStandardAction(standardActionSource, data)')
+			&& src.includes("if (!shouldGuideTikTokStandard && !shouldSuppressTikTokUiAutoFallback('fatal_error', data.error || null))"),
+		'expected manual Standard recoverable fatal errors to suppress automatic fallback while guiding the user'
+	);
+}
+
+async function testManualStandardNavigationWarnsInsteadOfClosing() {
+	const indexPath = path.join(__dirname, '..', '..', 'index.html');
+	const mainPath = path.join(__dirname, '..', '..', 'main.js');
+	const indexSrc = fs.readFileSync(indexPath, 'utf8');
+	const mainSrc = fs.readFileSync(mainPath, 'utf8');
+
+	assert.ok(
+		indexSrc.includes('manualActivation: wasManualActivation(source.id)'),
+		'expected renderer to pass manual activation intent into classic window creation'
+	);
+	assert.ok(
+		mainSrc.includes('function shouldPreserveManualTikTokStandardNavigation')
+			&& mainSrc.includes('args.manualActivation !== true')
+			&& mainSrc.includes('isTikTokWindowArgs(args)'),
+		'expected main process to identify manual TikTok Standard navigation separately from auto activation'
+	);
+	assert.ok(
+		mainSrc.includes('sendWindowNavigationWarning(view, args, navUrl, reason, mode)')
+			&& mainSrc.includes("mainWindow.webContents.send('window-navigation-warning'"),
+		'expected manual TikTok Standard redirects to warn the renderer instead of closing'
+	);
+	assert.ok(
+		indexSrc.includes("ipcRenderer.on('window-navigation-warning'")
+			&& indexSrc.includes('TikTok redirected the Standard capture page')
+			&& indexSrc.includes("updateConnectionStatus(entryElement, 'error', message, { tiktokStandardAction: true })"),
+		'expected renderer to show a Standard-mode action message and highlight Reveal'
 	);
 }
 
@@ -932,6 +992,14 @@ async function run() {
 		{
 			name: 'manual standard fatal does not auto close classic window',
 			fn: testManualStandardFatalDoesNotAutoCloseClassicWindow
+		},
+		{
+			name: 'manual standard recoverable fatal guides reveal',
+			fn: testManualStandardRecoverableFatalGuidesReveal
+		},
+		{
+			name: 'manual standard navigation warns instead of closing',
+			fn: testManualStandardNavigationWarnsInsteadOfClosing
 		},
 		{
 			name: 'classic terminal statuses release stale handles',
