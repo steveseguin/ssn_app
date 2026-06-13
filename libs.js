@@ -908,6 +908,41 @@ function getDefaultConfig() {
 
 const WELCOME_GUIDE_URL = "https://www.youtube.com/watch?v=VpD2pnZVYF0";
 const WELCOME_GUIDE_THUMBNAIL_URL = "https://i.ytimg.com/vi/VpD2pnZVYF0/hqdefault.jpg";
+const WELCOME_FRAME_SCROLLBAR_STYLE = `
+html,
+body {
+	scrollbar-width: thin;
+	scrollbar-color: #ffffff40 #00000080;
+}
+
+::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+	background-color: #00000080;
+	-webkit-border-radius: 100px;
+}
+
+::-webkit-scrollbar:hover {
+	background-color: #00000080;
+}
+
+::-webkit-scrollbar-thumb {
+	background-color: #ffffff40;
+	-webkit-border-radius: 100px;
+}
+
+::-webkit-scrollbar-thumb:active {
+	background-color: #ffffff80;
+}
+
+::-webkit-scrollbar-thumb:vertical {
+	min-height: 10px;
+}
+
+::-webkit-scrollbar-thumb:horizontal {
+	min-width: 10px;
+}
+`;
 
 function normalizeWelcomeFrameUrl(url) {
 	if (typeof url !== "string") return "";
@@ -927,6 +962,16 @@ function addWelcomeFrameBaseHref(html, resolvedUrl) {
 	if (/<base\s/i.test(html)) return html;
 	const baseHref = resolvedUrl.href.replace(/[^/?#]*([?#].*)?$/, "");
 	return html.replace(/<head([^>]*)>/i, `<head$1><base href="${baseHref}">`);
+}
+
+function addWelcomeFrameScrollbarStyles(html) {
+	if (!html || typeof html !== "string") return html;
+	if (html.includes("__ssapp-welcome-scrollbars")) return html;
+	const styleTag = `<style id="__ssapp-welcome-scrollbars">${WELCOME_FRAME_SCROLLBAR_STYLE}</style>`;
+	if (/<\/head>/i.test(html)) {
+		return html.replace(/<\/head>/i, `${styleTag}</head>`);
+	}
+	return `${styleTag}${html}`;
 }
 
 function patchWelcomeFrameHtml(html, options = {}) {
@@ -1008,13 +1053,13 @@ async function loadWelcomeFrameContent(frame, url) {
 		resetToSrc('');
 		return;
 	}
-	const currentOrigin = typeof window !== 'undefined' && window.location ? window.location.origin : null;
 	if (normalizedUrl.startsWith('file://')) {
 		try {
 			const resolvedUrl = new URL(normalizedUrl, window.location ? window.location.href : undefined);
 			let html = await readWelcomeFrameFileContent(normalizedUrl);
 			html = patchWelcomeFrameHtml(html, { useVideoFallback: true });
 			html = addWelcomeFrameBaseHref(html, resolvedUrl);
+			html = addWelcomeFrameScrollbarStyles(html);
 			frame.srcdoc = html;
 			return;
 		} catch (err) {
@@ -1023,46 +1068,6 @@ async function loadWelcomeFrameContent(frame, url) {
 			return;
 		}
 	}
-	const shouldInlineResponse = (response, resolvedUrl) => {
-		const normalized = (value) => (value || '').trim().toLowerCase();
-		const xFrameOptions = normalized(response.headers.get('x-frame-options'));
-		if (xFrameOptions.includes('deny')) {
-			return true;
-		}
-		if (xFrameOptions.includes('sameorigin')) {
-			if (!resolvedUrl || !currentOrigin || resolvedUrl.origin !== currentOrigin) {
-				return true;
-			}
-		}
-		const csp = response.headers.get('content-security-policy');
-		if (csp) {
-			const frameAncestorsMatch = csp.toLowerCase().match(/frame-ancestors([^;]*)/);
-			if (frameAncestorsMatch) {
-				const directive = frameAncestorsMatch[1].trim();
-				if (!directive || directive === "'none'" || directive === "none") {
-					return true;
-				}
-				const tokens = directive
-					.split(/\s+/)
-					.filter(Boolean)
-					.map((token) => token.replace(/^'+|'+$/g, '').toLowerCase());
-				if (tokens.includes('*')) {
-					return false;
-				}
-				if (tokens.includes('self')) {
-					if (!resolvedUrl || !currentOrigin || resolvedUrl.origin !== currentOrigin) {
-						return true;
-					}
-					return false;
-				}
-				if (!currentOrigin) {
-					return true;
-				}
-				return !tokens.includes(currentOrigin.toLowerCase());
-			}
-		}
-		return false;
-	};
 	try {
 		const response = await fetch(normalizedUrl, { credentials: 'omit' });
 		if (!response.ok) {
@@ -1075,14 +1080,10 @@ async function loadWelcomeFrameContent(frame, url) {
 				return null;
 			}
 		})();
-		const forceInline = shouldInlineResponse(response, resolvedUrl);
-		if (!forceInline) {
-			resetToSrc((resolvedUrl && resolvedUrl.href) || normalizedUrl);
-			return;
-		}
 		let html = await response.text();
 		html = patchWelcomeFrameHtml(html, { useVideoFallback: false });
 		html = addWelcomeFrameBaseHref(html, resolvedUrl);
+		html = addWelcomeFrameScrollbarStyles(html);
 		frame.srcdoc = html;
 	} catch (err) {
 		console.warn('Failed to fetch welcome frame content; falling back to iframe src.', err);

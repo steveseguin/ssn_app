@@ -350,6 +350,27 @@ body {
   border: none;
 }
 
+#welcomeFrame {
+  scrollbar-width: thin;
+  scrollbar-color: #ffffff40 #00000080;
+}
+
+#welcomeFrame::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+  background-color: #00000080;
+  -webkit-border-radius: 100px;
+}
+
+#welcomeFrame::-webkit-scrollbar-thumb {
+  background-color: #ffffff40;
+  -webkit-border-radius: 100px;
+}
+
+#welcomeFrame::-webkit-scrollbar-thumb:active {
+  background-color: #ffffff80;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
