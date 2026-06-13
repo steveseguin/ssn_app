@@ -2267,7 +2267,7 @@ function sendChatMessage(data, virtualTabId) {
 
 let wssID = 0;
 
-function normalizeTikTokConnectionId(value) {
+function parseTikTokNumericId(value) {
     if (typeof value === 'number' && Number.isFinite(value)) {
         return value;
     }
@@ -2278,12 +2278,20 @@ function normalizeTikTokConnectionId(value) {
     return null;
 }
 
+function normalizeTikTokConnectionId(value) {
+    const parsed = parseTikTokNumericId(value);
+    if (!parsed) {
+        return null;
+    }
+    return parsed >= 900001 ? parsed - 900000 : parsed;
+}
+
 function normalizeTikTokSourceId(value) {
     return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
 function getTikTokWssIdFromMessage(msg) {
-    const tid = normalizeTikTokConnectionId(msg?.tid);
+    const tid = parseTikTokNumericId(msg?.tid);
     if (!tid || tid < 900001) {
         return null;
     }
@@ -2688,13 +2696,17 @@ global.intervals.push(connectionCleanupInterval);
 function cleanupConnection(wssID) {
     try {
         const normalizedWssID = normalizeTikTokConnectionId(wssID);
-        const manager = env.websocketConnections[wssID] || (normalizedWssID ? env.websocketConnections[normalizedWssID] : null);
+        const rawWssID = parseTikTokNumericId(wssID);
+        const manager = (normalizedWssID ? env.websocketConnections[normalizedWssID] : null)
+            || env.websocketConnections[wssID]
+            || (rawWssID ? env.websocketConnections[rawWssID] : null);
         if (manager) {
             const sourceId = normalizeTikTokSourceId(manager.sourceId);
             if (sourceId && activeTikTokConnectionBySourceId.get(sourceId) === normalizedWssID) {
                 activeTikTokConnectionBySourceId.delete(sourceId);
             }
             manager.isStopped = true;
+            manager.activeConnectPromise = null;
             // If it's a ConnectionManager instance
             if (manager.connection) {
                 manager.connection.disconnect();
@@ -2742,16 +2754,26 @@ function cleanupConnection(wssID) {
                 log("Removed virtual tab: " + manager.virtualTabId);
             }
 
-            delete env.websocketConnections[wssID];
-            if (normalizedWssID && normalizedWssID !== wssID) {
-                delete env.websocketConnections[normalizedWssID];
+            const connectionIdsToDelete = new Set([
+                wssID,
+                rawWssID,
+                normalizedWssID,
+                manager.wssID,
+                normalizeTikTokConnectionId(manager.wssID)
+            ].filter((value) => value !== null && value !== undefined));
+            for (const id of connectionIdsToDelete) {
+                delete env.websocketConnections[id];
             }
         }
-        connectionStates.delete(wssID);
-        if (normalizedWssID && normalizedWssID !== wssID) {
-            connectionStates.delete(normalizedWssID);
+        const stateIdsToDelete = new Set([
+            wssID,
+            rawWssID,
+            normalizedWssID
+        ].filter((value) => value !== null && value !== undefined));
+        for (const id of stateIdsToDelete) {
+            connectionStates.delete(id);
         }
-        log("deleting connectionStates: " + wssID);
+        log("deleting connectionStates: " + (normalizedWssID || wssID));
     } catch (e) {
         console.error('Error during connection cleanup:', e);
     }
@@ -4136,6 +4158,25 @@ class ConnectionManager {
 
     isActiveSourceConnection() {
         return getTikTokConnectionEligibility(this).allowed;
+    }
+
+    buildStoppedError(stage = 'connection') {
+        const stoppedError = new Error('Connection stopped');
+        stoppedError.code = 'SSAPP_TIKTOK_STOPPED';
+        stoppedError.stage = stage;
+        return stoppedError;
+    }
+
+    assertConnectionCanContinue(stage = 'connection') {
+        if (this.isStopped) {
+            throw this.buildStoppedError(stage);
+        }
+        if (!this.isActiveSourceConnection()) {
+            const stoppedError = this.buildStoppedError(stage);
+            stoppedError.reason = 'inactive_source_connection';
+            cleanupConnection(this.wssID);
+            throw stoppedError;
+        }
     }
 
     recordTikTokDiagnosticCounter(counterName, amount = 1) {
@@ -7301,6 +7342,7 @@ class ConnectionManager {
                     }
                 }
 
+                this.assertConnectionCanContinue('before_ensure_connection');
                 this.ensureConnectionInstance('connect');
                 const activeConnection = this.connection;
                 if (!activeConnection || typeof activeConnection.connect !== 'function') {
@@ -7315,10 +7357,15 @@ class ConnectionManager {
                 }
 
                 await waitForTikTokConnectAttemptSlot(this, usingLocalSigner ? 'local_signer_connect' : 'connect');
+                this.assertConnectionCanContinue('before_connector_connect');
                 await activeConnection.connect();
                 if (typeof restoreAuthenticatedWsBootstrapEnv === 'function') {
                     restoreAuthenticatedWsBootstrapEnv();
                     restoreAuthenticatedWsBootstrapEnv = null;
+                }
+                if (this.isStopped || !this.isActiveSourceConnection()) {
+                    await this.teardownConnection({ silent: true });
+                    return false;
                 }
 
                 const modeDetails = this.getConnectionModeDetails();
@@ -7363,6 +7410,16 @@ class ConnectionManager {
                 const primaryError = err instanceof Error ? err : (err && err.exception instanceof Error ? err.exception : err);
                 const errorName = primaryError && primaryError.name;
                 const errorMessage = primaryError && primaryError.message ? primaryError.message : '';
+                if (this.isStopped || primaryError?.code === 'SSAPP_TIKTOK_STOPPED') {
+                    this.logDebug('lifecycle.connect.stopped', {
+                        stage: primaryError?.stage || null,
+                        reason: primaryError?.reason || null
+                    });
+                    try {
+                        await this.teardownConnection({ silent: true });
+                    } catch (_) { /* noop */ }
+                    return false;
+                }
                 const handledReconnectPromise = this.getFallbackReconnectPromise(primaryError);
                 if (this.hasFallbackTransitionStarted(primaryError)) {
                     this.logDebug('lifecycle.connect.fallbackTransitionHandled', {

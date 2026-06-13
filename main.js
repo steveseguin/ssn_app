@@ -16543,6 +16543,20 @@ function normalizeTikTokSigningArgs(input) {
     return Object.keys(payload).length ? payload : null;
 }
 
+function normalizeTikTokConnectionHandle(value) {
+    let parsed = null;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        parsed = value;
+    } else if (typeof value === 'string' && value.trim()) {
+        const numeric = Number(value);
+        parsed = Number.isFinite(numeric) ? numeric : null;
+    }
+    if (!parsed) {
+        return null;
+    }
+    return parsed >= 900001 ? parsed - 900000 : parsed;
+}
+
 ipcMain.handle("createTikTokConnection", async function (_event, args) {
     if (runtimeForceTikTokClassic) {
         console.info('[TikTok] Skipping WebSocket connection - classic mode is forced.');
@@ -16715,17 +16729,18 @@ ipcMain.on("disconnectTikTokConnection", function (eventRet, args) {
     }
 
     try {
-        const managerMeta = websocketConnections[args.wssID];
+        const normalizedWssID = normalizeTikTokConnectionHandle(args.wssID) || args.wssID;
+        const managerMeta = websocketConnections[normalizedWssID] || websocketConnections[args.wssID];
         const sourceId = managerMeta && managerMeta.sourceId ? managerMeta.sourceId : null;
         try {
             // Notify renderer to clear UI/countdowns
             mainWindow.webContents.send('tiktokConnectionStatus', {
-                wssID: args.wssID,
+                wssID: normalizedWssID,
                 status: 'stopped_by_user',
                 sourceId
             });
         } catch (_) { }
-        cleanupConnection(args.wssID);
+        cleanupConnection(normalizedWssID);
         eventRet.returnValue = true;
     } catch (e) {
         console.error('Error in disconnectTikTokConnection:', e);

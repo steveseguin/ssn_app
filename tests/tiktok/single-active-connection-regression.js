@@ -21,7 +21,9 @@ function buildConnectorStub() {
 
 function createHarness() {
   const emitted = [];
+  const statuses = [];
   const websocketConnections = {};
+  const browserViews = {};
   const connectionStates = new Map();
 
   const env = createTikTokEnvironment({
@@ -30,9 +32,9 @@ function createHarness() {
     resolveLogDirectory: () => null,
     getMainWindow: () => null,
     websocketConnections,
-    browserViews: {},
+    browserViews,
     log: () => { },
-    onStatus: () => { },
+    onStatus: (status) => statuses.push(status),
     onEvent: (event) => emitted.push(event),
     getCachedSettings: () => ({}),
     isCaptureEventsEnabled: () => true,
@@ -54,7 +56,9 @@ function createHarness() {
 
   return {
     emitted,
+    statuses,
     websocketConnections,
+    browserViews,
     connectionStates,
     env,
     makeManager
@@ -63,6 +67,10 @@ function createHarness() {
 
 function registerManager(harness, manager) {
   harness.websocketConnections[manager.wssID] = manager;
+  harness.browserViews[manager.virtualTabId] = {
+    isTikTokVirtual: true,
+    wssID: manager.wssID
+  };
   harness.connectionStates.set(manager.wssID, {
     isConnected: false,
     lastAttempt: Date.now(),
@@ -173,11 +181,73 @@ async function runDirectChatSendBlocksStaleManagerAssertion() {
   assert.strictEqual(result.error, 'Connection is no longer active');
 }
 
+function runCleanupAcceptsVirtualTabIdAssertion() {
+  const harness = createHarness();
+  const manager = harness.makeManager(1);
+  let disconnected = false;
+  let listenersRemoved = false;
+  manager.connection = {
+    disconnect: () => {
+      disconnected = true;
+    },
+    removeAllListeners: () => {
+      listenersRemoved = true;
+    }
+  };
+  registerManager(harness, manager);
+
+  harness.env.cleanupConnection(900001);
+
+  assert.strictEqual(manager.isStopped, true, 'cleanup by virtual tab id should stop the manager');
+  assert.strictEqual(disconnected, true, 'cleanup by virtual tab id should disconnect the real connection');
+  assert.strictEqual(listenersRemoved, true, 'cleanup by virtual tab id should remove connection listeners');
+  assert.strictEqual(harness.websocketConnections[1], undefined, 'real wss id should be removed');
+  assert.strictEqual(harness.websocketConnections[900001], undefined, 'virtual tab id should not remain registered');
+  assert.strictEqual(harness.connectionStates.has(1), false, 'real connection state should be removed');
+  assert.strictEqual(harness.connectionStates.has(900001), false, 'virtual connection state should be removed');
+  assert.strictEqual(harness.browserViews[900001], undefined, 'virtual browser view should be removed');
+}
+
+async function runStoppedConnectCompletionDoesNotActivateAssertion() {
+  const harness = createHarness();
+  const manager = harness.makeManager(1);
+  registerManager(harness, manager);
+  manager.connectAttemptMinIntervalMs = 0;
+  manager.connectAttemptProviderIntervalMs = 0;
+
+  let disconnected = false;
+  manager.ensureConnectionInstance = () => {
+    manager.connection = {
+      isConnected: false,
+      connect: async () => {
+        manager.isStopped = true;
+        return true;
+      },
+      disconnect: () => {
+        disconnected = true;
+      },
+      removeAllListeners: () => { }
+    };
+  };
+
+  const result = await manager.connect();
+
+  assert.strictEqual(result, false, 'connect should not succeed after the manager is stopped mid-attempt');
+  assert.strictEqual(disconnected, true, 'stopped connect completion should tear down the connector');
+  assert.strictEqual(
+    harness.statuses.some((status) => status && status.status === 'connected'),
+    false,
+    'stopped connect completion should not emit connected status'
+  );
+}
+
 async function run() {
   runReplacementSuppressesOldEventsAssertion();
   runFinalForwarderDropsStaleVirtualTabsAssertion();
   runStaleQueueFlushAssertion();
   await runDirectChatSendBlocksStaleManagerAssertion();
+  runCleanupAcceptsVirtualTabIdAssertion();
+  await runStoppedConnectCompletionDoesNotActivateAssertion();
   console.log('single-active-connection-regression: all checks passed');
 }
 

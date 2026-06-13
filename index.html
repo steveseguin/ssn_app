@@ -1660,7 +1660,13 @@
 
         function getTikTokWssId(source) {
             if (!source || source.target !== 'tiktok') return null;
-            return normalizeNumericId(source.tiktokWssId);
+            const directWssId = normalizeNumericId(source.tiktokWssId);
+            if (directWssId) return directWssId;
+            const virtualTabId = normalizeNumericId(source.vid);
+            if (virtualTabId && virtualTabId >= 900001) {
+                return virtualTabId - 900000;
+            }
+            return normalizeNumericId(source.wssId);
         }
 
         function getSourceWssHandle(source) {
