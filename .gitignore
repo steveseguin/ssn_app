@@ -36,8 +36,14 @@ pkg/
 /test-results/
 /playwright-report/
 /coverage/
+/tmp/
 /tmp-codex-logs/
 /tmp-login-test/
+
+# Editor swap files
+*.swp
+*.swo
+*.swpx
 
 # Build configuration
 build-config.env
