@@ -1869,11 +1869,51 @@ function normalizeWelcomeFrameUrl(url) {
 	return url;
 }
 
+function getWelcomeFrameLanguageCode() {
+	try {
+		if (typeof getSocialStreamLanguageCode === "function") {
+			return getSocialStreamLanguageCode();
+		}
+	} catch (_) { }
+	try {
+		if (typeof normalizeLanguage === "function") {
+			return normalizeLanguage(localStorage.getItem("language") || navigator.language || "en-us");
+		}
+	} catch (_) { }
+	return "en-us";
+}
+
+function addWelcomeFrameLanguageParam(url, langCode) {
+	if (!url || typeof url !== "string" || !langCode) return url;
+	try {
+		if (typeof setUrlQueryParamPreservingFlags === "function") {
+			return setUrlQueryParamPreservingFlags(url, "ln", langCode);
+		}
+	} catch (_) { }
+	try {
+		const parsed = new URL(url, window.location ? window.location.href : undefined);
+		parsed.searchParams.set("ln", langCode);
+		return parsed.toString();
+	} catch (_) {
+		const separator = url.includes("?") ? "&" : "?";
+		return `${url}${separator}ln=${encodeURIComponent(langCode)}`;
+	}
+}
+
 function addWelcomeFrameBaseHref(html, resolvedUrl) {
 	if (!html || !resolvedUrl) return html;
 	if (/<base\s/i.test(html)) return html;
 	const baseHref = resolvedUrl.href.replace(/[^/?#]*([?#].*)?$/, "");
 	return html.replace(/<head([^>]*)>/i, `<head$1><base href="${baseHref}">`);
+}
+
+function addWelcomeFrameLanguageScript(html, langCode) {
+	if (!html || typeof html !== "string" || html.includes('__ssapp-welcome-language')) return html;
+	const languageScript = `<script id="__ssapp-welcome-language">window.SSAPP_WELCOME_LANGUAGE=${JSON.stringify(langCode || "en-us")};<\/script>`;
+	if (/<\/head>/i.test(html)) {
+		return html.replace(/<\/head>/i, `${languageScript}</head>`);
+	}
+	return `${languageScript}${html}`;
 }
 
 function addWelcomeFrameScrollbarStyles(html) {
@@ -1933,7 +1973,7 @@ function patchWelcomeFrameHtml(html, options = {}) {
         <div class="video-container">
             <a class="video-fallback-link" href="${WELCOME_GUIDE_URL}" target="_blank" rel="noopener noreferrer">
                 <img src="${WELCOME_GUIDE_THUMBNAIL_URL}" alt="Social Stream Ninja walkthrough video thumbnail">
-                <span class="video-fallback-label">Watch the walkthrough on YouTube</span>
+                <span class="video-fallback-label" data-i18n-html="video.fallback">Watch the walkthrough on YouTube</span>
             </a>
         </div>`;
 		patchedHtml = patchedHtml.replace(
@@ -1950,9 +1990,11 @@ async function readWelcomeFrameFileContent(fileUrl) {
 	return fs.readFile(fileURLToPath(fileUrl), "utf8");
 }
 
-async function loadWelcomeFrameContent(frame, url) {
+async function loadWelcomeFrameContent(frame, url, options = {}) {
 	if (!frame) return;
-	const normalizedUrl = normalizeWelcomeFrameUrl(url);
+	const langCode = options.language || getWelcomeFrameLanguageCode();
+	const normalizedUrl = addWelcomeFrameLanguageParam(normalizeWelcomeFrameUrl(url), langCode);
+	frame.dataset.welcomeLanguage = langCode;
 	const resetToSrc = (targetUrl) => {
 		try {
 			frame.removeAttribute('srcdoc');
@@ -1971,6 +2013,7 @@ async function loadWelcomeFrameContent(frame, url) {
 			let html = await readWelcomeFrameFileContent(normalizedUrl);
 			html = patchWelcomeFrameHtml(html, { useVideoFallback: true });
 			html = addWelcomeFrameBaseHref(html, resolvedUrl);
+			html = addWelcomeFrameLanguageScript(html, langCode);
 			html = addWelcomeFrameScrollbarStyles(html);
 			frame.srcdoc = html;
 			return;
@@ -1995,6 +2038,7 @@ async function loadWelcomeFrameContent(frame, url) {
 		let html = await response.text();
 		html = patchWelcomeFrameHtml(html, { useVideoFallback: false });
 		html = addWelcomeFrameBaseHref(html, resolvedUrl);
+		html = addWelcomeFrameLanguageScript(html, langCode);
 		html = addWelcomeFrameScrollbarStyles(html);
 		frame.srcdoc = html;
 	} catch (err) {
@@ -2019,7 +2063,8 @@ function manageWelcomePage() {
 			isBetaMode ?
 			`https://socialstream.ninja/beta/docs/ssapp.html` :
 			`https://socialstream.ninja/docs/ssapp.html`;
-	  loadWelcomeFrameContent(welcomeFrame, welcomeURL);
+	  welcomeFrame.dataset.welcomeBaseUrl = welcomeURL;
+	  loadWelcomeFrameContent(welcomeFrame, welcomeURL, { language: getWelcomeFrameLanguageCode() });
 	  welcomeFrame.onerror = ()=>{
 		  welcomeFrame.style.display = "none";
 	  }

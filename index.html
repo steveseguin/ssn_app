@@ -109,20 +109,18 @@
         </ul>
         <div class="language-selector">
             <select id="language-select" onchange="changeLanguage(this.value)">
-                <option value="en">🇺🇸 English</option>
-                <option value="pt-BR">🇧🇷 Português (Brasil)</option>
+                <option value="en-us">🇺🇸 American</option>
+                <option value="en-uk">🇬🇧 English</option>
+                <option value="pt-br">🇧🇷 Portuguese - BR</option>
                 <option value="es">🇪🇸 Español</option>
-                <option value="fr">🇫🇷 Français</option>
                 <option value="de">🇩🇪 Deutsch</option>
                 <option value="cs">🇨🇿 Čeština</option>
-                <option value="it">🇮🇹 Italiano</option>
-                <option value="ja">🇯🇵 日本語</option>
+                <option value="th">🇹🇭 Thai</option>
                 <option value="zh-CN">🇨🇳 简体中文</option>
                 <option value="zh-TW">🇹🇼 繁體中文</option>
-                <option value="ko">🇰🇷 한국어</option>
-                <option value="ru">🇷🇺 Русский</option>
                 <option value="tr">🇹🇷 Türkçe</option>
                 <option value="uk">🇺🇦 Українська</option>
+                <option value="test">Test Translations</option>
             </select>
         </div>
     </nav>
@@ -999,217 +997,6 @@
 
         if (ipcRenderer) {
             bindRendererIpcEvents();
-        }
-
-        // Universal IPC Promise Handler
-        class UniversalIPCHandler {
-            constructor(defaultTimeout = 15000) {
-                this.callbacks = new Map();
-                this.defaultTimeout = defaultTimeout;
-                this.nextId = 1;
-                this.maxCallbacks = 100; // Prevent unlimited growth
-                this.metrics = {
-                    sent: 0,
-                    completed: 0,
-                    failed: 0,
-                    timedOut: 0
-                };
-                this.boundHandleResponse = (event, data) => {
-                    this.handleResponse(data);
-                };
-                this.currentRenderer = null;
-
-                // Single listener for ALL IPC responses
-                this.bindRenderer();
-
-                // Periodic cleanup - more aggressive
-                this.cleanupInterval = setInterval(() => this.cleanup(), 10000); // Every 10 seconds
-            }
-
-            bindRenderer(renderer = ipcRenderer) {
-                const target = renderer || ipcRenderer;
-                if (!target || typeof target.on !== 'function') {
-                    return false;
-                }
-                if (this.currentRenderer === target) {
-                    return true;
-                }
-                if (this.currentRenderer && typeof this.currentRenderer.removeListener === 'function') {
-                    this.currentRenderer.removeListener('ipc-response', this.boundHandleResponse);
-                }
-                this.currentRenderer = target;
-                this.currentRenderer.on('ipc-response', this.boundHandleResponse);
-                return true;
-            }
-
-            // Send any IPC message with optional custom timeout
-            async send(channel, data, options = {}) {
-                if (!ipcRenderer) {
-                    throw new Error('IPC not available');
-                }
-
-                const timeout = options.timeout || this.defaultTimeout;
-
-                return new Promise((resolve, reject) => {
-                    // Check if we've hit the callback limit
-                    if (this.callbacks.size >= this.maxCallbacks) {
-                        // Force cleanup of oldest callbacks
-                        this.forceCleanup();
-
-                        // If still at limit, reject
-                        if (this.callbacks.size >= this.maxCallbacks) {
-                            this.metrics.failed++;
-                            reject(new Error(`IPC callback limit reached (${this.maxCallbacks}). Too many pending requests.`));
-                            return;
-                        }
-                    }
-
-                    const callbackId = `${channel}-${this.nextId++}-${Date.now()}`;
-
-                    const timeoutId = setTimeout(() => {
-                        const callback = this.callbacks.get(callbackId);
-                        if (callback) {
-                            this.callbacks.delete(callbackId);
-                            this.metrics.timedOut++;
-                            reject(new Error(`IPC timeout: ${channel} after ${timeout}ms`));
-                        }
-                    }, timeout);
-
-                    this.callbacks.set(callbackId, {
-                        resolve,
-                        reject,
-                        timeoutId,
-                        channel,
-                        timestamp: Date.now()
-                    });
-
-                    this.metrics.sent++;
-
-                    // Send with metadata
-                    ipcRenderer.send('ipc-request', {
-                        channel,
-                        callbackId,
-                        data,
-                        timestamp: Date.now()
-                    });
-                });
-            }
-
-            handleResponse(response) {
-                const { callbackId, error, result } = response;
-                const callback = this.callbacks.get(callbackId);
-
-                if (callback) {
-                    clearTimeout(callback.timeoutId);
-                    this.callbacks.delete(callbackId);
-
-                    if (error) {
-                        this.metrics.failed++;
-                        callback.reject(new Error(error));
-                    } else {
-                        this.metrics.completed++;
-                        callback.resolve(result);
-                    }
-
-                    // Log slow responses
-                    const duration = Date.now() - callback.timestamp;
-                    if (duration > 1000) {
-                        console.warn(`Slow IPC response for ${callback.channel}: ${duration}ms`);
-                    }
-                }
-            }
-
-            // Cleanup old callbacks
-            cleanup() {
-                const now = Date.now();
-                let cleaned = 0;
-
-                this.callbacks.forEach((callback, id) => {
-                    if (now - callback.timestamp > 30000) { // 30 seconds (reduced from 60)
-                        clearTimeout(callback.timeoutId);
-                        callback.reject(new Error('Callback expired during cleanup'));
-                        this.callbacks.delete(id);
-                        cleaned++;
-                    }
-                });
-
-                if (cleaned > 0) {
-                    console.log(`IPC cleanup: removed ${cleaned} expired callbacks`);
-                }
-            }
-
-            forceCleanup() {
-                // Remove oldest callbacks until we're under 75% of limit
-                const targetSize = Math.floor(this.maxCallbacks * 0.75);
-                const sortedCallbacks = Array.from(this.callbacks.entries())
-                    .sort((a, b) => a[1].timestamp - b[1].timestamp);
-
-                let cleaned = 0;
-                while (this.callbacks.size > targetSize && sortedCallbacks.length > 0) {
-                    const [id, callback] = sortedCallbacks.shift();
-                    clearTimeout(callback.timeoutId);
-                    callback.reject(new Error('Callback forcefully cleaned due to limit'));
-                    this.callbacks.delete(id);
-                    cleaned++;
-                }
-
-                if (cleaned > 0) {
-                    console.warn(`IPC force cleanup: removed ${cleaned} callbacks to prevent memory overflow`);
-                }
-            }
-
-            // Retry capability
-            async sendWithRetry(channel, data, maxRetries = 3) {
-                for (let i = 0; i < maxRetries; i++) {
-                    try {
-                        return await this.send(channel, data);
-                    } catch (error) {
-                        if (i === maxRetries - 1) throw error;
-                        console.log(`Retry ${i + 1}/${maxRetries} for ${channel}`);
-                        await new Promise(r => setTimeout(r, 1000 * (i + 1)));
-                    }
-                }
-            }
-
-            // Cleanup all resources
-            destroy() {
-                // Clear the interval
-                if (this.cleanupInterval) {
-                    clearInterval(this.cleanupInterval);
-                    this.cleanupInterval = null;
-                }
-
-                if (this.currentRenderer && typeof this.currentRenderer.removeListener === 'function') {
-                    this.currentRenderer.removeListener('ipc-response', this.boundHandleResponse);
-                    this.currentRenderer = null;
-                }
-
-                // Clear all pending callbacks
-                this.callbacks.forEach((callback, id) => {
-                    clearTimeout(callback.timeoutId);
-                    callback.reject(new Error('IPC handler destroyed'));
-                });
-                this.callbacks.clear();
-
-                console.log('IPC handler destroyed, metrics:', this.metrics);
-            }
-
-            // Get metrics
-            getMetrics() {
-                return {
-                    ...this.metrics,
-                    pending: this.callbacks.size,
-                    successRate: this.metrics.sent > 0
-                        ? ((this.metrics.completed / this.metrics.sent) * 100).toFixed(1) + '%'
-                        : '0%'
-                };
-            }
-        }
-
-        // Create global instance
-        window.ipc = new UniversalIPCHandler();
-        if (window.ipc && typeof window.ipc.bindRenderer === 'function') {
-            window.ipc.bindRenderer();
         }
 
         // Function to rewrite old Kick URLs to new format
@@ -7400,20 +7187,6 @@
                 console.log('[CreateClassicWindow] Created window/tab ID:', response, 'for', source.username || source.videoId);
                 return response;
 
-                // TODO: Fix async implementation
-                /*
-                const response = await window.ipc.send('createWindow', {
-                    url: rewriteKickUrl(urlToLoad),
-                    config: conf,
-                    visible: source.isVisible,
-                    muted: source.isMuted,
-                    source: scriptPath, 
-                    tab: tabid,
-                    isBetaMode: isBetaMode,
-                    domain: new URL(urlToLoad).hostname
-                });
-                return response; 
-                */
             } catch (e) {
                 console.error("Error in createClassicWindowFromSource:", e);
                 Toast.error("Window Error", `Failed to create classic window: ${e.message}`);
@@ -10358,13 +10131,18 @@
                     const currentFrame1Src = document.getElementById("frame1")?.src;
                     let expectedFrame1Src = "";
                     try {
-                        const resolved = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2' });
+                        const resolved = await resolveSocialStreamPage('popup.html', {
+                            versionParam: 'v=2',
+                            extraParams: getLanguageExtraParams()
+                        });
                         expectedFrame1Src = resolved && resolved.url ? resolved.url : "";
                     } catch (error) {
                         console.error('Failed to resolve popup frame after main signal:', error);
                     }
                     if (document.getElementById("frame1") && currentFrame1Src !== expectedFrame1Src) {
-                        document.getElementById("frame1").src = expectedFrame1Src;
+                        const popupFrame = document.getElementById("frame1");
+                        postLanguageToPopupFrameAfterLoad(popupFrame);
+                        popupFrame.src = expectedFrame1Src;
                     }
                 });
 
@@ -11095,9 +10873,6 @@
                 }
                 if (ipcRenderer) {
                     bindRendererIpcEvents();
-                    if (window.ipc && typeof window.ipc.bindRenderer === 'function') {
-                        window.ipc.bindRenderer();
-                    }
                     window.prompt = function (title, val, message = "") {
                         log("window.prompt");
                         let options = {};
@@ -11383,9 +11158,7 @@
             const frame2 = document.getElementById("frame2");
             if (!frame2) return false;
 
-            // Get the language code for the URL
-            const langCode = currentLanguage === 'pt-BR' ? 'pt' : currentLanguage;
-            const langParam = `ln=${langCode}`;
+            const languageParams = getLanguageExtraParams();
 
             // Check if we should show the editor view initially
             const viewParam = window.initialEditorView ? 'view=editor' : null;
@@ -11397,7 +11170,7 @@
             try {
                 const resolved = await resolveSocialStreamPage('background.html', {
                     versionParam: 'v=2',
-                    extraParams: [langParam, viewParam].filter(Boolean)
+                    extraParams: languageParams.concat([viewParam].filter(Boolean))
                 });
                 if (resolved && resolved.url) {
                     if (!frame2.src || (resolved.url !== frame2.src)) {
@@ -11409,7 +11182,7 @@
                 } else {
                     const fallback = await resolveSocialStreamPage('background.html', {
                         versionParam: 'v=2',
-                        extraParams: [langParam, viewParam].filter(Boolean),
+                        extraParams: languageParams.concat([viewParam].filter(Boolean)),
                         forceLocal: true
                     });
                     if (fallback && fallback.url) {
@@ -11428,7 +11201,7 @@
                 try {
                     const fallback = await resolveSocialStreamPage('background.html', {
                         versionParam: 'v=2',
-                        extraParams: [langParam, viewParam].filter(Boolean),
+                        extraParams: languageParams.concat([viewParam].filter(Boolean)),
                         forceLocal: true
                     });
                     if (fallback && fallback.url) {
@@ -11452,16 +11225,22 @@
             const frame1 = document.getElementById('frame1');
             if (!frame1) return false;
             if (!forceReload && frame1.src && frame1.src !== 'about:blank') return true;
+            const popupResolveOptions = {
+                versionParam: 'v=2',
+                extraParams: getLanguageExtraParams()
+            };
             try {
-                const resolved = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2' });
+                const resolved = await resolveSocialStreamPage('popup.html', popupResolveOptions);
                 if (resolved && resolved.url) {
+                    postLanguageToPopupFrameAfterLoad(frame1);
                     frame1.src = resolved.url;
                     frame1.dataset.ssappOrigin = resolved.origin;
                     frame1.classList.add('loading');
                     return true;
                 }
-                const fallback = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2', forceLocal: true });
+                const fallback = await resolveSocialStreamPage('popup.html', { ...popupResolveOptions, forceLocal: true });
                 if (fallback && fallback.url) {
+                    postLanguageToPopupFrameAfterLoad(frame1);
                     frame1.src = fallback.url;
                     frame1.dataset.ssappOrigin = fallback.origin;
                     frame1.classList.add('loading');
@@ -11473,8 +11252,9 @@
             } catch (error) {
                 console.error('Failed to resolve popup frame source:', error);
                 try {
-                    const fallback = await resolveSocialStreamPage('popup.html', { versionParam: 'v=2', forceLocal: true });
+                    const fallback = await resolveSocialStreamPage('popup.html', { ...popupResolveOptions, forceLocal: true });
                     if (fallback && fallback.url) {
+                        postLanguageToPopupFrameAfterLoad(frame1);
                         frame1.src = fallback.url;
                         frame1.dataset.ssappOrigin = fallback.origin;
                         frame1.classList.add('loading');
@@ -11818,7 +11598,7 @@
                 selectedPage.style.display = 'block';
 
                 // Check if this page needs an iframe and create/update it
-                const langCode = currentLanguage === 'pt-BR' ? 'pt' : currentLanguage;
+                const langCode = getSocialStreamLanguageCode();
                 const existingIframe = selectedPage.querySelector('iframe');
 
                 // Pages that should have iframes with socialstream.ninja content
@@ -13430,36 +13210,142 @@
             });
         });
 
+        const sharedLanguageCodes = new Set([
+            'en-us',
+            'en-uk',
+            'de',
+            'es',
+            'pt-br',
+            'uk',
+            'tr',
+            'cs',
+            'th',
+            'zh-CN',
+            'zh-TW',
+            'test'
+        ]);
+
+        const appTranslationLanguageMap = {
+            'en-us': 'en',
+            'en-uk': 'en',
+            'pt-br': 'pt-BR',
+            th: 'en',
+            test: 'en'
+        };
+
         function normalizeLanguage(lang) {
-            if (!lang || typeof lang !== 'string') return 'en';
+            if (!lang || typeof lang !== 'string') return 'en-us';
             const trimmed = lang.trim();
-            if (!trimmed) return 'en';
+            if (!trimmed) return 'en-us';
             const lower = trimmed.toLowerCase();
+            if (lower === 'test') return 'test';
             if (lower === 'zh' || lower === 'zh-cn' || lower === 'zh-hans') return 'zh-CN';
             if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-hant') return 'zh-TW';
-            if (lower.startsWith('en')) return 'en';
-            if (lower.startsWith('pt')) return 'pt-BR';
+            if (lower === 'en-gb' || lower === 'en-uk') return 'en-uk';
+            if (lower === 'en' || lower.startsWith('en-')) return 'en-us';
+            if (lower === 'pt-br' || lower.startsWith('pt')) return 'pt-br';
             if (lower.startsWith('es')) return 'es';
-            if (lower.startsWith('fr')) return 'fr';
             if (lower.startsWith('de')) return 'de';
-            if (lower.startsWith('it')) return 'it';
             if (lower.startsWith('cs')) return 'cs';
-            if (lower.startsWith('ja')) return 'ja';
-            if (lower.startsWith('ko')) return 'ko';
-            if (lower.startsWith('ru')) return 'ru';
+            if (lower.startsWith('th')) return 'th';
             if (lower.startsWith('tr')) return 'tr';
             if (lower.startsWith('uk')) return 'uk';
-            return trimmed;
+            return sharedLanguageCodes.has(trimmed) ? trimmed : 'en-us';
         }
 
-        const storedLanguage = localStorage.getItem('language') || 'en';
-        let currentLanguage = normalizeLanguage(storedLanguage);
-        if (currentLanguage !== storedLanguage) {
-            localStorage.setItem('language', currentLanguage);
+        function getAppTranslationLanguage(lang = currentLanguage) {
+            const normalized = normalizeLanguage(lang);
+            return appTranslationLanguageMap[normalized] || normalized;
         }
+
+        function getSocialStreamLanguageCode(lang = currentLanguage) {
+            return normalizeLanguage(lang);
+        }
+
+        function getLanguageExtraParams(lang = currentLanguage) {
+            const langCode = getSocialStreamLanguageCode(lang);
+            return langCode ? [`ln=${encodeURIComponent(langCode)}`] : [];
+        }
+
+        function postLanguageToPopupFrame(iframe, langCode = getSocialStreamLanguageCode()) {
+            if (!iframe || !iframe.contentWindow || !langCode) return false;
+            try {
+                iframe.contentWindow.postMessage({
+                    type: 'changeLanguage',
+                    language: langCode
+                }, '*');
+                return true;
+            } catch (error) {
+                console.error('Error sending popup language message:', error);
+                return false;
+            }
+        }
+
+        function postLanguageToPopupFrameAfterLoad(iframe, langCode = getSocialStreamLanguageCode()) {
+            if (!iframe || !langCode) return;
+            const onLoad = function() {
+                iframe.removeEventListener('load', onLoad);
+                setTimeout(() => postLanguageToPopupFrame(iframe, langCode), 100);
+            };
+            iframe.addEventListener('load', onLoad);
+        }
+
+        function setUrlQueryParamPreservingFlags(rawUrl, key, value) {
+            if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
+            const hashIndex = rawUrl.indexOf('#');
+            const beforeHash = hashIndex >= 0 ? rawUrl.slice(0, hashIndex) : rawUrl;
+            const hash = hashIndex >= 0 ? rawUrl.slice(hashIndex) : '';
+            const queryIndex = beforeHash.indexOf('?');
+            const base = queryIndex >= 0 ? beforeHash.slice(0, queryIndex) : beforeHash;
+            const query = queryIndex >= 0 ? beforeHash.slice(queryIndex + 1) : '';
+            const encodedKey = encodeURIComponent(key);
+            const nextPart = `${encodedKey}=${encodeURIComponent(value)}`;
+            let replaced = false;
+            const parts = query
+                ? query.split('&').filter(Boolean).map(part => {
+                    const rawName = part.split('=')[0];
+                    let decodedName = rawName;
+                    try {
+                        decodedName = decodeURIComponent(rawName.replace(/\+/g, '%20'));
+                    } catch (_) { }
+                    if (decodedName === key) {
+                        replaced = true;
+                        return nextPart;
+                    }
+                    return part;
+                })
+                : [];
+            if (!replaced) {
+                parts.push(nextPart);
+            }
+            return `${base}?${parts.join('&')}${hash}`;
+        }
+
+        function persistLanguagePreference(lang, options = {}) {
+            const normalized = normalizeLanguage(lang);
+            localStorage.setItem('language', normalized);
+            try {
+                if (window.ssappLocale && typeof window.ssappLocale.setLanguage === 'function') {
+                    Promise.resolve(window.ssappLocale.setLanguage({
+                        language: normalized,
+                        source: options.source || 'user'
+                    })).catch((error) => {
+                        console.warn('Failed to persist app language preference:', error);
+                    });
+                }
+            } catch (error) {
+                console.warn('Failed to persist app language preference:', error);
+            }
+            return normalized;
+        }
+
+        const storedLanguage = localStorage.getItem('language') || 'en-us';
+        let currentLanguage = normalizeLanguage(storedLanguage);
+        persistLanguagePreference(currentLanguage, { source: 'startup' });
 
         function translate(key) {
-            return translations[currentLanguage]?.[key] || translations['en'][key] || key;
+            const appLanguage = getAppTranslationLanguage();
+            return translations[appLanguage]?.[key] || translations['en'][key] || key;
         }
 
         function translateTemplate(key, values = {}) {
@@ -13472,10 +13358,9 @@
         window.translate = translate;
         window.translateTemplate = translateTemplate;
 
-        function changeLanguage(lang) {
-            const normalized = normalizeLanguage(lang);
+        function changeLanguage(lang, options = {}) {
+            const normalized = persistLanguagePreference(lang, options);
             currentLanguage = normalized;
-            localStorage.setItem('language', normalized);
 
             const languageSelect = document.getElementById('language-select');
             if (languageSelect && languageSelect.value !== normalized) {
@@ -13513,39 +13398,42 @@
         }
 
         function refreshIframesWithLanguage() {
-            // Get the language code (convert pt-BR to pt for URL parameter)
-            const langCode = currentLanguage === 'pt-BR' ? 'pt' : currentLanguage;
-
-            // Map our language codes to popup.html language codes
-            const languageMap = {
-                'en': '',  // Default
-                'de': 'de',
-                'cs': 'cs',
-                'es': 'es',
-                'pt-BR': 'pt-br',
-                'fr': 'fr',  // Add if supported
-                'it': 'it',  // Add if supported
-                'ja': 'ja',  // Add if supported
-                'zh-CN': 'zh-CN',
-                'zh-TW': 'zh-TW',
-                'zh': 'zh-CN',
-                'zh-HK': 'zh-TW',
-                'ko': 'ko',  // Add if supported
-                'ru': 'ru',  // Add if supported
-                'tr': 'tr',
-                'uk': 'uk'
-            };
-
-            const popupLangCode = languageMap[currentLanguage] || '';
+            const langCode = getSocialStreamLanguageCode();
 
             // Find all iframes in the content pane
             document.querySelectorAll('#content-pane iframe').forEach(iframe => {
+                if (iframe.id === 'welcomeFrame') {
+                    try {
+                        if (typeof loadWelcomeFrameContent === 'function' && iframe.dataset.welcomeBaseUrl) {
+                            loadWelcomeFrameContent(iframe, iframe.dataset.welcomeBaseUrl, { language: langCode });
+                        } else if (iframe.contentWindow) {
+                            iframe.contentWindow.postMessage({
+                                type: 'changeLanguage',
+                                language: langCode
+                            }, '*');
+                        }
+                    } catch (e) {
+                        console.error('Error updating welcome page language:', e);
+                    }
+                    return;
+                }
                 if (iframe.src && iframe.src !== 'about:blank') {
                     try {
+                        if (iframe.id === 'frame1') {
+                            const nextSrc = setUrlQueryParamPreservingFlags(iframe.src, 'ln', langCode);
+                            if (iframe.src !== nextSrc) {
+                                postLanguageToPopupFrameAfterLoad(iframe, langCode);
+                                iframe.src = nextSrc;
+                                iframe.classList.add('loading');
+                            } else {
+                                postLanguageToPopupFrame(iframe, langCode);
+                            }
+                            return;
+                        }
                         // Send a message to the iframe to change language
                         iframe.contentWindow.postMessage({
                             type: 'changeLanguage',
-                            language: popupLangCode
+                            language: langCode
                         }, '*');
                     } catch (e) {
                         console.error('Error sending language message to iframe:', e);
@@ -13695,9 +13583,9 @@
         // Set up navigation
         document.addEventListener('DOMContentLoaded', () => {
             // Initialize language
-            const savedLanguage = normalizeLanguage(localStorage.getItem('language') || 'en');
+            const savedLanguage = normalizeLanguage(localStorage.getItem('language') || 'en-us');
             document.getElementById('language-select').value = savedLanguage;
-            changeLanguage(savedLanguage);
+            changeLanguage(savedLanguage, { source: 'startup' });
 
             const navLinks = document.querySelectorAll('#main-navigation a');
             navLinks.forEach(link => {

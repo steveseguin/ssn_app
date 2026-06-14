@@ -129,10 +129,7 @@ const {
 } = require('undici');
 const isMac = process.platform === "darwin";
 const WebSocket = require('ws');
-const {
-    Worker,
-    workerData
-} = require('worker_threads');
+const { Worker } = require('worker_threads');
 
 
 const Store = require("electron-store");
@@ -197,6 +194,13 @@ const WINDOW_STATE_DIAGNOSTICS_REPORT_PATH = (() => {
     if (!arg) return null;
     return arg.slice('--window-state-report='.length);
 })();
+const TTS_DIAGNOSTICS_ENABLED = process.argv.includes('--tts-diagnostics');
+const TTS_DIAGNOSTICS_REPORT_PATH = (() => {
+    const arg = process.argv.find((value) => typeof value === 'string' && value.startsWith('--tts-report='));
+    if (!arg) return null;
+    return arg.slice('--tts-report='.length);
+})();
+const TTS_DIAGNOSTICS_SAFE_GPU = TTS_DIAGNOSTICS_ENABLED || parseBooleanLikeFlag(process.env.SSAPP_TTS_DIAGNOSTICS_SAFE_GPU) === true;
 
 const win10TransparencyCompatRequested = (() => {
     const envFlag = parseBooleanLikeFlag(process.env.SSAPP_WIN10_TRANSPARENCY_COMPAT);
@@ -354,6 +358,12 @@ function initializeStabilityRuntimeForStartup() {
     let level = clampGpuFallbackLevel(state.gpuFallbackLevel);
     let latestCrashReason = null;
     const notices = [];
+
+    if (TTS_DIAGNOSTICS_SAFE_GPU && level < STABILITY_GPU_SANDBOX_FALLBACK_LEVEL) {
+        level = STABILITY_GPU_SANDBOX_FALLBACK_LEVEL;
+        state.lastFallbackChangeAt = now;
+        notices.push('[Stability] TTS diagnostics forcing stability GPU profile L4.');
+    }
 
     if (previousSessionActive) {
         const inferredCrashAt = Number(state.lastCrashSignalAt) > 0
@@ -3045,10 +3055,16 @@ function normalizeForLogging(value, seen = new WeakMap()) {
 const SOCIAL_STREAM_CACHE_DIR = 'social_stream_cache';
 const SOCIAL_STREAM_FALLBACK_DIR = 'social_stream_fallback';
 const SOCIAL_STREAM_REMOTE_TIMEOUT_MS = 5000;
+const SOCIAL_STREAM_ALLOWED_BRANCHES = new Set(['main', 'beta']);
 const socialStreamLoadPromises = new Map();
 const pendingInjectorToasts = [];
 const seenInjectorToastKeys = new Set();
 let mainWindowReadyForInjectorToasts = false;
+
+function normalizeSocialStreamBranch(input) {
+    const normalized = typeof input === 'string' ? input.trim().toLowerCase() : '';
+    return SOCIAL_STREAM_ALLOWED_BRANCHES.has(normalized) ? normalized : 'main';
+}
 
 function normalizeSocialStreamRelativePath(input) {
     if (!input || typeof input !== 'string') return null;
@@ -3103,21 +3119,49 @@ async function readTextIfExists(filePath) {
     }
 }
 
+function isPathInsideDirectory(rootDir, targetPath) {
+    const root = path.resolve(rootDir);
+    const target = path.resolve(targetPath);
+    const relative = path.relative(root, target);
+    return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolvePathInsideRoot(rootDir, relativePath) {
+    const normalizedPath = normalizeSocialStreamRelativePath(relativePath);
+    if (!normalizedPath) return null;
+
+    const targetPath = path.resolve(rootDir, normalizedPath);
+    if (!isPathInsideDirectory(rootDir, targetPath)) {
+        return null;
+    }
+    return targetPath;
+}
+
 function getSocialStreamCachePath(branch, relativePath) {
-    const sanitizedBranch = branch && typeof branch === 'string' ? branch : 'main';
+    const sanitizedBranch = normalizeSocialStreamBranch(branch);
     const userDataPath = app.getPath('userData');
-    return path.join(userDataPath, SOCIAL_STREAM_CACHE_DIR, sanitizedBranch, relativePath);
+    const cacheRoot = path.join(userDataPath, SOCIAL_STREAM_CACHE_DIR, sanitizedBranch);
+    return resolvePathInsideRoot(cacheRoot, relativePath);
 }
 
 function getCandidateBundledPaths(branch, relativePath) {
+    const sanitizedBranch = normalizeSocialStreamBranch(branch);
     const candidates = [];
+    const roots = [];
     if (process.resourcesPath) {
-        candidates.push(path.join(process.resourcesPath, SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
-        candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
-        candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'resources', SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
+        roots.push(path.join(process.resourcesPath, SOCIAL_STREAM_FALLBACK_DIR, sanitizedBranch));
+        roots.push(path.join(process.resourcesPath, 'app.asar.unpacked', SOCIAL_STREAM_FALLBACK_DIR, sanitizedBranch));
+        roots.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'resources', SOCIAL_STREAM_FALLBACK_DIR, sanitizedBranch));
     }
-    candidates.push(path.join(__dirname, 'resources', SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
-    candidates.push(path.join(__dirname, SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
+    roots.push(path.join(__dirname, 'resources', SOCIAL_STREAM_FALLBACK_DIR, sanitizedBranch));
+    roots.push(path.join(__dirname, SOCIAL_STREAM_FALLBACK_DIR, sanitizedBranch));
+
+    for (const root of roots) {
+        const candidate = resolvePathInsideRoot(root, relativePath);
+        if (candidate) {
+            candidates.push(candidate);
+        }
+    }
     return candidates;
 }
 
@@ -3179,7 +3223,7 @@ function validateSocialStreamSourceText(text, relativePath = '', remoteUrl = '')
 }
 
 async function loadSocialStreamSource(remoteUrl, options = {}) {
-    const branch = options.branch || 'main';
+    const branch = normalizeSocialStreamBranch(options.branch || 'main');
     const relativePath = normalizeSocialStreamRelativePath(options.relativePath || '');
     const cacheKey = `${branch}::${remoteUrl || 'none'}::${relativePath || 'inline'}`;
 
@@ -3198,8 +3242,10 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
                 if (relativePath) {
                     try {
                         cachePath = getSocialStreamCachePath(branch, relativePath);
-                        await ensureDirectoryFor(cachePath);
-                        await fsp.writeFile(cachePath, text, 'utf8');
+                        if (cachePath) {
+                            await ensureDirectoryFor(cachePath);
+                            await fsp.writeFile(cachePath, text, 'utf8');
+                        }
                     } catch (cacheWriteError) {
                         console.warn('Failed to update Social Stream cache:', cacheWriteError);
                     }
@@ -3218,16 +3264,18 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
         if (relativePath) {
             try {
                 cachePath = cachePath || getSocialStreamCachePath(branch, relativePath);
-                const cachedText = await readTextIfExists(cachePath);
-                if (typeof cachedText === 'string') {
-                    return {
-                        text: cachedText,
-                        origin: 'cache',
-                        meta: {
-                            path: cachePath,
-                            reason: remoteError ? remoteError.message : 'remote unavailable'
-                        }
-                    };
+                if (cachePath) {
+                    const cachedText = await readTextIfExists(cachePath);
+                    if (typeof cachedText === 'string') {
+                        return {
+                            text: cachedText,
+                            origin: 'cache',
+                            meta: {
+                                path: cachePath,
+                                reason: remoteError ? remoteError.message : 'remote unavailable'
+                            }
+                        };
+                    }
                 }
             } catch (cacheReadError) {
                 console.warn('Failed to read Social Stream cache:', cacheReadError);
@@ -3315,7 +3363,7 @@ function notifySocialStreamFallback(relativePath, fromBranch, toBranch) {
 }
 
 async function locateBundledSocialStreamFile(branch, relativePath, options = {}) {
-    const sanitizedBranch = (branch && typeof branch === 'string' && branch.trim()) ? branch.trim() : 'main';
+    const sanitizedBranch = normalizeSocialStreamBranch(branch);
     const normalizedPath = normalizeSocialStreamRelativePath(relativePath);
     if (!normalizedPath) {
         return null;
@@ -3415,8 +3463,11 @@ ipcMain.handle('socialstream:resolve-cache-url', async (_event, relativePath, op
         if (!normalized) {
             return { success: false, error: 'INVALID_PATH' };
         }
-        const branch = options.branch || 'main';
+        const branch = normalizeSocialStreamBranch(options.branch || 'main');
         const cachePath = getSocialStreamCachePath(branch, normalized);
+        if (!cachePath) {
+            return { success: false, error: 'INVALID_PATH' };
+        }
         try {
             await fsp.access(cachePath, fs.constants.R_OK);
             return {
@@ -3451,6 +3502,42 @@ ipcMain.handle('ssapp:get-environment', async () => {
         preferLocalAssets: !!(preferLocalAssetsFlag && hasFallback),
         hasFallbackBundle: hasFallback
     };
+});
+
+function normalizeUiLanguagePreference(lang) {
+    if (!lang || typeof lang !== 'string') return '';
+    const trimmed = lang.trim();
+    if (!trimmed) return '';
+    const lower = trimmed.toLowerCase();
+    if (lower === 'test') return 'test';
+    if (lower === 'zh' || lower === 'zh-cn' || lower === 'zh-hans') return 'zh-CN';
+    if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-hant') return 'zh-TW';
+    if (lower === 'en-gb' || lower === 'en-uk') return 'en-uk';
+    if (lower === 'en' || lower.startsWith('en-')) return 'en-us';
+    if (lower === 'pt-br' || lower.startsWith('pt')) return 'pt-br';
+    if (lower.startsWith('es')) return 'es';
+    if (lower.startsWith('de')) return 'de';
+    if (lower.startsWith('cs')) return 'cs';
+    if (lower.startsWith('th')) return 'th';
+    if (lower.startsWith('tr')) return 'tr';
+    if (lower.startsWith('uk')) return 'uk';
+    return 'en-us';
+}
+
+ipcMain.handle('ssapp:set-language', async (_event, payload) => {
+    const language = payload && typeof payload === 'object' ? payload.language : payload;
+    const source = payload && typeof payload === 'object' && typeof payload.source === 'string' ? payload.source : 'user';
+    const normalized = normalizeUiLanguagePreference(language) || 'en-us';
+    if (source === 'startup') {
+        const currentRaw = store.get('language');
+        const currentNormalized = normalizeUiLanguagePreference(currentRaw);
+        if (currentRaw && currentNormalized && currentNormalized !== normalized) {
+            store.set('language', currentNormalized);
+            return { ok: true, language: currentNormalized, preserved: true };
+        }
+    }
+    store.set('language', normalized);
+    return { ok: true, language: normalized };
 });
 
 ipcMain.handle('ssapp:get-source-window-config', async (event) => {
@@ -4139,6 +4226,163 @@ async function runWindowStateDiagnostics() {
 
     if (WINDOW_STATE_DIAGNOSTICS_REPORT_PATH) {
         await fsp.writeFile(WINDOW_STATE_DIAGNOSTICS_REPORT_PATH, JSON.stringify(report, null, 2), 'utf8');
+    }
+
+    return report;
+}
+
+function getTtsDiagnosticBuffer(value) {
+    if (!value) return null;
+    if (Buffer.isBuffer(value)) return value;
+    if (value instanceof Uint8Array) {
+        return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+    }
+    if (value instanceof ArrayBuffer) {
+        return Buffer.from(value);
+    }
+    if (Array.isArray(value)) {
+        return Buffer.from(value);
+    }
+    if (value.type === 'Buffer' && Array.isArray(value.data)) {
+        return Buffer.from(value.data);
+    }
+    if (value.buffer instanceof ArrayBuffer) {
+        return Buffer.from(value.buffer, value.byteOffset || 0, value.byteLength || value.length || 0);
+    }
+    return null;
+}
+
+function validateTtsDiagnosticResponse(response) {
+    const errors = [];
+    if (!response || typeof response !== 'object') {
+        errors.push('No response object returned.');
+    } else {
+        if (!Number.isFinite(response.byteLength) || response.byteLength <= 44) {
+            errors.push(`WAV response is too small: ${response.byteLength}`);
+        }
+        if (response.riffSignature !== 'RIFF') {
+            errors.push(`Missing RIFF signature: ${response.riffSignature}`);
+        }
+        if (response.waveSignature !== 'WAVE') {
+            errors.push(`Missing WAVE signature: ${response.waveSignature}`);
+        }
+    }
+    return errors;
+}
+
+async function runTtsDiagnosticRequest(text, settings) {
+    const startedAt = Date.now();
+    const wavBuffer = await enqueueTtsRequest({ text, settings });
+    const bytes = getTtsDiagnosticBuffer(wavBuffer);
+    const response = bytes
+        ? {
+            byteLength: bytes.byteLength,
+            riffSignature: bytes.toString('ascii', 0, 4),
+            waveSignature: bytes.toString('ascii', 8, 12),
+            elapsedMs: Date.now() - startedAt
+        }
+        : {
+            byteLength: 0,
+            riffSignature: '',
+            waveSignature: '',
+            elapsedMs: Date.now() - startedAt
+        };
+    const errors = validateTtsDiagnosticResponse(response);
+    return {
+        text,
+        settings,
+        ...response,
+        passed: errors.length === 0,
+        errors
+    };
+}
+
+async function runTtsDiagnostics() {
+    const report = {
+        startedAt: new Date().toISOString(),
+        platform: process.platform,
+        requests: [],
+        snapshots: {},
+        summary: {
+            passed: 0,
+            failed: 0,
+            workerCreateDelta: 0,
+            completedRequestDelta: 0,
+            workerModelLoadCount: 0
+        }
+    };
+
+    report.snapshots.before = getTtsDiagnosticsSnapshot();
+
+    const cases = [
+        {
+            text: 'Social Stream local TTS diagnostic one.',
+            settings: { voice: 'af_aoede', speed: 1 }
+        },
+        {
+            text: 'Social Stream local TTS diagnostic two.',
+            settings: { voice: 'af_aoede', speed: 1 }
+        }
+    ];
+
+    for (const testCase of cases) {
+        let result;
+        try {
+            result = await runTtsDiagnosticRequest(testCase.text, testCase.settings);
+        } catch (error) {
+            result = {
+                text: testCase.text,
+                settings: testCase.settings,
+                byteLength: 0,
+                riffSignature: '',
+                waveSignature: '',
+                elapsedMs: 0,
+                passed: false,
+                errors: [error && error.message ? error.message : String(error)]
+            };
+        }
+        report.requests.push(result);
+        if (result.passed) {
+            report.summary.passed += 1;
+        } else {
+            report.summary.failed += 1;
+        }
+    }
+
+    report.snapshots.after = getTtsDiagnosticsSnapshot();
+    report.summary.workerCreateDelta =
+        report.snapshots.after.workerCreateCount - report.snapshots.before.workerCreateCount;
+    report.summary.completedRequestDelta =
+        report.snapshots.after.completedRequestCount - report.snapshots.before.completedRequestCount;
+    report.summary.workerModelLoadCount = report.snapshots.after.workerModelLoadCount;
+
+    if (report.summary.workerCreateDelta !== 1) {
+        report.summary.failed += 1;
+        report.requests.push({
+            passed: false,
+            errors: [`Expected one TTS worker for two requests; created ${report.summary.workerCreateDelta}.`]
+        });
+    }
+    if (report.summary.completedRequestDelta !== cases.length) {
+        report.summary.failed += 1;
+        report.requests.push({
+            passed: false,
+            errors: [`Expected ${cases.length} completed TTS requests; completed ${report.summary.completedRequestDelta}.`]
+        });
+    }
+    if (report.summary.workerModelLoadCount !== 1) {
+        report.summary.failed += 1;
+        report.requests.push({
+            passed: false,
+            errors: [`Expected one Kokoro model load in the worker; observed ${report.summary.workerModelLoadCount}.`]
+        });
+    }
+
+    report.finishedAt = new Date().toISOString();
+    report.success = report.summary.failed === 0;
+
+    if (TTS_DIAGNOSTICS_REPORT_PATH) {
+        await fsp.writeFile(TTS_DIAGNOSTICS_REPORT_PATH, JSON.stringify(report, null, 2), 'utf8');
     }
 
     return report;
@@ -8297,18 +8541,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
         if (isMainAppWindow) {
             // This is the main app window, inject language preference
             try {
-                const normalizeUiLanguage = (lang) => {
-                    if (!lang || typeof lang !== 'string') return lang;
-                    const trimmed = lang.trim();
-                    if (!trimmed) return lang;
-                    const lower = trimmed.toLowerCase();
-                    if (lower === 'zh' || lower === 'zh-cn' || lower === 'zh-hans') return 'zh-CN';
-                    if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-hant') return 'zh-TW';
-                    return trimmed;
-                };
-
                 const savedLanguageRaw = store.get('language');
-                const savedLanguage = normalizeUiLanguage(savedLanguageRaw);
+                const savedLanguage = normalizeUiLanguagePreference(savedLanguageRaw);
                 if (savedLanguage) {
                     if (savedLanguageRaw && savedLanguage !== savedLanguageRaw) {
                         store.set('language', savedLanguage);
@@ -8327,24 +8561,21 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     let uiLanguage = SYSTEM_LOCALE;
                     const languageMap = {
                         'tr-TR': 'tr',
-                        'pt-BR': 'pt-BR', // Keep as is
+                        'pt-BR': 'pt-br',
                         'es-ES': 'es',
                         'es-MX': 'es',
-                        'fr-FR': 'fr',
-                        'fr-CA': 'fr',
                         'de-DE': 'de',
                         'de-AT': 'de',
                         'de-CH': 'de',
                         'cs-CZ': 'cs',
-                        'it-IT': 'it',
-                        'ja-JP': 'ja',
+                        'th-TH': 'th',
                         'zh-CN': 'zh-CN',
                         'zh-TW': 'zh-TW',
                         'zh-HK': 'zh-TW',
                         'zh-Hans': 'zh-CN',
                         'zh-Hant': 'zh-TW',
-                        'ko-KR': 'ko',
-                        'ru-RU': 'ru'
+                        'en-GB': 'en-uk',
+                        'en-US': 'en-us'
                     };
 
                     // Use mapped language or extract the base language code
@@ -8353,7 +8584,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     } else if (SYSTEM_LOCALE.includes('-')) {
                         uiLanguage = SYSTEM_LOCALE.split('-')[0];
                     }
-                    uiLanguage = normalizeUiLanguage(uiLanguage);
+                    uiLanguage = normalizeUiLanguagePreference(uiLanguage);
 
                     executeJavaScriptQuietly(mainWindow.webContents, `
                         localStorage.setItem('language', ${JSON.stringify(uiLanguage)});
@@ -10101,144 +10332,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     }
 
-
-    // Universal IPC Request Handler
-    ipcMain.on('ipc-request', async (event, request) => {
-        const { channel, callbackId, data, timestamp } = request;
-
-        // Log all IPC requests for debugging
-        log(`IPC Request: ${channel} [${callbackId}]`);
-
-        try {
-            let result;
-
-            // Route to appropriate handler based on channel
-            switch (channel) {
-                case 'createWindow':
-                    // Handle window creation
-                    result = await handleCreateWindowAsync(data);
-                    break;
-
-                case 'storageSave':
-                    result = await handleStorageSave(data);
-                    break;
-
-                case 'storageLoad':
-                    result = await handleStorageLoad(data);
-                    break;
-
-                case 'nodefetch':
-                    result = await handleNodeFetch(data);
-                    break;
-
-                case 'closeWindow':
-                    result = await handleCloseWindow(data);
-                    break;
-
-                case 'reloadWindow':
-                    result = await handleReloadWindow(data);
-                    break;
-
-                case 'getWindowInfo':
-                    result = await handleGetWindowInfo(data);
-                    break;
-
-                default:
-                    throw new Error(`Unknown IPC channel: ${channel}`);
-            }
-
-            // Send success response
-            event.sender.send('ipc-response', {
-                callbackId,
-                result
-            });
-
-        } catch (error) {
-            log(`IPC Error in ${channel}: ${error.message}`);
-
-            // Send error response
-            event.sender.send('ipc-response', {
-                callbackId,
-                error: error.message
-            });
-        }
-    });
-
-    // Async window creation handler
-    async function handleCreateWindowAsync(args2) {
-        return new Promise((resolve, reject) => {
-            try {
-                var args = Object.assign({}, Argv, args2);
-                if (!args.url) {
-                    reject(new Error("No URL provided"));
-                    return;
-                }
-
-                const isBetaMode = args.isBetaMode || false;
-
-                // Check if we're already creating a window for this source to prevent duplicates
-                if (args.sourceId) {
-                    for (const [id, view] of Object.entries(browserViews)) {
-                        if (view.args && view.args.sourceId === args.sourceId && !view.isDestroyed()) {
-                            log("Window already exists for source: " + args.sourceId);
-                            resolve(id);
-                            return;
-                        }
-                    }
-                }
-
-                // If updating existing window
-                if (args.tab) {
-                    const existingView = getActiveBrowserView(args.tab);
-                    if (existingView && existingView.webContents) {
-                        try {
-                            existingView.args = { ...(existingView.args || {}), ...args };
-                            if (args?.config?.userAgent) {
-                                existingView.webContents.loadURL(args.url, {
-                                    userAgent: args.config.userAgent
-                                });
-                            } else {
-                                existingView.webContents.loadURL(args.url);
-                            }
-                            resolve(args.tab);
-                            return;
-                        } catch (e) {
-                            reject(e);
-                            return;
-                        }
-                    }
-                }
-
-                // For now, run the sync handler in a non-blocking way
-                setImmediate(() => {
-                    const mockEvent = {
-                        returnValue: null
-                    };
-
-                    try {
-                        log("Calling originalCreateWindowHandler for async request");
-                        originalCreateWindowHandler(mockEvent, args2);
-
-                        if (mockEvent.returnValue) {
-                            log(`Async handler got window ID: ${mockEvent.returnValue}`);
-                            resolve(mockEvent.returnValue);
-                        } else {
-                            log("Async handler got no window ID");
-                            reject(new Error("No window ID returned"));
-                        }
-                    } catch (e) {
-                        log(`Error in async window creation: ${e.message}`);
-                        reject(e);
-                    }
-                });
-
-            } catch (error) {
-                log(`Outer error in handleCreateWindowAsync: ${error.message}`);
-                reject(error);
-            }
-        });
-    }
-
     // Keep the old sync handler for backward compatibility  
     const originalCreateWindowHandler = function (eventRet, args2) {
         log("IPC CREATE WINDOW");
@@ -11449,9 +11542,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     sourceInjectionHandled = true;
                     (async () => {
                         try {
-                            const branch = (typeof args.assetBranch === 'string' && args.assetBranch.trim())
-                                ? args.assetBranch.trim()
-                                : (isBetaMode ? 'beta' : 'main');
+                            const branch = normalizeSocialStreamBranch(
+                                (typeof args.assetBranch === 'string' && args.assetBranch.trim())
+                                    ? args.assetBranch
+                                    : (isBetaMode ? 'beta' : 'main')
+                            );
                             const loadedSourceTexts = [];
                             const sourceLoadFailures = [];
 
@@ -11823,37 +11918,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     // Register the sync handler for backward compatibility
     ipcMain.on("createWindow", originalCreateWindowHandler);
-
-    // Add async handlers for other IPC channels
-    async function handleStorageSave(data) {
-        // TODO: Implement async storage save
-        throw new Error("Not implemented yet - use sync handler");
-    }
-
-    async function handleStorageLoad(data) {
-        // TODO: Implement async storage load
-        throw new Error("Not implemented yet - use sync handler");
-    }
-
-    async function handleNodeFetch(data) {
-        // TODO: Implement async node fetch
-        throw new Error("Not implemented yet - use sync handler");
-    }
-
-    async function handleCloseWindow(data) {
-        // TODO: Implement async close window
-        throw new Error("Not implemented yet - use sync handler");
-    }
-
-    async function handleReloadWindow(data) {
-        // TODO: Implement async reload window
-        throw new Error("Not implemented yet - use sync handler");
-    }
-
-    async function handleGetWindowInfo(data) {
-        // TODO: Implement async get window info
-        throw new Error("Not implemented yet - use sync handler");
-    }
 
     ipcMain.on("getVersion", function (eventRet) {
         eventRet.returnValue = app.getVersion();
@@ -13459,6 +13523,7 @@ app.on("before-quit", (event) => {
             console.warn('[TikTok] Failed to dispose signing window during quit:', error);
         }
     }
+    shutdownTtsWorker();
 });
 
 app.on("will-quit", () => {
@@ -14284,6 +14349,34 @@ app.whenReady().then(async function () {
         }
     });
 
+    if (TTS_DIAGNOSTICS_ENABLED) {
+        try {
+            const report = await runTtsDiagnostics();
+            console.log('[TtsDiagnostics] Summary:', JSON.stringify(report.summary));
+            shutdownTtsWorker();
+            app.exit(report.success ? 0 : 1);
+        } catch (error) {
+            const failureReport = {
+                startedAt: new Date().toISOString(),
+                finishedAt: new Date().toISOString(),
+                success: false,
+                error: error && error.message ? error.message : String(error),
+                snapshots: {
+                    after: getTtsDiagnosticsSnapshot()
+                }
+            };
+            if (TTS_DIAGNOSTICS_REPORT_PATH) {
+                try {
+                    await fsp.writeFile(TTS_DIAGNOSTICS_REPORT_PATH, JSON.stringify(failureReport, null, 2), 'utf8');
+                } catch (_) { }
+            }
+            console.error('[TtsDiagnostics] Failed:', failureReport.error);
+            shutdownTtsWorker();
+            app.exit(1);
+        }
+        return;
+    }
+
 	    try {
 	        const diskResult = loadCachedStateWithBackupSource({ logSelection: true });
 	        if (diskResult && diskResult.state) {
@@ -14410,46 +14503,203 @@ app.whenReady().then(async function () {
     .catch(console.error);
 
 ipcMain.handle("tts", async (event, data) => {
-    return new Promise((resolve, reject) => {
-        // Determine the correct path to the Kokoro-82M-ONNX directory
-        let appPath;
-        if (app.isPackaged) {
-            // In production: use the path relative to the application's root
-            appPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'Kokoro-82M-ONNX');
-        } else {
-            // In development: use the path relative to the current directory
-            appPath = path.join(__dirname, 'Kokoro-82M-ONNX');
+    return enqueueTtsRequest(data);
+});
+
+const TTS_WORKER_PATH = path.join(__dirname, 'tts-worker.js');
+let ttsWorker = null;
+let ttsActiveRequest = null;
+let ttsRequestId = 0;
+const ttsQueue = [];
+let ttsWorkerShuttingDown = false;
+let ttsWorkerCreateCount = 0;
+let ttsCompletedRequestCount = 0;
+let ttsWorkerModelLoadCount = 0;
+
+function getKokoroModelPath() {
+    if (app.isPackaged) {
+        return path.join(process.resourcesPath, 'app.asar.unpacked', 'Kokoro-82M-ONNX');
+    }
+    return path.join(__dirname, 'Kokoro-82M-ONNX');
+}
+
+function normalizeTtsError(error, fallbackMessage) {
+    if (error instanceof Error) return error;
+    if (error && typeof error.message === 'string') return new Error(error.message);
+    if (typeof error === 'string' && error.trim()) return new Error(error);
+    return new Error(fallbackMessage || 'TTS request failed');
+}
+
+function createTtsWorker() {
+    const appPath = getKokoroModelPath();
+    log("Using Kokoro model path:" + appPath);
+    ttsWorkerShuttingDown = false;
+    ttsWorkerCreateCount += 1;
+
+    const worker = new Worker(TTS_WORKER_PATH, {
+        workerData: {
+            appPath
+        }
+    });
+
+    ttsWorker = worker;
+
+    worker.on('message', (result) => {
+        handleTtsWorkerMessage(worker, result);
+    });
+
+    worker.on('error', (error) => {
+        handleTtsWorkerCrash(worker, error);
+    });
+
+    worker.on('exit', (code) => {
+        if (ttsWorker !== worker) return;
+        ttsWorker = null;
+
+        if (ttsWorkerShuttingDown) {
+            ttsWorkerShuttingDown = false;
+            return;
         }
 
-        log("Using Kokoro model path:" + appPath);
-
-        // Create a worker thread with model path information
-        const worker = new Worker(path.join(__dirname, 'tts-worker.js'), {
-            workerData: {
-                appPath
-            }
-        });
-
-        // Send the text to the worker
-        worker.postMessage(data);
-
-        // Handle the result from the worker
-        worker.on('message', (result) => {
-            if (result.error) {
-                reject(result.error);
-            } else {
-                resolve(result.wavBuffer);
-            }
-            worker.terminate();
-        });
-
-        worker.on('error', (error) => {
-            console.error("TTS Worker Error:", error);
-            reject(error);
-            worker.terminate();
-        });
+        const error = new Error(code === 0 ? 'TTS worker exited unexpectedly' : `TTS worker exited with code ${code}`);
+        console.error("TTS Worker Error:", error);
+        failActiveTtsRequest(error);
+        scheduleNextTtsRequest();
     });
-});
+
+    return worker;
+}
+
+function getTtsWorker() {
+    return ttsWorker || createTtsWorker();
+}
+
+function handleTtsWorkerMessage(worker, result) {
+    if (ttsWorker !== worker) return;
+
+    const request = ttsActiveRequest;
+    if (!request) {
+        console.warn('[TTS] Worker returned a result with no active request.');
+        return;
+    }
+
+    if (!result || result.id !== request.id) {
+        ttsActiveRequest = null;
+        request.reject(new Error('TTS worker returned an unexpected response.'));
+        scheduleNextTtsRequest();
+        return;
+    }
+
+    ttsActiveRequest = null;
+    ttsCompletedRequestCount += 1;
+    if (result && Number.isFinite(result.modelLoadCount)) {
+        ttsWorkerModelLoadCount = result.modelLoadCount;
+    }
+    if (result.error) {
+        request.reject(normalizeTtsError(result.error, 'TTS request failed'));
+    } else {
+        request.resolve(result.wavBuffer);
+    }
+    scheduleNextTtsRequest();
+}
+
+function handleTtsWorkerCrash(worker, error) {
+    if (ttsWorker !== worker) return;
+
+    ttsWorker = null;
+    const normalizedError = normalizeTtsError(error, 'TTS worker crashed');
+    console.error("TTS Worker Error:", normalizedError);
+    failActiveTtsRequest(normalizedError);
+
+    try {
+        worker.terminate();
+    } catch (_) { }
+
+    scheduleNextTtsRequest();
+}
+
+function failActiveTtsRequest(error) {
+    const request = ttsActiveRequest;
+    ttsActiveRequest = null;
+    if (request) {
+        request.reject(normalizeTtsError(error, 'TTS request failed'));
+    }
+}
+
+function scheduleNextTtsRequest() {
+    if (ttsQueue.length > 0) {
+        setImmediate(processTtsQueue);
+    }
+}
+
+function processTtsQueue() {
+    if (ttsActiveRequest || ttsQueue.length === 0) return;
+
+    const request = ttsQueue.shift();
+    let worker;
+    try {
+        worker = getTtsWorker();
+        ttsActiveRequest = request;
+        worker.postMessage({
+            id: request.id,
+            data: request.data
+        });
+    } catch (error) {
+        if (ttsActiveRequest === request) {
+            ttsActiveRequest = null;
+        }
+        request.reject(normalizeTtsError(error, 'Failed to send TTS request to worker'));
+        if (worker && ttsWorker === worker) {
+            ttsWorker = null;
+            try {
+                worker.terminate();
+            } catch (_) { }
+        }
+        scheduleNextTtsRequest();
+    }
+}
+
+function enqueueTtsRequest(data) {
+    return new Promise((resolve, reject) => {
+        ttsQueue.push({
+            id: ++ttsRequestId,
+            data,
+            resolve,
+            reject
+        });
+        processTtsQueue();
+    });
+}
+
+function getTtsDiagnosticsSnapshot() {
+    return {
+        hasWorker: !!ttsWorker,
+        activeRequestId: ttsActiveRequest ? ttsActiveRequest.id : null,
+        queueLength: ttsQueue.length,
+        workerCreateCount: ttsWorkerCreateCount,
+        completedRequestCount: ttsCompletedRequestCount,
+        workerModelLoadCount: ttsWorkerModelLoadCount
+    };
+}
+
+function shutdownTtsWorker() {
+    ttsWorkerShuttingDown = true;
+    const shutdownError = new Error('TTS worker is shutting down');
+
+    failActiveTtsRequest(shutdownError);
+    while (ttsQueue.length > 0) {
+        const request = ttsQueue.shift();
+        request.reject(shutdownError);
+    }
+
+    if (ttsWorker) {
+        const worker = ttsWorker;
+        ttsWorker = null;
+        try {
+            worker.terminate();
+        } catch (_) { }
+    }
+}
 
 app.on("ready", () => {
     app.on('web-contents-created', (event, contents) => {

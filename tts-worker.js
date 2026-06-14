@@ -1,8 +1,8 @@
+'use strict';
+
 const { parentPort, workerData } = require('worker_threads');
-const { KokoroTTS } = require("kokoro-js");
-const os = require('os');
 const process = require("process");
-const path = require('path');
+const { KokoroTTS } = require("kokoro-js");
 
 if (process.platform === 'win32') {
   try {
@@ -17,6 +17,25 @@ const modelPath = (() => {
   const { appPath } = workerData;
   return appPath;
 })();
+let ttsModelPromise = null;
+let ttsModelLoadCount = 0;
+
+function getTtsModel() {
+  if (!ttsModelPromise) {
+    ttsModelLoadCount += 1;
+    ttsModelPromise = KokoroTTS.from_pretrained(
+      modelPath,
+      {
+        dtype: "q8",
+        execution_provider: ["dml", "cuda", "cpu"]
+      }
+    ).catch((error) => {
+      ttsModelPromise = null;
+      throw error;
+    });
+  }
+  return ttsModelPromise;
+}
 
 // Function to convert to WAV format
 function convertToWav(buffer, options) {
@@ -53,18 +72,12 @@ function convertToWav(buffer, options) {
 	return wavBuffer;
 }
 
-parentPort.on('message', async (data) => {
+parentPort.on('message', async (message) => {
+  const requestId = message && Object.prototype.hasOwnProperty.call(message, 'id') ? message.id : undefined;
+  const data = message && message.data ? message.data : message;
+
   try {
-    
-	//const modelPath = "C:\\Users\\steve\\AppData\\Local\\Programs\\SocialStream\\resources\\app.asar.unpacked\\node_modules\\@huggingface\\transformers\\.cache\\onnx-community\\Kokoro-82M-ONNX";
-	
-    const tts = await KokoroTTS.from_pretrained(
-      modelPath,
-      { 
-        dtype: "q8",
-        execution_provider: ["dml", "cuda", "cpu"]
-      }
-    );
+    const tts = await getTtsModel();
     
     const audio = await tts.generate(data.text, { voice: (data?.settings?.voice || data?.settings?.voiceName || "af_aoede"), speed: (data?.settings?.speed || data?.settings?.rate || 1.0) });
     const audioData = audio.audio;
@@ -87,9 +100,9 @@ parentPort.on('message', async (data) => {
     });
     
     // Send the result back to the main thread
-    parentPort.postMessage({ wavBuffer });
+    parentPort.postMessage({ id: requestId, wavBuffer, modelLoadCount: ttsModelLoadCount });
   } catch (error) {
     console.error("TTS Error in worker:", error);
-    parentPort.postMessage({ error: error.message });
+    parentPort.postMessage({ id: requestId, error: error && error.message ? error.message : String(error), modelLoadCount: ttsModelLoadCount });
   }
 });

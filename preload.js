@@ -78,6 +78,15 @@ const ssappEnvironmentBridge = {
 	}
 };
 
+async function setSsappLanguagePreference(language) {
+	try {
+		return await ipcRenderer.invoke('ssapp:set-language', language);
+	} catch (error) {
+		console.error('[Preload] Failed to persist SSAPP language:', error);
+		return { ok: false, error: error?.message || 'Unable to persist language.' };
+	}
+}
+
 const ssappCustomJsBridge = {
 	getState: async () => {
 		try {
@@ -530,7 +539,8 @@ function configureContextBridge(){
 			source: localeSource,
 			getLocale: () => effectiveLocale,
 			getAcceptLanguage: () => acceptLanguageHeader,
-			getSource: () => localeSource
+			getSource: () => localeSource,
+			setLanguage: setSsappLanguagePreference
 		});
 		contextBridge.exposeInMainWorld('ssappFallback', ssappFallbackBridge);
 		contextBridge.exposeInMainWorld('ssappEnvironment', ssappEnvironmentBridge);
@@ -648,6 +658,10 @@ try {
 				return await ipcRenderer.invoke('kick-ws-disconnect', payload);
 			},
 
+			tts: async (text, settings) => {
+				return await ipcRenderer.invoke('tts', {text, settings});
+			},
+
 			onKickWsEvent: (() => {
 				let registered = false;
 				return (callback) => {
@@ -677,7 +691,8 @@ try {
 			source: process.env.SSAPP_LOCALE_SOURCE || 'system',
 			getLocale() { return this.locale; },
 			getAcceptLanguage() { return this.acceptLanguage; },
-			getSource() { return this.source; }
+			getSource() { return this.source; },
+			setLanguage: setSsappLanguagePreference
 		};
 		window.ssappFallback = ssappFallbackBridge;
 		window.ssappEnvironment = ssappEnvironmentBridge;

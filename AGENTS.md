@@ -35,6 +35,14 @@ Electron desktop application for aggregating social media live stream chat. Comm
 
 No formal test framework (Jest/Mocha). Manual integration tests only.
 
+### VERY IMPORTANT: What Counts As Testing
+
+- Testing is not complete if it relies only on unit tests, smoke tests, static checks, syntax checks, or mocked/headless checks.
+- Unit tests and smoke tests are **not** considered actual testing for this project. They are only supporting sanity checks.
+- Only functional in-app, end-to-end testing of the real user workflow is considered actual testing.
+- For Electron/app changes, actual testing means starting the app in an appropriate isolated profile/environment and verifying the behavior inside the running app over time, including side effects such as reloads, persistence, network/server calls, background jobs, and repeated events.
+- Do not report a change as tested unless functional in-app/e2e testing was performed, or clearly state that only sanity checks were run and actual testing remains incomplete.
+
 ### TikTok Connection Tests
 
 ```bash
