@@ -91,6 +91,9 @@ Then include:
 
 Rules for the notes:
 
+- Follow the existing Social Stream release-note style, including the heading `### What's new in this version:`.
+- The `What's new` bullets must summarize every important user-facing change included in the release package, not only the final version bump. If `v0.3.128` is being released after `v0.3.113`, include the important user-facing changes from `v0.3.114` through `v0.3.128`.
+- Check recent `steveseguin/social_stream` releases before writing notes so the wording and layout match the existing style.
 - Include only important changes a non-technical user would care about.
 - Use plain, easy language.
 - Do not include internal implementation details unless they explain a visible fix.

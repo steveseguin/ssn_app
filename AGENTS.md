@@ -38,6 +38,10 @@ Electron desktop application for aggregating social media live stream chat. Comm
 
 - Read `RELEASE.md` before any release, deploy, tag, or artifact-upload work.
 - Critical rule: never create git tags or GitHub releases in `ssapp` / `ssn_app`; app release tags and artifacts belong in `steveseguin/social_stream`.
+- GitHub release notes should follow the existing Social Stream style, including the heading `### What's new in this version:`.
+- The `What's new` bullets must summarize every important user-facing change included in the release package, not only the final version bump. For example, if `v0.3.128` is being released after `v0.3.113`, include the important user-facing changes from `v0.3.114` through `v0.3.128`.
+- Before writing or updating release notes, check recent `steveseguin/social_stream` releases so the notes match the existing release-note style and include the right range of changes.
+- Do not add redundant platform intro text such as "Windows, macOS, and Linux pre-release" or "This pre-release includes Windows, macOS, and Linux builds." The Downloads table already shows platforms.
 
 ## Testing
 
