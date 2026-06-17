@@ -1652,7 +1652,6 @@ to {
 .entry:has(i.la-stop:not(.hidden)) .mode-selector,
 .entry:has([data-stophtml]:not(.hidden)) .mode-selector {
   pointer-events: none !important;
-  opacity: 0.5 !important;
   position: relative !important;
 }
 
@@ -1688,7 +1687,7 @@ to {
 .entry:has(i.la-stop:not(.hidden)) .mode-option,
 .entry:has([data-stophtml]:not(.hidden)) .mode-option {
   cursor: not-allowed !important;
-  opacity: 0.6 !important;
+  opacity: 0.42 !important;
   background: rgba(0, 0, 0, 0.3) !important;
 }
 
@@ -1700,7 +1699,7 @@ to {
 
 .entry:has(i.la-stop:not(.hidden)) .mode-option.active,
 .entry:has([data-stophtml]:not(.hidden)) .mode-option.active {
-  opacity: 0.8 !important;
+  opacity: 1 !important;
 }
 
 .mode-selector-label {
@@ -1743,6 +1742,17 @@ to {
   justify-content: center;
 }
 
+.mode-option::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.28;
+  box-shadow: none;
+  flex: 0 0 auto;
+}
+
 .mode-option:hover {
   background: rgba(255, 255, 255, 0.15);
   color: white !important;
@@ -1754,6 +1764,56 @@ to {
   color: white;
   font-weight: 600 !important;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2) !important;
+}
+
+.mode-option.active::before {
+  opacity: 1;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.12);
+}
+
+.mode-option[data-mode="classic"].active {
+  background: rgba(148, 163, 184, 0.28) !important;
+  border-color: rgba(203, 213, 225, 0.38) !important;
+  color: #f8fafc !important;
+}
+
+.mode-option[data-mode="websocket"].active,
+.mode-option[data-mode="tiktok-websocket"].active {
+  background: rgba(56, 189, 248, 0.24) !important;
+  border-color: rgba(56, 189, 248, 0.58) !important;
+  color: #e0f2fe !important;
+}
+
+.mode-option[data-mode="tiktok-legacy"].active {
+  background: rgba(245, 158, 11, 0.24) !important;
+  border-color: rgba(245, 158, 11, 0.55) !important;
+  color: #ffedd5 !important;
+}
+
+.entry:has(i.la-stop:not(.hidden)) .mode-option[data-mode="classic"].active,
+.entry:has([data-stophtml]:not(.hidden)) .mode-option[data-mode="classic"].active {
+  opacity: 1 !important;
+  background: rgba(148, 163, 184, 0.28) !important;
+  border-color: rgba(203, 213, 225, 0.38) !important;
+  color: #f8fafc !important;
+}
+
+.entry:has(i.la-stop:not(.hidden)) .mode-option[data-mode="websocket"].active,
+.entry:has([data-stophtml]:not(.hidden)) .mode-option[data-mode="websocket"].active,
+.entry:has(i.la-stop:not(.hidden)) .mode-option[data-mode="tiktok-websocket"].active,
+.entry:has([data-stophtml]:not(.hidden)) .mode-option[data-mode="tiktok-websocket"].active {
+  opacity: 1 !important;
+  background: rgba(56, 189, 248, 0.24) !important;
+  border-color: rgba(56, 189, 248, 0.58) !important;
+  color: #e0f2fe !important;
+}
+
+.entry:has(i.la-stop:not(.hidden)) .mode-option[data-mode="tiktok-legacy"].active,
+.entry:has([data-stophtml]:not(.hidden)) .mode-option[data-mode="tiktok-legacy"].active {
+  opacity: 1 !important;
+  background: rgba(245, 158, 11, 0.24) !important;
+  border-color: rgba(245, 158, 11, 0.55) !important;
+  color: #ffedd5 !important;
 }
 
 .control-panel .auto-activate-toggle {

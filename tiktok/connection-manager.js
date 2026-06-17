@@ -10031,6 +10031,18 @@ function logTikTokForwardedMessage(msg, context = 'single', meta = {}) {
     }
 }
 
+function isSocialStreamBackgroundFrame(frameUrl) {
+    if (!frameUrl || typeof frameUrl !== 'string') return false;
+    try {
+        const parsed = new URL(frameUrl);
+        const pathname = (parsed.pathname || '').replace(/\/+$/, '').toLowerCase();
+        return pathname.endsWith('/background.html') || pathname.endsWith('/background');
+    } catch (_) {
+        const pathname = frameUrl.split(/[?#]/)[0].replace(/\/+$/, '').toLowerCase();
+        return pathname.endsWith('background.html') || pathname.endsWith('/background');
+    }
+}
+
 function sendToBackground(msg, target = null) {
     if (shouldDropTikTokMessageForInactiveConnection(msg, 'single')) {
         return;
@@ -10067,7 +10079,7 @@ function sendToBackground(msg, target = null) {
     if (mainWindow && mainWindow.webContents && mainWindow.webContents.mainFrame) {
         try {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (frame.url.split('?')[0].endsWith('background.html')) {
+                if (isSocialStreamBackgroundFrame(frame.url)) {
                     frame.postMessage('fromMain', {
                         message: msg,
                         ...(directTarget ? { target: directTarget } : {})
@@ -10128,7 +10140,7 @@ function sendBatchToBackground(messages) {
     if (mainWindow && mainWindow.webContents && mainWindow.webContents.mainFrame) {
         try {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (frame.url.split('?')[0].endsWith('background.html')) {
+                if (isSocialStreamBackgroundFrame(frame.url)) {
                     frame.postMessage('fromMain', {
                         messages
                     });
