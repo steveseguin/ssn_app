@@ -34,6 +34,11 @@ Electron desktop application for aggregating social media live stream chat. Comm
 | `npm run clean` | Remove dist folder |
 | `npm run update:fallback` | Update Social Stream fallback bundle |
 
+## Release Rules
+
+- Read `RELEASE.md` before any release, deploy, tag, or artifact-upload work.
+- Critical rule: never create git tags or GitHub releases in `ssapp` / `ssn_app`; app release tags and artifacts belong in `steveseguin/social_stream`.
+
 ## Testing
 
 No formal test framework (Jest/Mocha). Manual integration tests only.

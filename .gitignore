@@ -48,6 +48,7 @@ pkg/
 # Build configuration
 build-config.env
 .env
+.secret
 electron-builder.env
 social_stream_fallback/
 resources/social_stream_fallback/

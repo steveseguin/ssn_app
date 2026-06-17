@@ -9,6 +9,38 @@ const { promisify } = require("util");
 const execFileAsync = promisify(execFile);
 const VT_API_BASE = "https://www.virustotal.com/api/v3";
 const DIRECT_UPLOAD_LIMIT_BYTES = 32 * 1024 * 1024;
+const DEFAULT_SECRET_PATH = path.resolve(__dirname, "..", ".secret");
+
+function loadLocalSecretEnv(secretPath = DEFAULT_SECRET_PATH) {
+	let content = "";
+	try {
+		content = fs.readFileSync(secretPath, "utf8");
+	} catch (error) {
+		if (error && error.code === "ENOENT") return;
+		throw error;
+	}
+
+	for (const rawLine of content.split(/\r?\n/)) {
+		const line = rawLine.trim();
+		if (!line || line.startsWith("#")) continue;
+
+		const separatorIndex = line.indexOf("=");
+		if (separatorIndex <= 0) continue;
+
+		const key = line.slice(0, separatorIndex).trim();
+		let value = line.slice(separatorIndex + 1).trim();
+		if (!key || process.env[key]) continue;
+
+		if (
+			(value.startsWith('"') && value.endsWith('"')) ||
+			(value.startsWith("'") && value.endsWith("'"))
+		) {
+			value = value.slice(1, -1);
+		}
+
+		process.env[key] = value;
+	}
+}
 
 function parseArgs(argv) {
 	const options = {
@@ -69,7 +101,7 @@ function isCandidateArtifact(fileName) {
 	const lowerName = fileName.toLowerCase();
 	if (!lowerName.endsWith(".exe")) return false;
 	if (lowerName.includes("uninstall")) return false;
-	return lowerName.startsWith("socialstream") || lowerName.startsWith("socialstreamninja");
+	return lowerName === "socialstreamninja-portable.exe" || /^socialstreamninja-setup-[0-9a-z.-]+\.exe$/.test(lowerName);
 }
 
 async function listCandidateArtifacts(distDir) {
@@ -139,6 +171,7 @@ async function collectUniqueArtifacts(distDir) {
 
 async function main() {
 	const options = parseArgs(process.argv.slice(2));
+	loadLocalSecretEnv();
 	const apiKey = String(process.env.VT_API_KEY || "").trim();
 
 	if (!apiKey) {
