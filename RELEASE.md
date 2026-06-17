@@ -6,6 +6,7 @@
 - Do not publish GitHub releases in `steveseguin/ssn_app`.
 - This repository builds the desktop wrapper binary, but the Social Stream project home is `steveseguin/social_stream`.
 - App release tags and release artifacts belong in `steveseguin/social_stream`.
+- Create new GitHub releases as **pre-releases**. Steve will promote them to full releases when ready.
 - If Steve says to "ship a release", confirm the target and scope before creating tags, releases, or uploading artifacts.
 
 ## Repository Roles
@@ -63,7 +64,7 @@ npm run submit:virustotal
 3. Commit and push `ssapp` code changes if Steve asked to push; include all dirty tracked changes unless Steve explicitly excludes something.
 4. Build release artifacts in `ssapp`.
 5. Submit the Windows installer and portable `.exe` files to VirusTotal.
-6. Publish tags and artifacts to `steveseguin/social_stream`, not `steveseguin/ssn_app`.
+6. Publish tags and artifacts to `steveseguin/social_stream`, not `steveseguin/ssn_app`; mark the GitHub release as a pre-release.
 7. Verify the public release/download URLs point at `steveseguin/social_stream/releases`.
 
 ## GitHub Release Notes
