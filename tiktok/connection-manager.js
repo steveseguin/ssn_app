@@ -10043,6 +10043,44 @@ function isSocialStreamBackgroundFrame(frameUrl) {
     }
 }
 
+const TIKTOK_BACKGROUND_RELAY_RETRIES = 3;
+const TIKTOK_BACKGROUND_RELAY_RETRY_MS = 250;
+
+function retryTikTokBackgroundRelay(payload, attempt) {
+    if (attempt >= TIKTOK_BACKGROUND_RELAY_RETRIES) return false;
+    setTimeout(() => {
+        postTikTokPayloadToBackground(payload, attempt + 1);
+    }, TIKTOK_BACKGROUND_RELAY_RETRY_MS);
+    return true;
+}
+
+function postTikTokPayloadToBackground(payload, attempt = 0) {
+    const mainWindow = getMainWindow();
+    const mainFrame = mainWindow && mainWindow.webContents ? mainWindow.webContents.mainFrame : null;
+    const frames = mainFrame ? mainFrame.frames : null;
+
+    if (!Array.isArray(frames)) {
+        return retryTikTokBackgroundRelay(payload, attempt);
+    }
+
+    let posted = false;
+    frames.forEach((frame) => {
+        if (!isSocialStreamBackgroundFrame(frame && frame.url)) return;
+        try {
+            frame.postMessage('fromMain', payload);
+            posted = true;
+        } catch (error) {
+            console.warn('Failed to forward TikTok payload to background frame:', error);
+        }
+    });
+
+    if (!posted) {
+        return retryTikTokBackgroundRelay(payload, attempt);
+    }
+
+    return true;
+}
+
 function sendToBackground(msg, target = null) {
     if (shouldDropTikTokMessageForInactiveConnection(msg, 'single')) {
         return;
@@ -10075,21 +10113,10 @@ function sendToBackground(msg, target = null) {
         try { env.onEvent(msg); } catch (error) { console.warn('onEvent callback failed:', error); }
     }
 
-    const mainWindow = getMainWindow();
-    if (mainWindow && mainWindow.webContents && mainWindow.webContents.mainFrame) {
-        try {
-            mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (isSocialStreamBackgroundFrame(frame.url)) {
-                    frame.postMessage('fromMain', {
-                        message: msg,
-                        ...(directTarget ? { target: directTarget } : {})
-                    });
-                }
-            });
-        } catch (error) {
-            console.warn('Failed to forward TikTok message to background:', error);
-        }
-    }
+    postTikTokPayloadToBackground({
+        message: msg,
+        ...(directTarget ? { target: directTarget } : {})
+    });
 }
 
 function sendBatchToBackground(messages) {
@@ -10136,20 +10163,9 @@ function sendBatchToBackground(messages) {
         });
     }
 
-    const mainWindow = getMainWindow();
-    if (mainWindow && mainWindow.webContents && mainWindow.webContents.mainFrame) {
-        try {
-            mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (isSocialStreamBackgroundFrame(frame.url)) {
-                    frame.postMessage('fromMain', {
-                        messages
-                    });
-                }
-            });
-        } catch (error) {
-            console.warn('Failed to forward TikTok batch to background:', error);
-        }
-    }
+    postTikTokPayloadToBackground({
+        messages
+    });
 }
 
 module.exports = {

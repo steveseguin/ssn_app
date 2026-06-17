@@ -8,6 +8,9 @@ Electron desktop application for aggregating social media live stream chat. Comm
 
 - When replying to Steve, prefer plain, everyday language over jargon.
 - Keep explanations direct and practical; explain technical terms briefly when they matter.
+- When Steve asks for a TLDR, keep it genuinely short: a few lines max, no long explanation.
+- When Steve asks to remember an instruction, save it into the relevant instruction file or memory mechanism when possible; do not merely say it will be kept in mind.
+- If Steve says "remember", treat it as a request to persist the instruction. Check for writable instruction targets, especially the repo `AGENTS.md` for project-specific behavior and `C:\Users\steve\.codex\AGENTS.md` for global behavior. Update the most appropriate file, or both when the instruction applies globally and to the current repo. Do not say memory tools are unavailable unless no writable instruction or memory target exists after checking.
 
 ## Source Of Truth
 

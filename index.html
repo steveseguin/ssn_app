@@ -552,7 +552,6 @@
         let preferTikTokClassic = cliForcesTikTokClassic;
         let lastTikTokMode = 'tiktok-websocket';
         let tikTokClassicSilentUpdate = false;
-        let tiktokWebsocketSigningWarningShown = false;
         const ssappSigningGuideEnv = (typeof process !== 'undefined' && process?.env?.SSAPP_TIKTOK_SIGNING_GUIDE_URL)
             ? String(process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL).trim()
             : '';
@@ -7412,13 +7411,6 @@
                 const isLocalSigner = signingProvider === 'local';
                 if (signingProvider === 'euler-ws' && (!signing || !signing.apiKey)) {
                     Toast.warning('Euler Proxy (Experimental)', 'Enter your Euler API key to use the proxy. Get one at eulerstream.com/dashboard');
-                }
-
-                if (strategy === 'websocket' && !signing && !isLocalSigner && !tiktokWebsocketSigningWarningShown) {
-                    tiktokWebsocketSigningWarningShown = true;
-                    const guide = typeof window.SSAPP_SIGNING_HELP_URL === 'string' ? window.SSAPP_SIGNING_HELP_URL : defaultSigningGuideUrl;
-                    const guideSuffix = guide ? `\nSee ${guide}` : '';
-                    Toast.info('TikTok WebSocket', `Using Euler community signing by default. If it fails, switch to Polling. Advanced signing options are experimental.${guideSuffix}`);
                 }
 
                 const wssID = await ipcRenderer.invoke('createTikTokConnection', {

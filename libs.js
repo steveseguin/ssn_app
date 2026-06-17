@@ -1635,7 +1635,7 @@ const Toast = {
 			title: '',
 			message: '',
 			type: 'info', // info, success, warning, error
-			duration: 5000, // ms
+			duration: 12000, // ms
 			showProgress: true,
 			onClose: null
 		};
