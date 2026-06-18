@@ -3,13 +3,13 @@ const { session } = require('electron');
 /**
  * Sets up WebSocket monitoring for a webContents instance
  * @param {Electron.WebContents} webContents - The webContents to monitor
- * @param {Object} options - Configuration options
- * @param {Function} options.filter - Optional filter function to limit which WebSockets to monitor
- * @param {Function} options.onMessage - Callback for WebSocket messages
- * @param {Function} options.onOpen - Callback for WebSocket open events
- * @param {Function} options.onClose - Callback for WebSocket close events
- * @param {Function} options.onSend - Callback for WebSocket send events
- * @returns {Function} Cleanup function to stop monitoring
+ * @param {Object} [options] - Configuration options
+ * @param {(url: string) => boolean} [options.filter] - Optional filter function to limit which WebSockets to monitor
+ * @param {Function} [options.onMessage] - Callback for WebSocket messages
+ * @param {Function} [options.onOpen] - Callback for WebSocket open events
+ * @param {Function} [options.onClose] - Callback for WebSocket close events
+ * @param {Function} [options.onSend] - Callback for WebSocket send events
+ * @returns {Promise<Function>} Cleanup function to stop monitoring
  */
 function setupWebSocketMonitor(webContents, options = {}) {
     const {
@@ -22,21 +22,6 @@ function setupWebSocketMonitor(webContents, options = {}) {
 
     let monitoringActive = false;
     const webSocketConnections = new Map();
-
-    // Attach debugger
-    try {
-        webContents.debugger.attach('1.3');
-        monitoringActive = true;
-    } catch (err) {
-        console.error('Failed to attach WebSocket monitor:', err);
-        return () => {};
-    }
-
-    // Enable network domain
-    webContents.debugger.sendCommand('Network.enable');
-    
-    // Enable runtime for WebSocket frame events
-    webContents.debugger.sendCommand('Runtime.enable');
 
     // Handle debugger events
     const messageHandler = (event, method, params) => {
@@ -91,8 +76,7 @@ function setupWebSocketMonitor(webContents, options = {}) {
 
     webContents.debugger.on('message', messageHandler);
 
-    // Cleanup function
-    return () => {
+    function cleanup() {
         if (monitoringActive) {
             try {
                 webContents.debugger.off('message', messageHandler);
@@ -103,7 +87,25 @@ function setupWebSocketMonitor(webContents, options = {}) {
                 console.error('Error detaching WebSocket monitor:', err);
             }
         }
-    };
+    }
+
+    try {
+        webContents.debugger.attach('1.3');
+        monitoringActive = true;
+        await Promise.all([
+            webContents.debugger.sendCommand('Network.enable'),
+            // Enable runtime for WebSocket frame events
+            webContents.debugger.sendCommand('Runtime.enable'),
+        ]);
+    } catch (err) {
+        console.error('Failed to attach WebSocket monitor:', err);
+        cleanup();
+
+        return () => { };
+    }
+
+    // Cleanup function
+    return cleanup;
 }
 
 module.exports = {
