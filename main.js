@@ -10280,7 +10280,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             websocketFilter = null;
                         }
 
-                        setupWebSocketMonitor(view.webContents, {
+                        const cleanup = setupWebSocketMonitor(view.webContents, {
                             filter: websocketFilter,
                             onMessage: (data) => {
                                 // Forward to content script via preload
@@ -10313,9 +10313,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                     timestamp: Date.now()
                                 });
                             }
-                        })
+                        });
                         // Store cleanup function for later
-                            .then(cleanup => view.__websocketMonitorCleanup = cleanup);
+                        view.__websocketMonitorCleanup = cleanup;
 
                         log(`WebSocket monitoring enabled${websocketFilter ? ' with filter' : ' for all WebSockets'}`);
                     } catch (error) {

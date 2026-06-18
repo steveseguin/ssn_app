@@ -9,7 +9,7 @@ const { session } = require('electron');
  * @param {Function} [options.onOpen] - Callback for WebSocket open events
  * @param {Function} [options.onClose] - Callback for WebSocket close events
  * @param {Function} [options.onSend] - Callback for WebSocket send events
- * @returns {Promise<Function>} Cleanup function to stop monitoring
+ * @returns {Function} Cleanup function to stop monitoring
  */
 function setupWebSocketMonitor(webContents, options = {}) {
     const {
@@ -88,21 +88,20 @@ function setupWebSocketMonitor(webContents, options = {}) {
             }
         }
     }
-
-    try {
-        webContents.debugger.attach('1.3');
-        monitoringActive = true;
-        await Promise.all([
-            webContents.debugger.sendCommand('Network.enable'),
-            // Enable runtime for WebSocket frame events
-            webContents.debugger.sendCommand('Runtime.enable'),
-        ]);
-    } catch (err) {
-        console.error('Failed to attach WebSocket monitor:', err);
-        cleanup();
-
-        return () => { };
-    }
+    (async () => {
+        try {
+            webContents.debugger.attach('1.3');
+            monitoringActive = true;
+            await Promise.all([
+                webContents.debugger.sendCommand('Network.enable'),
+                // Enable runtime for WebSocket frame events
+                webContents.debugger.sendCommand('Runtime.enable'),
+            ]);
+        } catch (err) {
+            console.error('Failed to attach WebSocket monitor:', err);
+            cleanup();
+        }
+    })();
 
     // Cleanup function
     return cleanup;
