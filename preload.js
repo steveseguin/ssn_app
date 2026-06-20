@@ -345,6 +345,31 @@ var doSomethingInWebAppWrapper = function(message, sender, sendResponse) {
 		} catch (_) {}
 	}
 };
+
+function extractBackgroundCommandRequest(data) {
+	if (!data || typeof data !== 'object') return null;
+	if (data.type === 'toBackground' && data.data && typeof data.data === 'object') {
+		return data.data;
+	}
+	return null;
+}
+
+function sendBackgroundCommandIfNeeded(data, callback) {
+	const request = extractBackgroundCommandRequest(data);
+	if (!request || !request.cmd || typeof callback !== 'function') return false;
+	ipcRenderer.invoke('ssapp:background-command', request)
+		.then((response) => {
+			callback(response || { ok: false, error: 'Background command returned no response' });
+		})
+		.catch((error) => {
+			callback({
+				ok: false,
+				error: error && error.message ? error.message : 'Background command failed'
+			});
+		});
+	return true;
+}
+
 function configureContextBridge(){
 	try {
 		console.log('[Preload] Configuring contextBridge with ninjafy (including OAuth methods)');
@@ -365,6 +390,10 @@ function configureContextBridge(){
 		  },
 		  
 		  sendMessage: function(ignore=null, data=null, callback=false, tabID=false) {
+			if (sendBackgroundCommandIfNeeded(data, callback)) {
+				return;
+			}
+
 			// Add authentication token to messages
 			const authenticatedData = { ...data, _authToken: MESSAGE_AUTH_TOKEN };
 			
@@ -569,6 +598,9 @@ try {
 			
 			sendMessage: (a, b, c, tabID) => {
 				const messageData = b || a;
+				if (sendBackgroundCommandIfNeeded(messageData, c)) {
+					return;
+				}
 				
 				// When tabID is provided, this is a message that should be routed to the background
 				// via postMessage handler, not directly to a tab

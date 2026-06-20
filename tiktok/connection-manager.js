@@ -99,6 +99,7 @@ let EulerSignerClass = null;
 const SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD = 3;
 const DEFAULT_TIKTOK_WEB_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36';
 const EULER_WS_PROVIDER = 'euler-ws';
+const STARTUP_HISTORY_CHAT_GRACE_MS = 5000;
 const GIFT_IGNORE_CONFIG_NOT_IGNORE = Number.isFinite(Number(GiftMessageIgnoreConfig?.GIFT_MESSAGE_IGNORE_CONFIG_NOT_IGNORE))
     ? Number(GiftMessageIgnoreConfig.GIFT_MESSAGE_IGNORE_CONFIG_NOT_IGNORE)
     : 0;
@@ -3365,6 +3366,10 @@ class MessageProcessor {
         }
 
         const timestamp = this.extractMessageTimestamp(data);
+        if (timestamp !== null && this.manager?.shouldDropStartupHistoryChat?.(timestamp, data)) {
+            return;
+        }
+
         const graceWindow = CONFIG.CHAT.STALE_MESSAGE_GRACE_MS || (3 * 60 * 1000);
         if (timestamp !== null && this.lastProcessedTimestamp > 0) {
             const cutoff = this.lastProcessedTimestamp - graceWindow;
@@ -3430,6 +3435,7 @@ class MessageProcessor {
 
     extractMessageTimestamp(data = {}) {
         const candidates = [
+            data?.common?.createTime,
             data?.createTime,
             data?.eventTime,
             data?.timestamp,
@@ -4149,11 +4155,36 @@ class ConnectionManager {
         this.websocketFailureCount = 0;
         this.WEBSOCKET_FAILURE_THRESHOLD = 3;
         this.lastConnectTimestamp = 0;
+        this.startupChatCutoffMs = 0;
         this.rapidDisconnectCount = 0;
     }
 
     canForwardEvents(context = 'event') {
         return canForwardFromTikTokConnection(this, context);
+    }
+
+    shouldDropStartupHistoryChat(timestamp, data = {}) {
+        const cutoff = Number(this.startupChatCutoffMs) || 0;
+        if (!cutoff || !Number.isFinite(timestamp)) {
+            return false;
+        }
+        if (timestamp >= cutoff) {
+            return false;
+        }
+        this.logDebug('event.suppressed.startup_history', {
+            event: 'chat',
+            timestamp,
+            cutoff,
+            msgId: data?.common?.msgId || data?.msgId || data?.msg_id || null
+        });
+        return true;
+    }
+
+    shouldApplyStartupHistoryChatCutoff() {
+        return this.connectionStrategy === 'websocket'
+            && this.preferredStrategy !== 'legacy'
+            && !this.pollingFallbackActivated
+            && !usingLegacyTikTokConnector;
     }
 
     isActiveSourceConnection() {
@@ -8219,19 +8250,25 @@ class ConnectionManager {
         }
         const modeDetails = this.getConnectionModeDetails();
         const connectionLabel = modeDetails.label || 'Websocket connected';
+        const connectedAt = Date.now();
         console.info(`${connectionLabel}, starting health check`);
         connectionStates.set(this.wssID, {
             isConnected: true,
-            lastAttempt: Date.now(),
+            lastAttempt: connectedAt,
             isReconnecting: false,
             attemptInProgress: false
         });
         this.clearPendingStreamEndConfirmation('connected');
-        this.lastMessageTime = Date.now();
+        this.lastMessageTime = connectedAt;
         this.startHealthCheck();
         this.startViewerUpdateInterval();
         this.reconnectAttempts = 0;
-        this.lastConnectTimestamp = Date.now();
+        this.lastConnectTimestamp = connectedAt;
+        if (this.shouldApplyStartupHistoryChatCutoff()) {
+            this.startupChatCutoffMs = connectedAt - STARTUP_HISTORY_CHAT_GRACE_MS;
+        } else {
+            this.startupChatCutoffMs = 0;
+        }
         this.offlineRetry = false;
         this.offlineRetryCount = 0;
         this.offlineReason = null;

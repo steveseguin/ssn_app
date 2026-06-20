@@ -707,6 +707,30 @@ ipcRenderer.on('sendToTab', (event, message) => {
 const contextIsolated = process.contextIsolated;
 console.log('[Preload] Context isolation:', contextIsolated);
 
+function extractBackgroundCommandRequest(data) {
+  if (!data || typeof data !== 'object') return null;
+  if (data.type === 'toBackground' && data.data && typeof data.data === 'object') {
+    return data.data;
+  }
+  return null;
+}
+
+function sendBackgroundCommandIfNeeded(data, callback) {
+  const request = extractBackgroundCommandRequest(data);
+  if (!request || !request.cmd || typeof callback !== 'function') return false;
+  ipcRenderer.invoke('ssapp:background-command', request)
+    .then((response) => {
+      callback(response || { ok: false, error: 'Background command returned no response' });
+    })
+    .catch((error) => {
+      callback({
+        ok: false,
+        error: error && error.message ? error.message : 'Background command failed'
+      });
+    });
+  return true;
+}
+
 if (contextIsolated) {
   // When contextIsolation is true, use contextBridge
   console.log('[Preload] Using contextBridge to expose IPC');
@@ -786,6 +810,9 @@ if (contextIsolated) {
       window.doSomethingInWebApp = callback;
     },
     sendMessage: (ignore, data, callback, tabID) => {
+      if (sendBackgroundCommandIfNeeded(data, callback)) {
+        return;
+      }
       const outgoingData = { ...data };
       if (tabID !== undefined && tabID !== null && tabID !== false) {
         outgoingData.__tabID__ = tabID;

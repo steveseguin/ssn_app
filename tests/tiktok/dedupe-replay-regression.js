@@ -25,6 +25,23 @@ function test(name, fn) {
     }
 }
 
+function getProcessorQueueSize(processor) {
+    return processor.queue && processor.queue.getSize ? processor.queue.getSize() : processor.queue.length;
+}
+
+function createChatProcessorManager(overrides = {}) {
+    return {
+        wssID: 1,
+        virtualTabId: 900001,
+        isStopped: false,
+        sourceId: null,
+        logDebug() {},
+        shouldSuppressDuplicateEvent() { return false; },
+        shouldDropStartupHistoryChat: ConnectionManager.prototype.shouldDropStartupHistoryChat,
+        ...overrides
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Chat dedupe key tests
 // ---------------------------------------------------------------------------
@@ -289,6 +306,62 @@ test('replay seeding: expired entry is refreshed by seeding logic', () => {
     assert.strictEqual(suppressed, true, 'refreshed entry should suppress duplicate');
 });
 
+test('startup history cutoff: chat timestamp reads common.createTime', () => {
+    const processor = new MessageProcessor(createChatProcessorManager());
+    const timestamp = processor.extractMessageTimestamp({
+        common: { createTime: '1700000000' },
+        comment: 'hello'
+    });
+    assert.strictEqual(timestamp, 1700000000000);
+});
+
+test('startup history cutoff: old Euler startup chat is dropped', () => {
+    const now = Date.now();
+    const logs = [];
+    const manager = createChatProcessorManager({
+        startupChatCutoffMs: now - 5000,
+        logDebug(eventName, payload) {
+            logs.push({ eventName, payload });
+        }
+    });
+    const processor = new MessageProcessor(manager);
+
+    processor.addToQueue({
+        common: {
+            msgId: 'old-startup-message',
+            createTime: String(Math.floor((now - 6000) / 1000))
+        },
+        user: { uniqueId: 'u1' },
+        comment: 'old startup message'
+    });
+
+    assert.strictEqual(getProcessorQueueSize(processor), 0, 'old startup message should not queue');
+    assert.ok(
+        logs.some((entry) => entry.eventName === 'event.suppressed.startup_history'),
+        'old startup message should be logged as startup history'
+    );
+});
+
+test('startup history cutoff: current Euler chat is allowed', () => {
+    const now = Date.now();
+    const manager = createChatProcessorManager({
+        startupChatCutoffMs: now - 5000
+    });
+    const processor = new MessageProcessor(manager);
+
+    processor.addToQueue({
+        common: {
+            msgId: 'current-message',
+            createTime: String(Math.floor(now / 1000))
+        },
+        user: { uniqueId: 'u1' },
+        comment: 'current message'
+    });
+
+    assert.strictEqual(getProcessorQueueSize(processor), 1, 'current message should queue');
+    processor.stop('test_cleanup');
+});
+
 // ---------------------------------------------------------------------------
 // Polling fallback handoff regression
 // ---------------------------------------------------------------------------
@@ -401,7 +474,7 @@ test('quiet-room: websocketData handler updates lastMessageTime', () => {
     const handleConnectIdx = src.indexOf('handleConnect() {');
     assert.ok(handleConnectIdx > 0, 'handleConnect definition should exist in source');
     const handleConnectBody = src.slice(handleConnectIdx, handleConnectIdx + 1200);
-    const lastMsgIdx = handleConnectBody.indexOf('this.lastMessageTime = Date.now()');
+    const lastMsgIdx = handleConnectBody.search(/this\.lastMessageTime\s*=\s*(Date\.now\(\)|connectedAt)/);
     const healthCheckIdx = handleConnectBody.indexOf('this.startHealthCheck()');
     assert.ok(lastMsgIdx > 0, 'handleConnect should set lastMessageTime');
     assert.ok(healthCheckIdx > 0, 'handleConnect should call startHealthCheck');

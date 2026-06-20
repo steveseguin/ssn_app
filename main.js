@@ -488,6 +488,70 @@ function shouldUseWin10TransparencyCompat(frame, transparent) {
     return WIN10_TRANSPARENCY_COMPAT_ENABLED && frame === false && transparent === true;
 }
 
+function getUrlSearchParams(url) {
+    if (!url || typeof url !== "string") return null;
+    try {
+        return new URL(url).searchParams;
+    } catch (_) {
+        try {
+            return new URL(url, "https://socialstream.local/").searchParams;
+        } catch (_) {
+            return null;
+        }
+    }
+}
+
+function hasUrlSearchParam(url, key) {
+    const params = getUrlSearchParams(url);
+    if (params) return params.has(key);
+    return url.includes(`?${key}`) || url.includes(`&${key}`);
+}
+
+function getUrlSearchParamValue(url, key) {
+    const params = getUrlSearchParams(url);
+    if (params) return params.get(key);
+
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = String(url || "").match(new RegExp(`[?&]${escapedKey}=([^&#]*)`));
+    if (!match) return null;
+
+    try {
+        return decodeURIComponent(match[1].replace(/\+/g, " "));
+    } catch (_) {
+        return match[1];
+    }
+}
+
+function isTranslucentChromaValue(value) {
+    if (value === null || value === undefined) return false;
+    const normalized = String(value).trim().replace(/^#/, "");
+
+    if (/^0{3}[0-9a-f]$/i.test(normalized)) {
+        return parseInt(normalized.slice(-1), 16) < 15;
+    }
+    if (/^0{6}[0-9a-f]{2}$/i.test(normalized)) {
+        return parseInt(normalized.slice(-2), 16) < 255;
+    }
+
+    return false;
+}
+
+function shouldUseFramelessForUrl(url) {
+    return (
+        hasUrlSearchParam(url, "transparent") ||
+        hasUrlSearchParam(url, "transparency") ||
+        hasUrlSearchParam(url, "chroma")
+    );
+}
+
+function shouldUseTransparentWindowForUrl(url) {
+    return (
+        hasUrlSearchParam(url, "transparent") ||
+        hasUrlSearchParam(url, "transparency") ||
+        isTranslucentChromaValue(getUrlSearchParamValue(url, "chroma"))
+    );
+}
+
 function applyPlatformWindowCompatibility(config) {
     if (!config || typeof config !== 'object') return config;
     if (shouldUseWin10TransparencyCompat(config.frame, config.transparent)) {
@@ -7504,29 +7568,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
             features
         }) => {
 
-            var frame = true;
-            if (url.includes("&transparent")) {
-                frame = false;
-            } else if (url.includes("&chroma=")) {
-                frame = false;
-            } else if (url.includes("?transparent")) {
-                frame = false;
-            } else if (url.includes("?chroma=")) {
-                frame = false;
-            }
+            var frame = !shouldUseFramelessForUrl(url);
             log(url);
             if ((isSocialStreamRemoteUrl(url) && matchesSocialStreamPagePath(url, "chathistory")) || (url == "./chathistory.html")) {
                 url = path.join(__dirname, "chathistory.html");
             }
 
             var backgroundColor = "#DDD";
-            var useTransparency = false;
+            var useTransparency = shouldUseTransparentWindowForUrl(url);
             if (!frame) {
                 backgroundColor = "#0000";
-                // Check if we actually need transparency
-                if (url.includes("&transparent") || url.includes("?transparent")) {
-                    useTransparency = true;
-                }
             }
             const forceWin10Compatibility = shouldUseWin10TransparencyCompat(frame, useTransparency);
 
@@ -7566,7 +7617,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     },
                     show: true,
                     backgroundColor: backgroundColor,
-                    transparent: forceWin10Compatibility ? useTransparency : !frame,
+                    transparent: useTransparency,
                     resizable: !forceWin10Compatibility,
                     frame: frame,
                     autoHideMenuBar: false,
@@ -9055,6 +9106,95 @@ async function createWindow(args, reuse = false, mainApp = false) {
         };
     }
 
+    function getJsonErrorMessage(json, fallback) {
+        if (json && json.error_description) return String(json.error_description);
+        if (json && typeof json.error === "string") return json.error;
+        if (json && json.error && json.error.message) return String(json.error.message);
+        if (json && json.message) return String(json.message);
+        return fallback;
+    }
+
+    function normalizeVpzoneApiUrlValue(value) {
+        let parsed;
+        try {
+            parsed = new URL(String(value || ""));
+        } catch (_) {
+            return null;
+        }
+        if (parsed.protocol !== "https:" || !["vpzone.tv", "www.vpzone.tv"].includes(parsed.hostname) || !parsed.pathname.startsWith("/api/")) {
+            return null;
+        }
+        parsed.hash = "";
+        return parsed;
+    }
+
+    async function fetchVpzoneJsonResponse(request = {}) {
+        const parsedUrl = normalizeVpzoneApiUrlValue(request.url);
+        if (!parsedUrl) {
+            throw new Error("VPZone fetch URL not allowed");
+        }
+
+        const method = String(request.method || "GET").toUpperCase();
+        const isOAuthTokenPost = method === "POST" && parsedUrl.pathname === "/api/oauth/token";
+        const isChatMessagePost = method === "POST" && /^\/api\/v1\/channels\/[^\/]+\/chat$/.test(parsedUrl.pathname);
+        if (method !== "GET" && !isOAuthTokenPost && !isChatMessagePost) {
+            throw new Error("VPZone fetch method not allowed");
+        }
+
+        const headers = {
+            Accept: "application/json"
+        };
+        if (isOAuthTokenPost) {
+            headers["Content-Type"] = "application/x-www-form-urlencoded";
+        } else if (isChatMessagePost) {
+            headers["Content-Type"] = "application/json";
+            if (request.authToken && typeof request.authToken === "string") {
+                headers.Authorization = "Bearer " + request.authToken.replace(/[\r\n]/g, "");
+            }
+        }
+
+        const response = await fetch(parsedUrl.toString(), {
+            method,
+            cache: "no-store",
+            headers,
+            body: method === "POST" ? String(request.body || "") : undefined
+        });
+        const responseText = await response.text();
+        let responseJson = {};
+        try {
+            responseJson = responseText ? JSON.parse(responseText) : {};
+        } catch (_) {
+            responseJson = null;
+        }
+        if (!response.ok) {
+            const error = new Error(getJsonErrorMessage(responseJson, "HTTP " + response.status));
+            error.status = response.status;
+            throw error;
+        }
+        if (responseJson == null) {
+            const error = new Error("Invalid JSON response");
+            error.status = response.status;
+            throw error;
+        }
+        return {
+            status: response.status,
+            data: responseJson
+        };
+    }
+
+    async function handleVpzoneFetchJsonCommand(request) {
+        try {
+            const vpzoneResponse = await fetchVpzoneJsonResponse(request);
+            return { ok: true, status: vpzoneResponse.status, data: vpzoneResponse.data };
+        } catch (error) {
+            return {
+                ok: false,
+                status: error && typeof error.status !== "undefined" ? error.status : undefined,
+                error: error?.message || "VPZone fetch failed"
+            };
+        }
+    }
+
     function normalizeRumbleApiUrlValue(value) {
         let raw = typeof value === "string" ? value.trim() : "";
         let parsed;
@@ -9117,6 +9257,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 error: error?.message || "Rumble fetch failed"
             };
         }
+    });
+
+    const backgroundCommandHandlers = {
+        vpzoneFetchJson: handleVpzoneFetchJsonCommand
+    };
+
+    ipcMain.handle("ssapp:background-command", async (_event, request = {}) => {
+        const command = request && typeof request.cmd === "string" ? request.cmd : "";
+        const handler = backgroundCommandHandlers[command];
+        if (!handler) {
+            return { ok: false, error: "Unsupported background command" };
+        }
+        return handler(request);
     });
 
     // Keep the synchronous version for backward compatibility
@@ -14713,16 +14866,9 @@ app.on("ready", () => {
         contents.setWindowOpenHandler(({ url, features }) => {
             // Always open links in-app, inheriting the opener's session
             // Apply a sensible default window configuration
-            let frame = true;
-            let backgroundColor = '#DDD';
-            let useTransparency = false;
-
-            if (url.includes('&transparent') || url.includes('?transparent') ||
-                url.includes('&chroma=') || url.includes('?chroma=')) {
-                frame = false;
-                backgroundColor = '#0000';
-                useTransparency = url.includes('&transparent') || url.includes('?transparent');
-            }
+            const frame = !shouldUseFramelessForUrl(url);
+            const backgroundColor = frame ? '#DDD' : '#0000';
+            const useTransparency = shouldUseTransparentWindowForUrl(url);
             const forceWin10Compatibility = shouldUseWin10TransparencyCompat(frame, useTransparency);
             const overrideBrowserWindowOptions = applyPlatformWindowCompatibility({
                 width: 800,
@@ -16290,7 +16436,7 @@ function createMenu() {
                 }
             },
             {
-                label: 'Send error reports to developer',
+                label: 'Enable automatic bug reports',
                 type: 'checkbox',
                 checked: store.get('errorReportingEnabled', false),
                 async click(item) {
