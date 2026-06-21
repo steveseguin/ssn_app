@@ -37,11 +37,6 @@ jobs:
           echo "Latest release tag: $RELEASE_TAG"
           echo "Latest release version: $VERSION"
 
-          # Get current AUR version
-          CURRENT=$(grep -Po '^pkgver=\K.*' aur/PKGBUILD)
-          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "Current AUR version: $CURRENT"
-
       - name: Update PKGBUILD
         id: update
         working-directory: aur
@@ -49,14 +44,19 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           VERSION: ${{ steps.version.outputs.version }}
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
-          CURRENT: ${{ steps.version.outputs.current }}
         run: |
           set -euo pipefail
 
-          CURRENT_PKGREL=$(grep -Po '^pkgrel=\K.*' PKGBUILD)
-          CURRENT_CHECKSUM=$(sed -n "s/^sha256sums=('\([^']*\)'.*/\1/p" PKGBUILD)
           echo "changed=false" >> "$GITHUB_OUTPUT"
           echo "Checking AppImage for release $RELEASE_TAG (pkgver $VERSION)"
+
+          AUR_CURRENT_DIR="$(mktemp -d)"
+          trap 'rm -rf "$AUR_CURRENT_DIR"' EXIT
+          git clone --depth 1 https://aur.archlinux.org/socialstreamninja.git "$AUR_CURRENT_DIR"
+          CURRENT=$(grep -Po '^pkgver=\K.*' "$AUR_CURRENT_DIR/PKGBUILD")
+          CURRENT_PKGREL=$(grep -Po '^pkgrel=\K.*' "$AUR_CURRENT_DIR/PKGBUILD")
+          CURRENT_CHECKSUM=$(sed -n "s/^sha256sums=('\([^']*\)'.*/\1/p" "$AUR_CURRENT_DIR/PKGBUILD")
+          echo "Current AUR version/pkgrel/checksum: $CURRENT / $CURRENT_PKGREL / $CURRENT_CHECKSUM"
 
           # Download and compute checksum
           URL="https://github.com/steveseguin/social_stream/releases/download/${RELEASE_TAG}/socialstreamninja_linux_v${VERSION}_x86_64.AppImage"
@@ -102,7 +102,6 @@ jobs:
             PKGREL=1
           fi
 
-          echo "Current AUR version/pkgrel/checksum: $CURRENT / $CURRENT_PKGREL / $CURRENT_CHECKSUM"
           echo "New release version/checksum: $VERSION / $CHECKSUM"
           echo "New pkgrel: $PKGREL"
 
