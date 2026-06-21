@@ -1,10 +1,12 @@
 // chathistory.js
 const DB_NAME = 'chatMessagesDB_v3';
+const DB_VERSION = 4;
 const STORE_NAME = 'messages';
 const PAGE_SIZE = 100;
 const MAX_PAGES = 5;
 const MAX_ITEMS = PAGE_SIZE * MAX_PAGES;
 const FILTER_DEBOUNCE_MS = 300;
+const FALLBACK_AVATAR_URL = 'https://cache.socialstream.ninja/sources/images/unknown.png';
 
 let db;
 let messages = [];
@@ -44,65 +46,67 @@ const filters = {
     membershipsOnly: false
 };
 
-function initDatabase() {
+function ensureMessageIndexes(store) {
+    if (!store.indexNames.contains('timestamp')) {
+        store.createIndex('timestamp', 'timestamp');
+    }
+    if (!store.indexNames.contains('user_timestamp')) {
+        store.createIndex('user_timestamp', ['chatname', 'timestamp']);
+    }
+    if (!store.indexNames.contains('user_type_timestamp')) {
+        store.createIndex('user_type_timestamp', ['chatname', 'type', 'timestamp']);
+    }
+    if (!store.indexNames.contains('user_id_timestamp')) {
+        store.createIndex('user_id_timestamp', ['userid', 'timestamp']);
+    }
+    if (!store.indexNames.contains('user_id_type_timestamp')) {
+        store.createIndex('user_id_type_timestamp', ['userid', 'type', 'timestamp']);
+    }
+}
+
+function upgradeDatabaseSchema(event) {
+    const upgradeDb = event.target.result;
+    let store;
+
+    if (!upgradeDb.objectStoreNames.contains(STORE_NAME)) {
+        store = upgradeDb.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+    } else {
+        const transaction = event.currentTarget.transaction;
+        store = transaction.objectStore(STORE_NAME);
+    }
+
+    ensureMessageIndexes(store);
+}
+
+function openChatHistoryDatabase(version) {
     return new Promise((resolve, reject) => {
-        const detectRequest = indexedDB.open(DB_NAME);
+        const request = version ? indexedDB.open(DB_NAME, version) : indexedDB.open(DB_NAME);
 
-        detectRequest.onsuccess = event => {
-            const detectedDb = event.target.result;
-            const currentVersion = detectedDb.version;
-            detectedDb.close();
+        request.onerror = event => reject(event.target.error);
+        request.onsuccess = event => {
+            const openedDb = event.target.result;
+            if (!openedDb.objectStoreNames.contains(STORE_NAME)) {
+                const repairVersion = Math.max(openedDb.version + 1, DB_VERSION);
+                openedDb.close();
+                openChatHistoryDatabase(repairVersion).then(resolve, reject);
+                return;
+            }
 
-            const request = indexedDB.open(DB_NAME, currentVersion);
-            request.onerror = event => reject(event.target.error);
-            request.onsuccess = event => {
-                db = event.target.result;
-                console.log(`Opened database version ${db.version}`);
-                resolve(db);
-            };
-            request.onupgradeneeded = event => {
-                const upgradeDb = event.target.result;
-                let store;
-
-                if (!upgradeDb.objectStoreNames.contains(STORE_NAME)) {
-                    store = upgradeDb.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
-                    store.createIndex('timestamp', 'timestamp');
-                    store.createIndex('user_timestamp', ['chatname', 'timestamp']);
-                    store.createIndex('user_type_timestamp', ['chatname', 'type', 'timestamp']);
-                } else {
-                    const transaction = event.currentTarget.transaction;
-                    store = transaction.objectStore(STORE_NAME);
-                }
-
-                if (event.oldVersion < 4 && store) {
-                    if (!store.indexNames.contains('user_id_timestamp')) {
-                        store.createIndex('user_id_timestamp', ['userid', 'timestamp']);
-                    }
-                    if (!store.indexNames.contains('user_id_type_timestamp')) {
-                        store.createIndex('user_id_type_timestamp', ['userid', 'type', 'timestamp']);
-                    }
-                }
-            };
+            db = openedDb;
+            db.onversionchange = () => db.close();
+            console.log(`Opened database version ${db.version}`);
+            resolve(db);
         };
+        request.onupgradeneeded = upgradeDatabaseSchema;
+    });
+}
 
-        detectRequest.onerror = event => {
-            const request = indexedDB.open(DB_NAME, 4);
-            request.onerror = event => reject(event.target.error);
-            request.onsuccess = event => {
-                db = event.target.result;
-                console.log(`Opened database version ${db.version} (fallback)`);
-                resolve(db);
-            };
-            request.onupgradeneeded = event => {
-                const upgradeDb = event.target.result;
-                if (!upgradeDb.objectStoreNames.contains(STORE_NAME)) {
-                    const store = upgradeDb.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
-                    store.createIndex('timestamp', 'timestamp');
-                    store.createIndex('user_timestamp', ['chatname', 'timestamp']);
-                    store.createIndex('user_type_timestamp', ['chatname', 'type', 'timestamp']);
-                }
-            };
-        };
+function initDatabase() {
+    return openChatHistoryDatabase(DB_VERSION).catch(error => {
+        if (error && error.name === 'VersionError') {
+            return openChatHistoryDatabase();
+        }
+        throw error;
     });
 }
 
@@ -223,7 +227,7 @@ function messageMatchesFilters(message, activeFilters = filters) {
     }
 
     if (activeFilters.type) {
-        if ((message.type || '').toLowerCase() !== activeFilters.type) {
+        if (normalizeSourceType(message.type) !== activeFilters.type) {
             return false;
         }
     }
@@ -292,7 +296,7 @@ function updateTypeOptions(newMessages) {
     let optionsAdded = false;
 
     newMessages.forEach(message => {
-        const type = (message.type || '').toLowerCase();
+        const type = normalizeSourceType(message.type);
         if (!type) return;
         if (knownTypes.has(type)) return;
         knownTypes.add(type);
@@ -303,8 +307,20 @@ function updateTypeOptions(newMessages) {
 
     const existingValue = select.value;
     const sortedTypes = Array.from(knownTypes).sort();
-    select.innerHTML = '<option value="">All Sources</option>' +
-        sortedTypes.map(type => `<option value="${type}">${type}</option>`).join('');
+    select.replaceChildren();
+
+    const allSourcesOption = document.createElement('option');
+    allSourcesOption.value = '';
+    allSourcesOption.textContent = 'All Sources';
+    select.appendChild(allSourcesOption);
+
+    sortedTypes.forEach(type => {
+        const option = document.createElement('option');
+        option.value = type;
+        option.textContent = type;
+        select.appendChild(option);
+    });
+
     select.value = existingValue;
 }
 
@@ -358,35 +374,243 @@ function mergeMessages(newMessages, direction) {
     updateTimestampBoundaries();
 }
 
+function isSafeDataImageUrl(value) {
+    return /^data:image\/(?:png|jpe?g|gif|webp|bmp|avif);base64,[a-z0-9+/=\s]+$/i.test(value);
+}
+
+function normalizeImageUrl(value, fallback = '', allowDataImage = true) {
+    if (!value || typeof value !== 'string') return fallback;
+    const trimmed = value.trim();
+    if (allowDataImage && isSafeDataImageUrl(trimmed)) {
+        return trimmed;
+    }
+
+    try {
+        const parsed = new URL(trimmed, window.location.href);
+        if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+            return parsed.href;
+        }
+    } catch (_) { }
+    return fallback;
+}
+
+function escapeHtml(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function formatTsvField(value) {
+    return String(value || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
+}
+
+function normalizeSourceType(value) {
+    const type = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    return /^[a-z0-9_-]+$/.test(type) ? type : '';
+}
+
+function appendImage(parent, src, alt, className, errorHide) {
+    const safeSrc = normalizeImageUrl(src);
+    if (!safeSrc) return null;
+
+    const img = document.createElement('img');
+    img.src = safeSrc;
+    img.alt = alt;
+    img.className = className;
+    if (errorHide) {
+        img.dataset.errorHide = errorHide;
+    }
+    img.addEventListener('error', handleImageError);
+    parent.appendChild(img);
+    return img;
+}
+
+function sanitizeClassName(value) {
+    return String(value || '')
+        .split(/\s+/)
+        .filter(token => /^[a-z0-9_-]+$/i.test(token))
+        .join(' ');
+}
+
+function copySafeInlineAttributes(source, target) {
+    ['class', 'title', 'aria-label'].forEach(name => {
+        const value = source.getAttribute(name);
+        if (!value) return;
+        target.setAttribute(name, name === 'class' ? sanitizeClassName(value) : value);
+    });
+
+    Array.from(source.attributes).forEach(attribute => {
+        const name = attribute.name.toLowerCase();
+        if (!name.startsWith('data-') || !/^data-[a-z0-9_-]+$/.test(name)) return;
+        target.setAttribute(name, attribute.value);
+    });
+}
+
+function sanitizeRichMessageNode(node) {
+    const safeFragment = document.createDocumentFragment();
+
+    if (node.nodeType === Node.TEXT_NODE) {
+        safeFragment.appendChild(document.createTextNode(node.textContent || ''));
+        return safeFragment;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+        return safeFragment;
+    }
+
+    const tagName = node.tagName.toLowerCase();
+    const blockedTags = new Set(['script', 'style', 'iframe', 'object', 'embed', 'svg', 'math', 'template']);
+
+    if (blockedTags.has(tagName)) {
+        return safeFragment;
+    }
+
+    const allowedInlineTags = new Set(['b', 'strong', 'i', 'em', 'u', 's', 'span', 'br', 'a', 'img']);
+
+    if (!allowedInlineTags.has(tagName)) {
+        Array.from(node.childNodes).forEach(child => {
+            safeFragment.appendChild(sanitizeRichMessageNode(child));
+        });
+        return safeFragment;
+    }
+
+    if (tagName === 'br') {
+        safeFragment.appendChild(document.createElement('br'));
+        return safeFragment;
+    }
+
+    if (tagName === 'img') {
+        const safeSrc = normalizeImageUrl(node.getAttribute('src'));
+        if (!safeSrc) return safeFragment;
+
+        const image = document.createElement('img');
+        image.src = safeSrc;
+        image.alt = node.getAttribute('alt') || '';
+        image.title = node.getAttribute('title') || '';
+        image.className = sanitizeClassName(node.getAttribute('class'));
+        copySafeInlineAttributes(node, image);
+        image.addEventListener('error', handleImageError);
+        safeFragment.appendChild(image);
+        return safeFragment;
+    }
+
+    const element = document.createElement(tagName);
+    copySafeInlineAttributes(node, element);
+
+    if (tagName === 'a') {
+        const safeHref = normalizeImageUrl(node.getAttribute('href'), '', false);
+        if (safeHref) {
+            element.href = safeHref;
+            element.target = '_blank';
+            element.rel = 'noopener noreferrer';
+        }
+    }
+
+    Array.from(node.childNodes).forEach(child => {
+        element.appendChild(sanitizeRichMessageNode(child));
+    });
+    safeFragment.appendChild(element);
+    return safeFragment;
+}
+
+function sanitizeRichMessageFragment(value) {
+    const template = document.createElement('template');
+    template.innerHTML = String(value || '');
+
+    const safeFragment = document.createDocumentFragment();
+    Array.from(template.content.childNodes).forEach(node => {
+        safeFragment.appendChild(sanitizeRichMessageNode(node));
+    });
+    return safeFragment;
+}
+
+function sanitizeRichMessageHtml(value) {
+    const container = document.createElement('div');
+    container.appendChild(sanitizeRichMessageFragment(value));
+    return container.innerHTML;
+}
+
 function renderMessages() {
+    messagesContainer.replaceChildren();
+
     if (!messages.length) {
-        messagesContainer.innerHTML = '<p>No messages match the current filters.</p>';
+        const emptyMessage = document.createElement('p');
+        emptyMessage.textContent = 'No messages match the current filters.';
+        messagesContainer.appendChild(emptyMessage);
         return;
     }
 
-    const html = messages.map(message => `
-        <div class="message-wrapper" id="message-${message.id}">
-            <div class="message">
-                <img src="${message.chatimg || 'https://cache.socialstream.ninja/sources/images/unknown.png'}" alt="Avatar" class="avatar" data-error-hide="message">
-                <div class="message-content">
-                    <div class="message-header">
-                        <span class="user-name">${message.chatname || 'Anonymous'}</span>
-                        ${message.type ? `<img src="https://cache.socialstream.ninja/sources/images/${message.type}.png" alt="${message.type}" class="type-image" data-error-hide="self">` : ''}
-                        <span class="timestamp">${formatTimestamp(message.timestamp)}</span>
-                    </div>
-                    <p class="message-text">${message.chatmessage || ''}</p>
-                    ${message.contentimg ? `<img src="${message.contentimg}" alt="Content" class="content-image" data-error-hide="self">` : ''}
-                    ${message.hasDonation ? `<p class="donation">Donation: ${message.hasDonation}</p>` : ''}
-                    ${(message.membership || message.hasMembership) ? `<p class="membership">Membership: ${message.membership || message.hasMembership}</p>` : ''}
-                </div>
-            </div>
-        </div>
-    `).join('');
+    const fragment = document.createDocumentFragment();
 
-    messagesContainer.innerHTML = html;
-    messagesContainer.querySelectorAll('img').forEach(img => {
-        img.addEventListener('error', handleImageError);
+    messages.forEach(message => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'message-wrapper';
+        wrapper.id = `message-${String(message.id || '').replace(/[^a-z0-9_-]/gi, '_')}`;
+
+        const messageElement = document.createElement('div');
+        messageElement.className = 'message';
+        wrapper.appendChild(messageElement);
+
+        appendImage(messageElement, normalizeImageUrl(message.chatimg, FALLBACK_AVATAR_URL), 'Avatar', 'avatar', 'message');
+
+        const content = document.createElement('div');
+        content.className = 'message-content';
+        messageElement.appendChild(content);
+
+        const header = document.createElement('div');
+        header.className = 'message-header';
+        content.appendChild(header);
+
+        const userName = document.createElement('span');
+        userName.className = 'user-name';
+        userName.textContent = message.chatname || 'Anonymous';
+        header.appendChild(userName);
+
+        const sourceType = normalizeSourceType(message.type);
+        if (sourceType) {
+            appendImage(
+                header,
+                `https://cache.socialstream.ninja/sources/images/${sourceType}.png`,
+                sourceType,
+                'type-image',
+                'self'
+            );
+        }
+
+        const timestamp = document.createElement('span');
+        timestamp.className = 'timestamp';
+        timestamp.textContent = formatTimestamp(message.timestamp);
+        header.appendChild(timestamp);
+
+        const messageText = document.createElement('p');
+        messageText.className = 'message-text';
+        messageText.appendChild(sanitizeRichMessageFragment(message.chatmessage || ''));
+        content.appendChild(messageText);
+
+        appendImage(content, message.contentimg, 'Content', 'content-image', 'self');
+
+        if (message.hasDonation) {
+            const donation = document.createElement('p');
+            donation.className = 'donation';
+            donation.textContent = `Donation: ${message.hasDonation}`;
+            content.appendChild(donation);
+        }
+
+        const membershipValue = message.membership || message.hasMembership;
+        if (membershipValue) {
+            const membership = document.createElement('p');
+            membership.className = 'membership';
+            membership.textContent = `Membership: ${membershipValue}`;
+            content.appendChild(membership);
+        }
+
+        fragment.appendChild(wrapper);
     });
+
+    messagesContainer.appendChild(fragment);
 }
 
 function ensureContentFillsContainer() {
@@ -569,7 +793,15 @@ function exportMessages(format) {
                     break;
                 case 'tsv':
                     content = 'ID\tTimestamp\tUsername\tUserID\tType\tMessage\tDonation\n' +
-                        sorted.map(m => `${m.id}\t${m.timestamp}\t${m.chatname}\t${m.userid || ''}\t${m.type}\t${m.chatmessage}\t${m.hasDonation || ''}`).join('\n');
+                        sorted.map(m => [
+                            formatTsvField(m.id),
+                            formatTsvField(m.timestamp),
+                            formatTsvField(m.chatname),
+                            formatTsvField(m.userid),
+                            formatTsvField(m.type),
+                            formatTsvField(m.chatmessage),
+                            formatTsvField(m.hasDonation)
+                        ].join('\t')).join('\n');
                     break;
                 case 'html':
                     content = `
@@ -587,10 +819,10 @@ function exportMessages(format) {
                             <p>Total messages: ${sorted.length}</p>
                             ${sorted.map(m => `
                                 <div class="message">
-                                    <span class="username">${m.chatname}</span>
-                                    <span class="timestamp">${new Date(m.timestamp).toLocaleString()}</span>
-                                    <p>${m.chatmessage}</p>
-                                    ${m.hasDonation ? `<p>Donation: ${m.hasDonation}</p>` : ''}
+                                    <span class="username">${escapeHtml(m.chatname || 'Anonymous')}</span>
+                                    <span class="timestamp">${escapeHtml(new Date(m.timestamp).toLocaleString())}</span>
+                                    <p>${sanitizeRichMessageHtml(m.chatmessage)}</p>
+                                    ${m.hasDonation ? `<p>Donation: ${escapeHtml(m.hasDonation)}</p>` : ''}
                                 </div>
                             `).join('')}
                         </body>

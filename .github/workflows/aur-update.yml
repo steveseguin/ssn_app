@@ -2,8 +2,8 @@ name: Update AUR Package
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # Daily at 6am UTC
-  workflow_dispatch:     # Manual trigger
+    - cron: "0 6 * * *" # Daily at 6am UTC
+  workflow_dispatch: # Manual trigger
 
 jobs:
   update-aur:
@@ -19,60 +19,120 @@ jobs:
       - name: Get release version
         id: version
         run: |
+          set -euo pipefail
+
           # Always fetch latest from social_stream releases
-          VERSION=$(curl -s https://api.github.com/repos/steveseguin/social_stream/releases/latest | jq -r .tag_name)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          RELEASE_TAG=$(curl -fsSL https://api.github.com/repos/steveseguin/social_stream/releases/latest | jq -r .tag_name)
+          if [ -z "$RELEASE_TAG" ] || [ "$RELEASE_TAG" = "null" ]; then
+            echo "Failed to resolve latest Social Stream release version"
+            exit 1
+          fi
+          VERSION="${RELEASE_TAG#v}"
+          if [ -z "$VERSION" ]; then
+            echo "Failed to normalize latest Social Stream release version from tag: $RELEASE_TAG"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "Latest release tag: $RELEASE_TAG"
           echo "Latest release version: $VERSION"
-          
+
           # Get current AUR version
           CURRENT=$(grep -Po '^pkgver=\K.*' aur/PKGBUILD)
-          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "Current AUR version: $CURRENT"
-          
-          if [ "$VERSION" = "$CURRENT" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "AUR is already up to date"
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "Update needed: $CURRENT -> $VERSION"
-          fi
 
       - name: Update PKGBUILD
-        if: steps.version.outputs.skip != 'true'
+        id: update
         working-directory: aur
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+          CURRENT: ${{ steps.version.outputs.current }}
         run: |
-          VERSION=${{ steps.version.outputs.version }}
+          set -euo pipefail
+
+          CURRENT_PKGREL=$(grep -Po '^pkgrel=\K.*' PKGBUILD)
+          CURRENT_CHECKSUM=$(sed -n "s/^sha256sums=('\([^']*\)'.*/\1/p" PKGBUILD)
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          echo "Checking AppImage for release $RELEASE_TAG (pkgver $VERSION)"
+
+          # Download and compute checksum
+          URL="https://github.com/steveseguin/social_stream/releases/download/${RELEASE_TAG}/socialstreamninja_linux_v${VERSION}_x86_64.AppImage"
+          echo "Downloading AppImage from: $URL"
+          APPIMAGE="$(mktemp)"
+          if ! curl -fL --retry 3 --retry-delay 2 -o "$APPIMAGE" "$URL"; then
+            rm -f "$APPIMAGE"
+            echo "Linux AppImage is not available yet for $RELEASE_TAG"
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              exit 1
+            fi
+            exit 0
+          fi
+          if [ ! -s "$APPIMAGE" ]; then
+            rm -f "$APPIMAGE"
+            echo "Downloaded AppImage is empty"
+            exit 1
+          fi
+          MAGIC=$(head -c 4 "$APPIMAGE" | od -An -tx1 | tr -d ' \n')
+          if [ "$MAGIC" != "7f454c46" ]; then
+            echo "Downloaded file is not an AppImage/ELF binary"
+            head -c 200 "$APPIMAGE" || true
+            rm -f "$APPIMAGE"
+            exit 1
+          fi
+          CHECKSUM=$(sha256sum "$APPIMAGE" | cut -d' ' -f1)
+          rm -f "$APPIMAGE"
+          echo "Computed SHA256: $CHECKSUM"
+
+          if [ "$VERSION" = "$CURRENT" ] && [ "$CHECKSUM" = "$CURRENT_CHECKSUM" ]; then
+            echo "AUR is already up to date for $VERSION with matching AppImage checksum"
+            exit 0
+          fi
+
           echo "Updating PKGBUILD to version $VERSION"
-          
+          if [ "$VERSION" = "$CURRENT" ]; then
+            if [[ "$CURRENT_PKGREL" =~ ^[0-9]+$ ]]; then
+              PKGREL=$((CURRENT_PKGREL + 1))
+            else
+              PKGREL=2
+            fi
+          else
+            PKGREL=1
+          fi
+
+          echo "Current AUR version/pkgrel/checksum: $CURRENT / $CURRENT_PKGREL / $CURRENT_CHECKSUM"
+          echo "New release version/checksum: $VERSION / $CHECKSUM"
+          echo "New pkgrel: $PKGREL"
+
           # Update pkgver
           sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
-          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
-          
-          # Download and compute checksum
-          URL="https://github.com/steveseguin/social_stream/releases/download/${VERSION}/socialstreamninja_linux_v${VERSION}_x86_64.AppImage"
-          echo "Downloading AppImage from: $URL"
-          CHECKSUM=$(curl -sL "$URL" | sha256sum | cut -d' ' -f1)
-          echo "Computed SHA256: $CHECKSUM"
-          
+          sed -i "s/^pkgrel=.*/pkgrel=$PKGREL/" PKGBUILD
+
           # Update sha256sums (first entry)
           sed -i "s/^sha256sums=('[^']*'/sha256sums=('$CHECKSUM'/" PKGBUILD
-          
+
           # Create non-root user for makepkg (required by makepkg)
           useradd -m builder
           chown -R builder:builder .
-          
+
           # Regenerate .SRCINFO
           su builder -c "makepkg --printsrcinfo > .SRCINFO"
-          
+
           echo "PKGBUILD updated successfully"
           cat PKGBUILD
+          echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Push to AUR
-        if: steps.version.outputs.skip != 'true'
+        if: steps.update.outputs.changed == 'true'
         working-directory: aur
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
+
           # Setup SSH for AUR
           AUR_SSH_DIR="$(pwd)/.aur-ssh"
           mkdir -p "$AUR_SSH_DIR"
@@ -100,24 +160,24 @@ jobs:
           fi
           chmod 600 "$AUR_SSH_DIR/known_hosts"
           export GIT_SSH_COMMAND="ssh -i $AUR_SSH_DIR/aur -o IdentitiesOnly=yes -o HostKeyAlgorithms=ssh-ed25519 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$AUR_SSH_DIR/known_hosts"
-          
+
           # Configure git
           git config --global user.email "steve@seguin.email"
           git config --global user.name "Steve Seguin"
-          
+
           # Clone AUR repo
           git clone aur@aur.archlinux.org:socialstreamninja.git ../aur-push
-          
+
           # Copy updated files
           cp PKGBUILD .SRCINFO socialstreamninja.desktop ../aur-push/
-          
+
           # Commit and push
           cd ../aur-push
           git add -A
           if git diff --cached --quiet; then
             echo "No changes to commit - AUR is already up to date"
           else
-            git commit -m "Update to ${{ steps.version.outputs.version }}"
+            git commit -m "Update to $VERSION"
             git push
             echo "Successfully pushed update to AUR"
           fi

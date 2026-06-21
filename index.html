@@ -8481,6 +8481,19 @@
             const lockProvider = (locked) => {
                 try { setSigningProviderLocked(element, locked); } catch (_) { }
             };
+            const statusText = (value) => ssappEscapeHtml(value || '');
+            const appendStatusAction = (label, handler) => {
+                const link = document.createElement('a');
+                link.href = '#';
+                link.textContent = label;
+                link.style.color = '#93c5fd';
+                link.style.textDecoration = 'underline';
+                link.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    handler();
+                });
+                statusElement.appendChild(link);
+            };
             switch (status) {
                 case 'connecting':
                     lockProvider(true);
@@ -8488,9 +8501,9 @@
                     {
                         const connectingContent = getConnectingStatusContent(sourceCtx, message);
                         const tipHtml = connectingContent.tip
-                            ? ` <span class="ws-tip">${connectingContent.tip}</span>`
+                            ? ` <span class="ws-tip">${statusText(connectingContent.tip)}</span>`
                             : '';
-                        statusElement.innerHTML = `<i class="las la-sync fa-spin"></i> ${connectingContent.label}${tipHtml}`;
+                        statusElement.innerHTML = `<i class="las la-sync fa-spin"></i> ${statusText(connectingContent.label)}${tipHtml}`;
                     }
                     break;
                 case 'connected':
@@ -8499,7 +8512,7 @@
                     {
                         const derivedLabel = formatConnectionLabel(sourceCtx);
                         const label = message || derivedLabel || 'Connected';
-                        statusElement.innerHTML = `<i class="las la-check-circle"></i> ${label}`;
+                        statusElement.innerHTML = `<i class="las la-check-circle"></i> ${statusText(label)}`;
                     }
                     try {
                         const activateButton = element.querySelector('[data-activatehtml]');
@@ -8523,23 +8536,34 @@
                                 const tiktokStandardAction = options.tiktokStandardAction === true
                                     || shouldPromptTikTokStandardAction(sourceCtx, { error: message });
                                 applyTikTokStandardRevealPrompt(element, sourceCtx, tiktokStandardAction);
-                                if (tiktokStandardAction) {
+                                if (options.tiktokSigningKeyPrompt === true) {
+                                    const promptSourceId = typeof options.sourceId === 'string' ? options.sourceId : sourceCtx?.id;
+                                    statusElement.innerHTML = `<i class="las la-exclamation-circle"></i> ${statusText(message || 'Connection methods exhausted.')}`;
+                                    statusElement.appendChild(document.createTextNode(' '));
+                                    appendStatusAction('Get a free API key', () => {
+                                        window.open('https://www.eulerstream.com/dashboard', '_blank');
+                                    });
+                                    if (promptSourceId) {
+                                        statusElement.appendChild(document.createTextNode(' · '));
+                                        appendStatusAction('Enter key', () => showTikTokSignInMenu(promptSourceId));
+                                    }
+                                } else if (tiktokStandardAction) {
                                     statusElement.classList.add('action-needed');
-                                    statusElement.innerHTML = `<i class="las la-exclamation-circle"></i> ${getTikTokStandardActionStatusMessage(message)}`;
+                                    statusElement.innerHTML = `<i class="las la-exclamation-circle"></i> ${statusText(getTikTokStandardActionStatusMessage(message))}`;
                                 } else {
-                                    statusElement.innerHTML = `<i class="las la-exclamation-circle"></i> ${message || 'Connection error'}`;
+                                    statusElement.innerHTML = `<i class="las la-exclamation-circle"></i> ${statusText(message || 'Connection error')}`;
                                 }
                             }
                             break;
                 case 'retry':
                     lockProvider(true);
                     statusElement.classList.add('retry');
-                    statusElement.innerHTML = `<i class="las la-sync fa-spin"></i> ${message || 'Retrying connection...'}`;
+                    statusElement.innerHTML = `<i class="las la-sync fa-spin"></i> ${statusText(message || 'Retrying connection...')}`;
                     break;
                 case 'stopped':
                     lockProvider(false);
                     statusElement.classList.add('stopped');
-                    statusElement.innerHTML = `<i class="las la-hand-paper"></i> ${message || 'Connection stopped'}`;
+                    statusElement.innerHTML = `<i class="las la-hand-paper"></i> ${statusText(message || 'Connection stopped')}`;
                     statusElement._autoHideTimer = setTimeout(() => {
                         if (statusElement.classList.contains('stopped')) statusElement.style.display = 'none';
                         statusElement._autoHideTimer = null;
@@ -8548,7 +8572,7 @@
                 case 'info':
                     lockProvider(false);
                     statusElement.classList.add('info');
-                    statusElement.innerHTML = `<i class="las la-info-circle"></i> ${message || ''}`;
+                    statusElement.innerHTML = `<i class="las la-info-circle"></i> ${statusText(message || '')}`;
                     if (!options.persistent) {
                         statusElement._autoHideTimer = setTimeout(() => {
                             if (statusElement.classList.contains('info')) statusElement.style.display = 'none';
@@ -10595,12 +10619,10 @@
                                             && (provider === 'auto' || provider === 'euler-ws')
                                             && !currentState.tiktokSigningApiKey;
                                         if (showKeyPrompt) {
-                                            const sid = sourceId.replace(/'/g, "\\'");
-                                            const keyMsg = 'Connection methods exhausted. '
-                                                + '<a href="#" onclick="window.open(\'https://www.eulerstream.com/dashboard\', \'_blank\'); return false;" style="color: #93c5fd; text-decoration: underline;">Get a free API key</a>'
-                                                + ' · '
-                                                + `<a href="#" onclick="showTikTokSignInMenu('${sid}'); return false;" style="color: #93c5fd; text-decoration: underline;">Enter key</a>`;
-                                            updateConnectionStatus(entryElement, 'error', keyMsg);
+                                            updateConnectionStatus(entryElement, 'error', 'Connection methods exhausted.', {
+                                                tiktokSigningKeyPrompt: true,
+                                                sourceId
+                                            });
                                         } else {
                                             updateConnectionStatus(entryElement, 'error', errorMessage);
                                         }
@@ -11317,20 +11339,64 @@
                         sessionEl.classList.add('current');
                     }
 
-                    sessionEl.innerHTML = `
-				<div class="session-info">
-					<h4 class="session-name">${session.name}</h4>
-					${session.description ? `<p class="session-description">${session.description}</p>` : ''}
-					<span class="session-date">Created: ${new Date(session.created).toLocaleDateString()}</span>
-				</div>
-				<div class="session-actions">
-					${id !== currentSession ? `<button onclick="switchToSession('${id}')" class="switch-btn"><i class="las la-sign-in-alt"></i> Switch</button>` : '<span class="active-label">Active</span>'}
-					${id !== 'default' ? `
-						<button onclick="renameSession('${id}')" class="rename-btn"><i class="las la-edit"></i></button>
-						<button onclick="deleteSession('${id}')" class="delete-btn"><i class="las la-trash"></i></button>
-					` : '<span class="default-label">Original Data</span>'}
-				</div>
-			`;
+                    const sessionInfo = document.createElement('div');
+                    sessionInfo.className = 'session-info';
+
+                    const sessionName = document.createElement('h4');
+                    sessionName.className = 'session-name';
+                    sessionName.textContent = session.name || '';
+                    sessionInfo.appendChild(sessionName);
+
+                    if (session.description) {
+                        const description = document.createElement('p');
+                        description.className = 'session-description';
+                        description.textContent = session.description;
+                        sessionInfo.appendChild(description);
+                    }
+
+                    const created = document.createElement('span');
+                    created.className = 'session-date';
+                    const createdDate = session.created ? new Date(session.created).toLocaleDateString() : 'Unknown';
+                    created.textContent = `Created: ${createdDate}`;
+                    sessionInfo.appendChild(created);
+
+                    const sessionActions = document.createElement('div');
+                    sessionActions.className = 'session-actions';
+
+                    if (id !== currentSession) {
+                        const switchButton = document.createElement('button');
+                        switchButton.className = 'switch-btn';
+                        switchButton.innerHTML = '<i class="las la-sign-in-alt"></i> Switch';
+                        switchButton.addEventListener('click', () => switchToSession(id));
+                        sessionActions.appendChild(switchButton);
+                    } else {
+                        const activeLabel = document.createElement('span');
+                        activeLabel.className = 'active-label';
+                        activeLabel.textContent = 'Active';
+                        sessionActions.appendChild(activeLabel);
+                    }
+
+                    if (id !== 'default') {
+                        const renameButton = document.createElement('button');
+                        renameButton.className = 'rename-btn';
+                        renameButton.innerHTML = '<i class="las la-edit"></i>';
+                        renameButton.addEventListener('click', () => renameSession(id, session.name || ''));
+                        sessionActions.appendChild(renameButton);
+
+                        const deleteButton = document.createElement('button');
+                        deleteButton.className = 'delete-btn';
+                        deleteButton.innerHTML = '<i class="las la-trash"></i>';
+                        deleteButton.addEventListener('click', () => deleteSession(id));
+                        sessionActions.appendChild(deleteButton);
+                    } else {
+                        const defaultLabel = document.createElement('span');
+                        defaultLabel.className = 'default-label';
+                        defaultLabel.textContent = 'Original Data';
+                        sessionActions.appendChild(defaultLabel);
+                    }
+
+                    sessionEl.appendChild(sessionInfo);
+                    sessionEl.appendChild(sessionActions);
 
                     container.appendChild(sessionEl);
                 });
@@ -11390,10 +11456,7 @@
             }
         }
 
-        async function renameSession(sessionId) {
-            const currentName = document.querySelector(`[onclick="renameSession('${sessionId}')"]`)
-                ?.closest('.session-item')?.querySelector('.session-name')?.textContent;
-
+        async function renameSession(sessionId, currentName = '') {
             const newName = prompt('Enter new name:', currentName);
             if (!newName || newName === currentName) return;
 
@@ -11436,7 +11499,7 @@
                     sessionInfo: {
                         name: sessionData.name,
                         description: sessionData.description,
-                        createdAt: sessionData.createdAt,
+                        createdAt: sessionData.created || sessionData.createdAt || null,
                         exportedAt: new Date().toISOString(),
                         currentSessionId: currentSession
                     },
@@ -14108,13 +14171,28 @@
             savedUserAgents.forEach((ua, index) => {
                 const item = document.createElement('div');
                 item.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 8px;';
-                item.innerHTML = `
-            <div style="flex: 1;">
-                <strong style="color: #63a4d8;">${ua.name}</strong><br>
-                <span style="font-size: 12px; color: rgba(255,255,255,0.7); word-break: break-all;">${ua.value}</span>
-            </div>
-            <button onclick="removeCustomUserAgent(${index})" style="margin-left: 10px; padding: 4px 8px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">Remove</button>
-        `;
+
+                const details = document.createElement('div');
+                details.style.flex = '1';
+
+                const name = document.createElement('strong');
+                name.style.color = '#63a4d8';
+                name.textContent = ua.name || '';
+                details.appendChild(name);
+                details.appendChild(document.createElement('br'));
+
+                const value = document.createElement('span');
+                value.style.cssText = 'font-size: 12px; color: rgba(255,255,255,0.7); word-break: break-all;';
+                value.textContent = ua.value || '';
+                details.appendChild(value);
+
+                const removeButton = document.createElement('button');
+                removeButton.textContent = 'Remove';
+                removeButton.style.cssText = 'margin-left: 10px; padding: 4px 8px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;';
+                removeButton.addEventListener('click', () => removeCustomUserAgent(index));
+
+                item.appendChild(details);
+                item.appendChild(removeButton);
                 listContainer.appendChild(item);
             });
         }
@@ -14335,13 +14413,31 @@
                 if (window.currentSelectedSession === session.name) {
                     sessionDiv.classList.add('selected');
                 }
-                sessionDiv.innerHTML = `
-            <span class="session-item-name">${session.name}</span>
-            <span class="session-item-actions">
-                <span style="color: #aaa; font-size: 12px;">Custom</span>
-                <button class="session-remove-btn" onclick="event.stopPropagation(); removeCustomSession('${session.name}')" title="Remove session">×</button>
-            </span>
-        `;
+
+                const sessionName = document.createElement('span');
+                sessionName.className = 'session-item-name';
+                sessionName.textContent = session.name || '';
+
+                const actions = document.createElement('span');
+                actions.className = 'session-item-actions';
+
+                const customLabel = document.createElement('span');
+                customLabel.style.cssText = 'color: #aaa; font-size: 12px;';
+                customLabel.textContent = 'Custom';
+                actions.appendChild(customLabel);
+
+                const removeButton = document.createElement('button');
+                removeButton.className = 'session-remove-btn';
+                removeButton.title = 'Remove session';
+                removeButton.textContent = '×';
+                removeButton.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    removeCustomSession(session.name);
+                });
+                actions.appendChild(removeButton);
+
+                sessionDiv.appendChild(sessionName);
+                sessionDiv.appendChild(actions);
                 sessionDiv.onclick = () => selectSession(session.name);
                 container.appendChild(sessionDiv);
             });

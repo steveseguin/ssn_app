@@ -12,7 +12,7 @@ url="https://github.com/steveseguin/ssn_app"
 license=('GPL3')
 depends=('fuse' 'zlib' 'glibc')
 optdepends=('gtk3: GTK integration' 'qt6-base: Qt6 framework intergration' 'wayland: A computer display server protocol' 'nss: Network security services' 'libxss: X11 screensaver extension' 'libnotify: Desktop notifications' 'libxtst: X11 testing')
-source=("${pkgname}-${pkgver}.AppImage::https://github.com/steveseguin/social_stream/releases/download/${pkgver}/socialstreamninja_linux_v${pkgver}_x86_64.AppImage"
+source=("${pkgname}-${pkgver}.AppImage::https://github.com/steveseguin/social_stream/releases/download/v${pkgver}/socialstreamninja_linux_v${pkgver}_x86_64.AppImage"
         "socialstreamninja.desktop")
 sha256sums=('0019dfc4b32d63c1392aa264aed2253c1e0c2fb09216f8e2cc269bbfb8bb49b5'
             'SKIP')
