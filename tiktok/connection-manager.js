@@ -9,6 +9,7 @@ const WebSocket = require('ws');
 const {
     cleanVisibleString,
     firstNonEmptyVisibleString,
+    normalizeTikTokBadgeLevel,
     normalizeTikTokImageUrl,
     collectTikTokBadges,
     getBadgeImageUrl
@@ -1926,6 +1927,93 @@ function resolveTikTokSubscriberStatus(data = {}) {
 	return false;
 }
 
+function resolveTikTokFollowerStatus(data = {}) {
+    const userIdentity = isPlainObject(data.userIdentity)
+        ? data.userIdentity
+        : isPlainObject(data?.user?.userIdentity)
+            ? data.user.userIdentity
+            : isPlainObject(data?.author?.userIdentity)
+                ? data.author.userIdentity
+                : null;
+
+    const candidates = [
+        data.isFollowerOfAnchor,
+        userIdentity?.isFollowerOfAnchor,
+        data?.user?.isFollowerOfAnchor,
+        data.followRole,
+        data?.user?.followRole,
+        data?.followInfo?.followStatus,
+        data?.user?.followInfo?.followStatus,
+        data.followStatus,
+        data?.user?.followStatus,
+        data.isFollower,
+        data?.user?.isFollower,
+        data.follower,
+        data?.user?.follower
+    ];
+
+    let sawFalse = false;
+    for (const candidate of candidates) {
+        const coerced = coerceTikTokBoolean(candidate);
+        if (coerced === true) {
+            return true;
+        }
+        if (coerced === false) {
+            sawFalse = true;
+        }
+    }
+
+    return sawFalse ? false : null;
+}
+
+function resolveTikTokMemberLevel(data = {}, badgeSources = null) {
+    const candidates = [
+        data.memberLevel,
+        data.teamMemberLevel,
+        data.fansLevel,
+        data.fanLevel,
+        data?.user?.memberLevel,
+        data?.user?.teamMemberLevel,
+        data?.user?.fansLevel,
+        data?.user?.fanLevel,
+        data?.user?.fansClubInfo?.fansLevel,
+        data?.user?.fansClubInfo?.level,
+        data?.user?.fansClub?.data?.level,
+        data?.author?.fansClubInfo?.fansLevel,
+        data?.author?.fansClubInfo?.level,
+        data?.author?.fansClub?.data?.level
+    ];
+
+    for (const candidate of candidates) {
+        const level = normalizeTikTokBadgeLevel(candidate);
+        if (level !== null) {
+            return level;
+        }
+    }
+
+    const badges = Array.isArray(badgeSources) ? badgeSources : collectTikTokBadges(data);
+    for (const badge of badges) {
+        if (!badge || typeof badge !== 'object') continue;
+        const sceneType = Number(badge.badgeSceneType ?? badge.badgeScene ?? badge.sceneType ?? badge.scene);
+        if (sceneType !== 10) continue;
+
+        const level = normalizeTikTokBadgeLevel(
+            badge.level
+            ?? badge.badgeLevel
+            ?? badge.badge_level
+            ?? badge.fanLevel
+            ?? badge.fan_level
+            ?? badge.displayLevel
+            ?? badge.display_level
+        );
+        if (level !== null) {
+            return level;
+        }
+    }
+
+    return null;
+}
+
 const LIKELY_EMOTE_PLACEHOLDER_HINTS = /\b(?:emoji|emote|sticker|smiley|smile|face|heart|laugh|grin|wink|kiss|sad|cry|angry|fire|rose|love|happy|joy|thumb|clap)\b/i;
 
 function normalizeEmoteLabelForMatching(value) {
@@ -2229,6 +2317,21 @@ function composeTikTokChatMessage(data = {}, options = {}) {
 
     message.moderator = resolveTikTokModeratorStatus(data);
     message.membership = resolveTikTokSubscriberStatus(data);
+    const genericMeta = {};
+    const followerStatus = resolveTikTokFollowerStatus(data);
+    if (followerStatus === true) {
+        genericMeta.follower = true;
+    }
+    const memberLevel = resolveTikTokMemberLevel(data, badgeSources);
+    if (memberLevel !== null) {
+        genericMeta.memberLevel = memberLevel;
+    }
+    if (Object.keys(genericMeta).length) {
+        if (!message.meta || typeof message.meta !== 'object' || Array.isArray(message.meta)) {
+            message.meta = {};
+        }
+        Object.assign(message.meta, genericMeta);
+    }
 
     const identity = extractTikTokIdentity(data);
     const resolvedUserId = resolveTikTokUserId(data, identity);
@@ -9274,10 +9377,14 @@ class ConnectionManager {
             }
         }
 
-        const metaPayload = sanitizeEventMeta({
+        const eventMeta = {
             eventType: canonicalEventType,
             ...extraMeta
-        });
+        };
+        if (canonicalEventType === 'followed') {
+            eventMeta.follower = true;
+        }
+        const metaPayload = sanitizeEventMeta(eventMeta);
         if (metaPayload) {
             payload.meta = metaPayload;
         }
