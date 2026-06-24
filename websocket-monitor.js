@@ -39,7 +39,7 @@ async function setupWebSocketMonitor(webContents, options = {}) {
                         webSocketConnections.set(requestId, { url, requestId, timestampDelta: null });
                         onOpen({ url, requestId });
                     }
-        } break;
+                } break;
 
                 case 'Network.webSocketWillSendHandshakeRequest': {
                     const conn = webSocketConnections.get(params.requestId);
@@ -47,9 +47,9 @@ async function setupWebSocketMonitor(webContents, options = {}) {
                         // The exact difference between MonotonicTime and Unix epoch clock time
                         conn.timestampDelta = params.wallTime - params.timestamp;
                     }
-        } break;
+                } break;
 
-        case 'Network.webSocketClosed': {
+                case 'Network.webSocketClosed': {
                     const connection = webSocketConnections.get(params.requestId);
                     if (connection) {
                         let { timestampDelta } = connection;
@@ -64,7 +64,7 @@ async function setupWebSocketMonitor(webContents, options = {}) {
                         });
                         webSocketConnections.delete(params.requestId);
                     }
-        } break;
+                } break;
 
                 case 'Network.webSocketFrameReceived':
                     const receivedConn = webSocketConnections.get(params.requestId);
@@ -81,9 +81,9 @@ async function setupWebSocketMonitor(webContents, options = {}) {
                             timestamp: params.timestamp + timestampDelta,
                             requestId: params.requestId
                         });
-          } break;
+                    } break;
 
-        case 'Network.webSocketFrameSent': {
+                case 'Network.webSocketFrameSent': {
                     const sentConn = webSocketConnections.get(params.requestId);
                     if (sentConn && params.response) {
                         let { timestampDelta } = sentConn;
@@ -99,7 +99,7 @@ async function setupWebSocketMonitor(webContents, options = {}) {
                             requestId: params.requestId
                         });
                     }
-        } break;
+                } break;
             }
         } catch (error) {
             console.error('Error handling WebSocket event:', error);
@@ -111,7 +111,7 @@ async function setupWebSocketMonitor(webContents, options = {}) {
     function cleanup() {
         try {
             webContents.debugger.off('message', messageHandler);
-    } catch (_) { }
+        } catch (_) { }
 
         if (monitoringActive) {
             try {
