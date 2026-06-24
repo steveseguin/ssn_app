@@ -1,5 +1,17 @@
 var { ipcRenderer, contextBridge } = require('electron');
 
+// Buffer for early WebSocket messages before the page registers its listener
+const wsMessagesBuffer = [];
+let wsMessageCallback = null;
+
+ipcRenderer.on('websocket-message', (event, data) => {
+	if (wsMessageCallback) {
+		wsMessageCallback(data);
+	} else {
+		wsMessagesBuffer.push(data);
+	}
+});
+
 let cachedEnvironment = null;
 const environmentPromise = (async () => {
 	try {
@@ -404,9 +416,15 @@ function configureContextBridge(){
 			  },
 			  
 			  onWebSocketMessage: (callback) => {
-				ipcRenderer.on('websocket-message', (event, data) => {
-				  callback(data);
-				});
+				wsMessageCallback = callback;
+				while (wsMessagesBuffer.length > 0) {
+					const msg = wsMessagesBuffer.shift();
+					try {
+						callback(msg);
+					} catch (err) {
+						console.error('[Preload] Error replaying buffered WebSocket message:', err);
+					}
+				}
 			  },
 			  
 			  sendDeviceList: (response) => {
@@ -584,9 +602,15 @@ try {
 			},
 			
 			onWebSocketMessage: (callback) => {
-				ipcRenderer.on('websocket-message', (event, data) => {
-				  callback(data);
-				});
+				wsMessageCallback = callback;
+				while (wsMessagesBuffer.length > 0) {
+					const msg = wsMessagesBuffer.shift();
+					try {
+						callback(msg);
+					} catch (err) {
+						console.error('[Preload] Error replaying buffered WebSocket message:', err);
+					}
+				}
 			},
 			
 			// Add other necessary methods
