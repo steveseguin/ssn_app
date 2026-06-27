@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.3.129",
+  "version": "0.3.130",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "main": "main.js",
@@ -100,6 +100,7 @@
       "!certs/**",
       "!old-certs-backup/**",
       "!dist/**",
+      "!cloudflare/**",
       "!sso-worker/**",
       "!aur/**",
       "!aur-repo/**",
@@ -215,6 +216,7 @@
         "releaseType": "release"
       }
     ],
+    "afterPack": "./scripts/prunePackagedNativeBinaries.js",
     "afterSign": "./afterSign.js",
     "afterAllArtifactBuild": "./afterPack.js"
   },
