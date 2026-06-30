@@ -2742,7 +2742,7 @@
                     messageParts.push('The stream must be live or upcoming and public for chat discovery to work.');
                     messageParts.push('@handles and channel URLs are more reliable than display-name search.');
                     response = await ipcRenderer.sendSync('prompt', {
-                        title: `Enter the ${target} handle or channel URL`,
+                        title: 'Enter the YouTube handle or channel URL',
                         message: messageParts.join('\n\n'),
                         showChannelTypeCheckbox: false,
                         showShortsCheckbox: (target === "youtubeshorts"),
