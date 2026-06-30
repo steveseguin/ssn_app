@@ -2375,6 +2375,7 @@
                     { manualTrigger: true, groupId: group.id }
                 );
                 showYouTubeManualDiscoveryStatus(group.id, result);
+                startYouTubeGroupAutoCheck(group.id);
                 return group;
             } catch (error) {
                 console.error('YouTube owner sign-in failed:', error);
@@ -2659,6 +2660,31 @@
                                 value: parsed.username,
                                 isChannelName: firstPart === 'c'
                             };
+                        }
+                        const pathParts = url.pathname.split('/').filter(Boolean);
+                        const firstPart = (pathParts[0] || '').trim();
+                        const reservedPaths = new Set([
+                            'about',
+                            'account',
+                            'clip',
+                            'embed',
+                            'feed',
+                            'gaming',
+                            'hashtag',
+                            'live',
+                            'playlist',
+                            'podcasts',
+                            'results',
+                            'shorts',
+                            'watch'
+                        ]);
+                        if (
+                            pathParts.length === 1 &&
+                            firstPart &&
+                            !firstPart.startsWith('@') &&
+                            !reservedPaths.has(firstPart.toLowerCase())
+                        ) {
+                            return { value: firstPart, isChannelName: true };
                         }
                         return { value: urlCandidate, isChannelName: false };
                     }
