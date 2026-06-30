@@ -2427,6 +2427,7 @@
                     { manualTrigger: true, groupId: group.id }
                 );
                 showYouTubeManualDiscoveryStatus(group.id, result);
+                startYouTubeGroupAutoCheck(group.id);
             }
         }
 
@@ -3744,7 +3745,7 @@
 
                     // Start or stop auto-checking for YouTube groups
                     if (group.target === "youtube" || group.target === "youtubeshorts") {
-                        if (autoActivateCheckbox.checked) {
+                        if (autoActivateCheckbox.checked || isYouTubeOwnerGroup(group)) {
                             startYouTubeGroupAutoCheck(groupId);
                         } else {
                             stopYouTubeGroupAutoCheck(groupId);
@@ -4053,6 +4054,10 @@
             return !!group.isChannel;
         }
 
+        function shouldPollYouTubeGroup(group) {
+            return !!(group && isYouTubeTarget(group.target) && (group.autoActivate || isYouTubeOwnerGroup(group)));
+        }
+
         function groupHasActiveConnection(group) {
             if (!group) return false;
             return (group.streams || []).some(sid => {
@@ -4065,7 +4070,7 @@
 
         function maybeRestartYouTubeGroupAutoCheck(groupId, reason = '') {
             const group = stateManager.getGroup(groupId);
-            if (!group || !group.autoActivate || !isYouTubeTarget(group.target)) return;
+            if (!shouldPollYouTubeGroup(group)) return;
             if (groupHasActiveConnection(group)) return;
             if (youtubeGroupIntervals.has(groupId)) return;
             preferYouTubeGroupScrapeOnly(groupId, reason || 'restart');
@@ -4211,7 +4216,7 @@
             stopYouTubeGroupAutoCheck(groupId);
 
             const group = stateManager.getGroup(groupId);
-            if (!group || !group.autoActivate) return;
+            if (!shouldPollYouTubeGroup(group)) return;
 
             // Skip auto-check entirely if any source in the group is already active
             if (groupHasActiveConnection(group)) {
@@ -4398,10 +4403,11 @@
                     ? `Found ${newStreams.length} owned YouTube broadcast(s) for ${group.username}`
                     : `Found ${newStreams.length} new live stream(s) for ${group.username}`);
                 let waitingNewOwnerStreams = 0;
+                const shouldAutoOpen = group.autoActivate === true;
 
                 // Auto-activate new streams if auto-activate is enabled
                 for (const stream of newStreams) {
-                    const newSource = buildYouTubeSourceDataForGroup(group, stream, true);
+                    const newSource = buildYouTubeSourceDataForGroup(group, stream, shouldAutoOpen);
                     const shouldOpenNow = shouldActivateYouTubeStreamNow(stream, group);
                     if (ownerBackedGroup && !shouldOpenNow) {
                         waitingNewOwnerStreams++;
@@ -4422,6 +4428,9 @@
                             console.log(`[Auto-add TIMEOUT] sourceElement found: ${!!sourceElement}, activateButton found: ${!!activateButton}`);
                             if (!shouldOpenNow) {
                                 setYouTubeSourceWaitingForChat(addedSource.id, stream);
+                                return;
+                            }
+                            if (!shouldAutoOpen) {
                                 return;
                             }
                             if (activateButton) {
@@ -4461,6 +4470,9 @@
                     if (isOpen || isActive) continue;
                     if (!shouldActivateYouTubeStreamNow(stream, group)) {
                         setYouTubeSourceWaitingForChat(existingSourceId, stream);
+                        continue;
+                    }
+                    if (group.autoActivate !== true) {
                         continue;
                     }
 
@@ -10143,7 +10155,7 @@
                 // Check YouTube groups
                 const groups = stateManager.getGroups();
                 groups.forEach(group => {
-                    if (group.autoActivate && (group.target === "youtube" || group.target === "youtubeshorts")) {
+                    if (shouldPollYouTubeGroup(group)) {
                         console.log(`Starting auto-check for YouTube group on startup: ${group.username}`);
                         startYouTubeGroupAutoCheck(group.id);
                     }
