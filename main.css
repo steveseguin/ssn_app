@@ -1259,7 +1259,9 @@ button.group-control {
 }
 
 .modal-content button.youtube-source-choice {
-  display: block;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
   width: 100%;
   margin: 0;
   padding: 14px;
@@ -1274,11 +1276,53 @@ button.group-control {
   border-color: var(--border-accent);
 }
 
-.youtube-source-choice-title {
+.youtube-source-choice-icon-wrap {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.youtube-source-choice-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+}
+
+.youtube-source-choice-copy {
   display: block;
+  min-width: 0;
+}
+
+.youtube-source-choice-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+
+.youtube-source-choice-title {
+  display: inline-block;
   font-size: 15px;
   font-weight: 600;
-  margin-bottom: 4px;
+}
+
+.youtube-source-choice-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .youtube-source-choice-description {

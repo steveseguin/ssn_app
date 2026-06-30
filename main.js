@@ -84,7 +84,7 @@ const {
     setupSpotifyOAuthWithLocalServer,
     setupSpotifyOAuthWithIntercept
 } = require('./resources/electron-spotify-handler');
-const { setupYouTubeOAuthHandler } = require('./resources/electron-youtube-handler');
+const { setupYouTubeOAuthHandler, clearYouTubeOwnerAuthStore } = require('./resources/electron-youtube-handler');
 const { setupTwitchOAuthHandler } = require('./resources/electron-twitch-handler');
 const { setupFacebookOAuthHandler } = require('./resources/electron-facebook-handler');
 const { setupVeloraOAuthHandler } = require('./resources/electron-velora-handler');
@@ -5658,6 +5658,12 @@ async function clearAllData() {
             store.clear();
         } catch (storeError) {
             console.error('Failed to clear settings store during reset:', storeError);
+        }
+
+        try {
+            clearYouTubeOwnerAuthStore();
+        } catch (ownerAuthStoreError) {
+            console.error('Failed to clear YouTube owner auth store during reset:', ownerAuthStoreError);
         }
 
         try {

@@ -404,6 +404,10 @@ function setStoredOwnerAuths(auths) {
     ownerAuthStore.set(OWNER_AUTH_STORE_KEY, auths && typeof auths === "object" ? auths : {});
 }
 
+function clearYouTubeOwnerAuthStore() {
+    ownerAuthStore.clear();
+}
+
 function normalizeYouTubeSessionPartition(customSession) {
     const normalizedSession = String(customSession || "").trim();
     if (normalizedSession && normalizedSession !== "AUTO") {
@@ -943,5 +947,6 @@ function setupYouTubeOAuthHandler() {
 }
 
 module.exports = {
-    setupYouTubeOAuthHandler
+    setupYouTubeOAuthHandler,
+    clearYouTubeOwnerAuthStore
 };
