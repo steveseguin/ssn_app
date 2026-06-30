@@ -375,7 +375,7 @@
             </div>
         </div>
         <div class="button-group">
-            <button onclick="handleYouTubeGroupActivationPrompt(this)">Select Live Sources</button>
+            <button onclick="handleYouTubeGroupActivationPrompt(this)">Check for live streams now</button>
             <button onclick="handleYouTubeGroupAutoActivation(this)">Auto-find & Activate</button>
             <button class="hidden" data-signin data-group-signin
                 title="Open a sign-in window for this group's browser session." onclick="signin(this)">🔑
@@ -442,7 +442,7 @@
 
     <div class="modal hidden" id="youtubeAddModeModal">
         <div class="modal-content modal-md youtube-owner-modal">
-            <h2>Add YouTube</h2>
+            <h2>Add a YouTube source</h2>
             <div class="youtube-source-choice-list">
                 <button class="youtube-source-choice" data-youtube-add-mode="public" type="button">
                     <span class="youtube-source-choice-icon-wrap">
@@ -450,10 +450,10 @@
                     </span>
                     <span class="youtube-source-choice-copy">
                         <span class="youtube-source-choice-heading">
-                            <span class="youtube-source-choice-title">Find public channel</span>
+                            <span class="youtube-source-choice-title">Track a public channel</span>
                             <span class="youtube-source-choice-badge">No sign-in</span>
                         </span>
-                        <span class="youtube-source-choice-description">Use a handle or channel URL. Finds live and upcoming public streams only.</span>
+                        <span class="youtube-source-choice-description">Enter an @handle or channel URL. Finds public live and upcoming streams only, not unlisted.</span>
                     </span>
                 </button>
                 <button class="youtube-source-choice" data-youtube-add-mode="owner" type="button">
@@ -462,10 +462,10 @@
                     </span>
                     <span class="youtube-source-choice-copy">
                         <span class="youtube-source-choice-heading">
-                            <span class="youtube-source-choice-title">Find my broadcasts</span>
-                            <span class="youtube-source-choice-badge">Sign-in required</span>
+                            <span class="youtube-source-choice-title">Use my YouTube account</span>
+                            <span class="youtube-source-choice-badge">Recommended</span>
                         </span>
-                        <span class="youtube-source-choice-description">Sign in read-only. Lists your own live and scheduled broadcasts, including unlisted streams.</span>
+                        <span class="youtube-source-choice-description">Sign in read-only. Reliably finds your own live and scheduled streams, including unlisted.</span>
                     </span>
                 </button>
                 <button class="youtube-source-choice" data-youtube-add-mode="video" type="button">
@@ -474,10 +474,10 @@
                     </span>
                     <span class="youtube-source-choice-copy">
                         <span class="youtube-source-choice-heading">
-                            <span class="youtube-source-choice-title">Paste video URL / ID</span>
-                            <span class="youtube-source-choice-badge">Exact link</span>
+                            <span class="youtube-source-choice-title">Paste a video link / ID</span>
+                            <span class="youtube-source-choice-badge">Direct</span>
                         </span>
-                        <span class="youtube-source-choice-description">Paste a live video link or ID. Works for public or unlisted videos; the video must already be live.</span>
+                        <span class="youtube-source-choice-description">Paste a live video URL or ID. Public or unlisted; the video must already be live.</span>
                     </span>
                 </button>
             </div>
@@ -504,7 +504,7 @@
             <h2>YouTube Sign-In</h2>
             <div class="youtube-owner-profile" id="youtubeOwnerManageSummary"></div>
             <div class="modal-footer">
-                <button id="youtubeOwnerManageSelectButton" type="button">Select Live Sources</button>
+                <button id="youtubeOwnerManageSelectButton" type="button">Check for live streams now</button>
                 <button id="youtubeOwnerManageSwitchButton" type="button">Switch account / channel</button>
                 <button id="youtubeOwnerManageCloseButton" data-type="cancel" type="button">Close</button>
             </div>
@@ -2218,7 +2218,7 @@
             return new Promise(resolve => {
                 let selectedChannelId = channels[0].channelId;
                 summary.textContent = channels.length === 1
-                    ? 'Signed in channel:'
+                    ? 'You are signed in as:'
                     : 'Choose the YouTube channel or Brand Channel this source should use:';
                 list.innerHTML = '';
 
@@ -2697,7 +2697,7 @@
                     const messageParts = [];
                     if (errorMessage) messageParts.push(errorMessage);
                     messageParts.push('Enter your YouTube handle, like @TGG_, or paste your channel URL.');
-                    messageParts.push('The stream must be live and public for chat discovery to work.');
+                    messageParts.push('The stream must be live or upcoming and public for chat discovery to work.');
                     const allowSpacesForChannel = (target === 'youtube' || target === 'youtubeshorts') && isChannelName;
                     if (allowSpacesForChannel) {
                         messageParts.push('Channel names can include spaces when the channel option is enabled.');
