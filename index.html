@@ -11828,7 +11828,7 @@
 
             // Check if we should show the editor view initially
             const viewParam = window.initialEditorView ? 'view=editor' : null;
-            const backgroundParams = languageParams.concat(['sdk=1', viewParam].filter(Boolean));
+            const backgroundParams = languageParams.concat([viewParam].filter(Boolean));
 
             if (sourcemode || devmode) {
                 document.getElementById("sources")?.classList.add("dev");
