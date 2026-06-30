@@ -2635,6 +2635,48 @@
             };
         }
 
+        function normalizeYouTubePublicSourceInput(value, fallbackIsChannelName = false) {
+            const trimmed = String(value || '').trim();
+            if (!trimmed) return { value: '', isChannelName: false };
+
+            const urlCandidate = /^https?:\/\//i.test(trimmed)
+                ? trimmed
+                : (/(^|\.)youtu(?:be\.com|\.be)\//i.test(trimmed) ? `https://${trimmed}` : '');
+
+            if (urlCandidate) {
+                try {
+                    const url = new URL(urlCandidate);
+                    const hostname = url.hostname.toLowerCase();
+                    if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+                        const parsed = parseYoutubeUrl(url);
+                        if (parsed?.isYoutubeUrl && parsed.type === 'channel_id' && parsed.id) {
+                            return { value: parsed.id, isChannelName: true };
+                        }
+                        if (parsed?.isYoutubeUrl && parsed.username) {
+                            const pathParts = url.pathname.split('/').filter(Boolean);
+                            const firstPart = (pathParts[0] || '').toLowerCase();
+                            return {
+                                value: parsed.username,
+                                isChannelName: firstPart === 'c'
+                            };
+                        }
+                        return { value: urlCandidate, isChannelName: false };
+                    }
+                } catch (_) { /* fall through to text inference */ }
+            }
+
+            if (/^UC[a-zA-Z0-9_-]{22}$/.test(trimmed)) {
+                return { value: trimmed, isChannelName: true };
+            }
+            if (trimmed.startsWith('@')) {
+                return { value: trimmed, isChannelName: false };
+            }
+            if (/\s/.test(trimmed)) {
+                return { value: trimmed, isChannelName: true };
+            }
+            return { value: trimmed, isChannelName: !!fallbackIsChannelName };
+        }
+
         async function newSourcePrompt(target) {
             let username = '';
             let isChannelName = false;
@@ -2696,18 +2738,13 @@
                 } else if (target === "youtube" || target === "youtubeshorts") {
                     const messageParts = [];
                     if (errorMessage) messageParts.push(errorMessage);
-                    messageParts.push('Enter your YouTube handle, like @TGG_, or paste your channel URL.');
+                    messageParts.push('Enter a YouTube @handle, channel URL, or display name.');
                     messageParts.push('The stream must be live or upcoming and public for chat discovery to work.');
-                    const allowSpacesForChannel = (target === 'youtube' || target === 'youtubeshorts') && isChannelName;
-                    if (allowSpacesForChannel) {
-                        messageParts.push('Channel names can include spaces when the channel option is enabled.');
-                    } else {
-                        messageParts.push('Do not enter a display name with spaces here; use the @handle or channel URL instead.');
-                    }
+                    messageParts.push('@handles and channel URLs are more reliable than display-name search.');
                     response = await ipcRenderer.sendSync('prompt', {
                         title: `Enter the ${target} handle or channel URL`,
                         message: messageParts.join('\n\n'),
-                        showChannelTypeCheckbox: true,
+                        showChannelTypeCheckbox: false,
                         showShortsCheckbox: (target === "youtubeshorts"),
                         value: typeof username === 'string' ? username : '',
                         defaultIsChannelName: isChannelName,
@@ -2809,6 +2846,13 @@
                     continue;
                 }
 
+                let normalizedInput = trimmedInput;
+                if (target === 'youtube' || target === 'youtubeshorts') {
+                    const youtubeInput = normalizeYouTubePublicSourceInput(trimmedInput, isChannelName);
+                    normalizedInput = youtubeInput.value;
+                    isChannelName = youtubeInput.isChannelName;
+                }
+
                 const allowSpacesForChannel = (target === 'youtube' || target === 'youtubeshorts' || target === 'rumble') && isChannelName;
                 if (/\s/.test(trimmedInput) && !allowSpacesForChannel) {
                     lastError = 'space';
@@ -2821,7 +2865,6 @@
                     continue;
                 }
 
-                let normalizedInput = trimmedInput;
                 if (target === 'kick') {
                     const kickSlug = extractKickSlugFromInput(trimmedInput);
                     if (kickSlug) {
