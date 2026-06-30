@@ -8,8 +8,6 @@
         content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=yes" />
     <meta http-equiv="Content-Security-Policy"
         content="script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; worker-src 'self' 'unsafe-inline' 'unsafe-eval' blob:;" />
-    <link rel="stylesheet"
-        href="https://maxst.icons8.com/vue-static/landings/line-awesome/line-awesome/1.3.0/css/line-awesome.min.css">
     <link rel="stylesheet" type="text/css" href="main.css" />
     <script src="resources/social_stream_fallback/main/thirdparty/vdoninja-sdk.js"></script>
     <script>
@@ -129,7 +127,7 @@
         <div id="streams-page">
             <div class="addnew">
                 <p data-i18n="source.add">Add a new source:</p>
-                <span><button onclick="newSourcePrompt('youtube');" data-source-type="youtube-username"><img
+                <span><button onclick="showYouTubeAddSourcePrompt('youtube');" data-source-type="youtube-username"><img
                             src="https://cache.socialstream.ninja/sources/images/youtube.png" class="icon" />YouTube</button></span>
                 <span><button onclick="newSourceVideoIDPrompt('youtube');" data-source-type="youtube-videoid"><img
                             src="https://cache.socialstream.ninja/sources/images/youtube.png" class="icon" />YouTube Video</button></span>
@@ -440,6 +438,49 @@
             <div class="yt-stream-buttons">
                 <button class="yt-stream-button secondary" id="ytCancelButton">Cancel</button>
                 <button class="yt-stream-button primary" id="ytActivateButton">Activate Selected</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal hidden" id="youtubeAddModeModal">
+        <div class="modal-content modal-md youtube-owner-modal">
+            <h2>Add YouTube Source</h2>
+            <div class="youtube-source-choice-list">
+                <button class="youtube-source-choice" data-youtube-add-mode="public" type="button">
+                    <span class="youtube-source-choice-title">Public channel</span>
+                    <span class="youtube-source-choice-description">Use a handle, username, or channel name. Finds public live and upcoming streams.</span>
+                </button>
+                <button class="youtube-source-choice" data-youtube-add-mode="owner" type="button">
+                    <span class="youtube-source-choice-title">My YouTube account</span>
+                    <span class="youtube-source-choice-description">Sign in with read-only access. Finds your own live and scheduled broadcasts, including unlisted streams.</span>
+                </button>
+            </div>
+            <div class="modal-footer">
+                <button data-youtube-add-mode="cancel" data-type="cancel" type="button">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal hidden" id="youtubeOwnerConfirmModal">
+        <div class="modal-content modal-md youtube-owner-modal">
+            <h2>Confirm YouTube Channel</h2>
+            <div class="youtube-owner-profile" id="youtubeOwnerProfileSummary"></div>
+            <div class="youtube-owner-channel-list" id="youtubeOwnerChannelList"></div>
+            <div class="modal-footer">
+                <button id="youtubeOwnerUseChannelButton" type="button">Use this channel</button>
+                <button id="youtubeOwnerCancelButton" data-type="cancel" type="button">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal hidden" id="youtubeOwnerManageModal">
+        <div class="modal-content modal-sm youtube-owner-modal">
+            <h2>YouTube Sign-In</h2>
+            <div class="youtube-owner-profile" id="youtubeOwnerManageSummary"></div>
+            <div class="modal-footer">
+                <button id="youtubeOwnerManageSelectButton" type="button">Select Live Sources</button>
+                <button id="youtubeOwnerManageSwitchButton" type="button">Switch account / channel</button>
+                <button id="youtubeOwnerManageCloseButton" data-type="cancel" type="button">Close</button>
             </div>
         </div>
     </div>
@@ -1809,8 +1850,13 @@
 
             element.querySelector("[data-sourceicon]").src = getSourceIconUrl(group.target);
             element.querySelector("[data-sourceicon]").title = group.target;
-            element.querySelector("[data-channelname]").textContent = group.username || "";
-            element.querySelector("[data-targetname]").textContent = group.target || "";
+            const isOwnerBackedYouTubeGroup = isYouTubeOwnerGroup(group);
+            element.querySelector("[data-channelname]").textContent = isOwnerBackedYouTubeGroup
+                ? (group.channelTitle || group.username || "")
+                : (group.username || "");
+            element.querySelector("[data-targetname]").textContent = isOwnerBackedYouTubeGroup
+                ? `${group.target || 'youtube'} - signed in`
+                : (group.target || "");
 
             const autoActivateCheckbox = element.querySelector('.auto-activate-toggle input[data-state-key="autoActivate"]');
             if (autoActivateCheckbox) {
@@ -1821,7 +1867,15 @@
             if (groupSigninButton) {
                 const isYouTubeGroup = group.target === 'youtube' || group.target === 'youtubeshorts';
                 const isWebsocketMode = group.connectionMode === 'websocket';
-                if (isYouTubeGroup) {
+                if (isOwnerBackedYouTubeGroup) {
+                    groupSigninButton.textContent = 'Manage Sign-In';
+                    groupSigninButton.classList.remove('hidden');
+                    groupSigninButton.classList.add('authenticated');
+                    groupSigninButton.disabled = false;
+                    groupSigninButton.style.cursor = '';
+                    groupSigninButton.title = 'Manage the signed-in YouTube account used for this group.';
+                    groupSigninButton.onclick = function () { manageYouTubeOwnerSignin(this); };
+                } else if (isYouTubeGroup) {
                     const label = typeof translate === 'function' ? translate('btn.signin') : '🔑 Sign-in';
                     groupSigninButton.textContent = label;
                     groupSigninButton.classList.remove('hidden');
@@ -1948,8 +2002,35 @@
         async function createYouTubeEntry(streamData, usernameForGroup, isShortSelected) {
             const target = isShortSelected ? 'youtubeshorts' : 'youtube';
 
-            let group = stateManager.getGroups().find(g => g.username === usernameForGroup && g.target === target);
+            let group = streamData.groupId ? stateManager.getGroup(streamData.groupId) : null;
+            if (group && group.target !== target) {
+                group = null;
+            }
+            if (!group && isYouTubeOwnerStream(streamData)) {
+                group = stateManager.getGroups().find(g =>
+                    isYouTubeOwnerGroup(g)
+                    && g.target === target
+                    && (
+                        (streamData.youtubeAuthRef && g.youtubeAuthRef === streamData.youtubeAuthRef)
+                        || (streamData.channelId && g.channelId === streamData.channelId)
+                    )
+                );
+            }
+            if (!group) {
+                group = stateManager.getGroups().find(g => g.username === usernameForGroup && g.target === target);
+            }
             let groupId = group ? group.id : null;
+
+            if (!groupId && isYouTubeOwnerStream(streamData) && streamData.channelId && streamData.youtubeAuthRef) {
+                const ownerGroup = createOrUpdateYouTubeOwnerGroup({
+                    authRef: streamData.youtubeAuthRef,
+                    channelId: streamData.channelId,
+                    channelTitle: streamData.channelTitle || usernameForGroup || streamData.channelId,
+                    customSession: streamData.customSession || ''
+                }, target);
+                group = ownerGroup || null;
+                groupId = group ? group.id : null;
+            }
 
             if (!groupId) {
                 console.warn(`Group for ${usernameForGroup} (${target}) not found. Creating now.`);
@@ -1977,7 +2058,7 @@
             const sourceDataObject = {
                 target: target,
                 videoId: streamData.videoId,
-                username: streamData.channelTitle || usernameForGroup,
+                username: streamData.channelTitle || parentGroup?.channelTitle || usernameForGroup,
                 url: `https://www.youtube.com/live_chat?is_popout=1&v=${streamData.videoId}${isShortSelected ? '&shorts' : ''}`,
                 isAutoDiscovered: true,
                 groupId: groupId,
@@ -1986,7 +2067,8 @@
                 isVisible: parentGroup?.groupVisible !== undefined ? parentGroup.groupVisible : true,
                 isMuted: parentGroup?.groupMuted !== undefined ? parentGroup.groupMuted : true,
                 autoActivate: false,
-                supportsWSS
+                supportsWSS,
+                ...getYouTubeStreamMetadataUpdates(streamData, parentGroup)
             };
 
             const sourceId = stateManager.addSource(sourceDataObject);
@@ -2027,6 +2109,503 @@
         }
 
 
+        function isYouTubeOwnerGroup(group) {
+            return !!(group && isYouTubeTarget(group.target) && group.youtubeDiscoveryMode === 'owner');
+        }
+
+        function isYouTubeOwnerStream(stream) {
+            return !!(stream && (stream.youtubeDiscoveryMode === 'owner' || stream.ownerDiscovered || stream.youtubeAuthRef));
+        }
+
+        function isYouTubeOwnerBroadcastSelectable(stream, maxFutureMinutes = 24 * 60) {
+            if (!stream || typeof stream !== 'object') return false;
+            if (stream.status === 'live') return true;
+            if (stream.status !== 'upcoming') return false;
+            if (!stream.scheduledStartTime) return true;
+            try {
+                const startMs = typeof getYouTubeStreamSortTimestamp === 'function'
+                    ? getYouTubeStreamSortTimestamp(stream)
+                    : Date.parse(stream.scheduledStartTime);
+                if (startMs === Number.MAX_SAFE_INTEGER || Number.isNaN(startMs)) return false;
+                const diffMins = (startMs - Date.now()) / (1000 * 60);
+                return diffMins >= -15 && diffMins <= maxFutureMinutes;
+            } catch (_) {
+                return false;
+            }
+        }
+
+        function getYouTubeOwnerBridge() {
+            if (window.ninjafy && typeof window.ninjafy.startYouTubeOwnerAuth === 'function') {
+                return window.ninjafy;
+            }
+            return null;
+        }
+
+        function getYouTubeChannelThumb(channel) {
+            return channel?.thumbnails?.default?.url
+                || channel?.thumbnails?.medium?.url
+                || channel?.thumbnails?.high?.url
+                || 'https://cache.socialstream.ninja/sources/images/youtube.png';
+        }
+
+        async function showYouTubeAddSourcePrompt(target = 'youtube') {
+            const mode = await showYouTubeAddModeModal();
+            if (mode === 'owner') {
+                return startYouTubeOwnerGroupFlow(target);
+            }
+            if (mode === 'public') {
+                return newSourcePrompt(target);
+            }
+        }
+
+        function showYouTubeAddModeModal() {
+            const modal = document.getElementById('youtubeAddModeModal');
+            if (!modal) return Promise.resolve('public');
+            return new Promise(resolve => {
+                const buttons = Array.from(modal.querySelectorAll('[data-youtube-add-mode]'));
+                const cleanup = (value) => {
+                    buttons.forEach(button => { button.onclick = null; });
+                    modal.classList.add('hidden');
+                    resolve(value);
+                };
+                buttons.forEach(button => {
+                    button.onclick = () => cleanup(button.dataset.youtubeAddMode);
+                });
+                modal.classList.remove('hidden');
+            });
+        }
+
+        function showYouTubeOwnerChannelConfirm(authResult) {
+            const modal = document.getElementById('youtubeOwnerConfirmModal');
+            const summary = document.getElementById('youtubeOwnerProfileSummary');
+            const list = document.getElementById('youtubeOwnerChannelList');
+            const useButton = document.getElementById('youtubeOwnerUseChannelButton');
+            const cancelButton = document.getElementById('youtubeOwnerCancelButton');
+            const channels = Array.isArray(authResult?.channels) ? authResult.channels : [];
+            if (!modal || !summary || !list || !useButton || !cancelButton || channels.length === 0) {
+                return Promise.resolve(channels[0] || null);
+            }
+
+            return new Promise(resolve => {
+                let selectedChannelId = channels[0].channelId;
+                summary.textContent = channels.length === 1
+                    ? 'Signed in channel:'
+                    : 'Choose the YouTube channel or Brand Channel this source should use:';
+                list.innerHTML = '';
+
+                channels.forEach((channel, index) => {
+                    const label = document.createElement('label');
+                    label.className = 'youtube-owner-channel-option';
+                    const radio = document.createElement('input');
+                    radio.type = 'radio';
+                    radio.name = 'youtube-owner-channel';
+                    radio.value = channel.channelId;
+                    radio.checked = index === 0;
+                    radio.addEventListener('change', () => {
+                        selectedChannelId = channel.channelId;
+                    });
+
+                    const img = document.createElement('img');
+                    img.src = getYouTubeChannelThumb(channel);
+                    img.alt = '';
+
+                    const text = document.createElement('span');
+                    const title = document.createElement('strong');
+                    title.textContent = channel.channelTitle || channel.channelId;
+                    const id = document.createElement('small');
+                    id.textContent = `Channel ID: ${channel.channelId}`;
+                    text.appendChild(title);
+                    text.appendChild(id);
+
+                    label.appendChild(radio);
+                    label.appendChild(img);
+                    label.appendChild(text);
+                    list.appendChild(label);
+                });
+
+                const cleanup = (value) => {
+                    useButton.onclick = null;
+                    cancelButton.onclick = null;
+                    modal.classList.add('hidden');
+                    resolve(value);
+                };
+
+                useButton.onclick = () => cleanup(channels.find(channel => channel.channelId === selectedChannelId) || channels[0]);
+                cancelButton.onclick = () => cleanup(null);
+                modal.classList.remove('hidden');
+            });
+        }
+
+        function createOrUpdateYouTubeOwnerGroup(profile, target = 'youtube', existingGroupId = null) {
+            if (!profile || !profile.channelId || !profile.authRef) {
+                throw new Error('Missing signed-in YouTube channel information.');
+            }
+            const channelTitle = profile.channelTitle || profile.channelId;
+            const desiredId = existingGroupId || `youtube-owner-${profile.channelId}-${target}`;
+            const existingGroup = existingGroupId
+                ? stateManager.getGroup(existingGroupId)
+                : stateManager.getGroups().find(group =>
+                    isYouTubeOwnerGroup(group)
+                    && group.target === target
+                    && (group.youtubeAuthRef === profile.authRef || group.channelId === profile.channelId)
+                );
+
+            const ownerFields = {
+                target,
+                username: channelTitle,
+                isChannel: false,
+                youtubeDiscoveryMode: 'owner',
+                channelId: profile.channelId,
+                channelTitle,
+                youtubeAuthRef: profile.authRef,
+                authProfileId: profile.authRef
+            };
+            const customSession = profile.customSession || existingGroup?.customSession || '';
+            if (customSession) {
+                ownerFields.customSession = customSession;
+            }
+
+            let groupId = existingGroup?.id || desiredId;
+            if (existingGroup) {
+                stateManager.updateGroup(groupId, ownerFields);
+            } else {
+                groupId = stateManager.addGroup({
+                    id: desiredId,
+                    ...ownerFields,
+                    connectionMode: 'classic',
+                    autoActivate: false,
+                    groupVisible: true,
+                    groupMuted: false
+                });
+            }
+
+            const groupElement = document.querySelector(`[data-group-id="${groupId}"]`);
+            if (groupElement) {
+                updateGroupUI(groupElement, stateManager.getGroup(groupId));
+            }
+            return stateManager.getGroup(groupId);
+        }
+
+        async function startYouTubeOwnerGroupFlow(target = 'youtube', existingGroupId = null) {
+            const bridge = getYouTubeOwnerBridge();
+            if (!bridge) {
+                Toast.error('YouTube Sign-In', 'This app build does not expose YouTube owner sign-in yet.');
+                return null;
+            }
+            try {
+                const existingGroup = existingGroupId ? stateManager.getGroup(existingGroupId) : null;
+                const customSession = existingGroup?.customSession || 'AUTO';
+                let tokenStorePage = await resolveWebSocketHtml('youtube_auth', {
+                    ssapp: '1',
+                    authonly: '1'
+                }, { branch: isBetaMode ? 'beta' : 'main' }).catch(error => {
+                    console.warn('Unable to resolve YouTube auth token store page:', error);
+                    return null;
+                });
+                if (!tokenStorePage) {
+                    tokenStorePage = await resolveWebSocketHtml('youtube', {
+                        ssapp: '1',
+                        authonly: '1'
+                    }, { branch: isBetaMode ? 'beta' : 'main' }).catch(error => {
+                        console.warn('Unable to resolve YouTube websocket fallback token store page:', error);
+                        return null;
+                    });
+                }
+                Toast.info('YouTube Sign-In', 'Opening YouTube sign-in in your browser...');
+                const authResult = await bridge.startYouTubeOwnerAuth({
+                    customSession,
+                    tokenStoreUrl: tokenStorePage?.url || ''
+                });
+                const selectedChannel = await showYouTubeOwnerChannelConfirm(authResult);
+                if (!selectedChannel) return null;
+
+                const confirmed = await bridge.confirmYouTubeOwnerAuth({
+                    pendingAuthId: authResult.pendingAuthId,
+                    channelId: selectedChannel.channelId
+                });
+                if (!confirmed?.success || !confirmed.profile) {
+                    throw new Error('YouTube sign-in did not return a usable channel profile.');
+                }
+
+                const group = createOrUpdateYouTubeOwnerGroup({
+                    ...confirmed.profile,
+                    customSession
+                }, target, existingGroupId);
+                if (confirmed.websocketTokenStore && confirmed.websocketTokenStore.success === false && !confirmed.websocketTokenStore.skipped) {
+                    Toast.warning('YouTube Sign-In', 'Discovery sign-in worked, but the YouTube chat session may still ask you to sign in.');
+                }
+                Toast.success('YouTube Sign-In', `Signed in as ${group.channelTitle || group.username}.`);
+
+                resetYouTubeGroupApiBootstrap(group.id, 'owner sign-in');
+                const result = await handleYouTubeActivation(
+                    group.username,
+                    group.target === 'youtubeshorts',
+                    true,
+                    false,
+                    false,
+                    { manualTrigger: true, groupId: group.id }
+                );
+                showYouTubeManualDiscoveryStatus(group.id, result);
+                return group;
+            } catch (error) {
+                console.error('YouTube owner sign-in failed:', error);
+                Toast.error('YouTube Sign-In', error?.message || 'Unable to sign in to YouTube.');
+                return null;
+            }
+        }
+
+        function showYouTubeOwnerManageModal(group) {
+            const modal = document.getElementById('youtubeOwnerManageModal');
+            const summary = document.getElementById('youtubeOwnerManageSummary');
+            const selectButton = document.getElementById('youtubeOwnerManageSelectButton');
+            const switchButton = document.getElementById('youtubeOwnerManageSwitchButton');
+            const closeButton = document.getElementById('youtubeOwnerManageCloseButton');
+            if (!modal || !summary || !selectButton || !switchButton || !closeButton) {
+                return Promise.resolve('close');
+            }
+            return new Promise(resolve => {
+                summary.textContent = `Signed in as: ${group.channelTitle || group.username || 'YouTube'}\nChannel ID: ${group.channelId || 'Unknown'}`;
+                const cleanup = (action) => {
+                    selectButton.onclick = null;
+                    switchButton.onclick = null;
+                    closeButton.onclick = null;
+                    modal.classList.add('hidden');
+                    resolve(action);
+                };
+                selectButton.onclick = () => cleanup('select');
+                switchButton.onclick = () => cleanup('switch');
+                closeButton.onclick = () => cleanup('close');
+                modal.classList.remove('hidden');
+            });
+        }
+
+        async function manageYouTubeOwnerSignin(buttonElement) {
+            const groupElement = buttonElement.closest('[data-is-group-header="true"]');
+            const groupId = groupElement?.dataset.groupId;
+            const group = stateManager.getGroup(groupId);
+            if (!isYouTubeOwnerGroup(group)) return;
+            const action = await showYouTubeOwnerManageModal(group);
+            if (action === 'switch') {
+                await startYouTubeOwnerGroupFlow(group.target, group.id);
+            } else if (action === 'select') {
+                resetYouTubeGroupApiBootstrap(group.id, 'owner manage select');
+                const result = await handleYouTubeActivation(
+                    group.username,
+                    group.target === 'youtubeshorts',
+                    true,
+                    false,
+                    false,
+                    { manualTrigger: true, groupId: group.id }
+                );
+                showYouTubeManualDiscoveryStatus(group.id, result);
+            }
+        }
+
+        async function fetchYouTubeOwnerStreamsForGroup(group) {
+            if (!isYouTubeOwnerGroup(group)) return [];
+            const bridge = getYouTubeOwnerBridge();
+            if (!bridge || typeof bridge.fetchYouTubeOwnerBroadcasts !== 'function') {
+                throw new Error('YouTube owner discovery is unavailable in this app build.');
+            }
+            if (!group.youtubeAuthRef) {
+                throw new Error('This YouTube group needs sign-in before owner discovery can run.');
+            }
+            const result = await bridge.fetchYouTubeOwnerBroadcasts({
+                authRef: group.youtubeAuthRef,
+                channelId: group.channelId,
+                statuses: ['active', 'upcoming']
+            });
+            if (result?.profile) {
+                const updates = {};
+                if (result.profile.channelTitle && result.profile.channelTitle !== group.channelTitle) {
+                    updates.channelTitle = result.profile.channelTitle;
+                    updates.username = result.profile.channelTitle;
+                }
+                if (Object.keys(updates).length) {
+                    stateManager.updateGroup(group.id, updates);
+                    group = stateManager.getGroup(group.id) || group;
+                }
+            }
+            const broadcasts = Array.isArray(result?.broadcasts) ? result.broadcasts : [];
+            const mapped = broadcasts.map(stream => ({
+                ...stream,
+                target: group.target,
+                isShort: group.target === 'youtubeshorts',
+                groupId: group.id,
+                youtubeDiscoveryMode: 'owner',
+                youtubeAuthRef: group.youtubeAuthRef,
+                customSession: group.customSession || 'AUTO',
+                channelId: stream.channelId || group.channelId,
+                channelTitle: stream.channelTitle || group.channelTitle || group.username,
+                username: group.channelTitle || group.username
+            })).filter(stream => isYouTubeOwnerBroadcastSelectable(stream));
+            return typeof sortYouTubeStreams === 'function' ? sortYouTubeStreams(mapped) : mapped;
+        }
+
+        function getYouTubeStreamMetadataUpdates(stream, group = null) {
+            if (!stream || typeof stream !== 'object') return {};
+            const updates = {};
+            [
+                'broadcastId',
+                'liveChatId',
+                'privacyStatus',
+                'scheduledStartTime',
+                'actualStartTime',
+                'actualEndTime',
+                'lifeCycleStatus',
+                'youtubeChatStatus',
+                'youtubeDiscoveryMode',
+                'youtubeAuthRef',
+                'customSession',
+                'channelId',
+                'channelTitle',
+                'title'
+            ].forEach(key => {
+                if (stream[key] !== undefined) updates[key] = stream[key];
+            });
+            if (group && isYouTubeOwnerGroup(group)) {
+                updates.youtubeDiscoveryMode = 'owner';
+                updates.youtubeAuthRef = group.youtubeAuthRef;
+                updates.channelId = updates.channelId || group.channelId;
+                updates.channelTitle = updates.channelTitle || group.channelTitle;
+            }
+            return updates;
+        }
+
+        function shouldActivateYouTubeStreamNow(stream, group = null) {
+            if (!stream) return false;
+            if (isYouTubeOwnerGroup(group) || isYouTubeOwnerStream(stream)) {
+                if (stream.status === 'ended' || stream.youtubeChatStatus === 'ended') return false;
+                if (stream.status === 'upcoming' && stream.youtubeChatStatus !== 'ready' && !stream.liveChatId) return false;
+                return stream.status === 'live' || !!stream.liveChatId || stream.youtubeChatStatus === 'ready';
+            }
+            return true;
+        }
+
+        function buildYouTubeSourceDataForGroup(group, stream, autoActivate = false) {
+            const isShorts = group.target === 'youtubeshorts' || stream.isShort === true;
+            const target = isShorts ? 'youtubeshorts' : 'youtube';
+            const ownerFields = isYouTubeOwnerGroup(group)
+                ? {
+                    youtubeDiscoveryMode: 'owner',
+                    youtubeAuthRef: group.youtubeAuthRef,
+                    authProfileId: group.youtubeAuthRef,
+                    channelId: stream.channelId || group.channelId,
+                    channelTitle: stream.channelTitle || group.channelTitle
+                }
+                : {};
+            return {
+                target,
+                username: stream.channelTitle || group.channelTitle || group.username,
+                url: `https://www.youtube.com/live_chat?is_popout=1&v=${stream.videoId}${target === 'youtubeshorts' ? '&shorts' : ''}`,
+                groupId: group.id,
+                videoId: stream.videoId,
+                title: stream.title,
+                isAutoDiscovered: true,
+                autoActivate,
+                connectionMode: group.connectionMode || 'classic',
+                customSession: group.customSession || 'AUTO',
+                isVisible: group.groupVisible !== undefined ? group.groupVisible : true,
+                isMuted: group.groupMuted !== undefined ? group.groupMuted : true,
+                supportsWSS: platformSupportsWebSocket(target),
+                ...getYouTubeStreamMetadataUpdates(stream, group),
+                ...ownerFields
+            };
+        }
+
+        function setYouTubeSourceWaitingForChat(sourceId, stream = null) {
+            const sourceElement = document.querySelector(`[data-source-id="${sourceId}"]`);
+            if (sourceElement && typeof updateConnectionStatus === 'function') {
+                const privacy = stream?.privacyStatus ? `${stream.privacyStatus} ` : '';
+                updateConnectionStatus(sourceElement, 'info', `Waiting for ${privacy}YouTube chat to become available...`, { persistent: true });
+            }
+        }
+
+        function normalizeInstagramUsernameInput(value) {
+            const raw = String(value || '').trim();
+            if (!raw) return '';
+
+            let input = raw.replace(/^@+/, '').trim();
+            const urlCandidate = /^https?:\/\//i.test(input)
+                ? input
+                : (/instagram\.com\//i.test(input) ? `https://${input}` : '');
+
+            if (urlCandidate) {
+                try {
+                    const liveUrl = new URL(urlCandidate);
+                    if (/(^|\.)instagram\.com$/i.test(liveUrl.hostname)) {
+                        const pathParts = liveUrl.pathname.split('/').filter(Boolean);
+                        const firstPathPart = pathParts[0] || '';
+                        const reservedPaths = new Set(['accounts', 'direct', 'explore', 'p', 'reel', 'reels', 'stories', 'tv']);
+                        return firstPathPart && !reservedPaths.has(firstPathPart.toLowerCase())
+                            ? firstPathPart.replace(/^@+/, '').trim()
+                            : '';
+                    }
+                    return '';
+                } catch (_) {
+                    return '';
+                }
+            }
+
+            return input.split(/[/?#]/)[0].replace(/^@+/, '').trim();
+        }
+
+        function normalizePartiSourceInput(value) {
+            const raw = String(value || '').trim();
+            if (!raw) return null;
+
+            let input = raw.replace(/^@+/, '').trim();
+            const urlCandidate = /^https?:\/\//i.test(input)
+                ? input
+                : (/parti\.com\//i.test(input) ? `https://${input}` : '');
+
+            if (urlCandidate) {
+                try {
+                    const partiUrl = new URL(urlCandidate);
+                    if (!/(^|\.)parti\.com$/i.test(partiUrl.hostname)) {
+                        return null;
+                    }
+                    const pathParts = partiUrl.pathname.split('/').filter(Boolean);
+                    if ((pathParts[0] || '').toLowerCase() === 'popout-chat') {
+                        const id = (partiUrl.searchParams.get('id') || '').replace(/^@+/, '').trim();
+                        if (!id) return null;
+                        if (/^\d+$/.test(id)) {
+                            return {
+                                username: id,
+                                url: `https://parti.com/popout-chat?id=${encodeURIComponent(id)}`
+                            };
+                        }
+                        return {
+                            username: id,
+                            url: `https://parti.com/${encodeURIComponent(id)}`
+                        };
+                    }
+                    const handle = (pathParts[0] || '').replace(/^@+/, '').trim();
+                    const reservedPaths = new Set(['assets', 'cdn-cgi', 'login', 'live', 'markets', 'overlay', 'popout-chat', 'predict', 'schedule']);
+                    if (!handle || reservedPaths.has(handle.toLowerCase())) return null;
+                    return {
+                        username: handle,
+                        url: `https://parti.com/${encodeURIComponent(handle)}`
+                    };
+                } catch (_) {
+                    return null;
+                }
+            }
+
+            const cleaned = input.split(/[/?#]/)[0].replace(/^@+/, '').trim();
+            if (!cleaned) return null;
+            if (/^\d+$/.test(cleaned)) {
+                return {
+                    username: cleaned,
+                    url: `https://parti.com/popout-chat?id=${encodeURIComponent(cleaned)}`
+                };
+            }
+            return {
+                username: cleaned,
+                url: `https://parti.com/${encodeURIComponent(cleaned)}`
+            };
+        }
+
         async function newSourcePrompt(target) {
             let username = '';
             let isChannelName = false;
@@ -2039,6 +2618,9 @@
                 nimo: "Nimo username",
                 sooplive: "SOOP broadcaster ID/name",
                 tiktok: "TikTok username or live URL",
+                instagram: "Instagram username or live URL",
+                instagramlive: "Instagram username or live URL",
+                parti: "Parti user ID, handle, or URL",
                 twitcasting: "TwitCasting username",
                 younow: "YouNow username",
                 bilibilicom: "Bilibili.com room ID or URL",
@@ -2124,10 +2706,10 @@
                 } else if (target === "parti") {
                     const messageParts = [];
                     if (errorMessage) messageParts.push(errorMessage);
-                    messageParts.push('This is a number which can be found at the end of the pop-out chat URL.');
-                    messageParts.push('Note: Usernames cannot contain spaces.');
+                    messageParts.push('Enter a Parti profile URL, handle, numeric user ID, or popout-chat URL.');
+                    messageParts.push('Examples: Mad_Dog_Music, https://parti.com/Mad_Dog_Music, or 627664.');
                     const promptOptions = {
-                        title: `Enter the ${target} user ID`,
+                        title: `Enter the ${promptTargetLabel}`,
                         message: messageParts.join('\n\n'),
                         value: typeof username === 'string' ? username : '',
                         errorMessage,
@@ -2143,6 +2725,10 @@
                         messageParts.push('Do not use the display name if it differs from the URL. Kick display names can use underscores while the URL slug uses hyphens.');
                     } else if (target === "tiktok") {
                         messageParts.push('Paste the TikTok live URL, like https://www.tiktok.com/@username/live, or enter only the username.');
+                    } else if (target === "instagram" || target === "instagramlive") {
+                        messageParts.push('Enter the Instagram username for the account that is live, or paste the live URL.');
+                        messageParts.push('If you are the host, Instagram may hide chat on your own public live page. Use the producer page instead: the Instagram page you are publishing from, where the Comments tab is visible.');
+                        messageParts.push('In the standalone app, that page must be open inside the SSN capture page. If you go live from a normal browser tab, use the Chrome extension instead, or sign in with a different Instagram account to watch the live.');
                     } else {
                         messageParts.push('Note: Usernames cannot contain spaces.');
                     }
@@ -2225,6 +2811,32 @@
                         continue;
                     }
                     normalizedInput = tiktokUsername;
+                } else if (target === 'instagram' || target === 'instagramlive') {
+                    const instagramUsername = normalizeInstagramUsernameInput(trimmedInput);
+                    if (!instagramUsername) {
+                        lastError = 'empty';
+                        if (lastInvalidToast) {
+                            Toast.hide(lastInvalidToast);
+                            lastInvalidToast = null;
+                        }
+                        lastInvalidToast = Toast.warning(translate('toast.missingusername'), emptyErrorMessage);
+                        username = inputValue;
+                        continue;
+                    }
+                    normalizedInput = instagramUsername;
+                } else if (target === 'parti') {
+                    const partiSource = normalizePartiSourceInput(trimmedInput);
+                    if (!partiSource) {
+                        lastError = 'empty';
+                        if (lastInvalidToast) {
+                            Toast.hide(lastInvalidToast);
+                            lastInvalidToast = null;
+                        }
+                        lastInvalidToast = Toast.warning(translate('toast.missingusername'), emptyErrorMessage);
+                        username = inputValue;
+                        continue;
+                    }
+                    normalizedInput = partiSource.username;
                 } else if (target === 'bilibilicom' && /bilibili\.com/i.test(trimmedInput)) {
                     try {
                         const roomUrl = new URL(/^https?:\/\//i.test(trimmedInput) ? trimmedInput : `https://${trimmedInput}`);
@@ -2452,6 +3064,7 @@
         async function newSource(target, username, startup = false, initialState = {}, isChannelName = false) {
             document.getElementById('welcomeFrame')?.remove();
             const invalidTikTokSourceMessage = translate('error.tiktok.invalidsource');
+            let partiSourceInfo = null;
 
             if (username) {
                 // Clean up username based on platform requirements
@@ -2475,6 +3088,17 @@
                         return;
                     }
                     username = tiktokUsername;
+                }
+                if (target === 'parti') {
+                    partiSourceInfo = normalizePartiSourceInput(username);
+                    if (!partiSourceInfo) {
+                        console.warn("Invalid Parti source input:", username);
+                        if (!startup) {
+                            Toast.warning(translate('toast.missingusername'), translate('error.username.empty'));
+                        }
+                        return;
+                    }
+                    username = partiSourceInfo.username;
                 }
                 if (!startup && /\s/.test(username) && !allowSpacesForChannel) {
                     Toast.warning(translate('toast.invalidusername'), translate('error.username.spaces'));
@@ -2604,7 +3228,7 @@
                     else if (target === "kick") sourceUrl = `https://kick.com/popout/${username}/chat`;
                     else if (target === "vpzone") sourceUrl = `https://vpzone.tv/watch/${username}`;
                     else if (target === "velora") sourceUrl = `https://velora.tv/${username}`;
-                    else if (target === "parti") sourceUrl = `https://parti.com/popout-chat?id=${username}`;
+                    else if (target === "parti") sourceUrl = partiSourceInfo?.url || `https://parti.com/popout-chat?id=${username}`;
                     else if (target === "rumble") {
                         if (isChannelName) {
                             sourceUrl = `https://rumble.com/c/${username}/live`;
@@ -2636,6 +3260,7 @@
                     if (target === "instagramlive" || target === "instagram") sourceFile = "sources/instagram.js";
                     else if (target === "picarto") sourceFile = "sources/picarto.js";
                     else if (target === "x") sourceFile = "sources/x.js";
+                    else if (target === "parti") sourceFile = "sources/parti.js";
                     else if (target === "beamstream") sourceFile = "sources/beamstream.js";
                     else if (target === "bilibilicom") sourceFile = "sources/bilibilicom.js";
                     else if (target === "bilibilitv") sourceFile = "sources/bilibili.js";
@@ -3282,7 +3907,7 @@
             if (!group || (group.target !== "youtube" && group.target !== "youtubeshorts")) return;
 
             resetYouTubeGroupApiBootstrap(groupId, 'manual discovery');
-            const result = await handleYouTubeActivation(group.username, group.target === "youtubeshorts", true, false, group.isChannel, { manualTrigger: true });
+            const result = await handleYouTubeActivation(group.username, group.target === "youtubeshorts", true, false, group.isChannel, { manualTrigger: true, groupId });
             showYouTubeManualDiscoveryStatus(groupId, result);
         }
 
@@ -3294,7 +3919,7 @@
             if (!group || (group.target !== "youtube" && group.target !== "youtubeshorts")) return;
 
             resetYouTubeGroupApiBootstrap(groupId, 'manual auto-activate');
-            const result = await handleYouTubeActivation(group.username, group.target === "youtubeshorts", false, true, group.isChannel, { manualTrigger: true });
+            const result = await handleYouTubeActivation(group.username, group.target === "youtubeshorts", false, true, group.isChannel, { manualTrigger: true, groupId });
             showYouTubeManualDiscoveryStatus(groupId, result);
         }
 
@@ -3341,7 +3966,10 @@
             return JSON.stringify({
                 username: String(group.username || '').trim(),
                 target: group.target || '',
-                isChannel: !!group.isChannel
+                isChannel: !!group.isChannel,
+                youtubeDiscoveryMode: group.youtubeDiscoveryMode || '',
+                channelId: group.channelId || '',
+                youtubeAuthRef: group.youtubeAuthRef || ''
             });
         }
 
@@ -3483,6 +4111,9 @@
             if (resultType === 'network_error') {
                 return translate('youtube.discovery.networkRetry');
             }
+            if (discoveryResult && typeof discoveryResult.message === 'string' && discoveryResult.message) {
+                return discoveryResult.message;
+            }
             if (resultType === 'only_ended_streams') {
                 return translate('youtube.discovery.onlyEndedStreams');
             }
@@ -3493,8 +4124,9 @@
         }
 
         function showYouTubeManualDiscoveryStatus(groupId, result) {
-            if (!result || result.count > 0 || result.type === 'multiple_selected') return;
+            if (!result || result.count > 0) return;
             const shouldShow =
+                result.waitingCount > 0 ||
                 result.type === 'no_streams_found' ||
                 result.type === 'multiple_auto' ||
                 result.type === 'network_error';
@@ -3647,14 +4279,17 @@
         async function checkYouTubeGroupForNewStreams(groupId) {
             const group = stateManager.getGroup(groupId);
             if (!group || (group.target !== "youtube" && group.target !== "youtubeshorts")) return false;
-            const useApiBootstrap = shouldUseYouTubeGroupApiBootstrap(group);
+            const ownerBackedGroup = isYouTubeOwnerGroup(group);
+            const useApiBootstrap = !ownerBackedGroup && shouldUseYouTubeGroupApiBootstrap(group);
 
-            console.log(`Checking for new streams in YouTube group: ${group.username} via ${useApiBootstrap ? 'API-only' : 'scrape-only'} discovery`);
+            console.log(`Checking for new streams in YouTube group: ${group.username} via ${ownerBackedGroup ? 'owner API' : (useApiBootstrap ? 'API-only' : 'scrape-only')} discovery`);
 
             let streams = [];
 
             try {
-                if (useApiBootstrap && typeof fetchYouTubeLiveStreams === 'function') {
+                if (ownerBackedGroup) {
+                    streams = await fetchYouTubeOwnerStreamsForGroup(group);
+                } else if (useApiBootstrap && typeof fetchYouTubeLiveStreams === 'function') {
                     streams = await fetchYouTubeLiveStreams(group.username, {
                         isChannelOnly: !!group.isChannel,
                         isUsernameOnly: !group.isChannel && !group.username.startsWith("UC"),
@@ -3683,7 +4318,8 @@
 
             // Further filter to eligible statuses:
             // - live
-            // - upcoming within the next 60 minutes
+            // - upcoming within the next 60 minutes for public discovery
+            // - upcoming within 24 hours for signed-in owner discovery, since these are exact owned broadcasts
             const now = new Date();
             const eligibleStreams = filteredStreams.filter(stream => {
                 if (!stream || !stream.status) return false;
@@ -3696,8 +4332,12 @@
                         if (startMs === Number.MAX_SAFE_INTEGER || Number.isNaN(startMs)) return false;
                         const start = new Date(startMs);
                         const diffMins = (start - now) / (1000 * 60);
-                        return diffMins >= 0 && diffMins <= 60; // within next hour
+                        const maxWindowMins = ownerBackedGroup ? 24 * 60 : 60;
+                        return diffMins >= -15 && diffMins <= maxWindowMins;
                     } catch (_) { /* ignore parse errors */ }
+                }
+                if (ownerBackedGroup && stream.status === 'upcoming' && !stream.scheduledStartTime) {
+                    return true;
                 }
                 return false;
             });
@@ -3725,30 +4365,24 @@
 
             if (newStreams.length > 0) {
                 console.log(`Found ${newStreams.length} new streams for group ${group.username}`);
-                Toast.info("New Streams Found", `Found ${newStreams.length} new live stream(s) for ${group.username}`);
+                Toast.info("New Streams Found", ownerBackedGroup
+                    ? `Found ${newStreams.length} owned YouTube broadcast(s) for ${group.username}`
+                    : `Found ${newStreams.length} new live stream(s) for ${group.username}`);
+                let waitingNewOwnerStreams = 0;
 
                 // Auto-activate new streams if auto-activate is enabled
                 for (const stream of newStreams) {
-                    const newSource = {
-                        target: group.target,
-                        username: group.username,
-                        url: `https://www.youtube.com/live_chat?is_popout=1&v=${stream.videoId}${group.target === 'youtubeshorts' ? '&shorts' : ''}`,
-                        groupId: groupId,
-                        videoId: stream.videoId,
-                        title: stream.title,
-                        isAutoDiscovered: true,
-                        autoActivate: true, // Inherit auto-activate from group
-                        connectionMode: group.connectionMode || 'classic',
-                        // Respect current group visibility/mute state for newly auto-added streams
-                        isVisible: group.groupVisible !== undefined ? group.groupVisible : true,
-                        isMuted: group.groupMuted !== undefined ? group.groupMuted : true
-                    };
+                    const newSource = buildYouTubeSourceDataForGroup(group, stream, true);
+                    const shouldOpenNow = shouldActivateYouTubeStreamNow(stream, group);
+                    if (ownerBackedGroup && !shouldOpenNow) {
+                        waitingNewOwnerStreams++;
+                    }
 
                     console.log(`[Auto-add] Creating new YouTube stream. Group visibility: ${group.groupVisible}, Source isVisible: ${newSource.isVisible}`);
                     console.log(`[Auto-add] FULL GROUP STATE:`, JSON.stringify({ groupVisible: group.groupVisible, groupMuted: group.groupMuted, id: group.id }, null, 2));
                     stateManager.addSource(newSource);
 
-                    // Auto-activate the new source
+                    // Auto-activate the new source when chat is available. Owner-backed upcoming broadcasts stay as waiting rows.
                     setTimeout(async () => {
                         const addedSource = stateManager.getSources().find(s => s.videoId === stream.videoId);
                         console.log(`[Auto-add TIMEOUT] Looking for source with videoId: ${stream.videoId}`);
@@ -3757,11 +4391,23 @@
                             const sourceElement = document.querySelector(`[data-source-id="${addedSource.id}"]`);
                             const activateButton = sourceElement?.querySelector('[data-activatehtml]');
                             console.log(`[Auto-add TIMEOUT] sourceElement found: ${!!sourceElement}, activateButton found: ${!!activateButton}`);
+                            if (!shouldOpenNow) {
+                                setYouTubeSourceWaitingForChat(addedSource.id, stream);
+                                return;
+                            }
                             if (activateButton) {
                                 await createWindow(activateButton);
                             }
                         }
                     }, 500);
+                }
+
+                if (ownerBackedGroup && waitingNewOwnerStreams === newStreams.length) {
+                    return {
+                        type: 'waiting_for_chat',
+                        waitingCount: waitingNewOwnerStreams,
+                        message: 'Upcoming YouTube broadcasts were added, but chat is not ready yet.'
+                    };
                 }
             }
 
@@ -3777,9 +4423,17 @@
                     if (!existingSourceId) continue;
                     const existingSource = stateManager.getSource(existingSourceId);
                     if (!existingSource) continue;
+                    const metadataUpdates = getYouTubeStreamMetadataUpdates(stream, group);
+                    if (Object.keys(metadataUpdates).length) {
+                        stateManager.updateSource(existingSourceId, metadataUpdates);
+                    }
                     const isOpen = !!(existingSource.vid || existingSource.wssId);
                     const isActive = existingSource.status === 'active';
                     if (isOpen || isActive) continue;
+                    if (!shouldActivateYouTubeStreamNow(stream, group)) {
+                        setYouTubeSourceWaitingForChat(existingSourceId, stream);
+                        continue;
+                    }
 
                     try {
                         // Ensure a DOM element exists
@@ -11174,6 +11828,7 @@
 
             // Check if we should show the editor view initially
             const viewParam = window.initialEditorView ? 'view=editor' : null;
+            const backgroundParams = languageParams.concat(['sdk=1', viewParam].filter(Boolean));
 
             if (sourcemode || devmode) {
                 document.getElementById("sources")?.classList.add("dev");
@@ -11182,7 +11837,7 @@
             try {
                 const resolved = await resolveSocialStreamPage('background.html', {
                     versionParam: 'v=2',
-                    extraParams: languageParams.concat([viewParam].filter(Boolean))
+                    extraParams: backgroundParams
                 });
                 if (resolved && resolved.url) {
                     if (!frame2.src || (resolved.url !== frame2.src)) {
@@ -11194,7 +11849,7 @@
                 } else {
                     const fallback = await resolveSocialStreamPage('background.html', {
                         versionParam: 'v=2',
-                        extraParams: languageParams.concat([viewParam].filter(Boolean)),
+                        extraParams: backgroundParams,
                         forceLocal: true
                     });
                     if (fallback && fallback.url) {
@@ -11213,7 +11868,7 @@
                 try {
                     const fallback = await resolveSocialStreamPage('background.html', {
                         versionParam: 'v=2',
-                        extraParams: languageParams.concat([viewParam].filter(Boolean)),
+                        extraParams: backgroundParams,
                         forceLocal: true
                     });
                     if (fallback && fallback.url) {

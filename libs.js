@@ -550,6 +550,12 @@ const tipsContent = {
 	  </ol>
 	</div>
 	<div class="tips-section">
+	  <h3>If You Are The Host</h3>
+	  <p>Instagram may hide chat on your own public live page. Use the producer page instead: the Instagram page you are publishing from, where the <strong>Comments</strong> tab is visible.</p>
+	  <p>In the standalone app, that producer page must be open inside SSN's capture page. If you started the live from a normal desktop browser tab, use the Chrome Extension instead, or sign in with a different Instagram account to watch the live.</p>
+	  <p>If you started the live from the mobile app, use a second Instagram account to view the live and capture comments.</p>
+	</div>
+	<div class="tips-section">
 	  <h3>Trouble Signing In?</h3>
 	  <p>If sign-in is rejected as "invalid browser", try changing the <strong>User Agent</strong> via the ⚙️ settings menu (try Firefox or a newer Chrome version).</p>
 	</div>
@@ -572,6 +578,12 @@ const tipsContent = {
 		<li>Navigate to the page where the live chat is visible</li>
 		<li>Once you can see the chat, it should start capturing</li>
 	  </ol>
+	</div>
+	<div class="tips-section">
+	  <h3>If You Are The Host</h3>
+	  <p>Instagram may hide chat on your own public live page. Use the producer page instead: the Instagram page you are publishing from, where the <strong>Comments</strong> tab is visible.</p>
+	  <p>In the standalone app, that producer page must be open inside SSN's capture page. If you started the live from a normal desktop browser tab, use the Chrome Extension instead, or sign in with a different Instagram account to watch the live.</p>
+	  <p>If you started the live from the mobile app, use a second Instagram account to view the live and capture comments.</p>
 	</div>
 	<div class="tips-section">
 	  <h3>Trouble Signing In?</h3>
@@ -676,6 +688,15 @@ const genericTipsContent = `
 		<li>If sign-in is rejected as "invalid browser", try changing the <strong>User Agent</strong> via the ⚙️ settings menu</li>
 		<li>Clear cache via the ⚙️ settings menu if having persistent issues</li>
 	  </ul>
+	</div>
+`;
+
+const instagramHostCaptureGuideContent = `
+	<div class="tips-section">
+	  <h3>If You Are The Host</h3>
+	  <p>Instagram may hide chat on your own public live page. Use the producer page instead: the Instagram page you are publishing from, where the <strong>Comments</strong> tab is visible.</p>
+	  <p>In the standalone app, that producer page must be open inside SSN's capture page. If you started the live from a normal desktop browser tab, use the Chrome Extension instead, or sign in with a different Instagram account to watch the live.</p>
+	  <p>If you started the live from the mobile app, use a second Instagram account to view the live and capture comments.</p>
 	</div>
 `;
 
@@ -1574,16 +1595,22 @@ function getSourceGuidePlatformLabel(platform, lang = "en") {
 function getSourceGuideContent(platform, lang) {
 	const contentKey = platform === "instagramlive" ? "instagram" : platform;
 	const compactContent = sourceGuideCompactContent[lang]?.[contentKey];
+	let content = "";
 	if (compactContent) {
-		return renderSourceGuideCompactContent(compactContent);
+		content = renderSourceGuideCompactContent(compactContent);
+	} else {
+		const languageContent = sourceGuideTipsContent[lang] || sourceGuideTipsContent.en;
+		content = languageContent[platform]
+			|| languageContent[contentKey]
+			|| sourceGuideTipsContent.en[platform]
+			|| sourceGuideTipsContent.en[contentKey]
+			|| tipsContent[platform]
+			|| genericTipsContent;
 	}
-	const languageContent = sourceGuideTipsContent[lang] || sourceGuideTipsContent.en;
-	return languageContent[platform]
-		|| languageContent[contentKey]
-		|| sourceGuideTipsContent.en[platform]
-		|| sourceGuideTipsContent.en[contentKey]
-		|| tipsContent[platform]
-		|| genericTipsContent;
+	if (contentKey === "instagram" && !content.includes("If You Are The Host")) {
+		content += instagramHostCaptureGuideContent;
+	}
+	return content;
 }
 
 function showTips(ele) {
@@ -1819,7 +1846,6 @@ function getDefaultConfig() {
 }
 
 const WELCOME_GUIDE_URL = "https://www.youtube.com/watch?v=VpD2pnZVYF0";
-const WELCOME_GUIDE_THUMBNAIL_URL = "https://i.ytimg.com/vi/VpD2pnZVYF0/hqdefault.jpg";
 const WELCOME_FRAME_SCROLLBAR_STYLE = `
 html,
 body {
@@ -1949,16 +1975,10 @@ function patchWelcomeFrameHtml(html, options = {}) {
             overflow: hidden;
             border-radius: 8px;
             text-decoration: none;
-            background: #000;
-        }
-        .video-fallback-link img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            opacity: 0.78;
+            background: linear-gradient(135deg, #1f2937, #111827);
+            border: 1px solid rgba(255, 255, 255, 0.14);
         }
         .video-fallback-label {
-            position: absolute;
             padding: 12px 18px;
             border-radius: 999px;
             background: rgba(0, 0, 0, 0.72);
@@ -1969,10 +1989,9 @@ function patchWelcomeFrameHtml(html, options = {}) {
         `;
 			patchedHtml = patchedHtml.replace(/<\/style>/i, `${fallbackStyles}</style>`);
 		}
-		const fallbackMarkup = `
+        const fallbackMarkup = `
         <div class="video-container">
             <a class="video-fallback-link" href="${WELCOME_GUIDE_URL}" target="_blank" rel="noopener noreferrer">
-                <img src="${WELCOME_GUIDE_THUMBNAIL_URL}" alt="Social Stream Ninja walkthrough video thumbnail">
                 <span class="video-fallback-label" data-i18n-html="video.fallback">Watch the walkthrough on YouTube</span>
             </a>
         </div>`;
@@ -1986,8 +2005,19 @@ function patchWelcomeFrameHtml(html, options = {}) {
 
 async function readWelcomeFrameFileContent(fileUrl) {
 	const fs = require("fs").promises;
-	const { fileURLToPath } = require("url");
-	return fs.readFile(fileURLToPath(fileUrl), "utf8");
+	const parsedUrl = new URL(fileUrl);
+	let filePath = decodeURIComponent(parsedUrl.pathname || "");
+	const isWindows = typeof process !== "undefined" && process.platform === "win32";
+	if (isWindows) {
+		filePath = filePath.replace(/\//g, "\\");
+		if (/^\\[a-zA-Z]:\\/.test(filePath)) {
+			filePath = filePath.slice(1);
+		}
+		if (parsedUrl.hostname) {
+			filePath = `\\\\${parsedUrl.hostname}${filePath}`;
+		}
+	}
+	return fs.readFile(filePath, "utf8");
 }
 
 async function loadWelcomeFrameContent(frame, url, options = {}) {
@@ -2036,7 +2066,7 @@ async function loadWelcomeFrameContent(frame, url, options = {}) {
 			}
 		})();
 		let html = await response.text();
-		html = patchWelcomeFrameHtml(html, { useVideoFallback: false });
+		html = patchWelcomeFrameHtml(html, { useVideoFallback: true });
 		html = addWelcomeFrameBaseHref(html, resolvedUrl);
 		html = addWelcomeFrameLanguageScript(html, langCode);
 		html = addWelcomeFrameScrollbarStyles(html);

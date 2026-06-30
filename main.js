@@ -1874,7 +1874,7 @@ function stopKickWsEntry(entry, reason) {
 function findYouTubeOAuthView() {
     try {
         for (const view of Object.values(browserViews)) {
-            if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
+            if (isBrowserViewDestroyed(view)) {
                 continue;
             }
             const wc = view.webContents;
@@ -1915,7 +1915,7 @@ async function triggerYouTubeExternalAuth() {
 function findTwitchOAuthView() {
     try {
         for (const view of Object.values(browserViews)) {
-            if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
+            if (isBrowserViewDestroyed(view)) {
                 continue;
             }
             const wc = view.webContents;
@@ -1956,7 +1956,7 @@ async function triggerTwitchExternalAuth() {
 function findKickOAuthView() {
     try {
         for (const view of Object.values(browserViews)) {
-            if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
+            if (isBrowserViewDestroyed(view)) {
                 continue;
             }
             const wc = view.webContents;
@@ -2229,7 +2229,7 @@ function setupRemoteControlServer() {
         if (parsed.pathname === '/views') {
             const views = [];
             for (const [key, view] of Object.entries(browserViews)) {
-                if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) continue;
+                if (isBrowserViewDestroyed(view)) continue;
                 const wc = view.webContents;
                 if (!wc || (typeof wc.isDestroyed === 'function' && wc.isDestroyed())) continue;
                 views.push({ key, url: wc.getURL ? wc.getURL() : 'unknown' });
@@ -2249,7 +2249,7 @@ function setupRemoteControlServer() {
                         return;
                     }
                     const view = browserViews[key];
-                    if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
+                    if (isBrowserViewDestroyed(view)) {
                         res.writeHead(404, { 'Content-Type': 'application/json' });
                         res.end(JSON.stringify({ ok: false, error: 'view_not_found' }));
                         return;
@@ -4624,13 +4624,9 @@ function getActiveBrowserView(id) {
     const view = browserViews[id];
     if (!view) return null;
     try {
-        if (typeof view.isDestroyed === 'function' && view.isDestroyed()) {
+        if (isBrowserViewDestroyed(view)) {
             delete browserViews[id];
             releaseWindowId(id);
-            return null;
-        }
-        const wc = view.webContents;
-        if (wc && typeof wc.isDestroyed === 'function' && wc.isDestroyed()) {
             return null;
         }
     } catch (error) {
@@ -4638,6 +4634,23 @@ function getActiveBrowserView(id) {
         return null;
     }
     return view;
+}
+
+function isBrowserViewDestroyed(view) {
+    if (!view) return true;
+    try {
+        if (typeof view.isDestroyed === 'function') {
+            return !!view.isDestroyed();
+        }
+        const wc = view.webContents;
+        if (wc && typeof wc.isDestroyed === 'function') {
+            return !!wc.isDestroyed();
+        }
+    } catch (error) {
+        console.warn('Error checking browser view state:', error);
+        return true;
+    }
+    return false;
 }
 
 function generateUniqueWindowId() {
@@ -5401,7 +5414,7 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
     }
 
     try {
-        ses.webRequest.onBeforeSendHeaders({ urls: ['*://*/*'] }, (details, callback) => {
+        ses.webRequest.onBeforeSendHeaders({ urls: ['*://*/*', 'ws://*/*', 'wss://*/*'] }, (details, callback) => {
             const requestHeaders = details && details.requestHeaders ? details.requestHeaders : {};
             let shouldStripElectron = hooks.stripElectronGlobally;
             try {
@@ -5539,7 +5552,7 @@ function resolveHeaderOverridesFromConfig(config, baseUrl) {
 }
 
 function registerActivatedWindowSessionHooks(view, args = {}) {
-    if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
+    if (isBrowserViewDestroyed(view)) {
         return () => { };
     }
     if (!view.webContents || !view.webContents.session) {
@@ -6582,7 +6595,7 @@ function getSourceWindowOffscreenCandidates(view) {
 }
 
 function parkSourceWindowOffscreen(view) {
-    if (!view || view.isDestroyed()) return false;
+    if (isBrowserViewDestroyed(view)) return false;
 
     let lastBounds = null;
     const candidates = getSourceWindowOffscreenCandidates(view);
@@ -6604,7 +6617,7 @@ function parkSourceWindowOffscreen(view) {
 
 function notifySourceWindowVisibilityChange(view, visible) {
     try {
-        if (!mainWindow || mainWindow.isDestroyed() || !view || view.isDestroyed()) return;
+        if (!mainWindow || mainWindow.isDestroyed() || isBrowserViewDestroyed(view)) return;
         mainWindow.webContents.send(visible ? 'window-shown' : 'window-hidden', {
             tabID: view.tabID,
             url: view.args && view.args.url
@@ -6626,7 +6639,7 @@ function installWindowsSourceWindowMinimizeGuard(view) {
         } catch (_) { }
         setTimeout(() => {
             try {
-                if (!view || view.isDestroyed()) return;
+                if (isBrowserViewDestroyed(view)) return;
                 try {
                     if (typeof view.isMinimized === 'function' && view.isMinimized()) {
                         view.restore();
@@ -6642,7 +6655,7 @@ function installWindowsSourceWindowMinimizeGuard(view) {
 // Stealth-hide: keep window visible to the OS, but move/resize it off-screen
 function stealthHideView(view) {
     try {
-        if (!view || view.isDestroyed()) return false;
+        if (isBrowserViewDestroyed(view)) return false;
         const wasVisible = view.__ss_visible !== false;
         // Mark logical visibility
         view.__ss_visible = false;
@@ -6667,7 +6680,7 @@ function stealthHideView(view) {
 // Restore from stealth-hide
 function stealthShowView(view, options = {}) {
     try {
-        if (!view || view.isDestroyed()) return true;
+        if (isBrowserViewDestroyed(view)) return true;
         view.__ss_visible = true;
         const bringToFront = !!(options && options.bringToFront);
         if (process.platform === 'linux') {
@@ -6735,13 +6748,11 @@ ipcMain.handle('checkWindowExists', (event, args) => {
     const view = browserViews[args.vid];
     if (!view) return false;
     try {
-        if (typeof view.isDestroyed === 'function') {
-            if (view.isDestroyed()) {
-                // Clean up stale reference
-                delete browserViews[args.vid];
-                releaseWindowId(args.vid);
-                return false;
-            }
+        if (isBrowserViewDestroyed(view)) {
+            // Clean up stale reference
+            delete browserViews[args.vid];
+            releaseWindowId(args.vid);
+            return false;
         }
     } catch (_) { }
     return true;
@@ -6756,7 +6767,7 @@ ipcMain.handle('closeWindow', async (event, args) => {
 
     try {
         // Attempt a clean destroy regardless of custom close handlers
-        if (typeof view.destroy === 'function' && !view.isDestroyed()) {
+        if (typeof view.destroy === 'function' && !isBrowserViewDestroyed(view)) {
             view.destroy();
         } else if (typeof view.close === 'function') {
             view.close();
@@ -7647,7 +7658,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (process.platform === "win32" && restoredWindowBounds) {
                 const applyDesiredBounds = () => {
                     try {
-                        if (!view || view.isDestroyed()) return;
+                        if (isBrowserViewDestroyed(view)) return;
                         applyBrowserWindowBounds(view, restoredWindowBounds);
                     } catch (_) { }
                 };
@@ -7665,7 +7676,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                 // Apply initial fix after a short delay
                 setTimeout(() => {
-                    if (view && !view.isDestroyed()) {
+                    if (!isBrowserViewDestroyed(view)) {
                         // Force a resize to trigger proper rendering
                         const bounds = view.getBounds();
                         view.setBounds({
@@ -7685,7 +7696,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     if (blurTimeout) clearTimeout(blurTimeout);
 
                     blurTimeout = setTimeout(() => {
-                        if (view && !view.isDestroyed()) {
+                        if (!isBrowserViewDestroyed(view)) {
                             // Store current bounds
                             const currentBounds = view.getBounds();
 
@@ -7808,7 +7819,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                         mainWindow.webContents.send(`window-closed-${view.tabID}`);
                                     }
                                 } catch (_) { }
-                                try { if (!view.isDestroyed()) view.destroy(); } catch (_) { }
+                                try { if (!isBrowserViewDestroyed(view)) view.destroy(); } catch (_) { }
                                 try { delete browserViews[view.tabID]; releaseWindowId(view.tabID); } catch (_) { }
                             }
                         };
@@ -9195,6 +9206,91 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     }
 
+    function normalizeJoystickApiUrlValue(value) {
+        let parsed;
+        try {
+            parsed = new URL(String(value || ""));
+        } catch (_) {
+            return null;
+        }
+        if (parsed.protocol !== "https:" || parsed.hostname !== "api.joystick.tv") {
+            return null;
+        }
+        parsed.hash = "";
+        return parsed;
+    }
+
+    async function fetchJoystickJsonResponse(request = {}) {
+        const parsedUrl = normalizeJoystickApiUrlValue(request.url);
+        if (!parsedUrl) {
+            throw new Error("Joystick API URL not allowed");
+        }
+
+        const method = String(request.method || "GET").toUpperCase();
+        const isOAuthTokenPost = method === "POST" && parsedUrl.pathname === "/api/oauth/token";
+        const isStreamSettingsGet = method === "GET" && parsedUrl.pathname === "/api/users/stream-settings";
+        if (!isOAuthTokenPost && !isStreamSettingsGet) {
+            throw new Error("Joystick API request not allowed");
+        }
+
+        const headers = {
+            Accept: "application/json"
+        };
+        const authHeader = typeof request.auth === "string" ? request.auth.replace(/[\r\n]/g, "") : "";
+        if (isOAuthTokenPost) {
+            headers["Content-Type"] = "application/x-www-form-urlencoded";
+            if (request.authType === "basic" && authHeader.startsWith("Basic ")) {
+                headers.Authorization = authHeader;
+            }
+        } else if (isStreamSettingsGet) {
+            headers["Content-Type"] = "application/json";
+            if (request.authType === "bearer" && authHeader.startsWith("Bearer ")) {
+                headers.Authorization = authHeader;
+            }
+        }
+
+        const response = await fetch(parsedUrl.toString(), {
+            method,
+            cache: "no-store",
+            headers,
+            body: isOAuthTokenPost ? String(request.body || "") : undefined
+        });
+        const responseText = await response.text();
+        let responseJson = {};
+        try {
+            responseJson = responseText ? JSON.parse(responseText) : {};
+        } catch (_) {
+            responseJson = null;
+        }
+        if (!response.ok) {
+            const error = new Error(getJsonErrorMessage(responseJson, "HTTP " + response.status));
+            error.status = response.status;
+            throw error;
+        }
+        if (responseJson == null) {
+            const error = new Error("Invalid JSON response");
+            error.status = response.status;
+            throw error;
+        }
+        return {
+            status: response.status,
+            data: responseJson
+        };
+    }
+
+    async function handleJoystickFetchJsonCommand(request) {
+        try {
+            const joystickResponse = await fetchJoystickJsonResponse(request);
+            return { ok: true, status: joystickResponse.status, data: joystickResponse.data };
+        } catch (error) {
+            return {
+                ok: false,
+                status: error && typeof error.status !== "undefined" ? error.status : undefined,
+                error: error?.message || "Joystick API fetch failed"
+            };
+        }
+    }
+
     function normalizeRumbleApiUrlValue(value) {
         let raw = typeof value === "string" ? value.trim() : "";
         let parsed;
@@ -9260,7 +9356,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
     });
 
     const backgroundCommandHandlers = {
-        vpzoneFetchJson: handleVpzoneFetchJsonCommand
+        vpzoneFetchJson: handleVpzoneFetchJsonCommand,
+        joystickFetchJson: handleJoystickFetchJsonCommand
     };
 
     ipcMain.handle("ssapp:background-command", async (_event, request = {}) => {
@@ -10423,7 +10520,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     if (errorCode === -7) {
                         log("Connection timed out - retrying in 2 seconds...");
                         setTimeout(() => {
-                            if (!view.isDestroyed()) {
+                            if (!isBrowserViewDestroyed(view)) {
                                 view.webContents.reload();
                             }
                         }, 2000);
@@ -10448,13 +10545,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 // Handle window closure
                 view.on('closed', () => {
                     const tabID = view.tabID; // Store it immediately
-                    log("Sign-in window closed, destroyed: " + view.isDestroyed());
+                    log("Sign-in window closed, destroyed: " + isBrowserViewDestroyed(view));
                     try {
                         releaseSignInWindowSessionHooks();
                     } catch (_) { }
 
                     // Clean up if possible
-                    if (!view.isDestroyed()) {
+                    if (!isBrowserViewDestroyed(view)) {
                         try {
                             view.destroy();
                         } catch (e) {
@@ -10504,7 +10601,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         // Check if we're already creating a window for this source to prevent duplicates
         if (args.sourceId) {
             for (const [id, view] of Object.entries(browserViews)) {
-                if (view.args && view.args.sourceId === args.sourceId && !view.isDestroyed()) {
+                if (view.args && view.args.sourceId === args.sourceId && !isBrowserViewDestroyed(view)) {
                     log("Window already exists for source: " + args.sourceId);
                     eventRet.returnValue = id;
                     return;
@@ -10674,7 +10771,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 try { view.showInactive(); } catch (_) { }
                 const reparkHiddenWindow = () => {
                     try {
-                        if (view && !view.isDestroyed() && view.__ss_visible === false) {
+                        if (!isBrowserViewDestroyed(view) && view.__ss_visible === false) {
                             stealthHideView(view);
                         }
                     } catch (_) { }
@@ -10762,7 +10859,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 } catch (_) { }
 
                                 // Destroy the window and clean up bookkeeping
-                                try { if (!view.isDestroyed()) view.destroy(); } catch (_) { }
+                                try { if (!isBrowserViewDestroyed(view)) view.destroy(); } catch (_) { }
                                 try { delete browserViews[view.tabID]; releaseWindowId(view.tabID); } catch (_) { }
                             }
                         };
@@ -10795,7 +10892,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     if (errorCode === -7) {
                         log("Connection timed out - retrying in 2 seconds...");
                         setTimeout(() => {
-                            if (!view.isDestroyed()) {
+                            if (!isBrowserViewDestroyed(view)) {
                                 view.webContents.reload();
                             }
                         }, 2000);
@@ -10863,9 +10960,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 }
 
                 try { stealthHideView(view); } catch (_) {
-                    try { if (view && !view.isDestroyed()) view.hide(); } catch (_) { }
+                    try { if (!isBrowserViewDestroyed(view)) view.hide(); } catch (_) { }
                 }
-                if (mainWindow && view && !mainWindow.isDestroyed() && !view.isDestroyed()) {
+                if (mainWindow && !mainWindow.isDestroyed() && !isBrowserViewDestroyed(view)) {
                     mainWindow.webContents.send('window-hidden', {
                         tabID: view.tabID,
                         url: view.args.url
@@ -11305,7 +11402,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     return;
                 }
 
-                if (!view || (typeof view.isDestroyed === "function" && view.isDestroyed())) {
+                if (isBrowserViewDestroyed(view)) {
                     log("Cannot start injection; view is already destroyed");
                     return;
                 }
@@ -12050,7 +12147,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 try { view.setSkipTaskbar(true); } catch (_) { }
                 const reparkHiddenWindow = () => {
                     try {
-                        if (view && !view.isDestroyed() && view.__ss_visible === false) {
+                        if (!isBrowserViewDestroyed(view) && view.__ss_visible === false) {
                             stealthHideView(view);
                         }
                     } catch (_) { }
@@ -12409,7 +12506,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Collect metrics for each window/tab
             for (const [id, view] of Object.entries(browserViews)) {
-                if (view && view.webContents && !view.isDestroyed()) {
+                if (view && view.webContents && !isBrowserViewDestroyed(view)) {
                     try {
                         const wcMetrics = await view.webContents.executeJavaScript(`
                             ({

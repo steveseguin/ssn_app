@@ -21,6 +21,11 @@ Electron desktop application for aggregating social media live stream chat. Comm
 - **Do not read, browse, edit, or add changes in `resources/social_stream_fallback` during normal app work.**  
   This folder is disposable/rebuilt on every build/update (`npm run update:fallback`), so spending time on it is not productive.
 
+## Social Stream Payload Rules
+
+- Donation-style chat rows should use `hasDonation` and optional `donoValue`; do not set `event: "donation"` just because a chat/tip row has a donation value.
+- Use existing payload fields first. Only populate `meta` when there is additional structured data that downstream consumers actually need and no existing field handles it well.
+
 ## Build/Run Commands
 
 | Command | Description |

@@ -476,6 +476,10 @@ function configureContextBridge(){
 			  fetchRumbleJson: async (url) => {
 				return await ipcRenderer.invoke('rumble-fetch-json', { url });
 			  },
+
+			  fetchJoystickJson: async (request) => {
+				return await ipcRenderer.invoke('ssapp:background-command', Object.assign({}, request || {}, { cmd: 'joystickFetchJson' }));
+			  },
 			  
 			  readStreamChunk: (streamId) => {},
 			  
@@ -491,6 +495,26 @@ function configureContextBridge(){
 
 			  refreshYouTubeOAuthToken: async (payload) => {
 				return await ipcRenderer.invoke('youtube-oauth-refresh', payload);
+			  },
+
+			  startYouTubeOwnerAuth: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-auth-start', payload || {});
+			  },
+
+			  confirmYouTubeOwnerAuth: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-auth-confirm', payload || {});
+			  },
+
+			  listYouTubeOwnerAuth: async () => {
+				return await ipcRenderer.invoke('youtube-owner-auth-list');
+			  },
+
+			  clearYouTubeOwnerAuth: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-auth-clear', payload || {});
+			  },
+
+			  fetchYouTubeOwnerBroadcasts: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-broadcasts', payload || {});
 			  },
 
 			  startMediaUpload: async (payload) => {
@@ -642,6 +666,10 @@ try {
 				return await ipcRenderer.invoke("nodefetch", args || {});
 			},
 
+			fetchJoystickJson: async (request) => {
+				return await ipcRenderer.invoke('ssapp:background-command', Object.assign({}, request || {}, { cmd: 'joystickFetchJson' }));
+			},
+
 			startYouTubeOAuth: async (payload) => {
 				return await ipcRenderer.invoke('youtube-oauth', payload);
 			},
@@ -652,6 +680,26 @@ try {
 
 			refreshYouTubeOAuthToken: async (payload) => {
 				return await ipcRenderer.invoke('youtube-oauth-refresh', payload);
+			},
+
+			startYouTubeOwnerAuth: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-auth-start', payload || {});
+			},
+
+			confirmYouTubeOwnerAuth: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-auth-confirm', payload || {});
+			},
+
+			listYouTubeOwnerAuth: async () => {
+				return await ipcRenderer.invoke('youtube-owner-auth-list');
+			},
+
+			clearYouTubeOwnerAuth: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-auth-clear', payload || {});
+			},
+
+			fetchYouTubeOwnerBroadcasts: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-broadcasts', payload || {});
 			},
 
 			startMediaUpload: async (payload) => {

@@ -54,6 +54,74 @@ a {
   color: lightblue;
 }
 
+/* Local replacement for the few Line Awesome icons used by the app shell. */
+.las {
+  display: inline-block;
+  width: 1em;
+  min-width: 1em;
+  line-height: 1;
+  text-align: center;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.la-sync::before {
+  content: "\21BB";
+}
+
+.la-check-circle::before {
+  content: "\2713";
+}
+
+.la-exclamation-circle::before {
+  content: "!";
+}
+
+.la-hand-paper::before {
+  content: "\270B";
+}
+
+.la-exclamation-triangle::before {
+  content: "\26A0";
+}
+
+.la-info-circle::before {
+  content: "i";
+}
+
+.la-sign-in-alt::before {
+  content: "\2192";
+}
+
+.la-edit::before {
+  content: "\270E";
+}
+
+.la-trash::before {
+  content: "\1F5D1";
+}
+
+.la-times::before {
+  content: "\00D7";
+}
+
+.la-stop::before {
+  content: "\25A0";
+}
+
+.fa-spin {
+  animation: ssapp-icon-spin 1s linear infinite;
+}
+
+@keyframes ssapp-icon-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* TikTok authentication button styles */
 button[data-tiktok-signin].authenticated {
   background-color: #10b981 !important;
@@ -1180,6 +1248,82 @@ button.group-control {
   color: white;
 }
 
+.youtube-owner-modal {
+  max-width: 560px;
+}
+
+.youtube-source-choice-list {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0 8px;
+}
+
+.modal-content button.youtube-source-choice {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 14px;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+}
+
+.modal-content button.youtube-source-choice:hover {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: var(--border-accent);
+}
+
+.youtube-source-choice-title {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.youtube-source-choice-description {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.youtube-owner-channel-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.youtube-owner-channel-option {
+  display: grid;
+  grid-template-columns: 20px 36px 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.youtube-owner-channel-option img {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+}
+
+.youtube-owner-channel-option span {
+  display: grid;
+  gap: 2px;
+}
+
+.youtube-owner-channel-option small,
+.youtube-owner-profile {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-line;
+}
+
 .beta-toggle {
   display: flex;
   float: right;
@@ -1373,6 +1517,11 @@ button.group-control {
   color: white;
 }
 
+.stream-status-badge.video {
+  background-color: #475569;
+  color: white;
+}
+
 .yt-stream-item.selected::before {
   opacity: 1;
 }
@@ -1392,6 +1541,38 @@ button.group-control {
   font-size: 12px;
   margin-left: 10px;
   background: rgba(255, 255, 255, 0.2);
+}
+
+.yt-stream-meta-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.yt-stream-meta-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  text-transform: uppercase;
+  background: rgba(148, 163, 184, 0.24);
+  color: #dbeafe;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.yt-stream-meta-badge.chat-ready {
+  background: rgba(34, 197, 94, 0.18);
+  color: #bbf7d0;
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.yt-stream-meta-badge.chat-waiting {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fde68a;
+  border-color: rgba(245, 158, 11, 0.4);
 }
 
 .stream-status {
@@ -1443,6 +1624,11 @@ button.group-control {
   opacity: 0.6;
   background: rgba(255, 255, 255, 0.05);
   pointer-events: none;
+}
+
+.yt-stream-item.not-live-stream {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .yt-stream-item.already-added .yt-stream-controls {
