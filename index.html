@@ -4032,7 +4032,7 @@
             if (!group || !isYouTubeTarget(group.target)) return;
             const identity = getYouTubeGroupDiscoveryIdentity(group);
             const existingState = youtubeGroupDiscoveryState.get(groupId);
-            if (existingState && existingState.identity === identity && existingState.apiBootstrapPending) {
+            if (existingState && existingState.identity === identity && existingState.apiBootstrapPending === false) {
                 return;
             }
             youtubeGroupDiscoveryState.set(groupId, {
@@ -4323,6 +4323,7 @@
                         isUsernameOnly: !group.isChannel && !group.username.startsWith("UC"),
                         isShortDefault: group.target === "youtubeshorts"
                     });
+                    preferYouTubeGroupScrapeOnly(group.id, 'api bootstrap consumed');
                 } else if (typeof fetchYoutube === 'function') {
                     streams = await fetchYoutube(group.username, false, { forceSearch: !!group.isChannel });
                     if (!Array.isArray(streams) || !streams.length) {
