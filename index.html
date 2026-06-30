@@ -3959,6 +3959,13 @@
         // Store backoff state for YouTube groups
         const youtubeGroupBackoffState = new Map();
         const youtubeGroupDiscoveryState = new Map();
+        const YOUTUBE_OWNER_POLL_FAST_MS = 30 * 1000;
+        const YOUTUBE_OWNER_POLL_NEAR_MS = 2 * 60 * 1000;
+        const YOUTUBE_OWNER_POLL_SCHEDULED_MS = 10 * 60 * 1000;
+        const YOUTUBE_OWNER_POLL_IDLE_MS = 15 * 60 * 1000;
+        const YOUTUBE_OWNER_POLL_FAST_WINDOW_MS = 10 * 60 * 1000;
+        const YOUTUBE_OWNER_POLL_NEAR_WINDOW_MS = 60 * 60 * 1000;
+        const YOUTUBE_OWNER_POLL_PAST_START_GRACE_MS = 15 * 60 * 1000;
 
         // Store interval IDs for Rumble auto-checking
         const rumbleIntervals = new Map();
@@ -4139,6 +4146,50 @@
             return formatAutoCheckDelay(ms);
         }
 
+        function getYouTubeScheduledStartMs(stream) {
+            if (!stream || !stream.scheduledStartTime) return Number.NaN;
+            if (typeof getYouTubeStreamSortTimestamp === 'function') {
+                const startMs = getYouTubeStreamSortTimestamp(stream);
+                return startMs === Number.MAX_SAFE_INTEGER ? Number.NaN : startMs;
+            }
+            return Date.parse(stream.scheduledStartTime);
+        }
+
+        function computeNextYouTubeOwnerPollInterval(group) {
+            if (!isYouTubeOwnerGroup(group)) return null;
+
+            let soonestStartMs = Infinity;
+            let hasLiveWaitingForChat = false;
+
+            (group.streams || []).forEach(sourceId => {
+                const stream = stateManager.getSource(sourceId);
+                if (!stream || stream.status === 'ended' || stream.youtubeChatStatus === 'ended') return;
+
+                const hasChat = !!stream.liveChatId || stream.youtubeChatStatus === 'ready';
+                if (stream.status === 'live') {
+                    if (!hasChat) {
+                        hasLiveWaitingForChat = true;
+                    }
+                    return;
+                }
+
+                const startMs = getYouTubeScheduledStartMs(stream);
+                if (Number.isNaN(startMs)) return;
+                const msUntilStart = startMs - Date.now();
+                if (msUntilStart < -YOUTUBE_OWNER_POLL_PAST_START_GRACE_MS) return;
+                soonestStartMs = Math.min(soonestStartMs, startMs);
+            });
+
+            if (hasLiveWaitingForChat) return YOUTUBE_OWNER_POLL_FAST_MS;
+            if (soonestStartMs !== Infinity) {
+                const msUntilStart = soonestStartMs - Date.now();
+                if (msUntilStart <= YOUTUBE_OWNER_POLL_FAST_WINDOW_MS) return YOUTUBE_OWNER_POLL_FAST_MS;
+                if (msUntilStart <= YOUTUBE_OWNER_POLL_NEAR_WINDOW_MS) return YOUTUBE_OWNER_POLL_NEAR_MS;
+                return YOUTUBE_OWNER_POLL_SCHEDULED_MS;
+            }
+            return YOUTUBE_OWNER_POLL_IDLE_MS;
+        }
+
         function getYouTubeDiscoveryStatusText(discoveryResult) {
             const resultType = discoveryResult && typeof discoveryResult === 'object' ? discoveryResult.type : '';
             if (resultType === 'network_error') {
@@ -4276,27 +4327,31 @@
             // Get backoff state
             const backoffState = youtubeGroupBackoffState.get(groupId);
             if (!backoffState) return;
+            const group = stateManager.getGroup(groupId);
 
             // Determine next check interval
             let nextInterval;
             if (hadTransientNetworkError) {
                 const retryIndex = Math.min(backoffState.checkCount, backoffState.intervals.length - 1);
                 nextInterval = backoffState.intervals[retryIndex];
-            } else if (backoffState.checkCount < backoffState.intervals.length) {
-                nextInterval = backoffState.intervals[backoffState.checkCount];
-                backoffState.checkCount++;
             } else {
-                // Use the last interval (16 minutes) for all subsequent checks
-                nextInterval = backoffState.intervals[backoffState.intervals.length - 1];
+                let fallbackInterval;
+                if (backoffState.checkCount < backoffState.intervals.length) {
+                    fallbackInterval = backoffState.intervals[backoffState.checkCount];
+                    backoffState.checkCount++;
+                } else {
+                    // Use the last interval (16 minutes) for all subsequent public checks
+                    fallbackInterval = backoffState.intervals[backoffState.intervals.length - 1];
+                }
+                nextInterval = computeNextYouTubeOwnerPollInterval(group) || fallbackInterval;
             }
 
-            const group = stateManager.getGroup(groupId);
             if (group) {
-                const minutes = Math.floor(nextInterval / 60000);
+                const delayText = formatYouTubeAutoCheckDelay(nextInterval);
                 if (hadTransientNetworkError) {
-                    console.log(`Temporary YouTube network issue for group ${group.username}, checking again in ${minutes} minute(s)`);
+                    console.log(`Temporary YouTube network issue for group ${group.username}, checking again in ${delayText}`);
                 } else {
-                    console.log(`No new streams found for YouTube group ${group.username}, checking again in ${minutes} minute(s)`);
+                    console.log(`No new streams found for YouTube group ${group.username}, checking again in ${delayText}`);
                 }
             }
 
