@@ -11710,9 +11710,26 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                     }
                                     (function(){
                                       try {
+                                        function __ss_hasActiveYouTubeOAuthState(){
+                                          try { if (sessionStorage.getItem('youtubeOAuthState')) return true; } catch(_){ }
+                                          var storedState = '';
+                                          try { storedState = localStorage.getItem('youtubeOAuthState') || ''; } catch(_){ }
+                                          if (!storedState) return false;
+                                          try {
+                                            var params = new URLSearchParams(location.search || '');
+                                            var callbackState = params.get('state') || '';
+                                            if (params.has('code') && callbackState && callbackState === storedState) return true;
+                                          } catch(_){ }
+                                          try { localStorage.removeItem('youtubeOAuthState'); } catch(_){ }
+                                          return false;
+                                        }
                                         var hasToken = false;
+                                        var hasRefreshToken = false;
+                                        var hasPendingAuth = false;
                                         try { hasToken = !!localStorage.getItem('youtubeOAuthToken'); } catch(_){ }
-                                        if (!hasToken) __ss_wssNotify('signin_required','Sign in with YouTube to continue');
+                                        try { hasRefreshToken = !!localStorage.getItem('youtubeRefreshToken'); } catch(_){ }
+                                        hasPendingAuth = __ss_hasActiveYouTubeOAuthState();
+                                        if (!hasToken && !hasRefreshToken && !hasPendingAuth) __ss_wssNotify('signin_required','Sign in with YouTube to continue');
                                       } catch(_){ }
                                     })();
                                     (function(){
@@ -11981,7 +11998,26 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                                   } catch(e){}
                                                 }
                                                 (function(){
-                                                  try { var hasToken=false; try{ hasToken = !!localStorage.getItem('youtubeOAuthToken'); } catch(_){ } if (!hasToken) __ss_wssNotify('signin_required','Sign in with YouTube to continue'); } catch(_){ }
+                                                  try {
+                                                    function __ss_hasActiveYouTubeOAuthState(){
+                                                      try{ if (sessionStorage.getItem('youtubeOAuthState')) return true; } catch(_){ }
+                                                      var storedState = '';
+                                                      try{ storedState = localStorage.getItem('youtubeOAuthState') || ''; } catch(_){ }
+                                                      if (!storedState) return false;
+                                                      try {
+                                                        var params = new URLSearchParams(location.search || '');
+                                                        var callbackState = params.get('state') || '';
+                                                        if (params.has('code') && callbackState && callbackState === storedState) return true;
+                                                      } catch(_){ }
+                                                      try{ localStorage.removeItem('youtubeOAuthState'); } catch(_){ }
+                                                      return false;
+                                                    }
+                                                    var hasToken=false, hasRefreshToken=false, hasPendingAuth=false;
+                                                    try{ hasToken = !!localStorage.getItem('youtubeOAuthToken'); } catch(_){ }
+                                                    try{ hasRefreshToken = !!localStorage.getItem('youtubeRefreshToken'); } catch(_){ }
+                                                    hasPendingAuth = __ss_hasActiveYouTubeOAuthState();
+                                                    if (!hasToken && !hasRefreshToken && !hasPendingAuth) __ss_wssNotify('signin_required','Sign in with YouTube to continue');
+                                                  } catch(_){ }
                                                 })();
                                                 (function(){
                                                   try {

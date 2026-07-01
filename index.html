@@ -11150,9 +11150,16 @@
                                 }
                                 // Auto-reveal the WSS window for sign-in
                                 if (ipcRenderer && (source.vid || tabId)) {
-                                    ipcRenderer.invoke('showWindow', { vid: source.vid || tabId, state: false, userInitiated: false }).then((visible) => {
-                                        stateManager.updateSource(source.id, { isVisible: (typeof visible === 'boolean') ? visible : true });
-                                    }).catch(() => stateManager.updateSource(source.id, { isVisible: true }));
+                                    ipcRenderer.invoke('showWindow', { vid: source.vid || tabId, state: false, userInitiated: false }).then((response) => {
+                                        const nextVisible = typeof response === 'boolean'
+                                            ? response
+                                            : (typeof response?.newState === 'boolean' ? response.newState : null);
+                                        if (nextVisible !== null) {
+                                            stateManager.updateSource(source.id, { isVisible: nextVisible });
+                                        }
+                                    }).catch((error) => {
+                                        console.warn('Failed to reveal WSS sign-in window:', error);
+                                    });
                                 }
                                 break;
                             case 'ready':
