@@ -2700,7 +2700,7 @@
             if (/\s/.test(trimmed)) {
                 return { value: trimmed, isChannelName: true };
             }
-            return { value: trimmed, isChannelName: !!fallbackIsChannelName };
+            return { value: trimmed, isChannelName: true };
         }
 
         async function newSourcePrompt(target) {
@@ -4569,6 +4569,16 @@
                         type: 'waiting_for_chat',
                         waitingCount: waitingNewOwnerStreams,
                         message: 'Upcoming YouTube broadcasts were added, but chat is not ready yet.'
+                    };
+                }
+                if (ownerBackedGroup && !shouldAutoOpen) {
+                    return {
+                        type: waitingNewOwnerStreams > 0 ? 'waiting_for_chat' : 'owner_streams_added',
+                        addedCount: newStreams.length,
+                        waitingCount: waitingNewOwnerStreams,
+                        message: waitingNewOwnerStreams > 0
+                            ? 'Owned YouTube broadcasts were added, but some chats are not ready yet.'
+                            : 'Owned YouTube broadcasts were added. Auto-activate is off, so checking will continue.'
                     };
                 }
             }
