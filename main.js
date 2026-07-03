@@ -9417,13 +9417,30 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     function isTrustedStreamDeckSourceCommandSender(event) {
         const sender = event && event.sender;
-        return !!(
+        if (!(
             sender &&
             mainWindow &&
             !mainWindow.isDestroyed() &&
             mainWindow.webContents &&
             sender.id === mainWindow.webContents.id
-        );
+        )) {
+            return false;
+        }
+
+        const frame = event.senderFrame;
+        if (!frame) return false;
+
+        try {
+            if (frame === mainWindow.webContents.mainFrame) {
+                return true;
+            }
+        } catch (_) { }
+
+        const frameUrl = typeof frame.url === "string" ? frame.url : "";
+        if (!frameUrl || !matchesSocialStreamPagePath(frameUrl, "background")) {
+            return false;
+        }
+        return frameUrl.startsWith("file://") || isSocialStreamRemoteUrl(frameUrl);
     }
 
     ipcMain.handle("ssapp:background-command", async (event, request = {}) => {

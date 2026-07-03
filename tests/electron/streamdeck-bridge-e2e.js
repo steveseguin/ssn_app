@@ -372,6 +372,54 @@ async function run() {
 		assert.equal(mainBridge.ok, true, 'main-process streamDeckSourceCommand failed');
 		assert.equal(mainBridge.payload.source.id, seed.sourceId, 'main-process bridge returned wrong source');
 
+		const untrustedFrameBridge = await execInRenderer(port, `
+			new Promise(resolve => {
+				const frame = document.createElement('iframe');
+				frame.style.display = 'none';
+				const messageType = 'streamdeck-forbidden-frame-' + Date.now();
+				const timer = setTimeout(() => {
+					window.removeEventListener('message', onMessage);
+					frame.remove();
+					resolve({ ok: false, error: { code: 'FRAME_TIMEOUT' } });
+				}, 10000);
+				function onMessage(event) {
+					if (!event.data || event.data.type !== messageType) return;
+					clearTimeout(timer);
+					window.removeEventListener('message', onMessage);
+					frame.remove();
+					resolve(event.data.response);
+				}
+				window.addEventListener('message', onMessage);
+				const script = \`
+					(function () {
+						function done(response) {
+							parent.postMessage({ type: '\${messageType}', response: response }, '*');
+						}
+						try {
+							const ipc = typeof require === 'function' ? require('electron').ipcRenderer : null;
+							if (!ipc) {
+								done({ ok: false, error: { code: 'IPC_UNAVAILABLE' } });
+								return;
+							}
+							ipc.invoke('ssapp:background-command', {
+								cmd: 'streamDeckSourceCommand',
+								request: { action: 'getSource', value: '${seed.sourceId}' }
+							}).then(done).catch(error => done({
+								ok: false,
+								error: { code: 'IPC_ERROR', message: error && error.message ? error.message : String(error) }
+							}));
+						} catch (error) {
+							done({ ok: false, error: { code: 'FRAME_ERROR', message: error && error.message ? error.message : String(error) } });
+						}
+					})();
+				\`;
+				frame.srcdoc = '<!doctype html><script>' + script + '<\\/script>';
+				document.body.appendChild(frame);
+			})
+		`, 'untrusted iframe streamDeckSourceCommand');
+		assert.equal(untrustedFrameBridge.ok, false, `untrusted iframe should be denied: ${JSON.stringify(untrustedFrameBridge)}`);
+		assert.equal(untrustedFrameBridge.error && untrustedFrameBridge.error.code, 'SSAPP_FORBIDDEN', `unexpected iframe denial response: ${JSON.stringify(untrustedFrameBridge)}`);
+
 		const untrustedUrl = `https://example.com/?ssapp-streamdeck-forbidden=${Date.now()}`;
 		await execInRenderer(port, `window.open('${untrustedUrl}', '_blank'); true`, 'open untrusted renderer');
 		const untrustedWindow = await waitForWindow(port, win => win.id !== mainExecWindowId && win.url === untrustedUrl);
