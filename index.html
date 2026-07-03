@@ -6669,6 +6669,385 @@
             }
         }
 
+        (function installStreamDeckBridge() {
+            const allowedConnectionModes = new Set(['classic', 'websocket', 'tiktok-websocket', 'tiktok-legacy']);
+            const sourceStatusValues = ['inactive', 'activating', 'active', 'error'];
+
+            function ok(payload) {
+                return { ok: true, payload };
+            }
+
+            function err(code, message) {
+                return {
+                    ok: false,
+                    error: {
+                        code,
+                        message: message || code
+                    }
+                };
+            }
+
+            function requireStateManager() {
+                if (typeof stateManager === 'undefined' || !stateManager) {
+                    return err('SSAPP_UNAVAILABLE', 'SSApp source state is unavailable.');
+                }
+                return null;
+            }
+
+            function requestValue(request) {
+                return request && Object.prototype.hasOwnProperty.call(request, 'value') ? request.value : undefined;
+            }
+
+            function sourceIdFromRequest(request) {
+                const value = requestValue(request);
+                if (typeof value === 'string' && value.trim()) return value.trim();
+                if (value && typeof value === 'object') {
+                    if (typeof value.sourceId === 'string' && value.sourceId.trim()) return value.sourceId.trim();
+                    if (typeof value.id === 'string' && value.id.trim()) return value.id.trim();
+                }
+                if (request && typeof request.target === 'string' && request.target && request.target !== 'ssapp') {
+                    return request.target;
+                }
+                return '';
+            }
+
+            function selectorForSourceId(sourceId) {
+                if (window.CSS && typeof window.CSS.escape === 'function') {
+                    return `[data-source-id="${window.CSS.escape(sourceId)}"]`;
+                }
+                return `[data-source-id="${String(sourceId).replace(/["\\]/g, '\\$&')}"]`;
+            }
+
+            function entryForSourceId(sourceId) {
+                if (!sourceId) return null;
+                return document.querySelector(selectorForSourceId(sourceId));
+            }
+
+            function normalizeSourceForStreamDeck(source) {
+                if (!source) return null;
+                const activeConnectionMode = getEffectiveConnectionMode(source);
+                const status = source.status || (hasConnectionHandles(source) ? 'active' : 'inactive');
+                return {
+                    id: source.id || '',
+                    target: source.target || '',
+                    url: source.url || '',
+                    username: source.username || '',
+                    videoId: source.videoId || '',
+                    connectionMode: source.connectionMode || 'classic',
+                    activeConnectionMode: activeConnectionMode || null,
+                    status: sourceStatusValues.includes(status) ? status : 'inactive',
+                    isVisible: source.isVisible !== false,
+                    isMuted: !!source.isMuted,
+                    autoActivate: !!source.autoActivate,
+                    groupId: source.groupId || null
+                };
+            }
+
+            function getCapabilities() {
+                return ok({
+                    available: true,
+                    runtime: 'electron',
+                    version: null,
+                    sourceControls: {
+                        list: true,
+                        get: true,
+                        start: true,
+                        stop: true,
+                        restart: true
+                    },
+                    bulkControls: {
+                        startAll: true,
+                        stopAll: true,
+                        restartAll: true,
+                        filters: ['all', 'target', 'groupId', 'status']
+                    },
+                    visibility: {
+                        get: true,
+                        set: true,
+                        toggle: true
+                    },
+                    mute: {
+                        get: true,
+                        set: true,
+                        toggle: true
+                    },
+                    connectionMode: {
+                        get: true,
+                        set: true,
+                        values: Array.from(allowedConnectionModes)
+                    },
+                    sourceStatus: {
+                        get: true,
+                        values: sourceStatusValues.slice()
+                    }
+                });
+            }
+
+            function listSources(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+
+                const value = requestValue(request);
+                const filters = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+                let sources = stateManager.getSources();
+                if (filters.target) {
+                    sources = sources.filter(source => source.target === filters.target);
+                }
+                if (filters.groupId) {
+                    sources = sources.filter(source => source.groupId === filters.groupId);
+                }
+                if (filters.status) {
+                    sources = sources.filter(source => (source.status || 'inactive') === filters.status);
+                }
+                return ok({ sources: sources.map(normalizeSourceForStreamDeck) });
+            }
+
+            function getSourceResult(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+
+                const sourceId = sourceIdFromRequest(request);
+                if (!sourceId) return err('INVALID_TARGET', 'Missing source id.');
+                const source = stateManager.getSource(sourceId);
+                if (!source) return err('SOURCE_NOT_FOUND', 'Source was not found.');
+                return ok({ source: normalizeSourceForStreamDeck(source) });
+            }
+
+            async function startSourceInternal(sourceId) {
+                const source = stateManager.getSource(sourceId);
+                if (!source) return err('SOURCE_NOT_FOUND', 'Source was not found.');
+                const entry = entryForSourceId(sourceId);
+                if (!entry) return err('SOURCE_NOT_FOUND', 'Source UI entry was not found.');
+                if (hasConnectionHandles(source)) {
+                    return ok({ source: normalizeSourceForStreamDeck(source) });
+                }
+                const button = entry.querySelector('[data-activatehtml]');
+                if (!button) return err('INVALID_TARGET', 'Source activate button is unavailable.');
+                await activateSource(button);
+                await waitForNextRender();
+                return ok({ source: normalizeSourceForStreamDeck(stateManager.getSource(sourceId) || source) });
+            }
+
+            async function stopSourceInternal(sourceId) {
+                const source = stateManager.getSource(sourceId);
+                if (!source) return err('SOURCE_NOT_FOUND', 'Source was not found.');
+                const entry = entryForSourceId(sourceId);
+                if (!entry) return err('SOURCE_NOT_FOUND', 'Source UI entry was not found.');
+                const button = entry.querySelector('[data-activatehtml][data-connecting="true"]')
+                    || entry.querySelector('[data-stophtml]')
+                    || entry.querySelector('[data-activatehtml]');
+                if (!button) return err('INVALID_TARGET', 'Source stop button is unavailable.');
+                await stopThis(button);
+                await waitForNextRender();
+                return ok({ source: normalizeSourceForStreamDeck(stateManager.getSource(sourceId) || source) });
+            }
+
+            async function startSource(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+                const sourceId = sourceIdFromRequest(request);
+                if (!sourceId) return err('INVALID_TARGET', 'Missing source id.');
+                return await startSourceInternal(sourceId);
+            }
+
+            async function stopSource(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+                const sourceId = sourceIdFromRequest(request);
+                if (!sourceId) return err('INVALID_TARGET', 'Missing source id.');
+                return await stopSourceInternal(sourceId);
+            }
+
+            async function restartSource(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+                const sourceId = sourceIdFromRequest(request);
+                if (!sourceId) return err('INVALID_TARGET', 'Missing source id.');
+                const stopResult = await stopSourceInternal(sourceId);
+                if (!stopResult.ok) return stopResult;
+                await new Promise(resolve => setTimeout(resolve, 200));
+                return await startSourceInternal(sourceId);
+            }
+
+            function bulkSources(request) {
+                const value = requestValue(request);
+                const filters = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+                let sources = stateManager.getSources();
+                if (filters.target) sources = sources.filter(source => source.target === filters.target);
+                if (filters.groupId) sources = sources.filter(source => source.groupId === filters.groupId);
+                if (filters.status) sources = sources.filter(source => (source.status || 'inactive') === filters.status);
+                if (filters.activeOnly === true) sources = sources.filter(source => hasConnectionHandles(source));
+                return sources;
+            }
+
+            async function runBulk(request, operation) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+
+                const value = requestValue(request);
+                const filters = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+                if ((operation === 'stop' || operation === 'restart') && filters.confirm !== true) {
+                    return err('INVALID_TARGET', 'Bulk stop/restart requires confirm: true.');
+                }
+
+                const sources = bulkSources(request);
+                const results = [];
+                for (const source of sources) {
+                    let result;
+                    if (operation === 'start') {
+                        result = await startSourceInternal(source.id);
+                    } else if (operation === 'stop') {
+                        result = await stopSourceInternal(source.id);
+                    } else {
+                        const stopResult = await stopSourceInternal(source.id);
+                        result = stopResult.ok ? await startSourceInternal(source.id) : stopResult;
+                    }
+                    results.push({
+                        sourceId: source.id,
+                        ok: !!result.ok,
+                        payload: result.payload || null,
+                        error: result.error || null
+                    });
+                }
+
+                return ok({
+                    count: results.length,
+                    results
+                });
+            }
+
+            async function setSourceMute(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+
+                const sourceId = sourceIdFromRequest(request);
+                const value = requestValue(request);
+                const desired = value && typeof value === 'object' && typeof value.isMuted === 'boolean'
+                    ? value.isMuted
+                    : undefined;
+                if (!sourceId) return err('INVALID_TARGET', 'Missing source id.');
+                if (typeof desired !== 'boolean') return err('INVALID_TARGET', 'Missing isMuted boolean.');
+
+                const source = stateManager.getSource(sourceId);
+                if (!source) return err('SOURCE_NOT_FOUND', 'Source was not found.');
+                stateManager.updateSource(sourceId, { isMuted: desired });
+                if (source.vid && ipcRenderer) {
+                    try {
+                        ipcRenderer.sendSync('muteWindow', {
+                            vid: source.vid,
+                            muteWindow: desired
+                        });
+                    } catch (error) {
+                        return err('INVALID_TARGET', error?.message || 'Could not update source mute state.');
+                    }
+                }
+                return ok({ source: normalizeSourceForStreamDeck(stateManager.getSource(sourceId)) });
+            }
+
+            async function toggleSourceMuteFromBridge(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+                const sourceId = sourceIdFromRequest(request);
+                if (!sourceId) return err('INVALID_TARGET', 'Missing source id.');
+                const source = stateManager.getSource(sourceId);
+                if (!source) return err('SOURCE_NOT_FOUND', 'Source was not found.');
+                return await setSourceMute({ ...request, value: { sourceId, isMuted: !source.isMuted } });
+            }
+
+            async function setSourceVisibility(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+
+                const sourceId = sourceIdFromRequest(request);
+                const value = requestValue(request);
+                const desired = value && typeof value === 'object' && typeof value.isVisible === 'boolean'
+                    ? value.isVisible
+                    : undefined;
+                if (!sourceId) return err('INVALID_TARGET', 'Missing source id.');
+                if (typeof desired !== 'boolean') return err('INVALID_TARGET', 'Missing isVisible boolean.');
+
+                const source = stateManager.getSource(sourceId);
+                if (!source) return err('SOURCE_NOT_FOUND', 'Source was not found.');
+                if (!source.vid || !ipcRenderer) return err('INVALID_TARGET', 'Source must be active to change visibility.');
+                try {
+                    const response = await ipcRenderer.invoke('showWindow', {
+                        vid: source.vid,
+                        state: !desired,
+                        userInitiated: true
+                    });
+                    let actual = desired;
+                    if (response && typeof response.newState === 'boolean') {
+                        actual = response.newState;
+                    } else if (typeof response === 'boolean') {
+                        actual = response;
+                    }
+                    stateManager.updateSource(sourceId, { isVisible: actual });
+                    return ok({ source: normalizeSourceForStreamDeck(stateManager.getSource(sourceId)) });
+                } catch (error) {
+                    return err('INVALID_TARGET', error?.message || 'Could not update source visibility.');
+                }
+            }
+
+            async function toggleSourceVisibilityFromBridge(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+                const sourceId = sourceIdFromRequest(request);
+                if (!sourceId) return err('INVALID_TARGET', 'Missing source id.');
+                const source = stateManager.getSource(sourceId);
+                if (!source) return err('SOURCE_NOT_FOUND', 'Source was not found.');
+                return await setSourceVisibility({ ...request, value: { sourceId, isVisible: !(source.isVisible !== false) } });
+            }
+
+            async function setConnectionMode(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+
+                const sourceId = sourceIdFromRequest(request);
+                const value = requestValue(request);
+                const mode = value && typeof value === 'object' && typeof value.mode === 'string'
+                    ? value.mode
+                    : typeof request.target === 'string' && request.target !== 'ssapp'
+                        ? request.target
+                        : '';
+                if (!sourceId) return err('INVALID_TARGET', 'Missing source id.');
+                if (!allowedConnectionModes.has(mode)) return err('INVALID_TARGET', 'Unsupported connection mode.');
+
+                const source = stateManager.getSource(sourceId);
+                if (!source) return err('SOURCE_NOT_FOUND', 'Source was not found.');
+                if (hasConnectionHandles(source)) return err('INVALID_TARGET', 'Stop source before changing connection mode.');
+                const entry = entryForSourceId(sourceId);
+                if (!entry) return err('SOURCE_NOT_FOUND', 'Source UI entry was not found.');
+                await setSourceConnectionMode(entry, mode, null);
+                await waitForNextRender();
+                return ok({ source: normalizeSourceForStreamDeck(stateManager.getSource(sourceId)) });
+            }
+
+            window.SSAppStreamDeckBridge = {
+                async handleCommand(request) {
+                    try {
+                        const action = request && typeof request.action === 'string' ? request.action : '';
+                        if (action === 'getCapabilities') return getCapabilities();
+                        if (action === 'getSources') return listSources(request);
+                        if (action === 'getSource') return getSourceResult(request);
+                        if (action === 'startSource') return await startSource(request);
+                        if (action === 'stopSource') return await stopSource(request);
+                        if (action === 'restartSource') return await restartSource(request);
+                        if (action === 'startAllSources') return await runBulk(request, 'start');
+                        if (action === 'stopAllSources') return await runBulk(request, 'stop');
+                        if (action === 'restartAllSources') return await runBulk(request, 'restart');
+                        if (action === 'setSourceMute') return await setSourceMute(request);
+                        if (action === 'toggleSourceMute') return await toggleSourceMuteFromBridge(request);
+                        if (action === 'setSourceVisibility') return await setSourceVisibility(request);
+                        if (action === 'toggleSourceVisibility') return await toggleSourceVisibilityFromBridge(request);
+                        if (action === 'setSourceConnectionMode') return await setConnectionMode(request);
+                        return err('UNSUPPORTED_ACTION', 'Unsupported SSApp source action.');
+                    } catch (error) {
+                        return err('UNSUPPORTED_ACTION', error?.message || 'SSApp source action failed.');
+                    }
+                }
+            };
+        })();
+
         async function createWindow(ele, tabid = false) {
             if (!ele) { console.error('No element provided to createWindow'); return false; }
             if (!configReady) {

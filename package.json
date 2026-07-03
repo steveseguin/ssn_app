@@ -15,6 +15,7 @@
     "test:settings-rootcause": "node tests/electron/settings-rootcause-diagnostics.js",
     "test:settings-transfer": "node tests/electron/settings-transfer-e2e.js",
     "test:stability-recovery": "node tests/electron/stability-recovery-diagnostics.js",
+    "test:streamdeck-bridge": "node tests/electron/streamdeck-bridge-e2e.js",
     "test:tts": "node tests/electron/tts-diagnostics.js",
     "test:socialstream-path-security": "node tests/electron/socialstream-path-security-regression.js",
     "test:ipc-scaffold": "node tests/electron/ipc-scaffold-regression.js",

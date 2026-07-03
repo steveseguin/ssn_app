@@ -9361,7 +9361,56 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     });
 
+    async function handleStreamDeckSourceCommand(request = {}) {
+        const command = request && request.request && typeof request.request === "object"
+            ? request.request
+            : {
+                action: request && typeof request.action === "string" ? request.action : "",
+                value: request ? request.value : undefined,
+                target: request ? request.target : undefined,
+                get: request ? request.get : undefined
+            };
+
+        if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents) {
+            return {
+                ok: false,
+                error: {
+                    code: "SSAPP_UNAVAILABLE",
+                    message: "SSApp renderer is unavailable."
+                }
+            };
+        }
+
+        try {
+            const script = `
+                (async () => {
+                    const request = ${JSON.stringify(command)};
+                    if (!window.SSAppStreamDeckBridge || typeof window.SSAppStreamDeckBridge.handleCommand !== "function") {
+                        return {
+                            ok: false,
+                            error: {
+                                code: "SSAPP_UNAVAILABLE",
+                                message: "SSApp source bridge is not ready."
+                            }
+                        };
+                    }
+                    return await window.SSAppStreamDeckBridge.handleCommand(request);
+                })()
+            `;
+            return await mainWindow.webContents.executeJavaScript(script, true);
+        } catch (error) {
+            return {
+                ok: false,
+                error: {
+                    code: "SSAPP_UNAVAILABLE",
+                    message: error?.message || "SSApp source command failed."
+                }
+            };
+        }
+    }
+
     const backgroundCommandHandlers = {
+        streamDeckSourceCommand: handleStreamDeckSourceCommand,
         vpzoneFetchJson: handleVpzoneFetchJsonCommand,
         joystickFetchJson: handleJoystickFetchJsonCommand
     };
