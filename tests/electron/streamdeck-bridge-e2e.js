@@ -224,6 +224,8 @@ async function execInRenderer(port, code, label = 'renderer exec') {
 
 async function run() {
 	const port = await getFreePort();
+	const untrustedHtmlPath = path.join(userDataDir, 'streamdeck-untrusted.html');
+	fs.writeFileSync(untrustedHtmlPath, '<!doctype html><meta charset="utf-8"><title>Untrusted Stream Deck Test</title>');
 	const child = spawn(
 		electronPath,
 		[
@@ -241,6 +243,7 @@ async function run() {
 				SSAPP_REMOTE_CONTROL: '1',
 				SSAPP_REMOTE_CONTROL_PORT: String(port),
 				SSAPP_REMOTE_CONTROL_TOKEN: token,
+				SSAPP_DIAGNOSTICS_SAFE_GPU: '1',
 				SSAPP_DEBUG_LOGS: '0'
 			},
 			stdio: ['ignore', 'pipe', 'pipe'],
@@ -359,6 +362,55 @@ async function run() {
 		assert.equal(mode.payload.source.connectionMode, 'websocket', 'connection mode did not update');
 		assert.equal(mode.payload.source.activeConnectionMode, null, 'inactive source should keep activeConnectionMode null after mode change');
 
+		const forcedClassicBlock = await execInRenderer(port, `
+			(async () => {
+				const sourceId = 'streamdeck-e2e-tiktok-source';
+				const previousGlobal = {
+					forceTikTokClassic: !!stateManager.state.global.forceTikTokClassic,
+					lastTikTokMode: stateManager.state.global.lastTikTokMode,
+					tiktokModeExplicitlySelected: !!stateManager.state.global.tiktokModeExplicitlySelected
+				};
+				if (!stateManager.getSource(sourceId)) {
+					stateManager.addSource({
+						id: sourceId,
+						target: 'tiktok',
+						username: 'streamdeck-e2e-tiktok',
+						url: 'https://www.tiktok.com/@streamdeck-e2e-tiktok/live',
+						connectionMode: 'classic',
+						isMuted: false,
+						isVisible: true,
+						autoActivate: false
+					});
+				}
+				let entry = document.querySelector('[data-source-id="' + sourceId + '"]');
+				if (!entry) {
+					entry = createSourceElement(sourceId);
+					document.getElementById('sources').appendChild(entry);
+				}
+				stateManager.updateGlobal({ forceTikTokClassic: true });
+				if (typeof updatePreferTikTokClassicFromState === 'function') {
+					updatePreferTikTokClassicFromState({ forceApply: true, skipSync: true, silent: true });
+				}
+				const response = await window.SSAppStreamDeckBridge.handleCommand({
+					action: 'setSourceConnectionMode',
+					value: { sourceId, mode: 'tiktok-websocket' }
+				});
+				const blockedSource = stateManager.getSource(sourceId);
+				stateManager.updateGlobal(previousGlobal);
+				if (typeof updatePreferTikTokClassicFromState === 'function') {
+					updatePreferTikTokClassicFromState({ forceApply: true, skipSync: true, silent: true });
+				}
+				return {
+					response,
+					connectionMode: blockedSource && blockedSource.connectionMode,
+					restoredForceTikTokClassic: !!stateManager.state.global.forceTikTokClassic
+				};
+			})()
+		`, 'renderer forced classic setSourceConnectionMode');
+		assert.equal(forcedClassicBlock.response.ok, false, `forced classic mode change should fail: ${JSON.stringify(forcedClassicBlock)}`);
+		assert.equal(forcedClassicBlock.response.error && forcedClassicBlock.response.error.code, 'INVALID_TARGET', `unexpected forced classic response: ${JSON.stringify(forcedClassicBlock)}`);
+		assert.equal(forcedClassicBlock.connectionMode, 'classic', 'forced classic block should leave TikTok source in classic mode');
+
 		const badSource = await execInRenderer(port, `window.SSAppStreamDeckBridge.handleCommand({ action: 'getSource', value: 'missing-source' })`, 'renderer SOURCE_NOT_FOUND');
 		assert.equal(badSource.ok, false, 'missing source should fail');
 		assert.equal(badSource.error.code, 'SOURCE_NOT_FOUND', 'missing source should return SOURCE_NOT_FOUND');
@@ -420,8 +472,10 @@ async function run() {
 		assert.equal(untrustedFrameBridge.ok, false, `untrusted iframe should be denied: ${JSON.stringify(untrustedFrameBridge)}`);
 		assert.equal(untrustedFrameBridge.error && untrustedFrameBridge.error.code, 'SSAPP_FORBIDDEN', `unexpected iframe denial response: ${JSON.stringify(untrustedFrameBridge)}`);
 
-		const untrustedUrl = `https://example.com/?ssapp-streamdeck-forbidden=${Date.now()}`;
-		await execInRenderer(port, `window.open('${untrustedUrl}', '_blank'); true`, 'open untrusted renderer');
+		const untrustedUrlObject = new URL(pathToFileURL(untrustedHtmlPath).href);
+		untrustedUrlObject.searchParams.set('ssapp-streamdeck-forbidden', String(Date.now()));
+		const untrustedUrl = untrustedUrlObject.href;
+		await execInRenderer(port, `window.open(${JSON.stringify(untrustedUrl)}, '_blank'); true`, 'open untrusted renderer');
 		const untrustedWindow = await waitForWindow(port, win => win.id !== mainExecWindowId && win.url === untrustedUrl);
 		const forbiddenBridge = await execInWindow(port, untrustedWindow.id, `
 			new Promise(resolve => {

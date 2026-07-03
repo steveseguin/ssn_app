@@ -200,7 +200,10 @@ const TTS_DIAGNOSTICS_REPORT_PATH = (() => {
     if (!arg) return null;
     return arg.slice('--tts-report='.length);
 })();
-const TTS_DIAGNOSTICS_SAFE_GPU = TTS_DIAGNOSTICS_ENABLED || parseBooleanLikeFlag(process.env.SSAPP_TTS_DIAGNOSTICS_SAFE_GPU) === true;
+const DIAGNOSTICS_SAFE_GPU =
+    TTS_DIAGNOSTICS_ENABLED ||
+    parseBooleanLikeFlag(process.env.SSAPP_TTS_DIAGNOSTICS_SAFE_GPU) === true ||
+    parseBooleanLikeFlag(process.env.SSAPP_DIAGNOSTICS_SAFE_GPU) === true;
 
 const win10TransparencyCompatRequested = (() => {
     const envFlag = parseBooleanLikeFlag(process.env.SSAPP_WIN10_TRANSPARENCY_COMPAT);
@@ -359,10 +362,10 @@ function initializeStabilityRuntimeForStartup() {
     let latestCrashReason = null;
     const notices = [];
 
-    if (TTS_DIAGNOSTICS_SAFE_GPU && level < STABILITY_GPU_SANDBOX_FALLBACK_LEVEL) {
+    if (DIAGNOSTICS_SAFE_GPU && level < STABILITY_GPU_SANDBOX_FALLBACK_LEVEL) {
         level = STABILITY_GPU_SANDBOX_FALLBACK_LEVEL;
         state.lastFallbackChangeAt = now;
-        notices.push('[Stability] TTS diagnostics forcing stability GPU profile L4.');
+        notices.push('[Stability] Diagnostics forcing stability GPU profile L4.');
     }
 
     if (previousSessionActive) {

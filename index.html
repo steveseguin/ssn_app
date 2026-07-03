@@ -7022,7 +7022,12 @@
                 if (!entry) return err('SOURCE_NOT_FOUND', 'Source UI entry was not found.');
                 await setSourceConnectionMode(entry, mode, null);
                 await waitForNextRender();
-                return ok({ source: normalizeSourceForStreamDeck(stateManager.getSource(sourceId)) });
+                const updatedSource = stateManager.getSource(sourceId);
+                if (!updatedSource) return err('SOURCE_NOT_FOUND', 'Source was not found.');
+                if (updatedSource.connectionMode !== mode) {
+                    return err('INVALID_TARGET', 'Connection mode change was blocked.');
+                }
+                return ok({ source: normalizeSourceForStreamDeck(updatedSource) });
             }
 
             window.SSAppStreamDeckBridge = {
