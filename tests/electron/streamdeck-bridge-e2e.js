@@ -77,6 +77,7 @@ async function createRelayServer() {
 	return {
 		server,
 		port: address && typeof address === 'object' ? address.port : 0,
+		joinedClientCount: () => Array.from(clients).filter(client => client.room).length,
 		close: () => new Promise(resolve => {
 			for (const client of clients) {
 				try {
@@ -117,6 +118,17 @@ async function waitForMessage(messages, predicate, timeoutMs = 10000) {
 		await new Promise(resolve => setTimeout(resolve, 50));
 	}
 	throw new Error('Timed out waiting for WebSocket message');
+}
+
+async function waitForCondition(predicate, timeoutMs = 10000) {
+	const started = Date.now();
+	while (Date.now() - started < timeoutMs) {
+		if (predicate()) {
+			return;
+		}
+		await new Promise(resolve => setTimeout(resolve, 50));
+	}
+	throw new Error('Timed out waiting for condition');
 }
 
 function requestJson(port, pathname, body) {
@@ -409,15 +421,22 @@ async function run() {
 			})()
 		`, 'background socket setup');
 		assert.equal(socketStart.ok, true, `background socket did not start: ${JSON.stringify(socketStart)}`);
+		await waitForCondition(() => relay.joinedClientCount() >= 2);
+		const capabilityRequestId = `capabilities-${Date.now()}`;
+		deckClient.socket.send(JSON.stringify({
+			action: 'getCapabilities',
+			get: capabilityRequestId
+		}));
 		const socketCapabilities = await waitForMessage(
 			deckClient.messages,
-			message => message && message.type === 'capabilities'
+			message => message && message.callback && message.callback.get === capabilityRequestId
 		);
-		assert.equal(socketCapabilities.ssapp.available, true, 'socket capabilities should advertise SSApp');
+		assert.equal(socketCapabilities.callback.result.ssapp.available, true, 'socket capabilities should advertise SSApp');
 
 		const requestId = `source-${Date.now()}`;
 		deckClient.socket.send(JSON.stringify({
 			action: 'getSource',
+			target: 'ssapp',
 			value: seed.sourceId,
 			get: requestId
 		}));
@@ -431,6 +450,7 @@ async function run() {
 		const startRequestId = `start-${Date.now()}`;
 		deckClient.socket.send(JSON.stringify({
 			action: 'startSource',
+			target: 'ssapp',
 			value: seed.sourceId,
 			get: startRequestId
 		}));
@@ -465,6 +485,7 @@ async function run() {
 		const stopRequestId = `stop-${Date.now()}`;
 		deckClient.socket.send(JSON.stringify({
 			action: 'stopSource',
+			target: 'ssapp',
 			value: seed.sourceId,
 			get: stopRequestId
 		}));
