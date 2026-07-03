@@ -170,6 +170,19 @@ function requestJson(port, pathname, body) {
 	});
 }
 
+async function waitForWindow(port, predicate, timeoutMs = 15000) {
+	const started = Date.now();
+	while (Date.now() - started < timeoutMs) {
+		const windows = await requestJson(port, '/windows');
+		const match = (windows.windows || []).find(predicate);
+		if (match) {
+			return match;
+		}
+		await new Promise(resolve => setTimeout(resolve, 250));
+	}
+	throw new Error('Timed out waiting for matching window');
+}
+
 async function waitForRemoteControl(port, timeoutMs = 60000) {
 	const started = Date.now();
 	let lastError = null;
@@ -187,12 +200,12 @@ async function waitForRemoteControl(port, timeoutMs = 60000) {
 	throw new Error(`Timed out waiting for remote control server: ${lastError ? lastError.message : 'no response'}`);
 }
 
-async function execInRenderer(port, code, label = 'renderer exec') {
+async function execInWindow(port, windowId, code, label = 'renderer exec') {
 	let response;
 	try {
 		const body = { code };
-		if (mainExecWindowId) {
-			body.windowId = mainExecWindowId;
+		if (windowId) {
+			body.windowId = windowId;
 		}
 		response = await requestJson(port, '/exec', body);
 	} catch (error) {
@@ -203,6 +216,10 @@ async function execInRenderer(port, code, label = 'renderer exec') {
 		throw new Error(`${label}: ${message}`);
 	}
 	return response.result;
+}
+
+async function execInRenderer(port, code, label = 'renderer exec') {
+	return execInWindow(port, mainExecWindowId, code, label);
 }
 
 async function run() {
@@ -352,6 +369,35 @@ async function run() {
 		`, 'main bridge getSource');
 		assert.equal(mainBridge.ok, true, 'main-process streamDeckSourceCommand failed');
 		assert.equal(mainBridge.payload.source.id, seed.sourceId, 'main-process bridge returned wrong source');
+
+		const untrustedUrl = `https://example.com/?ssapp-streamdeck-forbidden=${Date.now()}`;
+		await execInRenderer(port, `window.open('${untrustedUrl}', '_blank'); true`, 'open untrusted renderer');
+		const untrustedWindow = await waitForWindow(port, win => win.id !== mainExecWindowId && win.url === untrustedUrl);
+		const forbiddenBridge = await execInWindow(port, untrustedWindow.id, `
+			new Promise(resolve => {
+				const started = Date.now();
+				function sendWhenReady() {
+					if (window.ninjafy && typeof window.ninjafy.sendMessage === 'function') {
+						window.ninjafy.sendMessage(null, {
+							type: 'toBackground',
+							data: {
+								cmd: 'streamDeckSourceCommand',
+								request: { action: 'getSource', value: '${seed.sourceId}' }
+							}
+						}, response => resolve(response));
+						return;
+					}
+					if (Date.now() - started > 10000) {
+						resolve({ ok: false, error: { code: 'NINJAFY_UNAVAILABLE' } });
+						return;
+					}
+					setTimeout(sendWhenReady, 100);
+				}
+				sendWhenReady();
+			})
+		`, 'untrusted renderer streamDeckSourceCommand');
+		assert.equal(forbiddenBridge.ok, false, `untrusted renderer should be denied: ${JSON.stringify(forbiddenBridge)}`);
+		assert.equal(forbiddenBridge.error && forbiddenBridge.error.code, 'SSAPP_FORBIDDEN', `unexpected denial response: ${JSON.stringify(forbiddenBridge)}`);
 
 		const backgroundBridge = await execInRenderer(port, `
 			(async () => {

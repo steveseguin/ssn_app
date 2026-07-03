@@ -9415,11 +9415,31 @@ async function createWindow(args, reuse = false, mainApp = false) {
         joystickFetchJson: handleJoystickFetchJsonCommand
     };
 
-    ipcMain.handle("ssapp:background-command", async (_event, request = {}) => {
+    function isTrustedStreamDeckSourceCommandSender(event) {
+        const sender = event && event.sender;
+        return !!(
+            sender &&
+            mainWindow &&
+            !mainWindow.isDestroyed() &&
+            mainWindow.webContents &&
+            sender.id === mainWindow.webContents.id
+        );
+    }
+
+    ipcMain.handle("ssapp:background-command", async (event, request = {}) => {
         const command = request && typeof request.cmd === "string" ? request.cmd : "";
         const handler = backgroundCommandHandlers[command];
         if (!handler) {
             return { ok: false, error: "Unsupported background command" };
+        }
+        if (command === "streamDeckSourceCommand" && !isTrustedStreamDeckSourceCommandSender(event)) {
+            return {
+                ok: false,
+                error: {
+                    code: "SSAPP_FORBIDDEN",
+                    message: "Stream Deck source commands are only available to the SSApp controller."
+                }
+            };
         }
         return handler(request);
     });
