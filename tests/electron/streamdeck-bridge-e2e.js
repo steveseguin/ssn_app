@@ -338,6 +338,7 @@ async function run() {
 		const getSource = await execInRenderer(port, `window.SSAppStreamDeckBridge.handleCommand({ action: 'getSource', value: '${seed.sourceId}' })`, 'renderer getSource');
 		assert.equal(getSource.ok, true, 'getSource failed');
 		assert.equal(getSource.payload.source.status, 'inactive', 'seeded source should start inactive');
+		assert.equal(getSource.payload.source.activeConnectionMode, null, 'inactive source should not report an active connection mode');
 
 		const mute = await execInRenderer(port, `
 			window.SSAppStreamDeckBridge.handleCommand({
@@ -356,6 +357,7 @@ async function run() {
 		`, 'renderer setSourceConnectionMode');
 		assert.equal(mode.ok, true, 'setSourceConnectionMode failed');
 		assert.equal(mode.payload.source.connectionMode, 'websocket', 'connection mode did not update');
+		assert.equal(mode.payload.source.activeConnectionMode, null, 'inactive source should keep activeConnectionMode null after mode change');
 
 		const badSource = await execInRenderer(port, `window.SSAppStreamDeckBridge.handleCommand({ action: 'getSource', value: 'missing-source' })`, 'renderer SOURCE_NOT_FOUND');
 		assert.equal(badSource.ok, false, 'missing source should fail');
@@ -542,6 +544,7 @@ async function run() {
 		);
 		assert.equal(socketStopCallback.callback.result.ok, true, `socket stopSource failed: ${JSON.stringify(socketStopCallback)}`);
 		assert.equal(socketStopCallback.callback.result.payload.source.status, 'inactive', 'source should be inactive after stop');
+		assert.equal(socketStopCallback.callback.result.payload.source.activeConnectionMode, null, 'stopped source should not report an active connection mode');
 
 		const stoppedState = await execInRenderer(port, `
 			(() => {

@@ -6725,8 +6725,11 @@
 
             function normalizeSourceForStreamDeck(source) {
                 if (!source) return null;
-                const activeConnectionMode = getEffectiveConnectionMode(source);
                 const status = source.status || (hasConnectionHandles(source) ? 'active' : 'inactive');
+                const normalizedStatus = sourceStatusValues.includes(status) ? status : 'inactive';
+                const activeConnectionMode = normalizedStatus === 'active' && source.activeConnectionMode
+                    ? source.activeConnectionMode
+                    : null;
                 return {
                     id: source.id || '',
                     target: source.target || '',
@@ -6734,8 +6737,8 @@
                     username: source.username || '',
                     videoId: source.videoId || '',
                     connectionMode: source.connectionMode || 'classic',
-                    activeConnectionMode: activeConnectionMode || null,
-                    status: sourceStatusValues.includes(status) ? status : 'inactive',
+                    activeConnectionMode,
+                    status: normalizedStatus,
                     isVisible: source.isVisible !== false,
                     isMuted: !!source.isMuted,
                     autoActivate: !!source.autoActivate,
