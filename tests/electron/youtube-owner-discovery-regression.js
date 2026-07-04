@@ -62,12 +62,35 @@ groups.set("owner-off", {
 	youtubeDiscoveryMode: "owner"
 });
 elements.set("owner-off", {});
+assert.equal(
+	context.helpers.shouldPollYouTubeGroup(groups.get("owner-off")),
+	false,
+	"owner discovery should not poll when auto-activate is off"
+);
 context.helpers.renderYouTubeGroupCountdown("owner-off", { type: "no_eligible_streams" }, Date.now() + 60000);
 assert(
-	calls.some((call) => call.type === "status" && call.message.includes("Next check in 1m")),
-	"owner discovery should keep showing the next check when auto-activate is off"
+	calls.some((call) => call.type === "clear" && call.id === "owner-off" && call.clearStatus === true),
+	"owner discovery with auto-activate off should clear recurring polling status"
 );
-assert.equal(calls.some((call) => call.type === "clear" && call.id === "owner-off"), false);
+
+calls.length = 0;
+groups.set("owner-on", {
+	id: "owner-on",
+	target: "youtube",
+	autoActivate: true,
+	youtubeDiscoveryMode: "owner"
+});
+elements.set("owner-on", {});
+assert.equal(
+	context.helpers.shouldPollYouTubeGroup(groups.get("owner-on")),
+	true,
+	"owner discovery should poll when auto-activate is on"
+);
+context.helpers.renderYouTubeGroupCountdown("owner-on", { type: "no_eligible_streams" }, Date.now() + 60000);
+assert(
+	calls.some((call) => call.type === "status" && call.message.includes("Next check in 1m")),
+	"owner discovery should show the next check when auto-activate is on"
+);
 
 calls.length = 0;
 groups.set("public-off", {

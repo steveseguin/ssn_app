@@ -2375,7 +2375,9 @@
                     { manualTrigger: true, groupId: group.id }
                 );
                 showYouTubeManualDiscoveryStatus(group.id, result);
-                startYouTubeGroupAutoCheck(group.id);
+                if (shouldPollYouTubeGroup(group)) {
+                    startYouTubeGroupAutoCheck(group.id);
+                }
                 return group;
             } catch (error) {
                 console.error('YouTube owner sign-in failed:', error);
@@ -2428,7 +2430,9 @@
                     { manualTrigger: true, groupId: group.id }
                 );
                 showYouTubeManualDiscoveryStatus(group.id, result);
-                startYouTubeGroupAutoCheck(group.id);
+                if (shouldPollYouTubeGroup(group)) {
+                    startYouTubeGroupAutoCheck(group.id);
+                }
             }
         }
 
@@ -3828,7 +3832,7 @@
 
                     // Start or stop auto-checking for YouTube groups
                     if (group.target === "youtube" || group.target === "youtubeshorts") {
-                        if (autoActivateCheckbox.checked || isYouTubeOwnerGroup(group)) {
+                        if (autoActivateCheckbox.checked) {
                             startYouTubeGroupAutoCheck(groupId);
                         } else {
                             stopYouTubeGroupAutoCheck(groupId);
@@ -4145,7 +4149,7 @@
         }
 
         function shouldPollYouTubeGroup(group) {
-            return !!(group && isYouTubeTarget(group.target) && (group.autoActivate || isYouTubeOwnerGroup(group)));
+            return !!(group && isYouTubeTarget(group.target) && group.autoActivate === true);
         }
 
         function groupHasActiveConnection(group) {
