@@ -4320,7 +4320,7 @@
         function renderYouTubeGroupCountdown(groupId, discoveryResult, nextCheckAt) {
             const groupElement = getYouTubeGroupElement(groupId);
             const group = stateManager.getGroup(groupId);
-            if (!groupElement || !group || !group.autoActivate || !isYouTubeTarget(group.target)) {
+            if (!groupElement || !shouldPollYouTubeGroup(group)) {
                 clearYouTubeGroupCountdown(groupId, true);
                 return;
             }

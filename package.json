@@ -20,6 +20,7 @@
     "test:socialstream-path-security": "node tests/electron/socialstream-path-security-regression.js",
     "test:ipc-scaffold": "node tests/electron/ipc-scaffold-regression.js",
     "test:source-url-parsing": "node tests/electron/source-url-parsing-regression.js",
+    "test:youtube-owner-discovery": "node tests/electron/youtube-owner-discovery-regression.js",
     "test:tiktok-auto-mode": "node tests/tiktok/auto-mode-regression.js",
     "test:tiktok-gift-regression": "node tests/tiktok/gift-count-regression.js",
     "test:tiktok-social-signals": "node tests/tiktok/social-signal-regression.js",
