@@ -8,6 +8,8 @@ const vm = require("vm");
 const repoRoot = path.resolve(__dirname, "..", "..");
 const indexPath = path.join(repoRoot, "index.html");
 const indexSource = fs.readFileSync(indexPath, "utf8");
+const youtubePath = path.join(repoRoot, "youtube.js");
+const youtubeSource = fs.readFileSync(youtubePath, "utf8");
 
 function extractFunction(source, name) {
 	const start = source.indexOf(`function ${name}`);
@@ -41,6 +43,7 @@ const dependencyBlock = [
 const context = {
 	console,
 	URL,
+	URLSearchParams,
 	manifest: {
 		content_scripts: [
 			{ js: ["./sources/websocket/kick.js"] },
@@ -53,8 +56,18 @@ const context = {
 	}
 };
 vm.createContext(context);
-vm.runInContext(`${helperBlock}\n${dependencyBlock}
+const youtubeParsingBlock = [
+	"hasYoutubeShortsMarker",
+	"extractYoutubeVideoId",
+	"parseYoutubeUrl",
+	"extractYoutubeID"
+].map((name) => extractFunction(youtubeSource, name)).join("\n\n");
+
+vm.runInContext(`${youtubeParsingBlock}\n${helperBlock}\n${dependencyBlock}\n${extractFunction(indexSource, "normalizeUrlForMatch")}
 this.helpers = {
+	extractYoutubeVideoId,
+	parseYoutubeUrl,
+	extractYoutubeID,
 	cleanSourceUrlIdentifier,
 	extractSourceUrlIdentifier,
 	isValidTikTokUsername,
@@ -63,10 +76,15 @@ this.helpers = {
 	getWebSocketChannelForSource,
 	getWebSocketScriptPathForSource,
 	buildWebSocketLaunchPlan,
+	buildYouTubeWebSocketQueryParams,
+	normalizeUrlForMatch,
 	normalizeVpzoneChannel
 };`, context);
 
 const {
+	extractYoutubeVideoId,
+	parseYoutubeUrl,
+	extractYoutubeID,
 	cleanSourceUrlIdentifier,
 	extractSourceUrlIdentifier,
 	isValidTikTokUsername,
@@ -75,6 +93,8 @@ const {
 	getWebSocketChannelForSource,
 	getWebSocketScriptPathForSource,
 	buildWebSocketLaunchPlan,
+	buildYouTubeWebSocketQueryParams,
+	normalizeUrlForMatch,
 	normalizeVpzoneChannel
 } = context.helpers;
 
@@ -85,6 +105,72 @@ function runCases(label, cases, fn) {
 	}
 	console.log(`${label}: ${cases.length} cases passed`);
 }
+
+runCases("extractYoutubeVideoId", [
+	{ input: "https://www.youtube.com/watch?v=abcdefghijk", expected: "abcdefghijk" },
+	{ input: "https://www.youtube.com/shorts/abcdefghijk?feature=share", expected: "abcdefghijk" },
+	{ input: "https://www.youtube.com/live/abcdefghijk", expected: "abcdefghijk" },
+	{ input: "https://youtu.be/abcdefghijk", expected: "abcdefghijk" },
+	{ input: "https://www.youtube.com/live_chat?is_popout=1&v=abcdefghijk&shorts", expected: "abcdefghijk" },
+	{ input: "abcdefghijk", expected: "abcdefghijk" }
+], extractYoutubeVideoId);
+
+const parseYoutubeUrlCases = [
+	{
+		name: "watch URL is standard video",
+		input: "https://www.youtube.com/watch?v=abcdefghijk",
+		expected: { isYoutubeUrl: true, type: "video", id: "abcdefghijk", isShort: false }
+	},
+	{
+		name: "shorts path is shorts video",
+		input: "https://www.youtube.com/shorts/abcdefghijk?feature=share",
+		expected: { isYoutubeUrl: true, type: "video", id: "abcdefghijk", isShort: true }
+	},
+	{
+		name: "live chat shorts marker is shorts video",
+		input: "https://www.youtube.com/live_chat?is_popout=1&v=abcdefghijk&shorts",
+		expected: { isYoutubeUrl: true, type: "video", id: "abcdefghijk", isShort: true }
+	},
+	{
+		name: "live chat without shorts marker is standard video",
+		input: "https://www.youtube.com/live_chat?is_popout=1&v=abcdefghijk",
+		expected: { isYoutubeUrl: true, type: "video", id: "abcdefghijk", isShort: false }
+	}
+];
+for (const testCase of parseYoutubeUrlCases) {
+	assert.deepStrictEqual(
+		JSON.parse(JSON.stringify(parseYoutubeUrl(testCase.input))),
+		testCase.expected,
+		`parseYoutubeUrl: ${testCase.name}`
+	);
+}
+console.log(`parseYoutubeUrl: ${parseYoutubeUrlCases.length} cases passed`);
+
+const extractYoutubeIDCases = [
+	{
+		name: "shorts URL marks shorts",
+		input: "https://www.youtube.com/shorts/abcdefghijk?feature=share",
+		expected: { id: "abcdefghijk", isShorts: true }
+	},
+	{
+		name: "live chat shorts marker marks shorts",
+		input: "https://www.youtube.com/live_chat?is_popout=1&v=abcdefghijk&shorts",
+		expected: { id: "abcdefghijk", isShorts: true }
+	},
+	{
+		name: "raw ID remains standard",
+		input: "abcdefghijk",
+		expected: { id: "abcdefghijk", isShorts: false }
+	}
+];
+for (const testCase of extractYoutubeIDCases) {
+	assert.deepStrictEqual(
+		JSON.parse(JSON.stringify(extractYoutubeID(testCase.input))),
+		testCase.expected,
+		`extractYoutubeID: ${testCase.name}`
+	);
+}
+console.log(`extractYoutubeID: ${extractYoutubeIDCases.length} cases passed`);
 
 runCases("cleanSourceUrlIdentifier", [
 	{ input: "@SomeUser", expected: "SomeUser" },
@@ -346,7 +432,7 @@ const launchCases = [
 		expected: {
 			websocketTarget: "youtube",
 			scriptPath: "sources/websocket/youtube.js",
-			queryParams: { channel: "SomeChannel", ssapp: "1" }
+			queryParams: { channel: "SomeChannel", shorts: "1", ssapp: "1" }
 		}
 	},
 	{
@@ -368,5 +454,87 @@ for (const testCase of launchCases) {
 	);
 }
 console.log(`buildWebSocketLaunchPlan: ${launchCases.length} cases passed`);
+
+const youtubeWssQueryCases = [
+	{
+		name: "standard channel",
+		source: { target: "youtube", username: "SomeChannel", url: "" },
+		options: {},
+		expected: { channel: "SomeChannel", ssapp: "1" }
+	},
+	{
+		name: "shorts channel",
+		source: { target: "youtubeshorts", username: "SomeChannel", url: "" },
+		options: {},
+		expected: { channel: "SomeChannel", shorts: "1", ssapp: "1" }
+	},
+	{
+		name: "shorts video ID",
+		source: {
+			target: "youtubeshorts",
+			videoId: "abcdefghijk",
+			url: "https://www.youtube.com/live_chat?is_popout=1&v=abcdefghijk&shorts"
+		},
+		options: {},
+		expected: { videoId: "abcdefghijk", shorts: "1", ssapp: "1" }
+	},
+	{
+		name: "standard target with shorts URL marker",
+		source: {
+			target: "youtube",
+			videoId: "abcdefghijk",
+			url: "https://www.youtube.com/live_chat?is_popout=1&v=abcdefghijk&shorts"
+		},
+		options: { devmode: true },
+		expected: { videoId: "abcdefghijk", shorts: "1", devmode: "", ssapp: "1" }
+	},
+	{
+		name: "missing identifier",
+		source: { target: "youtubeshorts", url: "" },
+		options: {},
+		expected: null
+	}
+];
+for (const testCase of youtubeWssQueryCases) {
+	assert.deepStrictEqual(
+		JSON.parse(JSON.stringify(buildYouTubeWebSocketQueryParams(testCase.source, testCase.options))),
+		testCase.expected,
+		`buildYouTubeWebSocketQueryParams: ${testCase.name}`
+	);
+}
+console.log(`buildYouTubeWebSocketQueryParams: ${youtubeWssQueryCases.length} cases passed`);
+
+const duplicateUrlCases = [
+	{
+		name: "YouTube video ID remains part of duplicate key",
+		left: "https://www.youtube.com/live_chat?is_popout=1&v=IaZtam78ec0",
+		right: "https://www.youtube.com/live_chat?is_popout=1&v=ddddddddddd",
+		same: false
+	},
+	{
+		name: "Parti popout ID remains part of duplicate key",
+		left: "https://parti.com/popout-chat?id=123",
+		right: "https://parti.com/popout-chat?id=456",
+		same: false
+	},
+	{
+		name: "tracking params do not affect duplicate key",
+		left: "https://parti.com/popout-chat?id=123&utm_source=newsletter",
+		right: "https://parti.com/popout-chat?utm_campaign=test&id=123",
+		same: true
+	},
+	{
+		name: "query param ordering does not affect duplicate key",
+		left: "https://example.com/chat?channel=abc&mode=popout",
+		right: "https://example.com/chat?mode=popout&channel=abc",
+		same: true
+	}
+];
+for (const testCase of duplicateUrlCases) {
+	const left = normalizeUrlForMatch(testCase.left);
+	const right = normalizeUrlForMatch(testCase.right);
+	assert.strictEqual(left === right, testCase.same, `normalizeUrlForMatch: ${testCase.name}`);
+}
+console.log(`normalizeUrlForMatch: ${duplicateUrlCases.length} cases passed`);
 
 console.log("source URL parsing regression checks passed");

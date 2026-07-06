@@ -1394,12 +1394,48 @@
             return savedFileName === expectedFileName ? savedScriptPath : fallbackScriptPath;
         }
 
+        function hasYouTubeShortsMarker(sourceUrl) {
+            const value = typeof sourceUrl === "string" ? sourceUrl.trim() : "";
+            if (!value) return false;
+            try {
+                const url = new URL(value);
+                return url.searchParams.has("shorts") || url.pathname.toLowerCase().includes("/shorts");
+            } catch (_) {
+                return /(?:[?&]shorts(?:[=&]|$)|\/shorts(?:\/|$))/i.test(value);
+            }
+        }
+
+        function isYouTubeShortsSource(source) {
+            if (!source || typeof source !== "object") return false;
+            return source.target === "youtubeshorts"
+                || (source.target === "youtube" && hasYouTubeShortsMarker(source.url || source.URL || ""));
+        }
+
+        function buildYouTubeWebSocketQueryParams(source, options = {}) {
+            const queryParams = {};
+            if (source && source.videoId) queryParams.videoId = source.videoId;
+            else if (source && source.username) queryParams.channel = source.username;
+            else return null;
+
+            if (isYouTubeShortsSource(source)) {
+                queryParams.shorts = "1";
+            }
+            if (options.devmode) {
+                queryParams.devmode = "";
+            }
+            queryParams.ssapp = "1";
+            return queryParams;
+        }
+
         function buildWebSocketLaunchPlan(source, options = {}) {
             const websocketTarget = getWebSocketManifestTarget(source && source.target) || (source && source.target) || "";
             const queryParams = {};
             const channel = getWebSocketChannelForSource(source);
             if (channel) {
                 queryParams.channel = channel;
+            }
+            if (isYouTubeShortsSource(source)) {
+                queryParams.shorts = "1";
             }
             if (source && (source.rumbleApiTracker || source.rumbleFollowerCountMode === 'total')) {
                 queryParams.followerMode = 'total';
@@ -5945,7 +5981,37 @@
         function normalizeUrlForMatch(u) {
             try {
                 const url = new URL(u);
-                return url.origin + url.pathname; // ignore query/hash for duplicate detection
+                const ignoredParams = new Set([
+                    'utm_source',
+                    'utm_medium',
+                    'utm_campaign',
+                    'utm_term',
+                    'utm_content',
+                    'utm_id',
+                    'fbclid',
+                    'gclid',
+                    'dclid',
+                    'msclkid',
+                    '_hsenc',
+                    '_hsmi',
+                    'mc_cid',
+                    'mc_eid',
+                    'igshid'
+                ]);
+                const params = new URLSearchParams(url.search);
+                Array.from(params.keys()).forEach((key) => {
+                    const lowerKey = String(key || '').toLowerCase();
+                    if (lowerKey.startsWith('utm_') || ignoredParams.has(lowerKey)) {
+                        params.delete(key);
+                    }
+                });
+                params.sort();
+                const queryString = params.toString();
+                let pathname = url.pathname || '/';
+                if (pathname.length > 1 && pathname.endsWith('/')) {
+                    pathname = pathname.slice(0, -1);
+                }
+                return url.origin + pathname + (queryString ? `?${queryString}` : '');
             } catch (_) {
                 return (u || '').trim();
             }
@@ -5963,7 +6029,7 @@
 
                 const dup = all.find(s => {
                     if (!s || s.target !== candidateTarget) return false;
-                    if (candidateVid && s.videoId && s.videoId === candidateVid) return true;
+                    if (candidateVid && s.videoId) return s.videoId === candidateVid;
                     if (normalizedCandidateUrl && s.url && normalizeUrlForMatch(s.url) === normalizedCandidateUrl) return true;
                     return false;
                 });
@@ -8527,21 +8593,13 @@
                 console.log('[CreateYouTubeWSS] Using AUTO user agent from config:', conf.userAgent);
             }
 
-            const queryParams = new URLSearchParams();
-            if (source.videoId) queryParams.set('videoId', source.videoId);
-            else if (source.username) queryParams.set('channel', source.username);
-            else {
+            const queryParams = buildYouTubeWebSocketQueryParams(source, { devmode });
+            if (!queryParams) {
                 Toast.error("YouTube WSS Error", "Missing Video ID or Username for YouTube WebSocket.");
                 return false;
             }
 
-            if (devmode && !queryParams.has('devmode')) {
-                queryParams.set('devmode', '');
-            }
-            // Signal to the WSS page that we're running in ssapp (Electron)
-            queryParams.set('ssapp', '1');
-
-            const resolvedHtml = await resolveWebSocketHtml('youtube', Object.fromEntries(queryParams.entries()), { branch: isBetaMode ? 'beta' : 'main' });
+            const resolvedHtml = await resolveWebSocketHtml('youtube', queryParams, { branch: isBetaMode ? 'beta' : 'main' });
             if (!resolvedHtml) {
                 Toast.error("YouTube WSS Error", "Unable to resolve the YouTube WebSocket page.");
                 return false;

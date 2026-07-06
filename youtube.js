@@ -2033,6 +2033,16 @@ function detectVideoOrientation(imgElement) {
     return false;
 }
 function logDebugInfo(debug) { }
+function hasYoutubeShortsMarker(urlInput) {
+    if (!urlInput || typeof urlInput !== 'string') return false;
+    try {
+        const urlObj = new URL(urlInput);
+        return urlObj.searchParams.has('shorts') || urlObj.pathname.toLowerCase().includes('/shorts/');
+    } catch (_) {
+        return /(?:[?&]shorts(?:[=&]|$)|\/shorts(?:\/|$))/i.test(urlInput);
+    }
+}
+
 function extractYoutubeVideoId(url) { 
     if (!url || typeof url !== 'string') return null;
 	try {
@@ -2055,6 +2065,10 @@ function extractYoutubeVideoId(url) {
             }
             if (pathname.startsWith('/embed/')) {
                 const candidate = pathname.split('/embed/')[1].split(/[?\/#]/)[0];
+                return validVideoId(candidate) ? candidate : null;
+            }
+            if (pathname === '/live_chat' || pathname === '/live_chat_replay') {
+                const candidate = searchParams.get('v') || searchParams.get('videoId') || searchParams.get('video_id');
                 return validVideoId(candidate) ? candidate : null;
             }
             if (pathname === '/watch') {
@@ -2094,7 +2108,7 @@ function parseYoutubeUrl(url) {
 		const parsedUrl = new URL(urlString); 
         const videoId = extractYoutubeVideoId(urlString); 
         if (videoId) {
-            return { isYoutubeUrl: true, type: 'video', id: videoId, isShort: urlString.includes('/shorts/') };
+            return { isYoutubeUrl: true, type: 'video', id: videoId, isShort: hasYoutubeShortsMarker(urlString) };
         }
         const handleMatch = urlString.match(handleRegex);
         if (handleMatch && handleMatch[1]) {
@@ -2121,7 +2135,7 @@ function extractYoutubeID(urlInput) {
     if (!urlInput || typeof urlInput !== 'string') return null;
     const extracted = extractYoutubeVideoId(urlInput);
     if (extracted) {
-        return { id: extracted, isShorts: urlInput.includes('/shorts/') };
+        return { id: extracted, isShorts: hasYoutubeShortsMarker(urlInput) };
     }
     // If it's just an 11-char ID
     if (urlInput.length === 11 && /^[a-zA-Z0-9_-]+$/.test(urlInput)) {
