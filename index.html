@@ -110,6 +110,7 @@
                 <option value="en-us">🇺🇸 American</option>
                 <option value="en-uk">🇬🇧 English</option>
                 <option value="pt-br">🇧🇷 Portuguese - BR</option>
+                <option value="ar" title="Arabic">العربية</option>
                 <option value="es">🇪🇸 Español</option>
                 <option value="de">🇩🇪 Deutsch</option>
                 <option value="cs">🇨🇿 Čeština</option>
@@ -14569,6 +14570,7 @@
             'de',
             'es',
             'pt-br',
+            'ar',
             'uk',
             'tr',
             'cs',
@@ -14582,6 +14584,7 @@
             'en-us': 'en',
             'en-uk': 'en',
             'pt-br': 'pt-BR',
+            ar: 'en',
             th: 'en',
             test: 'en'
         };
@@ -14597,6 +14600,7 @@
             if (lower === 'en-gb' || lower === 'en-uk') return 'en-uk';
             if (lower === 'en' || lower.startsWith('en-')) return 'en-us';
             if (lower === 'pt-br' || lower.startsWith('pt')) return 'pt-br';
+            if (lower.startsWith('ar')) return 'ar';
             if (lower.startsWith('es')) return 'es';
             if (lower.startsWith('de')) return 'de';
             if (lower.startsWith('cs')) return 'cs';

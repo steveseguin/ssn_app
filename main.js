@@ -3582,6 +3582,7 @@ function normalizeUiLanguagePreference(lang) {
     if (lower === 'en-gb' || lower === 'en-uk') return 'en-uk';
     if (lower === 'en' || lower.startsWith('en-')) return 'en-us';
     if (lower === 'pt-br' || lower.startsWith('pt')) return 'pt-br';
+    if (lower.startsWith('ar')) return 'ar';
     if (lower.startsWith('es')) return 'es';
     if (lower.startsWith('de')) return 'de';
     if (lower.startsWith('cs')) return 'cs';
@@ -8633,6 +8634,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     const languageMap = {
                         'tr-TR': 'tr',
                         'pt-BR': 'pt-br',
+                        'ar-SA': 'ar',
+                        'ar-EG': 'ar',
+                        'ar-AE': 'ar',
                         'es-ES': 'es',
                         'es-MX': 'es',
                         'de-DE': 'de',
