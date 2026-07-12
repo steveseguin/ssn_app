@@ -370,6 +370,71 @@ function sendBackgroundCommandIfNeeded(data, callback) {
 	return true;
 }
 
+let sttStatusSubscriptionCounter = 0;
+const sttStatusSubscriptions = new Map();
+const STT_MAX_AUDIO_BYTE_LENGTH = 16000 * 20 * Float32Array.BYTES_PER_ELEMENT;
+
+function normalizeSttAudioBuffer(audio) {
+	const isArrayBuffer = audio instanceof ArrayBuffer;
+	const isView = ArrayBuffer.isView(audio) && audio.buffer instanceof ArrayBuffer;
+	const byteLength = isArrayBuffer ? audio.byteLength : isView ? audio.byteLength : 0;
+	if (!byteLength || byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) {
+		throw new TypeError('transcribeAudio expects non-empty Float32 PCM bytes.');
+	}
+	if (byteLength > STT_MAX_AUDIO_BYTE_LENGTH) {
+		throw new RangeError('transcribeAudio is limited to 20 seconds of 16 kHz audio.');
+	}
+	return isArrayBuffer
+		? audio.slice(0)
+		: audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength);
+}
+
+async function transcribeAudio(audio, options = {}) {
+	return await ipcRenderer.invoke('stt:transcribe', {
+		audio: normalizeSttAudioBuffer(audio),
+		sampleRate: Number(options.sampleRate) || 16000,
+	});
+}
+
+function subscribeToSttStatus(callback) {
+	if (typeof callback !== 'function') return '';
+	const subscriptionId = `stt-status-${++sttStatusSubscriptionCounter}`;
+	const listener = (_event, payload) => {
+		try {
+			callback(payload);
+		} catch (error) {
+			console.warn('[Preload] STT status callback failed:', error && error.message ? error.message : error);
+		}
+	};
+	sttStatusSubscriptions.set(subscriptionId, listener);
+	ipcRenderer.on('stt:status', listener);
+	return subscriptionId;
+}
+
+function unsubscribeFromSttStatus(subscriptionId) {
+	const id = String(subscriptionId || '');
+	const listener = sttStatusSubscriptions.get(id);
+	if (!listener) return false;
+	ipcRenderer.removeListener('stt:status', listener);
+	sttStatusSubscriptions.delete(id);
+	return true;
+}
+
+const localMediaBridge = {
+	select: async (payload = {}) => ipcRenderer.invoke('local-media:select', payload),
+	list: async () => ipcRenderer.invoke('local-media:list'),
+	get: async (assetId) => ipcRenderer.invoke('local-media:get', { assetId }),
+	remove: async (assetId) => ipcRenderer.invoke('local-media:remove', { assetId }),
+	status: async () => ipcRenderer.invoke('local-media:status'),
+	start: async () => ipcRenderer.invoke('local-media:start'),
+	stop: async () => ipcRenderer.invoke('local-media:stop'),
+	setPort: async (port) => ipcRenderer.invoke('local-media:set-port', { port }),
+	getFlowActionsUrl: async (payload = {}) => ipcRenderer.invoke('local-media:flow-url', payload),
+	getMediaUrl: async (assetId) => ipcRenderer.invoke('local-media:media-url', { assetId }),
+	reveal: async (assetId) => ipcRenderer.invoke('local-media:reveal', { assetId }),
+	rotateToken: async () => ipcRenderer.invoke('local-media:rotate-token'),
+};
+
 function configureContextBridge(){
 	try {
 		console.log('[Preload] Configuring contextBridge with ninjafy (including OAuth methods)');
@@ -418,6 +483,22 @@ function configureContextBridge(){
 		  getInjectedScriptFlag: () => INJECTED_SCRIPT_FLAG,
 
 		  getSourceWindowConfig: getSourceWindowConfig,
+
+		  localMedia: localMediaBridge,
+
+		  getSttCapabilities: async () => {
+			return await ipcRenderer.invoke('stt:get-capabilities');
+		  },
+
+		  transcribeAudio,
+
+		  getSttDiagnostics: async () => {
+			return await ipcRenderer.invoke('stt:get-diagnostics');
+		  },
+
+		  onSttStatus: subscribeToSttStatus,
+
+		  offSttStatus: unsubscribeFromSttStatus,
 			  
 			  closeFileStream: async () => {
 				await ipcRenderer.invoke('close-file-stream');
@@ -619,6 +700,8 @@ try {
 			_authToken: MESSAGE_AUTH_TOKEN,
 			
 			getInjectedScriptFlag: () => INJECTED_SCRIPT_FLAG,
+
+			localMedia: localMediaBridge,
 			
 			sendMessage: (a, b, c, tabID) => {
 				const messageData = b || a;
@@ -737,6 +820,20 @@ try {
 			stopKickWebSocket: async (payload) => {
 				return await ipcRenderer.invoke('kick-ws-disconnect', payload);
 			},
+
+			getSttCapabilities: async () => {
+				return await ipcRenderer.invoke('stt:get-capabilities');
+			},
+
+			transcribeAudio,
+
+			getSttDiagnostics: async () => {
+				return await ipcRenderer.invoke('stt:get-diagnostics');
+			},
+
+			onSttStatus: subscribeToSttStatus,
+
+			offSttStatus: unsubscribeFromSttStatus,
 
 			tts: async (text, settings) => {
 				return await ipcRenderer.invoke('tts', {text, settings});

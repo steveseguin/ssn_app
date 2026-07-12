@@ -52,6 +52,12 @@ Electron desktop application for aggregating social media live stream chat. Comm
 
 No formal test framework (Jest/Mocha). Manual integration tests only.
 
+### LLM Control Maintenance
+
+- Whenever the SSApp control API, MCP adapter, command endpoints, capabilities, schemas, or version compatibility changes, update the checked-in skill under `C:\Users\steve\Code\social_stream\docs\skills\control-social-stream` in the same work.
+- Record each such change in the skill's version log, including the minimum SSApp version required for newly added or changed capabilities.
+- Keep the running SSApp version exposed through the control API and MCP responses so agents can select only skill capabilities supported by that app version.
+
 ### VERY IMPORTANT: What Counts As Testing
 
 - Testing is not complete if it relies only on unit tests, smoke tests, static checks, syntax checks, or mocked/headless checks.
@@ -59,6 +65,7 @@ No formal test framework (Jest/Mocha). Manual integration tests only.
 - Only functional in-app, end-to-end testing of the real user workflow is considered actual testing.
 - For Electron/app changes, actual testing means starting the app in an appropriate isolated profile/environment and verifying the behavior inside the running app over time, including side effects such as reloads, persistence, network/server calls, background jobs, and repeated events.
 - Do not report a change as tested unless functional in-app/e2e testing was performed, or clearly state that only sanity checks were run and actual testing remains incomplete.
+- For website-loading and capture issues, reproduce them in SSApp's real Electron source window using the same session, user agent, preload, request hooks, and injected source configuration. Do not use the OpenAI in-app Browser or an unrelated browser as evidence of SSApp behavior.
 
 ### TikTok Connection Tests
 

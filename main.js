@@ -38,7 +38,8 @@ const {
     globalShortcut,
     session,
     safeStorage,
-    dialog
+    dialog,
+    clipboard
 } = require('electron')
 const { exec, spawn } = require('child_process');
 const http = require('http');
@@ -91,6 +92,8 @@ const { setupVeloraOAuthHandler } = require('./resources/electron-velora-handler
 const { setupKickOAuthHandler } = require('./resources/electron-kick-handler');
 const { setupVpzoneOAuthHandler } = require('./resources/electron-vpzone-handler');
 const { setupMediaUploadHandler } = require('./resources/electron-media-upload-handler');
+const { setupElectronLocalMedia } = require('./resources/electron-local-media-server');
+const { createControlApiRouter } = require('./resources/electron-control-api');
 const { KickWsClient } = require('./resources/kick-ws-client');
 
 const SOCIAL_STREAM_REMOTE_HOSTS = new Set([
@@ -134,6 +137,7 @@ const { Worker } = require('worker_threads');
 
 const Store = require("electron-store");
 const store = new Store();
+let localMediaService = null;
 const reporter = require('./error-reporter');
 reporter.init(store);
 const POPUP_UNCLICKABLE_ALL_KEY = 'popupUnclickableAll';
@@ -1780,21 +1784,80 @@ function attachSourceAccountMetaToPayload(payload, tabID) {
     return payload;
 }
 
-const remoteControlEnabled = (
+const legacyRemoteControlEnabled = (
     process.argv.includes('--remote-control') ||
     (process.env.SSAPP_REMOTE_CONTROL || '').trim() === '1'
 );
+const headlessControlEnabled = process.argv.includes('--ssapp-headless-control')
+    || (process.env.SSAPP_HEADLESS_CONTROL || '').trim() === '1';
+const controlApiEnabled = legacyRemoteControlEnabled
+    || headlessControlEnabled
+    || process.argv.includes('--ssapp-control-api')
+    || (process.env.SSAPP_CONTROL_API || '').trim() === '1'
+    || store.get('controlApi.enabled', false) === true;
+const remoteControlEnabled = controlApiEnabled;
 const remoteControlPort = (() => {
-    const raw = (process.env.SSAPP_REMOTE_CONTROL_PORT || '').trim();
+    const inline = process.argv.find(value => typeof value === 'string' && value.startsWith('--ssapp-control-port='));
+    const index = process.argv.indexOf('--ssapp-control-port');
+    const raw = (inline ? inline.slice('--ssapp-control-port='.length) : (index >= 0 ? process.argv[index + 1] : ''))
+        || (process.env.SSAPP_CONTROL_PORT || '').trim()
+        || (process.env.SSAPP_REMOTE_CONTROL_PORT || '').trim();
     const parsed = parseInt(raw, 10);
-    return Number.isFinite(parsed) ? parsed : 17777;
+    return Number.isInteger(parsed) && parsed >= 1024 && parsed <= 65535 ? parsed : 17777;
 })();
 const remoteControlToken = (() => {
-    const env = (process.env.SSAPP_REMOTE_CONTROL_TOKEN || '').trim();
+    const inline = process.argv.find(value => typeof value === 'string' && value.startsWith('--ssapp-control-token='));
+    const index = process.argv.indexOf('--ssapp-control-token');
+    const tokenFileInline = process.argv.find(value => typeof value === 'string' && value.startsWith('--ssapp-control-token-file='));
+    const tokenFileIndex = process.argv.indexOf('--ssapp-control-token-file');
+    const tokenFile = (tokenFileInline ? tokenFileInline.slice('--ssapp-control-token-file='.length) : (tokenFileIndex >= 0 ? process.argv[tokenFileIndex + 1] : ''))
+        || (process.env.SSAPP_CONTROL_TOKEN_FILE || '').trim();
+    let fileToken = '';
+    if (tokenFile) {
+        try {
+            fileToken = fs.readFileSync(path.resolve(tokenFile), 'utf8').trim();
+        } catch (error) {
+            console.warn('[Control API] Unable to read token file:', error && error.message ? error.message : error);
+        }
+    }
+    const env = fileToken
+        || (process.env.SSAPP_CONTROL_TOKEN || '').trim()
+        || (inline ? inline.slice('--ssapp-control-token='.length) : (index >= 0 ? process.argv[index + 1] : ''))
+        || (process.env.SSAPP_REMOTE_CONTROL_TOKEN || '').trim();
     if (env) return env;
-    // Generate a random token when none is configured so endpoints are never open by default
-    return crypto.randomBytes(24).toString('hex');
+    const stored = String(store.get('controlApi.token', '') || '').trim();
+    if (stored.length >= 32) return stored;
+    const generated = crypto.randomBytes(32).toString('hex');
+    store.set('controlApi.token', generated);
+    return generated;
 })();
+const remoteControlFileSelections = [];
+let llmControlCommandHandler = null;
+let controlApiRouter = null;
+
+if (headlessControlEnabled) {
+    app.on('browser-window-created', (_event, window) => {
+        const keepHidden = () => {
+            try {
+                if (!window || window.isDestroyed()) return;
+                window.setSkipTaskbar(true);
+                window.hide();
+            } catch (_) { }
+        };
+        keepHidden();
+        window.on('show', keepHidden);
+        window.on('ready-to-show', keepHidden);
+    });
+}
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+    try {
+        process.once(signal, () => {
+            markStabilitySessionGraceful(`control-api-${signal.toLowerCase()}`);
+            app.quit();
+        });
+    } catch (_) { }
+}
 
 
 function normalizeKickSlug(value) {
@@ -2020,6 +2083,40 @@ function setupRemoteControlServer() {
         return;
     }
 
+    const executeControlCommand = async (command) => {
+        if (!llmControlCommandHandler) {
+            return { ok: false, error: { code: 'SSAPP_UNAVAILABLE', message: 'SSApp controller is not ready.' } };
+        }
+        return llmControlCommandHandler(command);
+    };
+    controlApiRouter = createControlApiRouter({
+        getSsappVersion: () => app.getVersion(),
+        executeCommand: executeControlCommand,
+        getStatus: async () => {
+            const sources = await executeControlCommand({ action: 'getSources' });
+            return {
+                ok: !!(sources && sources.ok),
+                app: {
+                    version: app.getVersion(),
+                    session: currentSessionName,
+                    headless: headlessControlEnabled,
+                    mainWindowReady: !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents),
+                    mainWindowVisible: !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+                    localMedia: localMediaService ? localMediaService.getStatus() : null
+                },
+                sources: sources && sources.ok ? sources.payload.sources : [],
+                error: sources && !sources.ok ? sources.error : undefined
+            };
+        },
+        reloadApp: () => {
+            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
+        },
+        shutdownApp: () => {
+            markStabilitySessionGraceful('control-api-shutdown');
+            app.quit();
+        }
+    });
+
     const server = http.createServer(async (req, res) => {
         const parsed = url.parse(req.url, true);
         const token = (parsed.query && parsed.query.token) || req.headers['x-ssapp-token'];
@@ -2030,6 +2127,13 @@ function setupRemoteControlServer() {
             return;
         }
 
+        if (await controlApiRouter.handle(req, res, parsed)) return;
+
+        const sendJson = (statusCode, payload) => {
+            res.writeHead(statusCode, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify(payload));
+        };
+
         if (parsed.pathname === '/ping') {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
@@ -2037,6 +2141,27 @@ function setupRemoteControlServer() {
                 version: app.getVersion(),
                 windows: BrowserWindow.getAllWindows().length
             }));
+            return;
+        }
+
+        if (!legacyRemoteControlEnabled) {
+            sendJson(404, { ok: false, error: 'not_found' });
+            return;
+        }
+
+        if (parsed.pathname === '/queue-file-selection' && req.method === 'POST') {
+            try {
+                const body = JSON.parse(await readBodyLimited(req));
+                const filePath = path.resolve(String(body.filePath || ''));
+                const stat = await fsp.stat(filePath);
+                if (!stat.isFile()) throw new Error('filePath must identify an existing file');
+                remoteControlFileSelections.push(filePath);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true, queued: remoteControlFileSelections.length }));
+            } catch (error) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: error && error.message ? error.message : String(error) }));
+            }
             return;
         }
 
@@ -2323,9 +2448,6 @@ function setupRemoteControlServer() {
 
     server.listen(remoteControlPort, '127.0.0.1', () => {
         console.log(`[Remote Control] Listening on http://127.0.0.1:${remoteControlPort}`);
-        if (!process.env.SSAPP_REMOTE_CONTROL_TOKEN) {
-            console.log(`[Remote Control] Auto-generated token: ${remoteControlToken}`);
-        }
     });
 }
 
@@ -6730,6 +6852,10 @@ function stealthShowView(view, options = {}) {
 ipcMain.handle('showWindow', (event, args) => {
     const view = browserViews[args.vid];
     if (!view) return false;
+    if (headlessControlEnabled) {
+        stealthHideView(view);
+        return { newState: false };
+    }
     const hasExplicitUserInitiated = !!(args && Object.prototype.hasOwnProperty.call(args, 'userInitiated'));
     const userInitiatedReveal = hasExplicitUserInitiated ? !!args.userInitiated : false;
 
@@ -7136,6 +7262,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             URI += "&sourcemode=" + encodeURIComponent(runningLocally);
         } else {
             URI += "?sourcemode=" + encodeURIComponent(runningLocally);
+        }
+        if (mainApp && preferLocalAssetsFlag) {
+            URI += "&hostedlinks=1";
         }
     }
 
@@ -9416,6 +9545,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     }
 
+    llmControlCommandHandler = handleStreamDeckSourceCommand;
+
     const backgroundCommandHandlers = {
         streamDeckSourceCommand: handleStreamDeckSourceCommand,
         vpzoneFetchJson: handleVpzoneFetchJsonCommand,
@@ -10732,7 +10863,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         var loaded = false;
         var timeout = false;
 
-        let visibibility = true;
+        let visibibility = !headlessControlEnabled;
         if ("visible" in args && !args.visible) {
             visibibility = false;
         }
@@ -13035,6 +13166,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
     }
 
     mainWindow.once("ready-to-show", () => {
+        if (headlessControlEnabled) {
+            try { mainWindow.setSkipTaskbar(true); } catch (_) { }
+            return;
+        }
         if (MINIMIZED) {
             mainWindow.minimize();
             //+ KravchenkoAndrey 08.01.2022
@@ -13909,6 +14044,13 @@ app.on("before-quit", (event) => {
         }
     }
     shutdownTtsWorker();
+    shutdownSttWorker();
+    if (localMediaService) {
+        localMediaService.stop().catch(() => { });
+    }
+    if (controlApiRouter) {
+        controlApiRouter.close();
+    }
 });
 
 app.on("will-quit", () => {
@@ -14849,6 +14991,56 @@ app.whenReady().then(async function () {
         }
     }
 
+    localMediaService = setupElectronLocalMedia({
+        ipcMain,
+        dialog,
+        shell,
+        store,
+        isTrustedSender: (event) => {
+            const frame = event && event.senderFrame;
+            if (!frame || (frame.mainFrame && frame !== frame.mainFrame)) return false;
+            const senderUrl = String(frame.url || (event.sender && event.sender.getURL()) || '');
+            if (isSocialStreamRemoteUrl(senderUrl)) return true;
+            try {
+                if (!senderUrl.startsWith('file:')) return false;
+                const senderPath = fileURLToPath(senderUrl);
+                const trustedRoots = [path.resolve(__dirname)];
+                if (Argv.filesource) {
+                    try {
+                        trustedRoots.push(path.resolve(String(Argv.filesource).startsWith('file:')
+                            ? fileURLToPath(Argv.filesource)
+                            : String(Argv.filesource)));
+                    } catch (_) { }
+                }
+                return trustedRoots.some((root) => isPathInsideDirectory(root, senderPath));
+            } catch (_) {
+                return false;
+            }
+        },
+        getRuntimeRoot: async () => {
+            if (Argv.filesource) return Argv.filesource;
+            return resolveBundledSocialStreamRoot('main');
+        },
+        showOpenDialog: remoteControlEnabled ? async (dialogOptions) => {
+            const filePath = remoteControlFileSelections.shift();
+            if (filePath) {
+                console.log('[Remote Control] Supplying queued local media selection:', path.basename(filePath));
+                return { canceled: false, filePaths: [filePath] };
+            }
+            if (headlessControlEnabled) {
+                const error = new Error('A visible app session is required to choose a local file.');
+                error.code = 'USER_INTERACTION_REQUIRED';
+                throw error;
+            }
+            return dialog.showOpenDialog(dialogOptions);
+        } : undefined
+    });
+    try {
+        await localMediaService.start();
+    } catch (error) {
+        console.warn('[Local Media] Server did not start:', error && error.message ? error.message : error);
+    }
+
     createWindow(Argv, false, true);
     queueStabilityStartupNotice();
     setupRemoteControlServer();
@@ -14886,6 +15078,288 @@ app.whenReady().then(async function () {
     }
 })
     .catch(console.error);
+
+const STT_WORKER_PATH = path.join(__dirname, 'stt-worker.js');
+const STT_MODEL_ID = String(process.env.SSAPP_STT_MODEL_ID || 'Xenova/whisper-tiny.en').trim() || 'Xenova/whisper-tiny.en';
+const STT_SAMPLE_RATE = 16000;
+const STT_MIN_SAMPLES = Math.round(STT_SAMPLE_RATE * 0.25);
+const STT_MAX_SAMPLES = STT_SAMPLE_RATE * 20;
+const STT_MAX_QUEUE_DEPTH = 3;
+const STT_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+let sttWorker = null;
+let sttActiveRequest = null;
+let sttRequestId = 0;
+let sttWorkerCreateCount = 0;
+let sttWorkerModelLoadCount = 0;
+let sttCompletedRequestCount = 0;
+const sttQueue = [];
+
+function createSttError(code, message) {
+    const error = new Error(`[${code}] ${message}`);
+    error.code = code;
+    return error;
+}
+
+function getSttModelCacheDir() {
+    const override = String(process.env.SSAPP_STT_MODEL_CACHE_DIR || '').trim();
+    if (override) return path.resolve(override);
+    return path.join(app.getPath('userData'), 'models', 'whisper');
+}
+
+function getSttSenderUrl(event) {
+    if (!event || !event.sender || !event.senderFrame) return '';
+    if (!event.sender.mainFrame || event.senderFrame !== event.sender.mainFrame) return '';
+    return String(event.senderFrame.url || event.sender.getURL() || '');
+}
+
+function isTrustedSttSender(event) {
+    const senderUrl = getSttSenderUrl(event);
+    if (!senderUrl) return false;
+    if (isSocialStreamRemoteUrl(senderUrl) && matchesSocialStreamPagePath(senderUrl, 'cohost')) return true;
+    return senderUrl.startsWith('file://') && matchesSocialStreamPagePath(senderUrl, 'cohost');
+}
+
+function assertTrustedSttSender(event) {
+    if (!isTrustedSttSender(event)) {
+        throw createSttError('SSAPP_STT_FORBIDDEN', 'Local speech recognition is only available to the main cohost page.');
+    }
+}
+
+function normalizeSttAudioPayload(payload) {
+    const sampleRate = Number(payload && payload.sampleRate);
+    if (sampleRate !== STT_SAMPLE_RATE) {
+        throw createSttError('SSAPP_STT_SAMPLE_RATE', `Expected ${STT_SAMPLE_RATE} Hz mono PCM audio.`);
+    }
+    const rawAudio = payload && payload.audio;
+    const isArrayBuffer = rawAudio instanceof ArrayBuffer;
+    const isView = ArrayBuffer.isView(rawAudio);
+    const byteLength = isArrayBuffer ? rawAudio.byteLength : isView ? rawAudio.byteLength : 0;
+    if (!byteLength || byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) {
+        throw createSttError('SSAPP_STT_AUDIO', 'Expected mono Float32 PCM audio.');
+    }
+    const sampleCount = byteLength / Float32Array.BYTES_PER_ELEMENT;
+    if (sampleCount < STT_MIN_SAMPLES) {
+        throw createSttError('SSAPP_STT_AUDIO_SHORT', 'Speech segment was too short to transcribe.');
+    }
+    if (sampleCount > STT_MAX_SAMPLES) {
+        throw createSttError('SSAPP_STT_AUDIO_LONG', 'Speech segment exceeded the 20 second limit.');
+    }
+    const audioBuffer = isArrayBuffer
+        ? rawAudio.slice(0)
+        : rawAudio.buffer.slice(rawAudio.byteOffset, rawAudio.byteOffset + rawAudio.byteLength);
+    return {
+        audioBuffer,
+        sampleCount,
+    };
+}
+
+function isSttModelCached() {
+    try {
+        const modelParts = STT_MODEL_ID.split('/').filter(Boolean);
+        const onnxDir = path.join(getSttModelCacheDir(), ...modelParts, 'onnx');
+        return fs.existsSync(path.join(onnxDir, 'encoder_model_quantized.onnx'))
+            && fs.existsSync(path.join(onnxDir, 'decoder_model_merged_quantized.onnx'));
+    } catch (_) {
+        return false;
+    }
+}
+
+function sendSttStatus(request, status) {
+    if (!request || !request.sender || request.sender.isDestroyed()) return;
+    try {
+        request.sender.send('stt:status', {
+            requestId: request.id,
+            engine: 'whisper',
+            model: STT_MODEL_ID,
+            ...status,
+        });
+    } catch (_) { }
+}
+
+function createSttWorker() {
+    sttWorkerCreateCount += 1;
+    const cacheDir = getSttModelCacheDir();
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const worker = new Worker(STT_WORKER_PATH, {
+        workerData: {
+            cacheDir,
+            modelId: STT_MODEL_ID,
+        },
+    });
+    sttWorker = worker;
+    worker.on('message', (message) => {
+        if (sttWorker !== worker || !message) return;
+        const request = sttActiveRequest;
+        if (message.type === 'status') {
+            if (request && (message.id === request.id || message.id === null || message.id === undefined)) {
+                sendSttStatus(request, message);
+            }
+            return;
+        }
+        if (message.type !== 'result' || !request) return;
+        clearTimeout(request.timeoutId);
+        sttActiveRequest = null;
+        sttCompletedRequestCount += 1;
+        if (Number.isFinite(message.modelLoadCount)) {
+            sttWorkerModelLoadCount = message.modelLoadCount;
+        }
+        if (message.id !== request.id) {
+            request.reject(createSttError('SSAPP_STT_RESPONSE', 'Whisper returned an unexpected response.'));
+        } else if (message.error) {
+            request.reject(createSttError('SSAPP_STT_TRANSCRIBE', message.error));
+        } else {
+            request.resolve({
+                text: String(message.text || '').slice(0, 4000),
+                engine: 'whisper',
+                model: STT_MODEL_ID,
+                elapsedMs: Number(message.elapsedMs) || 0,
+                modelLoadCount: sttWorkerModelLoadCount,
+            });
+        }
+        processSttQueue();
+    });
+    worker.on('error', (error) => {
+        if (sttWorker !== worker) return;
+        sttWorker = null;
+        const request = sttActiveRequest;
+        sttActiveRequest = null;
+        if (request) {
+            clearTimeout(request.timeoutId);
+            request.reject(createSttError('SSAPP_STT_WORKER', error && error.message ? error.message : 'Whisper worker failed.'));
+        }
+        try {
+            worker.terminate();
+        } catch (_) { }
+        processSttQueue();
+    });
+    worker.on('exit', (code) => {
+        if (sttWorker !== worker) return;
+        sttWorker = null;
+        const request = sttActiveRequest;
+        sttActiveRequest = null;
+        if (request) {
+            clearTimeout(request.timeoutId);
+            request.reject(createSttError('SSAPP_STT_WORKER', `Whisper worker exited with code ${code}.`));
+        }
+        processSttQueue();
+    });
+    return worker;
+}
+
+function getSttWorker() {
+    return sttWorker || createSttWorker();
+}
+
+function processSttQueue() {
+    if (sttActiveRequest || sttQueue.length === 0) return;
+    const request = sttQueue.shift();
+    if (!request.sender || request.sender.isDestroyed()) {
+        request.reject(createSttError('SSAPP_STT_CLOSED', 'The cohost window closed before transcription started.'));
+        processSttQueue();
+        return;
+    }
+    let worker;
+    try {
+        worker = getSttWorker();
+        sttActiveRequest = request;
+        request.timeoutId = setTimeout(() => {
+            if (sttActiveRequest !== request) return;
+            sttActiveRequest = null;
+            request.reject(createSttError('SSAPP_STT_TIMEOUT', 'Local Whisper transcription timed out.'));
+            if (sttWorker === worker) sttWorker = null;
+            try {
+                worker.terminate();
+            } catch (_) { }
+            processSttQueue();
+        }, STT_REQUEST_TIMEOUT_MS);
+        sendSttStatus(request, {
+            type: 'status',
+            phase: isSttModelCached() ? 'queued' : 'model-download-needed',
+        });
+        worker.postMessage({
+            id: request.id,
+            audioBuffer: request.audioBuffer,
+        }, [request.audioBuffer]);
+    } catch (error) {
+        if (sttActiveRequest === request) sttActiveRequest = null;
+        request.reject(error instanceof Error ? error : createSttError('SSAPP_STT_WORKER', String(error)));
+        if (worker && sttWorker === worker) {
+            sttWorker = null;
+            try {
+                worker.terminate();
+            } catch (_) { }
+        }
+        processSttQueue();
+    }
+}
+
+function enqueueSttRequest(sender, normalizedAudio) {
+    if (sttQueue.length + (sttActiveRequest ? 1 : 0) >= STT_MAX_QUEUE_DEPTH) {
+        return Promise.reject(createSttError('SSAPP_STT_BUSY', 'Local Whisper is busy; wait for the current speech segment to finish.'));
+    }
+    return new Promise((resolve, reject) => {
+        sttQueue.push({
+            id: ++sttRequestId,
+            sender,
+            audioBuffer: normalizedAudio.audioBuffer,
+            sampleCount: normalizedAudio.sampleCount,
+            timeoutId: null,
+            resolve,
+            reject,
+        });
+        processSttQueue();
+    });
+}
+
+function shutdownSttWorker() {
+    const shutdownError = createSttError('SSAPP_STT_SHUTDOWN', 'Local Whisper is shutting down.');
+    if (sttActiveRequest) {
+        clearTimeout(sttActiveRequest.timeoutId);
+        sttActiveRequest.reject(shutdownError);
+        sttActiveRequest = null;
+    }
+    while (sttQueue.length > 0) {
+        sttQueue.shift().reject(shutdownError);
+    }
+    if (sttWorker) {
+        const worker = sttWorker;
+        sttWorker = null;
+        try {
+            worker.terminate();
+        } catch (_) { }
+    }
+}
+
+ipcMain.handle('stt:get-capabilities', async (event) => {
+    assertTrustedSttSender(event);
+    return {
+        available: true,
+        engine: 'whisper',
+        model: STT_MODEL_ID,
+        sampleRate: STT_SAMPLE_RATE,
+        modelCached: isSttModelCached(),
+        maxDurationMs: Math.round((STT_MAX_SAMPLES / STT_SAMPLE_RATE) * 1000),
+    };
+});
+
+ipcMain.handle('stt:transcribe', async (event, payload) => {
+    assertTrustedSttSender(event);
+    return enqueueSttRequest(event.sender, normalizeSttAudioPayload(payload));
+});
+
+ipcMain.handle('stt:get-diagnostics', async (event) => {
+    assertTrustedSttSender(event);
+    return {
+        hasWorker: !!sttWorker,
+        activeRequestId: sttActiveRequest ? sttActiveRequest.id : null,
+        queueLength: sttQueue.length,
+        workerCreateCount: sttWorkerCreateCount,
+        completedRequestCount: sttCompletedRequestCount,
+        workerModelLoadCount: sttWorkerModelLoadCount,
+        modelCached: isSttModelCached(),
+        model: STT_MODEL_ID,
+    };
+});
 
 ipcMain.handle("tts", async (event, data) => {
     return enqueueTtsRequest(data);
@@ -16286,6 +16760,75 @@ function createMenu() {
                             click: async () => {
                                 await importSettingsBackupWithDialog();
                             }
+                        }
+                    ]
+                },
+                {
+                    label: 'AI / LLM Control',
+                    submenu: [
+                        {
+                            label: 'Enable Control API',
+                            type: 'checkbox',
+                            checked: store.get('controlApi.enabled', false) === true,
+                            click: async menuItem => {
+                                store.set('controlApi.enabled', menuItem.checked === true);
+                                const result = await dialog.showMessageBox({
+                                    type: 'info',
+                                    buttons: ['Restart Now', 'Later'],
+                                    defaultId: 0,
+                                    cancelId: 1,
+                                    title: 'AI / LLM Control',
+                                    message: menuItem.checked ? 'Control API enabled.' : 'Control API disabled.',
+                                    detail: 'Restart Social Stream Ninja to apply this change.'
+                                });
+                                if (result.response === 0) {
+                                    markStabilitySessionGraceful('control-api-setting-restart');
+                                    app.relaunch();
+                                    app.exit();
+                                }
+                            }
+                        },
+                        {
+                            label: 'Copy Control Connection',
+                            enabled: controlApiEnabled,
+                            click: async () => {
+                                clipboard.writeText(JSON.stringify({
+                                    url: `http://127.0.0.1:${remoteControlPort}`,
+                                    token: remoteControlToken,
+                                    ssappVersion: app.getVersion()
+                                }, null, 2));
+                                await dialog.showMessageBox({
+                                    type: 'info',
+                                    buttons: ['OK'],
+                                    title: 'Control Connection Copied',
+                                    message: 'The private localhost connection was copied.',
+                                    detail: 'Treat the token like a password. Do not paste it into public chats or logs.'
+                                });
+                            }
+                        },
+                        {
+                            label: 'Rotate Control Token',
+                            click: async () => {
+                                const confirmation = await dialog.showMessageBox({
+                                    type: 'warning',
+                                    buttons: ['Rotate and Restart', 'Cancel'],
+                                    defaultId: 1,
+                                    cancelId: 1,
+                                    title: 'Rotate Control Token',
+                                    message: 'Existing AI and automation clients will be disconnected.',
+                                    detail: 'You will need to copy the new connection after restart.'
+                                });
+                                if (confirmation.response !== 0) return;
+                                store.set('controlApi.token', crypto.randomBytes(32).toString('hex'));
+                                markStabilitySessionGraceful('control-api-token-rotation');
+                                app.relaunch();
+                                app.exit();
+                            }
+                        },
+                        { type: 'separator' },
+                        {
+                            label: 'Open AI Control Guide',
+                            click: () => shell.openExternal('https://socialstream.ninja/docs/llm-control-guide.html')
                         }
                     ]
                 },

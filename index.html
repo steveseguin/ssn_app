@@ -600,6 +600,7 @@
         var urlParams = new URLSearchParams(window.location.search);
         var devmode = urlParams.has("devmode");
         var sourcemode = urlParams.get("sourcemode") || false;
+        const forceHostedGeneratedLinks = urlParams.has("hostedlinks");
         // Ensure sourcemode has file:// protocol if it's a local path
         if (sourcemode && !sourcemode.startsWith('http') && !sourcemode.startsWith('file://')) {
             if (sourcemode.match(/^[A-Za-z]:\//)) {
@@ -768,6 +769,14 @@
             return `${getSsappStaticBase(branch)}/${String(relativePath || '').replace(/^\/+/, '')}`;
         }
 
+        function getSsappHostedBase(branch = 'main') {
+            return branch === 'beta' ? 'https://beta.socialstream.ninja' : 'https://socialstream.ninja';
+        }
+
+        function getSsappRemoteBases(branch = 'main') {
+            return [getSsappStaticBase(branch), getSsappHostedBase(branch)];
+        }
+
         async function resolveSocialStreamPage(pageName, options = {}) {
             const env = await ensureSsappEnvironment();
             const branch = options.branch || (isBetaMode ? 'beta' : 'main');
@@ -789,9 +798,15 @@
                 }
                 const frameParams = buildFrameQueryParams(extraParams);
                 finalUrl += finalUrl.includes('?') ? `&${frameParams}` : `?${frameParams}`;
-                // Add sourcemode for local file:// URLs so popup.js knows the correct base path
-                if (localBaseUrl && localBaseUrl.startsWith('file://')) {
-                    finalUrl += `&sourcemode=${encodeURIComponent(localBaseUrl)}`;
+				// Older popup bundles use sourcemode as their generated-link base. When the
+				// popup itself is a local fallback, point that legacy control at the hosted
+				// site while retaining generatedlinkbase for newer popup bundles.
+				if (localBaseUrl && localBaseUrl.startsWith('file://')) {
+					const generatedSourceMode = options.generatedLinkBase || localBaseUrl;
+					finalUrl += `&sourcemode=${encodeURIComponent(generatedSourceMode)}`;
+					if (options.generatedLinkBase) {
+						finalUrl += `&generatedlinkbase=${encodeURIComponent(options.generatedLinkBase)}`;
+					}
                 }
                 return finalUrl;
             };
@@ -847,23 +862,28 @@
 
             const resolveRemote = async () => {
                 for (const remoteBranch of remoteBranches) {
-                    const baseUrl = getSsappStaticBase(remoteBranch);
-                    const rawUrl = `${baseUrl}/${pageName}`;
-                    try {
-                        const response = await fetchWithDeadline(rawUrl, { timeoutMs: remoteTimeoutMs });
-                        if (!response || !response.ok) {
-                            continue;
+                    const remoteBases = getSsappRemoteBases(remoteBranch);
+                    const originTimeoutMs = Math.max(1000, Math.ceil(remoteTimeoutMs / remoteBases.length));
+                    for (const baseUrl of remoteBases) {
+                        const rawUrl = `${baseUrl}/${pageName}`;
+                        try {
+                            const response = await fetchWithDeadline(rawUrl, { timeoutMs: originTimeoutMs });
+                            if (!response || !response.ok) {
+                                continue;
+                            }
+                            const text = await response.text();
+                            validateRemoteHtmlPage(pageName, text);
+                            return {
+                                url: appendFrameParams(rawUrl),
+                                origin: baseUrl === getSsappStaticBase(remoteBranch)
+                                    ? (remoteBranch === branch ? 'remote' : 'remote-main')
+                                    : (remoteBranch === branch ? 'hosted' : 'hosted-main'),
+                                baseUrl,
+                                branch: remoteBranch
+                            };
+                        } catch (error) {
+                            console.warn(`[SSAPP] Remote Social Stream page unavailable (${baseUrl}):`, error && error.message ? error.message : error);
                         }
-                        const text = await response.text();
-                        validateRemoteHtmlPage(pageName, text);
-                        return {
-                            url: appendFrameParams(rawUrl),
-                            origin: remoteBranch === branch ? 'remote' : 'remote-main',
-                            baseUrl,
-                            branch: remoteBranch
-                        };
-                    } catch (error) {
-                        console.warn(`[SSAPP] Remote Social Stream page unavailable (${remoteBranch}):`, error && error.message ? error.message : error);
                     }
                 }
                 return null;
@@ -875,7 +895,11 @@
                 if (needsSlash) {
                     sourcemodeBase += '/';
                 }
-                let queryParts = [`sourcemode=${encodeURIComponent(sourcemode)}`, buildFrameQueryParams(extraParams)];
+				const generatedSourceMode = options.generatedLinkBase || sourcemode;
+				let queryParts = [`sourcemode=${encodeURIComponent(generatedSourceMode)}`, buildFrameQueryParams(extraParams)];
+                if (options.generatedLinkBase) {
+                    queryParts.push(`generatedlinkbase=${encodeURIComponent(options.generatedLinkBase)}`);
+                }
                 if (devmode && options.includeDevFlag !== false) {
                     queryParts.push('devmode');
                 }
@@ -963,22 +987,29 @@
             }
 
             const tryRemote = async (remoteBranch) => {
-                const remoteBase = `${getSsappStaticBase(remoteBranch)}/`;
-                const remoteUrl = appendQuery(`${remoteBase}${relativePath}`);
-                try {
-                    const response = await fetchWithDeadline(remoteUrl, { timeoutMs: options.timeoutMs || 5000 });
-                    if (response && response.ok) {
-                        const text = await response.text();
-                        validateRemoteHtmlPage(relativePath, text);
-                        return {
-                            url: remoteUrl,
-                            origin: remoteBranch === branch ? 'remote' : 'remote-main',
-                            branch: remoteBranch,
-                            relativePath
-                        };
+                const remoteBases = getSsappRemoteBases(remoteBranch);
+                const totalTimeoutMs = options.timeoutMs || 5000;
+                const originTimeoutMs = Math.max(1000, Math.ceil(totalTimeoutMs / remoteBases.length));
+                for (const remoteBaseValue of remoteBases) {
+                    const remoteBase = `${remoteBaseValue}/`;
+                    const remoteUrl = appendQuery(`${remoteBase}${relativePath}`);
+                    try {
+                        const response = await fetchWithDeadline(remoteUrl, { timeoutMs: originTimeoutMs });
+                        if (response && response.ok) {
+                            const text = await response.text();
+                            validateRemoteHtmlPage(relativePath, text);
+                            return {
+                                url: remoteUrl,
+                                origin: remoteBaseValue === getSsappStaticBase(remoteBranch)
+                                    ? (remoteBranch === branch ? 'remote' : 'remote-main')
+                                    : (remoteBranch === branch ? 'hosted' : 'hosted-main'),
+                                branch: remoteBranch,
+                                relativePath
+                            };
+                        }
+                    } catch (error) {
+                        console.warn(`Remote WSS HTML unavailable (${remoteBaseValue}):`, error && error.message ? error.message : error);
                     }
-                } catch (error) {
-                    console.warn(`Remote WSS HTML unavailable (${remoteBranch}):`, error && error.message ? error.message : error);
                 }
                 return null;
             };
@@ -6817,14 +6848,239 @@
                 };
             }
 
+            const controllableGlobalSettings = new Set([
+                'betaMode', 'youtubeAutoAdd', 'youtubeAutoCleanup', 'youtubeCheckInterval',
+                'forceTikTokClassic', 'preferTikTokLegacy', 'lastTikTokMode'
+            ]);
+            const controllableSourceSettings = new Set([
+                'url', 'username', 'videoId', 'connectionMode', 'isVisible', 'isMuted',
+                'autoActivate', 'replyOnly', 'accountRole', 'customSession'
+            ]);
+            const booleanGlobalSettings = new Set([
+                'betaMode', 'youtubeAutoAdd', 'youtubeAutoCleanup', 'forceTikTokClassic', 'preferTikTokLegacy'
+            ]);
+            const booleanSourceSettings = new Set(['isVisible', 'isMuted', 'autoActivate', 'replyOnly']);
+            const settingDefinitions = Object.freeze({
+                betaMode: { type: 'boolean', default: false, restartRequired: false, sensitive: false },
+                youtubeAutoAdd: { type: 'boolean', default: false, restartRequired: false, sensitive: false },
+                youtubeAutoCleanup: { type: 'boolean', default: false, restartRequired: false, sensitive: false },
+                youtubeCheckInterval: { type: 'integer', default: 300000, minimum: 30000, maximum: 86400000, restartRequired: false, sensitive: false },
+                forceTikTokClassic: { type: 'boolean', default: false, restartRequired: false, sensitive: false },
+                preferTikTokLegacy: { type: 'boolean', default: false, restartRequired: false, sensitive: false },
+                lastTikTokMode: { type: 'string', enum: ['classic', 'tiktok-websocket', 'tiktok-legacy'], default: 'tiktok-legacy', restartRequired: false, sensitive: false }
+            });
+            const platformDefinitions = Object.freeze({
+                twitch: { identifiers: ['username'], connectionModes: ['classic', 'websocket'], defaultConnectionMode: 'websocket' },
+                kick: { identifiers: ['username'], connectionModes: ['classic', 'websocket'], defaultConnectionMode: 'websocket' },
+                youtube: { identifiers: ['videoId', 'url'], connectionModes: ['classic', 'websocket'], defaultConnectionMode: 'classic' },
+                youtubeshorts: { identifiers: ['videoId', 'url'], connectionModes: ['classic', 'websocket'], defaultConnectionMode: 'classic' },
+                tiktok: { identifiers: ['username'], connectionModes: ['classic', 'tiktok-websocket', 'tiktok-legacy'], defaultConnectionMode: 'tiktok-legacy' },
+                instagram: { identifiers: ['username'], connectionModes: ['classic'], defaultConnectionMode: 'classic' },
+                instagramlive: { identifiers: ['username'], connectionModes: ['classic'], defaultConnectionMode: 'classic' },
+                picarto: { identifiers: ['username'], connectionModes: ['classic'], defaultConnectionMode: 'classic' },
+                mixcloud: { identifiers: ['username'], connectionModes: ['classic'], defaultConnectionMode: 'classic' },
+                chzzk: { identifiers: ['username'], connectionModes: ['classic'], defaultConnectionMode: 'classic' },
+                nimo: { identifiers: ['username'], connectionModes: ['classic'], defaultConnectionMode: 'classic' },
+                bilibilicom: { identifiers: ['username'], connectionModes: ['classic', 'websocket'], defaultConnectionMode: 'classic' },
+                bilibilitv: { identifiers: ['username'], connectionModes: ['classic'], defaultConnectionMode: 'classic' }
+            });
+
+            function supportedConnectionModesForSource(source) {
+                if (!source || typeof source !== 'object') return [];
+                const definition = platformDefinitions[source.target];
+                if (definition) return definition.connectionModes;
+                if (source.target === 'tiktok') return ['classic', 'tiktok-websocket', 'tiktok-legacy'];
+                const modes = ['classic'];
+                if (source.supportsWSS === true || platformSupportsWebSocket(source.target)) modes.push('websocket');
+                return modes;
+            }
+
+            function buildSourceUrl(target, username, suppliedUrl, videoId) {
+                const rawUrl = String(suppliedUrl || '').trim();
+                if (rawUrl) {
+                    try {
+                        const parsed = new URL(rawUrl);
+                        if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+                        return parsed.href;
+                    } catch (_) {
+                        return '';
+                    }
+                }
+                const normalizedVideoId = String(videoId || '').trim();
+                if ((target === 'youtube' || target === 'youtubeshorts') && normalizedVideoId) {
+                    return `https://www.youtube.com/live_chat?is_popout=1&v=${encodeURIComponent(normalizedVideoId)}${target === 'youtubeshorts' ? '&shorts' : ''}`;
+                }
+                const name = String(username || '').trim().replace(/^@/, '');
+                if (!name) return '';
+                const builders = {
+                    twitch: value => `https://www.twitch.tv/popout/${encodeURIComponent(value)}/chat?popout=`,
+                    kick: value => `https://kick.com/popout/${encodeURIComponent(value)}/chat`,
+                    tiktok: value => `https://www.tiktok.com/@${encodeURIComponent(value)}/live`,
+                    instagram: value => `https://www.instagram.com/${encodeURIComponent(value)}/live/`,
+                    instagramlive: value => `https://www.instagram.com/${encodeURIComponent(value)}/live/`,
+                    picarto: value => `https://picarto.tv/chatpopout/${encodeURIComponent(value)}/public`,
+                    mixcloud: value => `https://www.mixcloud.com/live/${encodeURIComponent(value)}/chat/`,
+                    chzzk: value => `https://chzzk.naver.com/live/${encodeURIComponent(value)}/chat`,
+                    nimo: value => `https://www.nimo.tv/popout/chat/${encodeURIComponent(value)}`,
+                    bilibilicom: value => `https://live.bilibili.com/${encodeURIComponent(value)}`,
+                    bilibilitv: value => `https://www.bilibili.tv/en/live/${encodeURIComponent(value)}`
+                };
+                return builders[target] ? builders[target](name) : '';
+            }
+
+            function getSettings(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+                const value = requestValue(request);
+                const requestedKeys = value && Array.isArray(value.keys) ? value.keys : Array.from(controllableGlobalSettings);
+                const settings = {};
+                for (const key of requestedKeys) {
+                    if (!controllableGlobalSettings.has(key)) return err('INVALID_TARGET', `Setting is not controllable: ${key}`);
+                    settings[key] = stateManager.state.global[key];
+                }
+                return ok({ settings, definitions: settingDefinitions });
+            }
+
+            function updateSettings(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+                const value = requestValue(request);
+                if (!value || typeof value !== 'object' || Array.isArray(value)) {
+                    return err('INVALID_TARGET', 'Settings must be an object.');
+                }
+                const updates = {};
+                for (const [key, settingValue] of Object.entries(value.settings || value)) {
+                    if (!controllableGlobalSettings.has(key)) return err('INVALID_TARGET', `Setting is not controllable: ${key}`);
+                    if (booleanGlobalSettings.has(key) && typeof settingValue !== 'boolean') {
+                        return err('INVALID_TARGET', `${key} must be a boolean.`);
+                    }
+                    updates[key] = settingValue;
+                }
+                if ('youtubeCheckInterval' in updates) {
+                    const interval = Number(updates.youtubeCheckInterval);
+                    if (!Number.isFinite(interval) || interval < 30000 || interval > 86400000) {
+                        return err('INVALID_TARGET', 'youtubeCheckInterval must be from 30000 through 86400000 milliseconds.');
+                    }
+                    updates.youtubeCheckInterval = Math.round(interval);
+                }
+                if ('lastTikTokMode' in updates && !['classic', 'tiktok-websocket', 'tiktok-legacy'].includes(updates.lastTikTokMode)) {
+                    return err('INVALID_TARGET', 'Unsupported TikTok mode.');
+                }
+                stateManager.updateGlobal(updates);
+                return getSettings({ value: { keys: Object.keys(updates) } });
+            }
+
+            function addSource(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+                const value = requestValue(request);
+                if (!value || typeof value !== 'object' || Array.isArray(value)) return err('INVALID_TARGET', 'Source details are required.');
+                const target = String(value.target || '').trim().toLowerCase();
+                if (!platformDefinitions[target]) return err('INVALID_TARGET', 'Unsupported source target. Check capabilities.platforms.');
+                const username = String(value.username || '').trim().replace(/^@/, '').slice(0, 200);
+                const videoId = String(value.videoId || '').trim().slice(0, 200);
+                const url = buildSourceUrl(target, username, value.url, videoId);
+                if (!url) return err('INVALID_TARGET', 'Provide a valid HTTP(S) URL or a username for a supported platform.');
+                const requestedMode = String(value.connectionMode || '').trim();
+                const platformDefinition = platformDefinitions[target];
+                if (requestedMode && !platformDefinition.connectionModes.includes(requestedMode)) return err('INVALID_TARGET', 'Unsupported connection mode for this platform.');
+                const idempotencyKey = String(value.idempotencyKey || '').trim().slice(0, 200);
+                if (idempotencyKey) {
+                    const existing = stateManager.getSources().find(source => source.controlIdempotencyKey === idempotencyKey);
+                    if (existing) return ok({ source: normalizeSourceForStreamDeck(existing), idempotentReplay: true });
+                }
+                const sourceId = stateManager.addSource({
+                    target,
+                    username,
+                    url,
+                    videoId,
+                    connectionMode: requestedMode || platformDefinition.defaultConnectionMode,
+                    isVisible: value.isVisible !== false,
+                    isMuted: value.isMuted !== false,
+                    autoActivate: value.autoActivate === true,
+                    replyOnly: value.replyOnly === true,
+                    accountRole: value.accountRole,
+                    customSession: typeof value.customSession === 'string' ? value.customSession.slice(0, 200) : undefined,
+                    supportsWSS: platformSupportsWebSocket(target),
+                    controlIdempotencyKey: idempotencyKey || undefined,
+                    urlGeneratedFromUsername: !String(value.url || '').trim()
+                });
+                const source = stateManager.getSource(sourceId);
+                return ok({ source: normalizeSourceForStreamDeck(source) });
+            }
+
+            async function removeSource(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+                const sourceId = sourceIdFromRequest(request);
+                if (!sourceId) return err('INVALID_TARGET', 'Missing source id.');
+                const source = stateManager.getSource(sourceId);
+                if (!source) return err('SOURCE_NOT_FOUND', 'Source was not found.');
+                if (hasConnectionHandles(source)) {
+                    const stopped = await stopSourceInternal(sourceId);
+                    if (!stopped.ok) return stopped;
+                }
+                stateManager.removeSource(sourceId);
+                return ok({ sourceId, removed: true });
+            }
+
+            function updateSourceFromBridge(request) {
+                const unavailable = requireStateManager();
+                if (unavailable) return unavailable;
+                const sourceId = sourceIdFromRequest(request);
+                const value = requestValue(request);
+                const requested = value && typeof value === 'object' ? (value.updates || value.settings || {}) : {};
+                if (!sourceId) return err('INVALID_TARGET', 'Missing source id.');
+                const source = stateManager.getSource(sourceId);
+                if (!source) return err('SOURCE_NOT_FOUND', 'Source was not found.');
+                const updates = {};
+                for (const [key, settingValue] of Object.entries(requested)) {
+                    if (!controllableSourceSettings.has(key)) return err('INVALID_TARGET', `Source setting is not controllable: ${key}`);
+                    if (booleanSourceSettings.has(key) && typeof settingValue !== 'boolean') {
+                        return err('INVALID_TARGET', `${key} must be a boolean.`);
+                    }
+                    updates[key] = settingValue;
+                }
+                for (const key of ['username', 'videoId', 'customSession']) {
+                    if (key in updates && typeof updates[key] !== 'string') return err('INVALID_TARGET', `${key} must be a string.`);
+                    if (key in updates) updates[key] = updates[key].trim().slice(0, 200);
+                }
+                if ('url' in updates) {
+                    const effectiveUsername = 'username' in updates ? updates.username : source.username;
+                    const effectiveVideoId = 'videoId' in updates ? updates.videoId : source.videoId;
+                    const normalizedUrl = buildSourceUrl(source.target, effectiveUsername, updates.url, effectiveVideoId);
+                    if (!normalizedUrl) return err('INVALID_TARGET', 'Source URL must use HTTP(S).');
+                    updates.url = normalizedUrl;
+                }
+                if ('accountRole' in updates && !['normal', 'host', 'bot', 'relay'].includes(updates.accountRole)) {
+                    return err('INVALID_TARGET', 'Unsupported account role.');
+                }
+                if ('connectionMode' in updates && !supportedConnectionModesForSource(source).includes(updates.connectionMode)) {
+                    return err('INVALID_TARGET', `Connection mode ${updates.connectionMode} is not supported for ${source.target}.`);
+                }
+                if (hasConnectionHandles(source) && ('url' in updates || 'username' in updates || 'videoId' in updates || 'connectionMode' in updates)) {
+                    return err('STATE_CONFLICT', 'Stop the source before changing its connection details.');
+                }
+                if (!('url' in updates) && source.urlGeneratedFromUsername && ('username' in updates || 'videoId' in updates)) {
+                    const generatedUrl = buildSourceUrl(source.target, updates.username || source.username, '', updates.videoId || source.videoId);
+                    if (generatedUrl) updates.url = generatedUrl;
+                }
+                stateManager.updateSource(sourceId, updates);
+                return ok({ source: normalizeSourceForStreamDeck(stateManager.getSource(sourceId)) });
+            }
+
             function getCapabilities() {
                 return ok({
                     available: true,
                     runtime: 'electron',
                     version: null,
+                    appControls: { status: true, reload: true, shutdown: true, headless: true },
                     sourceControls: {
                         list: true,
                         get: true,
+                        add: true,
+                        remove: true,
+                        update: true,
                         start: true,
                         stop: true,
                         restart: true
@@ -6853,7 +7109,9 @@
                     sourceStatus: {
                         get: true,
                         values: sourceStatusValues.slice()
-                    }
+                    },
+                    settings: { get: true, update: true, keys: Array.from(controllableGlobalSettings), definitions: settingDefinitions },
+                    platforms: platformDefinitions
                 });
             }
 
@@ -6897,9 +7155,13 @@
                 }
                 const button = entry.querySelector('[data-activatehtml]');
                 if (!button) return err('INVALID_TARGET', 'Source activate button is unavailable.');
-                await activateSource(button);
-                await waitForNextRender();
-                return ok({ source: normalizeSourceForStreamDeck(stateManager.getSource(sourceId) || source) });
+                stateManager.updateSource(sourceId, { status: 'activating', error: null });
+                setTimeout(() => {
+                    activateSource(button).catch(error => {
+                        stateManager.updateSource(sourceId, { status: 'error', error: error?.message || 'Source activation failed.' });
+                    });
+                }, 0);
+                return ok({ accepted: true, source: normalizeSourceForStreamDeck(stateManager.getSource(sourceId) || source) });
             }
 
             async function stopSourceInternal(sourceId) {
@@ -7084,10 +7346,11 @@
                         ? request.target
                         : '';
                 if (!sourceId) return err('INVALID_TARGET', 'Missing source id.');
-                if (!allowedConnectionModes.has(mode)) return err('INVALID_TARGET', 'Unsupported connection mode.');
-
                 const source = stateManager.getSource(sourceId);
                 if (!source) return err('SOURCE_NOT_FOUND', 'Source was not found.');
+                if (!supportedConnectionModesForSource(source).includes(mode)) {
+                    return err('INVALID_TARGET', `Connection mode ${mode} is not supported for ${source.target}.`);
+                }
                 if (hasConnectionHandles(source)) return err('INVALID_TARGET', 'Stop source before changing connection mode.');
                 const entry = entryForSourceId(sourceId);
                 if (!entry) return err('SOURCE_NOT_FOUND', 'Source UI entry was not found.');
@@ -7108,6 +7371,11 @@
                         if (action === 'getCapabilities') return getCapabilities();
                         if (action === 'getSources') return listSources(request);
                         if (action === 'getSource') return getSourceResult(request);
+                        if (action === 'getSettings') return getSettings(request);
+                        if (action === 'addSource') return addSource(request);
+                        if (action === 'removeSource') return await removeSource(request);
+                        if (action === 'updateSource') return updateSourceFromBridge(request);
+                        if (action === 'updateSettings') return updateSettings(request);
                         if (action === 'startSource') return await startSource(request);
                         if (action === 'stopSource') return await stopSource(request);
                         if (action === 'restartSource') return await restartSource(request);
@@ -12540,7 +12808,10 @@
             if (!forceReload && frame1.src && frame1.src !== 'about:blank') return true;
             const popupResolveOptions = {
                 versionParam: 'v=2',
-                extraParams: getLanguageExtraParams()
+                extraParams: getLanguageExtraParams(),
+                generatedLinkBase: (!sourcemode && !devmode) || forceHostedGeneratedLinks
+                    ? `${getSsappHostedBase(isBetaMode ? 'beta' : 'main')}/`
+                    : ''
             };
             try {
                 const resolved = await resolveSocialStreamPage('popup.html', popupResolveOptions);

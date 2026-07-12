@@ -362,6 +362,38 @@ async function run() {
 		assert.equal(mode.payload.source.connectionMode, 'websocket', 'connection mode did not update');
 		assert.equal(mode.payload.source.activeConnectionMode, null, 'inactive source should keep activeConnectionMode null after mode change');
 
+		const unsupportedPlatformModes = await execInRenderer(port, `
+			(async () => {
+				const sourceId = 'streamdeck-e2e-instagram-source';
+				if (!stateManager.getSource(sourceId)) {
+					stateManager.addSource({
+						id: sourceId,
+						target: 'instagram',
+						username: 'streamdeck-e2e-instagram',
+						url: 'https://www.instagram.com/streamdeck-e2e-instagram/',
+						connectionMode: 'classic',
+						isMuted: true,
+						isVisible: false,
+						autoActivate: false
+					});
+				}
+				const updateResult = await window.SSAppStreamDeckBridge.handleCommand({
+					action: 'updateSource',
+					value: { sourceId, updates: { connectionMode: 'websocket' } }
+				});
+				const setResult = await window.SSAppStreamDeckBridge.handleCommand({
+					action: 'setSourceConnectionMode',
+					value: { sourceId, mode: 'websocket' }
+				});
+				return { updateResult, setResult, source: stateManager.getSource(sourceId) };
+			})()
+		`, 'renderer unsupported platform connection modes');
+		assert.equal(unsupportedPlatformModes.updateResult.ok, false, 'updateSource accepted an unsupported platform mode');
+		assert.equal(unsupportedPlatformModes.updateResult.error.code, 'INVALID_TARGET');
+		assert.equal(unsupportedPlatformModes.setResult.ok, false, 'setSourceConnectionMode accepted an unsupported platform mode');
+		assert.equal(unsupportedPlatformModes.setResult.error.code, 'INVALID_TARGET');
+		assert.equal(unsupportedPlatformModes.source.connectionMode, 'classic', 'rejected mode change altered persisted source state');
+
 		const forcedClassicBlock = await execInRenderer(port, `
 			(async () => {
 				const sourceId = 'streamdeck-e2e-tiktok-source';
