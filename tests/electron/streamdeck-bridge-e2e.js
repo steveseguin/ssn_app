@@ -334,6 +334,48 @@ async function run() {
 		assert.equal(capabilities.payload.available, true, 'SSApp capabilities should be available');
 		assert.equal(capabilities.payload.sourceControls.start, true, 'source start capability missing');
 
+		const onboarding = await execInRenderer(port, `
+			(async () => {
+				showPage('streamdeck');
+				await ensureStreamDeckSetupLoaded();
+				const frame = document.getElementById('streamdeck-setup-frame');
+				const started = Date.now();
+				while (Date.now() - started < 15000) {
+					const documentReady = frame && frame.contentDocument && frame.contentDocument.readyState === 'complete';
+					const sessionValue = documentReady && frame.contentDocument.getElementById('sessionValue');
+					const imagesLoaded = documentReady && Array.from(frame.contentDocument.querySelectorAll('.screenshots img')).every(image => image.complete && image.naturalWidth > 0);
+					if (sessionValue && sessionValue.textContent && !sessionValue.textContent.includes('available in SSApp') && !sessionValue.textContent.includes('still loading') && imagesLoaded) {
+						const setupState = await getStreamDeckSetupState();
+						return {
+							ready: true,
+							src: frame.src,
+							sessionId: setupState.sessionId,
+							displayedSessionId: sessionValue.textContent,
+							copyEnabled: !frame.contentDocument.getElementById('copySession').disabled,
+							imagesLoaded,
+							activeNav: document.querySelector('[data-page="streamdeck"]').classList.contains('active')
+						};
+					}
+					await new Promise(resolve => setTimeout(resolve, 100));
+				}
+				return {
+					ready: false,
+					src: frame && frame.src,
+					setupState: await getStreamDeckSetupState(),
+					displayedSessionId: frame && frame.contentDocument && frame.contentDocument.getElementById('sessionValue')
+						? frame.contentDocument.getElementById('sessionValue').textContent
+						: null
+				};
+			})()
+		`, 'Stream Deck onboarding');
+		assert.equal(onboarding.ready, true, `Stream Deck onboarding was not ready: ${JSON.stringify(onboarding)}`);
+		assert(onboarding.src.includes('streamdeck/index.html'), `unexpected onboarding URL: ${onboarding.src}`);
+		assert(onboarding.sessionId, 'onboarding did not read the active Social Stream session ID');
+		assert.equal(onboarding.displayedSessionId, onboarding.sessionId, 'onboarding displayed the wrong session ID');
+		assert.equal(onboarding.copyEnabled, true, 'onboarding copy button should be enabled');
+		assert.equal(onboarding.imagesLoaded, true, 'onboarding screenshots should load');
+		assert.equal(onboarding.activeNav, true, 'Stream Deck navigation tab should be active');
+
 		const sources = await execInRenderer(port, `window.SSAppStreamDeckBridge.handleCommand({ action: 'getSources' })`, 'renderer getSources');
 		assert.equal(sources.ok, true, 'getSources failed');
 		assert(sources.payload.sources.some(source => source.id === seed.sourceId), 'seeded source missing from getSources');
@@ -701,6 +743,7 @@ async function run() {
 			sourceCount: sources.payload.sources.length,
 			connectionMode: mode.payload.source.connectionMode,
 			muted: mute.payload.source.isMuted,
+			onboarding: onboarding.ready,
 			backgroundRoute: backgroundBridge.result.ok,
 			socketRoute: socketCallback.callback.result.ok,
 			socketStartStop: socketStartCallback.callback.result.ok && socketStopCallback.callback.result.ok

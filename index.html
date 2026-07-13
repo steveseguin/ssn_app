@@ -103,6 +103,7 @@
             <li><a href="#" data-page="dashboard">📰 Status and Logs</a></li>
             <li><a href="#" data-page="event-flow-editor">⚡ Event Flow Editor</a></li>
             <li><a href="#" data-page="vdo-ninja">🎦 Remote Camera Feed</a></li>
+            <li><a href="#" data-page="streamdeck">🎛️ Stream Deck Setup</a></li>
             <li><a href="#" data-page="sessions">🧑‍🤝‍🧑 Sessions</a></li>
         </ul>
         <div class="language-selector">
@@ -215,6 +216,11 @@
         <div id="vdo-ninja-page" style="display:none;">
             <iframe id="frame3" class="loading" style="height:100%;width:100%"
                 allow="autoplay *; camera *; clipboard-write *; encrypted-media *; fullscreen *; geolocation *; microphone *; midi *; usb *"></iframe>
+        </div>
+
+        <div id="streamdeck-page" style="display:none;">
+            <iframe id="streamdeck-setup-frame" class="loading" style="height:100%;width:100%;border:0"
+                allow="clipboard-write" title="Stream Deck Setup"></iframe>
         </div>
 
         <div id="sessions-page" style="display:none;">
@@ -11412,6 +11418,7 @@
             const frame1 = document.getElementById('frame1');
             const frame2 = document.getElementById('frame2');
             const frame3 = document.getElementById('frame3');
+            const streamDeckFrame = document.getElementById('streamdeck-setup-frame');
 
         async function switchToPage(pageId) {
             navigationLinks.forEach(link => {
@@ -11422,15 +11429,18 @@
             document.getElementById('dashboard-page')?.style.setProperty('display', 'none', 'important');
             //document.getElementById('link-overlay-page')?.style.setProperty('display', 'none', 'important');
             document.getElementById('vdo-ninja-page')?.style.setProperty('display', 'none', 'important');
+            document.getElementById('streamdeck-page')?.style.setProperty('display', 'none', 'important');
             // if (frame1) frame1.style.setProperty('display', 'none', 'important');
             if (frame2) frame2.style.setProperty('display', 'none', 'important');
             if (frame3) frame3.style.setProperty('display', 'none', 'important');
+            if (streamDeckFrame) streamDeckFrame.style.setProperty('display', 'none', 'important');
 
 
             const streamsPage = document.getElementById('streams-page');
             const dashboardPage = document.getElementById('dashboard-page');
             //const linkOverlayPage = document.getElementById('link-overlay-page');
             const vdoNinjaPage = document.getElementById('vdo-ninja-page');
+            const streamDeckPage = document.getElementById('streamdeck-page');
 
             if (pageId === 'dashboard' || pageId === 'event-flow-editor') {
                 if (dashboardPage) dashboardPage.style.display = 'block';
@@ -11464,6 +11474,9 @@
             } else if (pageId === 'vdo-ninja') {
                 if (vdoNinjaPage) vdoNinjaPage.style.display = 'block';
                 if (frame3) frame3.style.display = 'block';
+            } else if (pageId === 'streamdeck') {
+                if (streamDeckPage) streamDeckPage.style.display = 'block';
+                if (streamDeckFrame) streamDeckFrame.style.display = 'block';
             }
 
             if ((pageId === 'dashboard' || pageId === 'event-flow-editor') && frame2 && (!frame2.src || frame2.src === "about:blank")) {
@@ -11481,6 +11494,8 @@
                 } catch (error) {
                     console.error('Failed to resolve vdo frame source:', error);
                 }
+            } else if (pageId === 'streamdeck') {
+                await ensureStreamDeckSetupLoaded();
             }
             stateManager.updateGlobal({ currentPage: pageId });
         }
@@ -12854,6 +12869,94 @@
                 }
             }
         }
+        let streamDeckSetupRetryTimer = null;
+
+        function getStreamDeckSetupState() {
+            return new Promise(resolve => {
+                const finish = async response => {
+                    let capabilityResponse = null;
+                    try {
+                        if (window.SSAppStreamDeckBridge && typeof window.SSAppStreamDeckBridge.handleCommand === 'function') {
+                            capabilityResponse = await window.SSAppStreamDeckBridge.handleCommand({ action: 'getCapabilities' });
+                        }
+                    } catch (error) {
+                        console.warn('Failed to read Stream Deck capabilities:', error);
+                    }
+                    const payload = capabilityResponse && capabilityResponse.payload ? capabilityResponse.payload : {};
+                    let backgroundSessionId = '';
+                    try {
+                        const backgroundFrame = document.getElementById('frame2');
+                        backgroundSessionId = backgroundFrame && backgroundFrame.contentWindow && backgroundFrame.contentWindow.streamID
+                            ? String(backgroundFrame.contentWindow.streamID)
+                            : '';
+                    } catch (_) { }
+                    resolve({
+                        sessionId: response && response.streamID ? String(response.streamID) : backgroundSessionId,
+                        appVersion: ipcRenderer ? ipcRenderer.sendSync('getVersion') : '',
+                        apiVersion: payload.apiVersion || '',
+                        bridgeVersion: payload.bridgeVersion || (capabilityResponse && capabilityResponse.ok ? '1' : ''),
+                        capabilities: payload
+                    });
+                };
+                try {
+                    if (window.ninjafy && typeof window.ninjafy.sendMessage === 'function') {
+                        window.ninjafy.sendMessage(null, { getSettings: true }, finish);
+                    } else {
+                        finish({});
+                    }
+                } catch (error) {
+                    console.warn('Failed to read the Social Stream session ID:', error);
+                    finish({});
+                }
+            });
+        }
+
+        async function sendStreamDeckSetupState() {
+            const frame = document.getElementById('streamdeck-setup-frame');
+            if (!frame || !frame.contentWindow) return;
+            const payload = await getStreamDeckSetupState();
+            const configuredOrigin = frame.dataset.ssappOrigin || '';
+            const targetOrigin = /^https?:\/\//i.test(configuredOrigin) ? configuredOrigin : '*';
+            frame.contentWindow.postMessage({ type: 'ssapp-streamdeck-setup', payload }, targetOrigin);
+            clearTimeout(streamDeckSetupRetryTimer);
+            const page = document.getElementById('streamdeck-page');
+            if (!payload.sessionId && page && page.style.display !== 'none') {
+                streamDeckSetupRetryTimer = setTimeout(sendStreamDeckSetupState, 750);
+            }
+        }
+
+        async function ensureStreamDeckSetupLoaded(forceReload = false) {
+            const frame = document.getElementById('streamdeck-setup-frame');
+            if (!frame) return false;
+            if (!forceReload && frame.src && frame.src !== 'about:blank') {
+                await sendStreamDeckSetupState();
+                return true;
+            }
+            try {
+                let resolved = await resolveSocialStreamPage('streamdeck/index.html', {
+                    versionParam: 'v=1',
+                    extraParams: getLanguageExtraParams()
+                });
+                if (!resolved || !resolved.url) {
+                    resolved = await resolveSocialStreamPage('streamdeck/index.html', {
+                        versionParam: 'v=1',
+                        extraParams: getLanguageExtraParams(),
+                        forceLocal: true
+                    });
+                }
+                if (!resolved || !resolved.url) throw new Error('Stream Deck setup page unavailable');
+                frame.addEventListener('load', sendStreamDeckSetupState, { once: true });
+                frame.src = resolved.url;
+                frame.dataset.ssappOrigin = resolved.origin || '';
+                frame.classList.add('loading');
+                return true;
+            } catch (error) {
+                console.error('Failed to load Stream Deck setup:', error);
+                Toast.error('Stream Deck Setup', 'Could not load the setup page.');
+                return false;
+            }
+        }
+
         async function checkForUpdates() {
             try {
                 const response = await fetchWithDeadline('https://api.github.com/repos/steveseguin/social_stream/releases', {
@@ -13234,6 +13337,10 @@
                     'vdo-ninja': `https://vdo.ninja/?ln=${langCode}`
                 };
 
+                if (pageName === 'streamdeck') {
+                    ensureStreamDeckSetupLoaded().catch(error => console.error('Failed to open Stream Deck setup:', error));
+                }
+
                 if (iframePages[pageName]) {
                     if (!existingIframe) {
                         // Create iframe if it doesn't exist
@@ -13289,6 +13396,7 @@
                 'nav.dashboard': '📰 Status and Logs',
                 'nav.eventfloweditor': '🪤 Event Flow Editor',
                 'nav.vdoninja': '🎦 Remote Camera Feed',
+                'nav.streamdeck': '🎛️ Stream Deck Setup',
                 'nav.sessions': '🧑‍🤝‍🧑 Sessions',
 
                 // Buttons
@@ -15231,6 +15339,11 @@
 
             // Listen for postMessage from iframes (e.g., popup requesting to open Event Flow Editor)
             window.addEventListener('message', (event) => {
+                const streamDeckFrame = document.getElementById('streamdeck-setup-frame');
+                if (streamDeckFrame && event.source === streamDeckFrame.contentWindow && event.data && event.data.type === 'ssapp-streamdeck-ready') {
+                    sendStreamDeckSetupState().catch(error => console.error('Failed to send Stream Deck setup state:', error));
+                    return;
+                }
                 // Only accept messages from same origin or sandboxed iframes (which report 'null')
                 const trustedOrigins = [window.location.origin, 'null'];
                 if (!trustedOrigins.includes(event.origin)) {
@@ -15252,6 +15365,15 @@
                     }
                 }
             });
+
+            if (ipcRenderer) {
+                ipcRenderer.on('open-streamdeck-setup', () => {
+                    showPage('streamdeck');
+                    if (typeof switchToPage === 'function') {
+                        switchToPage('streamdeck').catch(error => console.error('Failed to switch to Stream Deck setup:', error));
+                    }
+                });
+            }
 
             // Restore last active page or show streams by default
             const savedPage = localStorage.getItem('currentPage') || 'streams';

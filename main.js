@@ -16764,6 +16764,16 @@ function createMenu() {
                     ]
                 },
                 {
+                    label: 'Set Up Stream Deck',
+                    click: () => {
+                        if (mainWindow && mainWindow.webContents) {
+                            mainWindow.show();
+                            mainWindow.focus();
+                            mainWindow.webContents.send('open-streamdeck-setup');
+                        }
+                    }
+                },
+                {
                     label: 'AI / LLM Control',
                     submenu: [
                         {
