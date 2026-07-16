@@ -5,6 +5,15 @@ const path = require('path');
 const os = require('os');
 const { EventEmitter } = require('events');
 const WebSocket = require('ws');
+const {
+    ControlAction,
+    GiftMessageIgnoreConfig,
+    WebcastEvent,
+    WebcastEventMap,
+    WebcastImEnterRoomMessage: PublicWebcastImEnterRoomMessage,
+    createBaseWebcastPushFrame: publicCreateBaseWebcastPushFrame,
+    deserializeMessage: publicDeserializeMessage
+} = require('tiktok-live-connector');
 
 const {
     cleanVisibleString,
@@ -17,16 +26,18 @@ const {
 const giftMapping = require('./gift-mapping.json');
 const reporter = require('../error-reporter');
 
-let connectorDeserializeMessage = null;
-let connectorCreateBaseWebcastPushFrame = null;
+let connectorDeserializeMessage = publicDeserializeMessage || null;
+let connectorCreateBaseWebcastPushFrame = publicCreateBaseWebcastPushFrame || null;
 try {
-    ({
-        deserializeMessage: connectorDeserializeMessage,
-        createBaseWebcastPushFrame: connectorCreateBaseWebcastPushFrame
-    } = require('tiktok-live-connector/dist/lib/utilities'));
+    if (!connectorDeserializeMessage || !connectorCreateBaseWebcastPushFrame) {
+        ({
+            deserializeMessage: connectorDeserializeMessage,
+            createBaseWebcastPushFrame: connectorCreateBaseWebcastPushFrame
+        } = require('tiktok-live-connector/dist/lib/utilities'));
+    }
 } catch (_) {
-    connectorDeserializeMessage = null;
-    connectorCreateBaseWebcastPushFrame = null;
+    connectorDeserializeMessage = connectorDeserializeMessage || null;
+    connectorCreateBaseWebcastPushFrame = connectorCreateBaseWebcastPushFrame || null;
 }
 
 let SendRoomChatRoute = null;
@@ -47,13 +58,13 @@ const {
     deserializeWebSocketMessage,
     SchemaVersion
 } = require('@eulerstream/euler-websocket-sdk');
-const { WebcastEventMap, WebcastEvent } = require('tiktok-live-connector/dist/types/events');
-const { ControlAction, GiftMessageIgnoreConfig } = require('tiktok-live-connector/dist/types/tiktok/enums');
-let ConnectorWebcastImEnterRoomMessage = null;
+let ConnectorWebcastImEnterRoomMessage = PublicWebcastImEnterRoomMessage || null;
 try {
-    ({ WebcastImEnterRoomMessage: ConnectorWebcastImEnterRoomMessage } = require('tiktok-live-connector/dist/types'));
+    if (!ConnectorWebcastImEnterRoomMessage) {
+        ({ WebcastImEnterRoomMessage: ConnectorWebcastImEnterRoomMessage } = require('tiktok-live-connector/dist/types'));
+    }
 } catch (_) {
-    ConnectorWebcastImEnterRoomMessage = null;
+    ConnectorWebcastImEnterRoomMessage = ConnectorWebcastImEnterRoomMessage || null;
 }
 
 const env = {
@@ -3214,17 +3225,10 @@ function resolveTikTokGiftContentImage(data = {}, giftData = {}, giftDetails = {
 }
 
 /**
- * Resolve a display image for a gift.  Prefers sticker/media-style images
- * (the existing resolveTikTokGiftContentImage path), then falls back to the
- * generic gift icon fields (giftPictureUrl, iconUrl, pictureUrl, etc.) that
- * were previously commented out.
+ * Resolve the small icon shown inline with a normal gift chat message.
+ * Rich sticker/media assets are handled separately by resolveTikTokGiftContentImage.
  */
-function resolveTikTokGiftDisplayImage(data = {}, giftData = {}, giftDetails = {}, extendedGiftInfo = {}) {
-    // 1. Sticker / media / asset images (preferred for rich gifts)
-    const stickerImage = resolveTikTokGiftContentImage(data, giftData, giftDetails, extendedGiftInfo);
-    if (stickerImage) return stickerImage;
-
-    // 2. Generic gift icon fields
+function resolveTikTokGiftInlineImage(data = {}, giftData = {}, giftDetails = {}, extendedGiftInfo = {}) {
     const iconCandidates = [
         data.giftPictureUrl,
         giftData.giftPictureUrl,
@@ -4032,9 +4036,15 @@ class GiftProcessor {
         const textOnly = explicitTextOnly || isTextOnlyModeEnabled();
         const contentImage = textOnly
             ? null
-            : resolveTikTokGiftDisplayImage(data, giftData, giftDetails, extendedGiftInfo);
+            : resolveTikTokGiftContentImage(data, giftData, giftDetails, extendedGiftInfo);
+        const inlineGiftImage = textOnly || contentImage
+            ? null
+            : resolveTikTokGiftInlineImage(data, giftData, giftDetails, extendedGiftInfo);
 
         let chatmessage = `Sent ${giftName} x${count}`;
+        if (inlineGiftImage) {
+            chatmessage += ` <img src='${inlineGiftImage}' />`;
+        }
 
         const msg = {
             chatmessage,
@@ -10323,7 +10333,7 @@ module.exports = {
 		normalizeTikTokEmoteEntries,
 		renderTikTokChatWithEmotes,
 		resolveTikTokGiftContentImage,
-		resolveTikTokGiftDisplayImage,
+		resolveTikTokGiftInlineImage,
 		resolveGiftMetricCount,
 		resolveGiftAggregatedCount,
 		resolveGiftId,

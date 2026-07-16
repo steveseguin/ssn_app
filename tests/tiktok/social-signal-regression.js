@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('assert');
-const { WebcastEvent } = require('tiktok-live-connector/dist/types/events');
+const { WebcastEvent } = require('tiktok-live-connector');
 const { __test } = require('../../tiktok/connection-manager.js');
 
 function createEventCapture(connection) {

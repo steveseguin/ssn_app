@@ -289,18 +289,28 @@ async function testAutoFallsBackToLocalSigner() {
 }
 
 async function testInstalledConnectorHasNoRuntimePollingPath() {
-	const clientPath = path.join(__dirname, '..', '..', 'node_modules', 'tiktok-live-connector', 'dist', 'lib', 'client.js');
-	const legacyPath = path.join(__dirname, '..', '..', 'node_modules', 'tiktok-live-connector', 'dist', 'lib', '_legacy', 'legacy-client.js');
+	const connectorDistPath = path.join(__dirname, '..', '..', 'node_modules', 'tiktok-live-connector', 'dist');
+	const legacyClientPath = path.join(connectorDistPath, 'lib', '_legacy', 'legacy-client.js');
+	const legacyPath = fs.existsSync(legacyClientPath)
+		? legacyClientPath
+		: path.join(connectorDistPath, 'legacy.js');
+	const oldClientPath = path.join(connectorDistPath, 'lib', 'client.js');
+	const bundledClientPath = fs.readdirSync(connectorDistPath)
+		.map(fileName => path.join(connectorDistPath, fileName))
+		.find(filePath => /^lib-.*\.js$/.test(path.basename(filePath)));
+	const clientPath = fs.existsSync(oldClientPath) ? oldClientPath : bundledClientPath;
+	assert.ok(clientPath, 'expected to find installed TikTok connector client code');
 	const clientSrc = fs.readFileSync(clientPath, 'utf8');
 	const legacySrc = fs.readFileSync(legacyPath, 'utf8');
 
 	const connectStart = clientSrc.indexOf('async _connect');
-	const disconnectStart = clientSrc.indexOf('\n    async disconnect', connectStart);
+	const disconnectStart = clientSrc.indexOf('async disconnect', connectStart);
 	assert.ok(connectStart >= 0 && disconnectStart > connectStart, 'expected to find TikTokLiveConnection._connect body');
 
 	const connectBody = clientSrc.slice(connectStart, disconnectStart);
 	assert.ok(
-		connectBody.includes('signedWebSocketProvider') && connectBody.includes('fetchSignedWebSocketFromEuler'),
+		(connectBody.includes('signedWebSocketProvider') && connectBody.includes('fetchSignedWebSocketFromEuler'))
+			|| connectBody.includes('fetchSignedWebSocketFromProvider'),
 		'expected installed connector to bootstrap through signed websocket provider/Euler'
 	);
 	assert.ok(
@@ -312,7 +322,7 @@ async function testInstalledConnectorHasNoRuntimePollingPath() {
 		'installed connector _connect should not have a runtime request-polling branch'
 	);
 	assert.ok(
-		/extends\s+lib_1\.TikTokLiveConnection/.test(legacySrc),
+		/extends\s+(?:lib_1\.)?TikTokLiveConnection/.test(legacySrc),
 		'legacy WebcastPushConnection should be a wrapper over TikTokLiveConnection'
 	);
 }

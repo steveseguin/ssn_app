@@ -485,19 +485,19 @@ test('quiet-room: websocketData handler updates lastMessageTime', () => {
 // Gift icon regression
 // ---------------------------------------------------------------------------
 
-test('gift icon: normal gift sends contentimg from generic icon', () => {
-    const img = __test.resolveTikTokGiftDisplayImage(
+test('gift icon: normal gift resolves generic icon for inline chatmessage', () => {
+    const img = __test.resolveTikTokGiftInlineImage(
         {},
         { giftPictureUrl: 'https://cdn.example.com/rose.webp' },
         {},
         {}
     );
     assert.strictEqual(img, 'https://cdn.example.com/rose.webp',
-        'generic giftPictureUrl should resolve as display image');
+        'generic giftPictureUrl should resolve as an inline image');
 });
 
-test('gift icon: display image skips non-renderable internal URIs', () => {
-    const img = __test.resolveTikTokGiftDisplayImage(
+test('gift icon: inline image skips non-renderable internal URIs', () => {
+    const img = __test.resolveTikTokGiftInlineImage(
         {},
         { giftPictureUrl: { uri: 'webcast://internal_only', urlList: ['https://cdn.example.com/rose.webp'] } },
         {},
@@ -507,20 +507,23 @@ test('gift icon: display image skips non-renderable internal URIs', () => {
         'should resolve public URL, not internal webcast:// URI');
 });
 
-test('gift icon: text-only mode suppresses contentimg in sendGiftMessage', () => {
-    // Verify the actual send path gates contentimg on textOnly.
-    // sendGiftMessage sets contentImage = textOnly ? null : resolveTikTokGiftDisplayImage(...)
-    // so we verify that pattern exists in the source.
+test('gift icon: sendGiftMessage separates rich content from inline gift icons', () => {
+    // Verify the actual send path keeps rich media in contentimg and normal gift
+    // icons inline in chatmessage, while text-only mode suppresses both.
     const fs = require('fs');
     const src = fs.readFileSync(
         require.resolve('../../tiktok/connection-manager.js'),
         'utf8'
     );
-    const textOnlyGate = src.match(
-        /const contentImage\s*=\s*textOnly\s*\?\s*null\s*:\s*resolveTikTokGiftDisplayImage/
-    );
-    assert.ok(textOnlyGate,
-        'sendGiftMessage should gate contentImage on textOnly using resolveTikTokGiftDisplayImage');
+    assert.match(src,
+        /const contentImage\s*=\s*textOnly\s*\?\s*null\s*:\s*resolveTikTokGiftContentImage/,
+        'sendGiftMessage should reserve contentImage for rich sticker media');
+    assert.match(src,
+        /const inlineGiftImage\s*=\s*textOnly\s*\|\|\s*contentImage\s*\?\s*null\s*:\s*resolveTikTokGiftInlineImage/,
+        'sendGiftMessage should resolve a normal gift icon only for inline rendering');
+    assert.match(src,
+        /chatmessage\s*\+=\s*` <img src='\$\{inlineGiftImage\}' \/>`/,
+        'sendGiftMessage should append the normal gift icon to chatmessage');
 });
 
 // ---------------------------------------------------------------------------

@@ -43,53 +43,53 @@ function run() {
     'generic gift icon should not be treated as sticker content image'
   );
 
-  // resolveTikTokGiftDisplayImage falls back to generic icons when no sticker is present.
+  // Normal gift icons are rendered inline in chatmessage, not as content images.
   assert.strictEqual(
-    __test.resolveTikTokGiftDisplayImage(
+    __test.resolveTikTokGiftInlineImage(
       {},
       { iconUrl: 'https://cdn.example.com/gift-icon.webp' },
       {},
       {}
     ),
     'https://cdn.example.com/gift-icon.webp',
-    'display image should fall back to generic gift icon'
+    'inline image should resolve a generic gift icon'
   );
   assert.strictEqual(
-    __test.resolveTikTokGiftDisplayImage(
+    __test.resolveTikTokGiftInlineImage(
       { mTrayInfo: { mDynamicImg: { urlList: ['https://cdn.example.com/sticker.webp'] } } },
       { iconUrl: 'https://cdn.example.com/gift-icon.webp' },
       {},
       {}
     ),
-    'https://cdn.example.com/sticker.webp',
-    'display image should prefer sticker over generic icon when both present'
+    'https://cdn.example.com/gift-icon.webp',
+    'inline image resolver should ignore rich sticker media'
   );
   assert.strictEqual(
-    __test.resolveTikTokGiftDisplayImage({}, {}, {}, {}),
+    __test.resolveTikTokGiftInlineImage({}, {}, {}, {}),
     null,
-    'display image should return null when no images available'
+    'inline image should return null when no gift icon is available'
   );
   // Object-shaped icon with internal uri must resolve to the public urlList entry,
   // not the non-renderable webcast:// uri.
   assert.strictEqual(
-    __test.resolveTikTokGiftDisplayImage(
+    __test.resolveTikTokGiftInlineImage(
       {},
       { giftPictureUrl: { uri: 'webcast://internal_only', urlList: ['https://cdn.example.com/gift-icon.webp'] } },
       {},
       {}
     ),
     'https://cdn.example.com/gift-icon.webp',
-    'display image should skip internal uri and use public urlList entry'
+    'inline image should skip internal uri and use public urlList entry'
   );
   assert.strictEqual(
-    __test.resolveTikTokGiftDisplayImage(
+    __test.resolveTikTokGiftInlineImage(
       {},
       {},
       { giftImage: { uri: 'webcast://internal_only', urlList: ['https://cdn.example.com/gift-icon.webp'] } },
       {}
     ),
     'https://cdn.example.com/gift-icon.webp',
-    'giftImage with internal uri should still resolve to public URL'
+    'inline giftImage should still resolve its public URL'
   );
   assert.strictEqual(
     __test.resolveTikTokGiftContentImage({
