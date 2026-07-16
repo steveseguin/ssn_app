@@ -46,22 +46,110 @@ const http = require('http');
 const url = require('url');
 const contextMenu = require("electron-context-menu");
 const Yargs = require("yargs");
+const {
+    resolveEarlyDataPaths,
+    prepareEarlyDataPaths,
+    initializePortableProfile,
+    markPortableProfileInitialized
+} = require('./resources/portable-data-paths');
 
-function getExplicitUserDataDir() {
-    const rawValue = (process.env.SSAPP_USER_DATA_DIR || "").trim();
-    if (!rawValue) return "";
-    return path.resolve(rawValue);
+let earlyDataPaths = resolveEarlyDataPaths();
+let portableMigrationPending = null;
+if (earlyDataPaths) {
+    try {
+        prepareEarlyDataPaths(earlyDataPaths);
+        if (earlyDataPaths.mode === 'portable') {
+            const legacyOverride = String(process.env.SSAPP_PORTABLE_LEGACY_USER_DATA_DIR || '').trim();
+            const legacyUserData = legacyOverride
+                ? path.resolve(legacyOverride)
+                : path.join(app.getPath('appData'), app.name);
+            const migration = initializePortableProfile(earlyDataPaths, {
+                legacyUserData,
+                choice: process.env.SSAPP_PORTABLE_MIGRATION_CHOICE
+            });
+            if (migration.action === 'pending') portableMigrationPending = migration;
+            console.log(`[SSAPP] Portable profile initialization: ${migration.action}`);
+        }
+        app.setPath('userData', earlyDataPaths.userData);
+        app.setPath('sessionData', earlyDataPaths.sessionData);
+        app.setPath('crashDumps', earlyDataPaths.crashes);
+        app.setAppLogsPath(earlyDataPaths.logs);
+        console.log(`[SSAPP] Using ${earlyDataPaths.mode} data directory: ${earlyDataPaths.dataRoot}`);
+    } catch (error) {
+        const detail = error && error.message ? error.message : String(error);
+        if (earlyDataPaths.mode === 'portable') {
+            const message = [
+                'Social Stream Ninja cannot write its portable data folder.',
+                '',
+                `Data folder: ${earlyDataPaths.dataRoot}`,
+                `Windows reported: ${detail}`,
+                '',
+                'Move the portable EXE to a writable folder, close other Social Stream Ninja windows, then try again.'
+            ].join('\n');
+            console.error('[SSAPP] Portable data directory is not writable:', detail);
+            electron.dialog.showErrorBox('Portable data folder unavailable', message);
+            process.exit(1);
+        }
+        console.warn('[SSAPP] Failed to apply SSAPP_USER_DATA_DIR override:', detail);
+        earlyDataPaths = null;
+    }
 }
 
-let explicitUserDataDir = getExplicitUserDataDir();
-if (explicitUserDataDir) {
-    try {
-        fs.mkdirSync(explicitUserDataDir, { recursive: true });
-        app.setPath("userData", explicitUserDataDir);
-    } catch (error) {
-        console.warn("[SSAPP] Failed to apply SSAPP_USER_DATA_DIR override:", error && error.message ? error.message : error);
-        explicitUserDataDir = "";
+function spawnPortableMigrationRunner(legacyUserData) {
+    const runnerPath = path.join(__dirname, 'resources', 'portable-migration-runner.js');
+    const portableExecutablePath = String(process.env.PORTABLE_EXECUTABLE_FILE || '').trim();
+    if (!portableExecutablePath || !fs.existsSync(portableExecutablePath)) {
+        throw new Error('The original portable executable could not be found for restart.');
     }
+
+    const child = spawn(process.execPath, [runnerPath], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        stdio: ['pipe', 'ignore', 'ignore'],
+        detached: true
+    });
+    child.stdin.end(JSON.stringify({
+        legacyUserData,
+        dataRoot: earlyDataPaths.dataRoot,
+        userData: earlyDataPaths.userData,
+        parentPid: process.pid,
+        execPath: portableExecutablePath,
+        appArgs: process.argv.slice(1)
+    }));
+    child.unref();
+}
+
+async function handlePendingPortableMigration() {
+    if (!portableMigrationPending || !earlyDataPaths || earlyDataPaths.mode !== 'portable') return false;
+    const legacyUserData = portableMigrationPending.legacyUserData;
+    const result = await dialog.showMessageBox({
+        type: 'question',
+        buttons: ['Copy existing data and restart', 'Start fresh'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'Set up portable data',
+        message: 'Existing Social Stream Ninja data was found in Windows AppData.',
+        detail: [
+            'Copy it into the portable data folder?',
+            '',
+            'This includes settings, browser sessions, sign-ins, and downloaded models. Disposable caches will start fresh.',
+            'The original AppData files will remain unchanged.',
+            'Close any other Social Stream Ninja window before copying.',
+            '',
+            `Existing data: ${legacyUserData}`,
+            `Portable data: ${earlyDataPaths.userData}`
+        ].join('\n')
+    });
+
+    if (result.response !== 0) {
+        markPortableProfileInitialized(earlyDataPaths, 'fresh');
+        portableMigrationPending = null;
+        return false;
+    }
+
+    spawnPortableMigrationRunner(legacyUserData);
+    markStabilitySessionGraceful('portable-profile-migration');
+    app.quit();
+    return true;
 }
 
 const fetch = require("electron-fetch").default;
@@ -14058,7 +14146,7 @@ app.on("will-quit", () => {
     safeUnregisterGlobalShortcuts('will-quit');
 });
 
-const folder = explicitUserDataDir || path.join(app.getPath("appData"), `${app.name}`);
+const folder = earlyDataPaths ? earlyDataPaths.userData : path.join(app.getPath("appData"), `${app.name}`);
 if (!fs.existsSync(folder)) {
     fs.mkdirSync(folder, {
         recursive: true
@@ -14808,6 +14896,8 @@ function saveCachedStateAtomic(state) {
 app.whenReady().then(async function () {
     //app.allowRendererProcessReuse = false;
     log("APP READY");
+
+    if (await handlePendingPortableMigration()) return;
 
     // Log actual app locale to see what Electron is using
     log(`Electron app.getLocale(): ${app.getLocale()}`);
