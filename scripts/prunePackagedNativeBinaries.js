@@ -48,9 +48,15 @@ module.exports = async function prunePackagedNativeBinaries(context) {
         removed += 1;
       }
     }
+
+    if (context.electronPlatformName === 'linux') {
+      for (const providerName of ['libonnxruntime_providers_cuda.so', 'libonnxruntime_providers_tensorrt.so']) {
+        if (removeIfExists(path.join(requiredRuntime, providerName))) removed += 1;
+      }
+    }
   }
 
   if (removed > 0) {
-    console.log(`[packaging] Pruned ${removed} unused ONNX native runtime directories for ${context.electronPlatformName}/${archName}.`);
+    console.log(`[packaging] Pruned ${removed} unused ONNX native runtime entries for ${context.electronPlatformName}/${archName}.`);
   }
 };

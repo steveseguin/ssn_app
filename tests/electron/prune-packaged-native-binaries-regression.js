@@ -21,6 +21,11 @@ function createRuntimeTree(appOutDir) {
 				const runtimeDirectory = path.join(root, platformName, archName);
 				fs.mkdirSync(runtimeDirectory, { recursive: true });
 				fs.writeFileSync(path.join(runtimeDirectory, 'runtime.node'), `${platformName}/${archName}`);
+				if (platformName === 'linux') {
+					fs.writeFileSync(path.join(runtimeDirectory, 'libonnxruntime_providers_shared.so'), 'required');
+					fs.writeFileSync(path.join(runtimeDirectory, 'libonnxruntime_providers_cuda.so'), 'optional');
+					fs.writeFileSync(path.join(runtimeDirectory, 'libonnxruntime_providers_tensorrt.so'), 'optional');
+				}
 			}
 		}
 	}
@@ -39,6 +44,11 @@ async function verifyTarget(platformName, arch, expectedArch) {
 			}
 			const otherArch = expectedArch === 'x64' ? 'arm64' : 'x64';
 			assert.strictEqual(fs.existsSync(path.join(root, platformName, otherArch)), false);
+			if (platformName === 'linux') {
+				assert.strictEqual(fs.existsSync(path.join(root, platformName, expectedArch, 'libonnxruntime_providers_shared.so')), true);
+				assert.strictEqual(fs.existsSync(path.join(root, platformName, expectedArch, 'libonnxruntime_providers_cuda.so')), false);
+				assert.strictEqual(fs.existsSync(path.join(root, platformName, expectedArch, 'libonnxruntime_providers_tensorrt.so')), false);
+			}
 		}
 	} finally {
 		fs.rmSync(appOutDir, { recursive: true, force: true });
