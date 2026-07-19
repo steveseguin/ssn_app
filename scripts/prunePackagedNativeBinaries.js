@@ -18,27 +18,39 @@ function removeIfExists(targetPath) {
 }
 
 module.exports = async function prunePackagedNativeBinaries(context) {
-  if (!context || context.electronPlatformName !== 'win32') return;
+  if (!context || !['win32', 'linux', 'darwin'].includes(context.electronPlatformName)) return;
 
   const archName = ARCH_NAMES[context.arch] || String(context.arch || '');
+  if (!['x64', 'arm64'].includes(archName)) return;
   const nodeModulesRoot = path.join(context.appOutDir, 'resources', 'app.asar.unpacked', 'node_modules');
   const onnxRoots = [
     path.join(nodeModulesRoot, 'onnxruntime-node', 'bin', 'napi-v3'),
     path.join(nodeModulesRoot, 'kokoro-js', 'node_modules', 'onnxruntime-node', 'bin', 'napi-v3'),
   ];
-  const removableByArch = new Set(['darwin', 'linux']);
-
-  if (archName === 'x64') removableByArch.add(path.join('win32', 'arm64'));
-  if (archName === 'arm64') removableByArch.add(path.join('win32', 'x64'));
 
   let removed = 0;
   for (const onnxRoot of onnxRoots) {
-    for (const relativePath of removableByArch) {
-      if (removeIfExists(path.join(onnxRoot, relativePath))) removed += 1;
+    const requiredRuntime = path.join(onnxRoot, context.electronPlatformName, archName);
+    if (!fs.existsSync(requiredRuntime)) {
+      console.warn(`[packaging] Required ONNX runtime missing at ${requiredRuntime}; skipping native runtime pruning.`);
+      continue;
+    }
+
+    for (const platformName of ['win32', 'linux', 'darwin']) {
+      if (platformName !== context.electronPlatformName && removeIfExists(path.join(onnxRoot, platformName))) {
+        removed += 1;
+      }
+    }
+
+    const targetPlatformRoot = path.join(onnxRoot, context.electronPlatformName);
+    for (const entry of fs.readdirSync(targetPlatformRoot, { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name !== archName && removeIfExists(path.join(targetPlatformRoot, entry.name))) {
+        removed += 1;
+      }
     }
   }
 
   if (removed > 0) {
-    console.log(`[packaging] Pruned ${removed} unused ONNX native runtime directories for win32/${archName}.`);
+    console.log(`[packaging] Pruned ${removed} unused ONNX native runtime directories for ${context.electronPlatformName}/${archName}.`);
   }
 };
