@@ -202,6 +202,10 @@ function isYouTubeDiscoveryNetworkError(error) {
     return error && error.code === 'SSAPP_YOUTUBE_DISCOVERY_NETWORK';
 }
 
+function isYouTubeOwnerAuthError(error) {
+    return error && error.code === 'SSAPP_YOUTUBE_OWNER_AUTH_REQUIRED';
+}
+
 function mergeYouTubeStreams(primaryStreams = [], fallbackStreams = [], isShortDefault = false) {
     const combined = [];
     const seenVideoIds = new Set();
@@ -603,8 +607,8 @@ class YouTubeStreamSelector {
 
 
 async function handleYouTubeActivation(username, isShortDefault = false, showPrompts = true, autoActivateAll = false, isChannelName = false, options = {}) {
+    const manualTrigger = !!options.manualTrigger;
     try {
-        const manualTrigger = !!options.manualTrigger;
         const groupTargetType = isShortDefault ? 'youtubeshorts' : 'youtube';
         const requestedGroup = options.groupId && typeof stateManager !== 'undefined'
             ? stateManager.getGroup(options.groupId)
@@ -832,6 +836,13 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
         }
     } catch (error) {
         console.error("Error in handleYouTubeActivation for " + username + ":", error);
+        if (isYouTubeOwnerAuthError(error)) {
+            const authMessage = 'YouTube sign-in expired or is unavailable. Use Manage sign-in to reconnect this channel.';
+            if (showPrompts || manualTrigger) {
+                Toast.warning('YouTube Sign-In', authMessage);
+            }
+            return { type: 'auth_error', message: authMessage };
+        }
         if (isYouTubeDiscoveryNetworkError(error)) {
             const networkMessage = translateYouTubeMessage(
                 'youtube.discovery.networkRetry',

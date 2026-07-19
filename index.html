@@ -2261,16 +2261,24 @@
             }
         }
 
+        let activeYouTubeAddModeCleanup = null;
+        let activeYouTubeOwnerConfirmCleanup = null;
+        let activeYouTubeOwnerManageCleanup = null;
+
         function showYouTubeAddModeModal() {
             const modal = document.getElementById('youtubeAddModeModal');
             if (!modal) return Promise.resolve('public');
+            if (activeYouTubeAddModeCleanup) activeYouTubeAddModeCleanup(null);
             return new Promise(resolve => {
                 const buttons = Array.from(modal.querySelectorAll('[data-youtube-add-mode]'));
                 const cleanup = (value) => {
+                    if (activeYouTubeAddModeCleanup !== cleanup) return;
+                    activeYouTubeAddModeCleanup = null;
                     buttons.forEach(button => { button.onclick = null; });
                     modal.classList.add('hidden');
                     resolve(value);
                 };
+                activeYouTubeAddModeCleanup = cleanup;
                 buttons.forEach(button => {
                     button.onclick = () => cleanup(button.dataset.youtubeAddMode);
                 });
@@ -2289,6 +2297,7 @@
                 return Promise.resolve(channels[0] || null);
             }
 
+            if (activeYouTubeOwnerConfirmCleanup) activeYouTubeOwnerConfirmCleanup(null);
             return new Promise(resolve => {
                 let selectedChannelId = channels[0].channelId;
                 summary.textContent = channels.length === 1
@@ -2327,12 +2336,15 @@
                 });
 
                 const cleanup = (value) => {
+                    if (activeYouTubeOwnerConfirmCleanup !== cleanup) return;
+                    activeYouTubeOwnerConfirmCleanup = null;
                     useButton.onclick = null;
                     cancelButton.onclick = null;
                     modal.classList.add('hidden');
                     resolve(value);
                 };
 
+                activeYouTubeOwnerConfirmCleanup = cleanup;
                 useButton.onclick = () => cleanup(channels.find(channel => channel.channelId === selectedChannelId) || channels[0]);
                 cancelButton.onclick = () => cleanup(null);
                 modal.classList.remove('hidden');
@@ -2469,15 +2481,19 @@
             if (!modal || !summary || !selectButton || !switchButton || !closeButton) {
                 return Promise.resolve('close');
             }
+            if (activeYouTubeOwnerManageCleanup) activeYouTubeOwnerManageCleanup('close');
             return new Promise(resolve => {
                 summary.textContent = `Signed in as: ${group.channelTitle || group.username || 'YouTube'}\nChannel ID: ${group.channelId || 'Unknown'}`;
                 const cleanup = (action) => {
+                    if (activeYouTubeOwnerManageCleanup !== cleanup) return;
+                    activeYouTubeOwnerManageCleanup = null;
                     selectButton.onclick = null;
                     switchButton.onclick = null;
                     closeButton.onclick = null;
                     modal.classList.add('hidden');
                     resolve(action);
                 };
+                activeYouTubeOwnerManageCleanup = cleanup;
                 selectButton.onclick = () => cleanup('select');
                 switchButton.onclick = () => cleanup('switch');
                 closeButton.onclick = () => cleanup('close');
@@ -2524,6 +2540,13 @@
                 channelId: group.channelId,
                 statuses: ['active', 'upcoming']
             });
+            if (result?.success === false) {
+                const detail = result.error && typeof result.error === 'object' ? result.error : {};
+                const error = new Error(detail.message || 'YouTube owner discovery failed.');
+                error.code = detail.code || 'SSAPP_YOUTUBE_OWNER_DISCOVERY_FAILED';
+                if (detail.status !== null && detail.status !== undefined) error.status = detail.status;
+                throw error;
+            }
             if (result?.profile) {
                 const updates = {};
                 if (result.profile.channelTitle && result.profile.channelTitle !== group.channelTitle) {
@@ -2730,6 +2753,9 @@
                         const parsed = parseYoutubeUrl(url);
                         if (parsed?.isYoutubeUrl && parsed.type === 'channel_id' && parsed.id) {
                             return { value: parsed.id, isChannelName: true };
+                        }
+                        if (parsed?.isYoutubeUrl && parsed.type === 'video' && parsed.id) {
+                            return { value: urlCandidate, isChannelName: false };
                         }
                         if (parsed?.isYoutubeUrl && parsed.username) {
                             const pathParts = url.pathname.split('/').filter(Boolean);
@@ -4116,6 +4142,8 @@
         // Store interval IDs for YouTube group checking
         const youtubeGroupIntervals = new Map();
         const youtubeGroupCountdownIntervals = new Map();
+        const youtubeGroupAutoCheckRuns = new Map();
+        let nextYouTubeGroupAutoCheckRunId = 0;
 
         // Store backoff state for YouTube groups
         const youtubeGroupBackoffState = new Map();
@@ -4236,10 +4264,18 @@
             });
         }
 
+        function groupNeedsYouTubeOwnerChatPolling(group) {
+            if (!shouldPollYouTubeGroup(group) || !isYouTubeOwnerGroup(group)) return false;
+            return (group.streams || []).some(sourceId => {
+                const source = stateManager.getSource(sourceId);
+                return !!(source && !source.liveChatId && source.youtubeChatStatus === 'waiting');
+            });
+        }
+
         function maybeRestartYouTubeGroupAutoCheck(groupId, reason = '') {
             const group = stateManager.getGroup(groupId);
             if (!shouldPollYouTubeGroup(group)) return;
-            if (groupHasActiveConnection(group)) return;
+            if (groupHasActiveConnection(group) && !groupNeedsYouTubeOwnerChatPolling(group)) return;
             if (youtubeGroupIntervals.has(groupId)) return;
             preferYouTubeGroupScrapeOnly(groupId, reason || 'restart');
             const reasonSuffix = reason ? ` (${reason})` : '';
@@ -4327,7 +4363,10 @@
                 if (!stream || stream.status === 'ended' || stream.youtubeChatStatus === 'ended') return;
 
                 const hasChat = !!stream.liveChatId || stream.youtubeChatStatus === 'ready';
-                if (stream.status === 'live') {
+                const lifeCycleStatus = String(stream.lifeCycleStatus || '').toLowerCase();
+                const isLiveBroadcast = lifeCycleStatus === 'live'
+                    || (!!stream.actualStartTime && !stream.actualEndTime);
+                if (isLiveBroadcast) {
                     if (!hasChat) {
                         hasLiveWaitingForChat = true;
                     }
@@ -4374,13 +4413,15 @@
                 result.waitingCount > 0 ||
                 result.type === 'no_streams_found' ||
                 result.type === 'multiple_auto' ||
-                result.type === 'network_error';
+                result.type === 'network_error' ||
+                result.type === 'auth_error';
             if (!shouldShow) return;
 
             const groupElement = getYouTubeGroupElement(groupId);
             if (!groupElement) return;
             const message = result.message || getYouTubeDiscoveryStatusText(result);
-            updateConnectionStatus(groupElement, result.type === 'network_error' ? 'error' : 'info', message);
+            const status = result.type === 'network_error' || result.type === 'auth_error' ? 'error' : 'info';
+            updateConnectionStatus(groupElement, status, message);
         }
 
         function clearYouTubeGroupCountdown(groupId, clearStatus = false) {
@@ -4402,7 +4443,7 @@
                 clearYouTubeGroupCountdown(groupId, true);
                 return;
             }
-            if (groupHasActiveConnection(group)) {
+            if (groupHasActiveConnection(group) && !groupNeedsYouTubeOwnerChatPolling(group)) {
                 clearYouTubeGroupCountdown(groupId, true);
                 return;
             }
@@ -4431,40 +4472,50 @@
             if (!shouldPollYouTubeGroup(group)) return;
 
             // Skip auto-check entirely if any source in the group is already active
-            if (groupHasActiveConnection(group)) {
+            if (groupHasActiveConnection(group) && !groupNeedsYouTubeOwnerChatPolling(group)) {
                 console.log(`YouTube group ${group.username} already has an active stream; skipping auto-check.`);
                 return;
             }
 
             console.log(`Starting auto-check for YouTube group: ${group.username}`);
 
+            const runId = ++nextYouTubeGroupAutoCheckRunId;
+            youtubeGroupAutoCheckRuns.set(groupId, runId);
+
             // Initialize backoff state
             youtubeGroupBackoffState.set(groupId, {
+                runId,
                 checkCount: 0,
                 intervals: [60000, 360000, 960000] // 1 min, 6 min, 16 min
             });
 
             // Check immediately
-            checkYouTubeGroupForNewStreamsWithBackoff(groupId);
+            checkYouTubeGroupForNewStreamsWithBackoff(groupId, runId);
         }
 
         function stopYouTubeGroupAutoCheck(groupId) {
             const timeoutId = youtubeGroupIntervals.get(groupId);
-            if (timeoutId) {
+            const wasRunning = youtubeGroupAutoCheckRuns.delete(groupId)
+                || youtubeGroupBackoffState.has(groupId)
+                || youtubeGroupIntervals.has(groupId);
+            if (timeoutId !== undefined) {
                 clearTimeout(timeoutId);
-                youtubeGroupIntervals.delete(groupId);
-                youtubeGroupBackoffState.delete(groupId);
+            }
+            youtubeGroupIntervals.delete(groupId);
+            youtubeGroupBackoffState.delete(groupId);
+            if (wasRunning) {
                 console.log(`Stopped auto-check for YouTube group: ${groupId}`);
             }
             clearYouTubeGroupCountdown(groupId, true);
         }
 
-        async function checkYouTubeGroupForNewStreamsWithBackoff(groupId) {
+        async function checkYouTubeGroupForNewStreamsWithBackoff(groupId, runId) {
+            if (!runId || youtubeGroupAutoCheckRuns.get(groupId) !== runId) return;
             clearYouTubeGroupCountdown(groupId, false);
 
             // If any stream is already active, stop checking and return
             const groupPre = stateManager.getGroup(groupId);
-            if (groupPre && groupHasActiveConnection(groupPre)) {
+            if (groupPre && groupHasActiveConnection(groupPre) && !groupNeedsYouTubeOwnerChatPolling(groupPre)) {
                 console.log(`YouTube group ${groupPre.username} has an active stream; stopping auto-check.`);
                 stopYouTubeGroupAutoCheck(groupId);
                 return;
@@ -4477,7 +4528,18 @@
 
             // Check for new streams
             const discoveryResult = await checkYouTubeGroupForNewStreams(groupId);
+            if (youtubeGroupAutoCheckRuns.get(groupId) !== runId) return;
             const hadTransientNetworkError = discoveryResult && discoveryResult.type === 'network_error';
+
+            if (discoveryResult && discoveryResult.type === 'auth_error') {
+                stopYouTubeGroupAutoCheck(groupId);
+                const authGroupElement = getYouTubeGroupElement(groupId);
+                if (authGroupElement) {
+                    updateConnectionStatus(authGroupElement, 'error', discoveryResult.message, { persistent: true });
+                }
+                Toast.warning('YouTube Sign-In', discoveryResult.message);
+                return;
+            }
 
             // If we found NEW streams, stop checking (not just any streams)
             if (discoveryResult === true) {
@@ -4487,8 +4549,16 @@
 
             // Get backoff state
             const backoffState = youtubeGroupBackoffState.get(groupId);
-            if (!backoffState) return;
+            if (!backoffState || backoffState.runId !== runId) return;
             const group = stateManager.getGroup(groupId);
+            if (!shouldPollYouTubeGroup(group)) {
+                stopYouTubeGroupAutoCheck(groupId);
+                return;
+            }
+            if (groupHasActiveConnection(group) && !groupNeedsYouTubeOwnerChatPolling(group)) {
+                stopYouTubeGroupAutoCheck(groupId);
+                return;
+            }
 
             // Determine next check interval
             let nextInterval;
@@ -4518,7 +4588,7 @@
 
             // Schedule next check
             const timeoutId = setTimeout(() => {
-                checkYouTubeGroupForNewStreamsWithBackoff(groupId);
+                checkYouTubeGroupForNewStreamsWithBackoff(groupId, runId);
             }, nextInterval);
 
             youtubeGroupIntervals.set(groupId, timeoutId);
@@ -4556,6 +4626,12 @@
                 }
             } catch (error) {
                 console.error("YouTube group discovery failed:", error);
+                if (typeof isYouTubeOwnerAuthError === 'function' && isYouTubeOwnerAuthError(error)) {
+                    return {
+                        type: 'auth_error',
+                        message: 'YouTube sign-in expired or is unavailable. Use Manage sign-in to reconnect this channel.'
+                    };
+                }
                 if (typeof isYouTubeDiscoveryNetworkError === 'function' && isYouTubeDiscoveryNetworkError(error)) {
                     return { type: 'network_error', message: error.message };
                 }
@@ -4656,11 +4732,13 @@
                     }, 500);
                 }
 
-                if (ownerBackedGroup && waitingNewOwnerStreams === newStreams.length) {
+                if (ownerBackedGroup && waitingNewOwnerStreams > 0 && shouldAutoOpen) {
                     return {
                         type: 'waiting_for_chat',
                         waitingCount: waitingNewOwnerStreams,
-                        message: 'Upcoming YouTube broadcasts were added, but chat is not ready yet.'
+                        message: waitingNewOwnerStreams === newStreams.length
+                            ? 'Upcoming YouTube broadcasts were added, but chat is not ready yet.'
+                            : 'Owned YouTube broadcasts were added, but some chats are not ready yet.'
                     };
                 }
                 if (ownerBackedGroup && !shouldAutoOpen) {
@@ -6838,10 +6916,11 @@
                 const activeConnectionMode = normalizedStatus === 'active' && source.activeConnectionMode
                     ? source.activeConnectionMode
                     : null;
+                const numericTabId = Number(source.vid);
                 return {
                     id: source.id || '',
                     target: source.target || '',
-                    url: source.url || '',
+                    tabId: Number.isFinite(numericTabId) && numericTabId > 0 ? numericTabId : null,
                     username: source.username || '',
                     videoId: source.videoId || '',
                     connectionMode: source.connectionMode || 'classic',

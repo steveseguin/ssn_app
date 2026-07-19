@@ -8,6 +8,7 @@ const fsp = fs.promises;
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const { Readable } = require('stream');
 
 const { LocalMediaService } = require('../../resources/electron-local-media-server');
 
@@ -50,6 +51,35 @@ function request(url, options = {}) {
 		req.on('error', reject);
 		req.end();
 	});
+}
+
+function abortAfterFirstChunk(url, options = {}) {
+	return new Promise((resolve, reject) => {
+		let settled = false;
+		const req = http.request(url, options, (res) => {
+			res.once('data', () => {
+				settled = true;
+				res.destroy();
+				resolve();
+			});
+			res.once('error', (error) => {
+				if (!settled) reject(error);
+			});
+		});
+		req.once('error', (error) => {
+			if (!settled) reject(error);
+		});
+		req.end();
+	});
+}
+
+async function waitFor(predicate, message, timeoutMs = 2000) {
+	const started = Date.now();
+	while (Date.now() - started < timeoutMs) {
+		if (predicate()) return;
+		await new Promise(resolve => setTimeout(resolve, 10));
+	}
+	throw new Error(message);
 }
 
 async function run() {
@@ -116,6 +146,38 @@ async function run() {
 		assert.strictEqual(invalidRange.statusCode, 416);
 		const post = await request(mediaUrl, { method: 'POST' });
 		assert.strictEqual(post.statusCode, 405);
+
+		const originalCreateReadStream = service.createReadStream;
+		const trackedStreams = [];
+		service.createReadStream = () => {
+			let timer = null;
+			let chunksRemaining = 64;
+			const stream = new Readable({
+				read() {
+					if (timer) return;
+					timer = setTimeout(() => {
+						timer = null;
+						if (stream.destroyed) return;
+						if (chunksRemaining-- <= 0) stream.push(null);
+						else stream.push(Buffer.alloc(4, 1));
+					}, 5);
+				},
+				destroy(error, callback) {
+					if (timer) clearTimeout(timer);
+					timer = null;
+					callback(error);
+				}
+			});
+			trackedStreams.push(stream);
+			return stream;
+		};
+		try {
+			await abortAfterFirstChunk(mediaUrl, { headers: { Range: 'bytes=0-255' } });
+			await waitFor(() => trackedStreams.length === 1 && trackedStreams[0].destroyed,
+				'aborted media response did not destroy its source stream');
+		} finally {
+			service.createReadStream = originalCreateReadStream;
+		}
 
 		const flowUrl = service.getFlowActionsUrl('room-one', {
 			search: '?password=secret&volume=0.5&js=https://example.com/unsafe.js',

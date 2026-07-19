@@ -40,6 +40,29 @@ async function runRunner(overrides = {}) {
 	});
 }
 
+async function runRunnerExpectFailure(overrides = {}, cwd = tempRoot) {
+	return await new Promise((resolve, reject) => {
+		const child = spawn(process.execPath, [runnerPath], {
+			cwd,
+			stdio: ['pipe', 'pipe', 'pipe'],
+		});
+		let stderr = '';
+		child.stderr.setEncoding('utf8');
+		child.stderr.on('data', (chunk) => { stderr += chunk; });
+		child.once('error', reject);
+		child.once('exit', (code) => resolve({ code, stderr }));
+		child.stdin.end(JSON.stringify({
+			legacyUserData,
+			dataRoot,
+			userData,
+			parentPid: 0,
+			execPath: process.execPath,
+			appArgs: ['-e', ''],
+			...overrides,
+		}));
+	});
+}
+
 async function run() {
 	fs.mkdirSync(path.join(legacyUserData, 'Local Storage'), { recursive: true });
 	fs.mkdirSync(path.join(legacyUserData, 'Cache'), { recursive: true });
@@ -69,6 +92,35 @@ async function run() {
 	assert.strictEqual(fs.statSync(failedUserData).isDirectory(), true);
 	assert.strictEqual(fs.existsSync(path.join(failedDataRoot, '.profile-initialized.json')), false);
 	assert.match(fs.readFileSync(path.join(failedDataRoot, 'portable-migration.log'), 'utf8'), /Profile copy failed/);
+
+	const existingFailedUserData = path.join(tempRoot, 'existing-failed-data', 'profile');
+	fs.mkdirSync(existingFailedUserData, { recursive: true });
+	fs.writeFileSync(path.join(existingFailedUserData, 'keep.txt'), 'keep-existing-profile');
+	await runRunner({
+		legacyUserData: path.join(tempRoot, 'still-missing-profile'),
+		dataRoot: path.dirname(existingFailedUserData),
+		userData: existingFailedUserData,
+	});
+	assert.strictEqual(fs.readFileSync(path.join(existingFailedUserData, 'keep.txt'), 'utf8'), 'keep-existing-profile');
+
+	const guardCwd = path.join(tempRoot, 'guard-cwd');
+	fs.mkdirSync(guardCwd, { recursive: true });
+	fs.writeFileSync(path.join(guardCwd, 'sentinel.txt'), 'do-not-delete');
+	const emptyPathResult = await runRunnerExpectFailure({ userData: '' }, guardCwd);
+	assert.notStrictEqual(emptyPathResult.code, 0);
+	assert.match(emptyPathResult.stderr, /Portable profile path is required/);
+	assert.strictEqual(fs.readFileSync(path.join(guardCwd, 'sentinel.txt'), 'utf8'), 'do-not-delete');
+
+	const protectedUserData = path.join(tempRoot, 'outside-data-root');
+	fs.mkdirSync(protectedUserData, { recursive: true });
+	fs.writeFileSync(path.join(protectedUserData, 'sentinel.txt'), 'outside-root');
+	const outsidePathResult = await runRunnerExpectFailure({
+		dataRoot: path.join(tempRoot, 'different-data-root'),
+		userData: protectedUserData,
+	});
+	assert.notStrictEqual(outsidePathResult.code, 0);
+	assert.match(outsidePathResult.stderr, /must be a child/);
+	assert.strictEqual(fs.readFileSync(path.join(protectedUserData, 'sentinel.txt'), 'utf8'), 'outside-root');
 	console.log('Portable migration runner regression checks passed.');
 }
 

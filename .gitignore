@@ -14,6 +14,7 @@ old-certs-backup/
 referenceonly/
 vdoninja/
 /node_modules
+.DS_Store
 
 # Claude-related files
 .claude/

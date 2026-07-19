@@ -306,7 +306,7 @@ async function run() {
 						target: 'youtube',
 						username: 'streamdeck-e2e',
 						videoId: 'streamdeck-video',
-						url: 'https://www.youtube.com/watch?v=streamdeck-video',
+						url: 'https://www.youtube.com/watch?v=streamdeck-video&access_token=STREAMDECK_SECRET#private',
 						connectionMode: 'classic',
 						isMuted: false,
 						isVisible: true,
@@ -378,12 +378,18 @@ async function run() {
 
 		const sources = await execInRenderer(port, `window.SSAppStreamDeckBridge.handleCommand({ action: 'getSources' })`, 'renderer getSources');
 		assert.equal(sources.ok, true, 'getSources failed');
-		assert(sources.payload.sources.some(source => source.id === seed.sourceId), 'seeded source missing from getSources');
+		const listedSource = sources.payload.sources.find(source => source.id === seed.sourceId);
+		assert(listedSource, 'seeded source missing from getSources');
+		assert.equal(Object.prototype.hasOwnProperty.call(listedSource, 'url'), false, 'getSources must not expose source URLs');
+		assert.equal(listedSource.tabId, null, 'inactive source should not expose a tab ID');
+		assert.equal(JSON.stringify(sources).includes('STREAMDECK_SECRET'), false, 'getSources leaked URL credentials');
 
 		const getSource = await execInRenderer(port, `window.SSAppStreamDeckBridge.handleCommand({ action: 'getSource', value: '${seed.sourceId}' })`, 'renderer getSource');
 		assert.equal(getSource.ok, true, 'getSource failed');
 		assert.equal(getSource.payload.source.status, 'inactive', 'seeded source should start inactive');
 		assert.equal(getSource.payload.source.activeConnectionMode, null, 'inactive source should not report an active connection mode');
+		assert.equal(Object.prototype.hasOwnProperty.call(getSource.payload.source, 'url'), false, 'getSource must not expose source URLs');
+		assert.equal(getSource.payload.source.tabId, null, 'inactive source should not expose a tab ID');
 
 		const mute = await execInRenderer(port, `
 			window.SSAppStreamDeckBridge.handleCommand({
@@ -670,6 +676,8 @@ async function run() {
 		);
 		assert.equal(socketCallback.callback.result.ok, true, `socket getSource failed: ${JSON.stringify(socketCallback)}`);
 		assert.equal(socketCallback.callback.result.payload.source.id, seed.sourceId, 'socket callback returned wrong source');
+		assert.equal(Object.prototype.hasOwnProperty.call(socketCallback.callback.result.payload.source, 'url'), false, 'socket getSource exposed a source URL');
+		assert.equal(JSON.stringify(socketCallback).includes('STREAMDECK_SECRET'), false, 'socket getSource leaked URL credentials');
 
 		const startRequestId = `start-${Date.now()}`;
 		deckClient.socket.send(JSON.stringify({
@@ -706,6 +714,81 @@ async function run() {
 		);
 		assert.equal(activeState.activeConnectionMode, 'websocket', `source should use websocket mode: ${JSON.stringify(activeState)}`);
 
+		const activeSource = await execInRenderer(port, `window.SSAppStreamDeckBridge.handleCommand({ action: 'getSource', value: '${seed.sourceId}' })`, 'active source summary');
+		assert.equal(activeSource.ok, true, `active source summary failed: ${JSON.stringify(activeSource)}`);
+		assert.equal(activeSource.payload.source.tabId, activeState.vid, 'active source summary returned the wrong tab ID');
+		assert.equal(Object.prototype.hasOwnProperty.call(activeSource.payload.source, 'url'), false, 'active source summary exposed a source URL');
+		await execInRenderer(port, `
+			(async () => {
+				const bg = document.getElementById('frame2').contentWindow;
+				const started = Date.now();
+				while (Date.now() - started < 10000) {
+					if (await bg.getSourceType(${activeState.vid}, 1000)) break;
+					await new Promise(resolve => setTimeout(resolve, 100));
+				}
+				bg.__streamDeckE2eTabMessages = [];
+				if (!bg.__streamDeckE2eOriginalSendMessage) {
+					bg.__streamDeckE2eOriginalSendMessage = bg.chrome.tabs.sendMessage;
+					bg.chrome.tabs.sendMessage = function(tabId, message, callback) {
+						bg.__streamDeckE2eTabMessages.push({ tabId, message });
+						return bg.__streamDeckE2eOriginalSendMessage.call(this, tabId, message, callback);
+					};
+				}
+				return true;
+			})()
+		`, 'targeted chat delivery probe');
+
+		const targetedMessage = `streamdeck-targeted-${Date.now()}`;
+		deckClient.socket.send(JSON.stringify({
+			action: 'sendChat',
+			target: 'youtube',
+			tabId: activeState.vid,
+			value: targetedMessage
+		}));
+		const targetedRoute = await execInRenderer(port, `
+			(async () => {
+				const bg = document.getElementById('frame2').contentWindow;
+				const started = Date.now();
+				while (Date.now() - started < 10000) {
+					const deliveries = (bg.__streamDeckE2eTabMessages || []).filter(entry =>
+						entry && entry.message && entry.message.message === '${targetedMessage}'
+					);
+					if (deliveries.length) {
+						const matchingTabIds = deliveries.map(entry => String(entry.tabId));
+						return { delivered: true, matchingTabIds };
+					}
+					await new Promise(resolve => setTimeout(resolve, 100));
+				}
+				return { delivered: false, deliveries: bg.__streamDeckE2eTabMessages || [] };
+			})()
+		`, 'targeted Stream Deck chat route');
+		assert.equal(targetedRoute.delivered, true, `targeted chat was not delivered: ${JSON.stringify(targetedRoute)}`);
+		assert.deepEqual(targetedRoute.matchingTabIds, [String(activeState.vid)], `targeted chat reached the wrong source: ${JSON.stringify(targetedRoute)}`);
+
+		const platformMessage = `platform-target-${Date.now()}`;
+		deckClient.socket.send(JSON.stringify({
+			action: 'sendChat',
+			target: 'youtube',
+			value: platformMessage
+		}));
+		const platformRoute = await execInRenderer(port, `
+			(async () => {
+				const bg = document.getElementById('frame2').contentWindow;
+				const started = Date.now();
+				while (Date.now() - started < 10000) {
+					const delivered = (bg.__streamDeckE2eTabMessages || []).some(entry =>
+						entry && entry.message && entry.message.message === '${platformMessage}'
+					);
+					if (delivered) {
+						return { delivered: true };
+					}
+					await new Promise(resolve => setTimeout(resolve, 100));
+				}
+				return { delivered: false };
+			})()
+		`, 'existing platform-target chat route');
+		assert.equal(platformRoute.delivered, true, 'existing target-only chat routing regressed');
+
 		const stopRequestId = `stop-${Date.now()}`;
 		deckClient.socket.send(JSON.stringify({
 			action: 'stopSource',
@@ -721,6 +804,7 @@ async function run() {
 		assert.equal(socketStopCallback.callback.result.ok, true, `socket stopSource failed: ${JSON.stringify(socketStopCallback)}`);
 		assert.equal(socketStopCallback.callback.result.payload.source.status, 'inactive', 'source should be inactive after stop');
 		assert.equal(socketStopCallback.callback.result.payload.source.activeConnectionMode, null, 'stopped source should not report an active connection mode');
+		assert.equal(socketStopCallback.callback.result.payload.source.tabId, null, 'stopped source should not report a tab ID');
 
 		const stoppedState = await execInRenderer(port, `
 			(() => {

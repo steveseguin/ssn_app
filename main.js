@@ -1923,6 +1923,12 @@ const remoteControlFileSelections = [];
 let llmControlCommandHandler = null;
 let controlApiRouter = null;
 
+function matchesRemoteControlToken(value) {
+    const supplied = Buffer.from(String(value || ''), 'utf8');
+    const expected = Buffer.from(remoteControlToken, 'utf8');
+    return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+}
+
 if (headlessControlEnabled) {
     app.on('browser-window-created', (_event, window) => {
         const keepHidden = () => {
@@ -2209,13 +2215,24 @@ function setupRemoteControlServer() {
         const parsed = url.parse(req.url, true);
         const token = (parsed.query && parsed.query.token) || req.headers['x-ssapp-token'];
         // Always enforce token auth — token is auto-generated if not configured
-        if (token !== remoteControlToken) {
+        if (!matchesRemoteControlToken(token)) {
             res.writeHead(403, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
             return;
         }
 
-        if (await controlApiRouter.handle(req, res, parsed)) return;
+        try {
+            if (await controlApiRouter.handle(req, res, parsed)) return;
+        } catch (error) {
+            console.error('[Control API] Request failed:', error && error.stack ? error.stack : error);
+            if (!res.headersSent) {
+                res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+                res.end(JSON.stringify({ ok: false, error: 'internal_error' }));
+            } else {
+                res.destroy();
+            }
+            return;
+        }
 
         const sendJson = (statusCode, payload) => {
             res.writeHead(statusCode, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });

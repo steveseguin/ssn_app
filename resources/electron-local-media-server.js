@@ -5,6 +5,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const http = require('http');
 const path = require('path');
+const { pipeline } = require('stream/promises');
 const { fileURLToPath } = require('url');
 
 const DEFAULT_HOST = '127.0.0.1';
@@ -139,6 +140,7 @@ class LocalMediaService {
 		this.host = options.host || DEFAULT_HOST;
 		this.logger = options.logger || console;
 		this.getRuntimeRoot = options.getRuntimeRoot || (() => options.runtimeRoot || '');
+		this.createReadStream = options.createReadStream || fs.createReadStream;
 		this.server = null;
 		this.lastError = '';
 		this.runtimeRoot = '';
@@ -471,13 +473,13 @@ class LocalMediaService {
 			res.end();
 			return;
 		}
-		await new Promise((resolve, reject) => {
-			const stream = fs.createReadStream(filePath, { start, end });
-			stream.on('error', reject);
-			res.on('close', resolve);
-			res.on('finish', resolve);
-			stream.pipe(res);
-		});
+		const stream = this.createReadStream(filePath, { start, end });
+		try {
+			await pipeline(stream, res);
+		} catch (error) {
+			if (req.destroyed || res.destroyed || error?.code === 'ERR_STREAM_PREMATURE_CLOSE') return;
+			throw error;
+		}
 	}
 }
 

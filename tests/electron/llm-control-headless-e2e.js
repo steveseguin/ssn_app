@@ -13,6 +13,9 @@ const { spawn, spawnSync } = require('child_process');
 
 const electronPath = require('electron');
 const repoRoot = path.resolve(__dirname, '..', '..');
+const expectedSsappVersion = require(path.join(repoRoot, 'package.json')).version;
+const expectedApiVersion = '1.1.3';
+const sourceUrlSecret = 'CONTROL_API_SOURCE_SECRET';
 const socialStreamRoot = path.resolve(repoRoot, '..', 'social_stream');
 const socialStreamUrl = pathToFileURL(socialStreamRoot + path.sep).href;
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-headless-control-'));
@@ -217,10 +220,10 @@ async function runMcpChecks(port) {
 		const listed = await call(2, 'tools/list');
 		assert.ok(listed.result.tools.some(tool => tool.name === 'ssapp_get_status'));
 		assert.ok(listed.result.tools.some(tool => tool.name === 'ssapp_add_source'));
-		assert.strictEqual(listed.result._meta.ssappVersion, '0.4.2');
+		assert.strictEqual(listed.result._meta.ssappVersion, expectedSsappVersion);
 		const status = await call(3, 'tools/call', { name: 'ssapp_get_status', arguments: {} });
-		assert.strictEqual(status.result.structuredContent.ssappVersion, '0.4.2');
-		assert.strictEqual(status.result.structuredContent.apiVersion, '1.1.2');
+		assert.strictEqual(status.result.structuredContent.ssappVersion, expectedSsappVersion);
+		assert.strictEqual(status.result.structuredContent.apiVersion, expectedApiVersion);
 	} finally {
 		child.stdin.end();
 		await Promise.race([
@@ -259,8 +262,8 @@ async function run() {
 		assert.strictEqual(capabilities.statusCode, 200, JSON.stringify(capabilities.data));
 		assert.strictEqual(capabilities.data.payload.sourceControls.add, true);
 		assert.strictEqual(capabilities.data.payload.settings.update, true);
-		assert.strictEqual(capabilities.data.ssappVersion, '0.4.2');
-		assert.strictEqual(capabilities.data.apiVersion, '1.1.2');
+		assert.strictEqual(capabilities.data.ssappVersion, expectedSsappVersion);
+		assert.strictEqual(capabilities.data.apiVersion, expectedApiVersion);
 		assert.ok(capabilities.data.payload.commands.restartSource.confirmationRequired);
 		const unauthenticated = await requestJson(firstPort, '/api/v1/status', undefined, 'wrong-token');
 		assert.strictEqual(unauthenticated.statusCode, 403);
@@ -269,12 +272,23 @@ async function run() {
 		assert.strictEqual(legacyEndpoint.statusCode, 404, 'Headless control exposed legacy renderer execution endpoints.');
 
 		const added = await command(firstPort, 'addSource', {
-			target: 'twitch', username: 'ssapp_llm_test', isMuted: true, autoActivate: false, idempotencyKey: 'headless-source-test',
+			target: 'twitch',
+			username: 'ssapp_llm_test',
+			url: `https://www.twitch.tv/popout/ssapp_llm_test/chat?popout=&access_token=${sourceUrlSecret}`,
+			isMuted: true,
+			autoActivate: false,
+			idempotencyKey: 'headless-source-test',
 		});
 		sourceId = added.source.id;
 		assert.ok(sourceId);
-		assert.strictEqual(added.source.url, 'https://www.twitch.tv/popout/ssapp_llm_test/chat?popout=');
-		assert.strictEqual(added._versions.ssapp, '0.4.2');
+		assert.strictEqual(Object.prototype.hasOwnProperty.call(added.source, 'url'), false);
+		assert.strictEqual(added.source.tabId, null);
+		assert.strictEqual(added._versions.ssapp, expectedSsappVersion);
+		assert.strictEqual(added._versions.api, expectedApiVersion);
+		const statusAfterAdd = await requestJson(firstPort, '/api/v1/status');
+		assert.strictEqual(statusAfterAdd.statusCode, 200, JSON.stringify(statusAfterAdd.data));
+		assert.strictEqual(JSON.stringify(statusAfterAdd.data).includes(sourceUrlSecret), false);
+		assert.strictEqual(Object.prototype.hasOwnProperty.call(statusAfterAdd.data.sources[0], 'url'), false);
 		const operation = await requestJson(firstPort, `/api/v1/operations/${added._meta.operationId}`);
 		assert.strictEqual(operation.statusCode, 200, JSON.stringify(operation.data));
 		assert.strictEqual(operation.data.payload.operation.status, 'completed');
@@ -288,7 +302,7 @@ async function run() {
 			updates: { username: 'ssapp_llm_test_updated', url: '', replyOnly: true },
 		});
 		assert.strictEqual(updated.source.username, 'ssapp_llm_test_updated');
-		assert.strictEqual(updated.source.url, 'https://www.twitch.tv/popout/ssapp_llm_test_updated/chat?popout=');
+		assert.strictEqual(Object.prototype.hasOwnProperty.call(updated.source, 'url'), false);
 
 		let settings;
 		await waitForEvent(firstPort, 'status.changed', async () => {

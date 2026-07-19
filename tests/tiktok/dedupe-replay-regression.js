@@ -7,7 +7,8 @@ const {
     buildGiftDedupeKey,
     MessageProcessor,
     GiftProcessor,
-    ConnectionManager
+    ConnectionManager,
+    escapeTikTokHtmlAttribute
 } = __test;
 
 let passed = 0;
@@ -521,9 +522,14 @@ test('gift icon: sendGiftMessage separates rich content from inline gift icons',
     assert.match(src,
         /const inlineGiftImage\s*=\s*textOnly\s*\|\|\s*contentImage\s*\?\s*null\s*:\s*resolveTikTokGiftInlineImage/,
         'sendGiftMessage should resolve a normal gift icon only for inline rendering');
+    assert.strictEqual(
+        escapeTikTokHtmlAttribute("https://cdn.example/rose.webp' onerror='alert(1)&label=\"gift\""),
+        'https://cdn.example/rose.webp&#39; onerror=&#39;alert(1)&amp;label=&quot;gift&quot;',
+        'inline gift attributes should encode quote and markup delimiters'
+    );
     assert.match(src,
-        /chatmessage\s*\+=\s*` <img src='\$\{inlineGiftImage\}' \/>`/,
-        'sendGiftMessage should append the normal gift icon to chatmessage');
+        /escapeTikTokHtmlAttribute\(inlineGiftImage\)/,
+        'sendGiftMessage should append only an escaped inline gift URL');
 });
 
 // ---------------------------------------------------------------------------

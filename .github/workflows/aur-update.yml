@@ -108,6 +108,7 @@ jobs:
           # Update pkgver
           sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
           sed -i "s/^pkgrel=.*/pkgrel=$PKGREL/" PKGBUILD
+          sed -i "s/^_release_tag=.*/_release_tag=$RELEASE_TAG/" PKGBUILD
 
           # Update sha256sums (first entry)
           sed -i "s/^sha256sums=('[^']*'/sha256sums=('$CHECKSUM'/" PKGBUILD

@@ -134,13 +134,14 @@ async function tryStartServer(server) {
     throw error;
 }
 
-function runLoopbackOAuthSession(payload = {}) {
+function runLoopbackOAuthSession(payload = {}, dependencies = {}) {
     return new Promise((resolve, reject) => {
         let timeoutId = null;
         let settled = false;
         let server = null;
         let session = null;
         const stateParam = payload.state || crypto.randomBytes(16).toString("hex");
+        const openExternal = dependencies.openExternal || ((...args) => shell.openExternal(...args));
 
         const cleanup = () => {
             if (timeoutId) {
@@ -179,19 +180,20 @@ function runLoopbackOAuthSession(payload = {}) {
 
             // Handle the callback path
             if (parsed.pathname === CALLBACK_PATH || parsed.pathname === '/callback' || parsed.pathname === '/') {
-                if (query.code) {
-                    if (query.state && query.state !== stateParam) {
-                        res.writeHead(200, { 'Content-Type': 'text/html' });
-                        res.end(`<!DOCTYPE html>
+                if ((query.code || query.error) && query.state !== stateParam) {
+                    res.writeHead(200, { 'Content-Type': 'text/html' });
+                    res.end(`<!DOCTYPE html>
 <html><head><title>Authorization Failed</title>
 <style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#0f0f0f;color:#fff}
 .container{text-align:center}h1{color:#ff0000}</style></head>
 <body><div class="container"><h1>State Mismatch</h1><p>Possible CSRF attack detected. Please try again.</p></div>
 <script>setTimeout(()=>window.close(),3000);</script></body></html>`);
-                        fail(new Error('State mismatch - possible CSRF attack'));
-                        return;
-                    }
-
+                    const stateError = new Error('State mismatch - possible CSRF attack');
+                    stateError.code = 'SSAPP_YOUTUBE_OAUTH_STATE_MISMATCH';
+                    fail(stateError);
+                    return;
+                }
+                if (query.code) {
                     res.writeHead(200, { 'Content-Type': 'text/html' });
                     res.end(`<!DOCTYPE html>
 <html><head><title>YouTube Authorization</title>
@@ -202,7 +204,7 @@ function runLoopbackOAuthSession(payload = {}) {
                     complete({
                         success: true,
                         code: query.code,
-                        state: query.state || payload.state || null,
+                        state: query.state,
                         redirectUri: payload.redirectUri || null
                     });
                     return;
@@ -250,7 +252,7 @@ function runLoopbackOAuthSession(payload = {}) {
                 payload.redirectUri = redirectUri;
 
                 try {
-                    await shell.openExternal(authUrl, { activate: true });
+                    await openExternal(authUrl, { activate: true });
                     console.log('[YouTube OAuth] Opening auth URL in default browser');
                 } catch (shellError) {
                     console.error('[YouTube OAuth] Failed to launch default browser:', shellError);
@@ -836,6 +838,32 @@ async function fetchYouTubeOwnerBroadcasts(payload = {}) {
     };
 }
 
+function normalizeYouTubeOwnerDiscoveryError(error) {
+    const message = String(error?.message || error || "YouTube owner discovery failed.");
+    const status = Number.isFinite(Number(error?.status)) ? Number(error.status) : null;
+    const reasons = Array.isArray(error?.payload?.error?.errors)
+        ? error.payload.error.errors.map(item => String(item?.reason || "").toLowerCase())
+        : [];
+    const searchable = [message, error?.code, error?.name, ...reasons].filter(Boolean).join(" ").toLowerCase();
+    const networkTokens = [
+        "fetch failed", "network", "timed out", "timeout", "enotfound", "eai_again",
+        "econnreset", "econnrefused", "socket hang up", "err_name_not_resolved"
+    ];
+    const authTokens = [
+        "invalid_grant", "invalid credentials", "login required", "sign in again", "sign-in",
+        "access token", "refresh token", "autherror", "insufficientpermissions"
+    ];
+
+    let code = "SSAPP_YOUTUBE_OWNER_DISCOVERY_FAILED";
+    if (error?.code === "SSAPP_YOUTUBE_API_TIMEOUT" || networkTokens.some(token => searchable.includes(token))) {
+        code = "SSAPP_YOUTUBE_DISCOVERY_NETWORK";
+    } else if (status === 401 || authTokens.some(token => searchable.includes(token))) {
+        code = "SSAPP_YOUTUBE_OWNER_AUTH_REQUIRED";
+    }
+
+    return { code, message, status };
+}
+
 function listYouTubeOwnerAuths() {
     const auths = getStoredOwnerAuths();
     return {
@@ -941,12 +969,23 @@ function setupYouTubeOAuthHandler() {
     if (ipcMain.listenerCount("youtube-owner-broadcasts") === 0) {
         ipcMain.handle("youtube-owner-broadcasts", async (event, payload = {}) => {
             assertMainAppOwnerAuthCaller(event);
-            return fetchYouTubeOwnerBroadcasts(payload);
+            try {
+                return await fetchYouTubeOwnerBroadcasts(payload);
+            } catch (error) {
+                return {
+                    success: false,
+                    error: normalizeYouTubeOwnerDiscoveryError(error)
+                };
+            }
         });
     }
 }
 
 module.exports = {
     setupYouTubeOAuthHandler,
-    clearYouTubeOwnerAuthStore
+    clearYouTubeOwnerAuthStore,
+    __test: {
+        normalizeYouTubeOwnerDiscoveryError,
+        runLoopbackOAuthSession
+    }
 };

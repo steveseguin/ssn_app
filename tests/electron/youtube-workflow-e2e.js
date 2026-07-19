@@ -206,8 +206,14 @@ const rendererWorkflow = String.raw`
 
 	await waitFor(() => window.stateManager && stateManager.initialized, 'stateManager was not initialized');
 	await waitFor(() => typeof newSourceVideoID === 'function'
+		&& typeof newSource === 'function'
 		&& typeof parseYoutubeUrl === 'function'
 		&& typeof extractYoutubeID === 'function'
+		&& typeof normalizeYouTubePublicSourceInput === 'function'
+		&& typeof showYouTubeAddModeModal === 'function'
+		&& typeof showYouTubeOwnerChannelConfirm === 'function'
+		&& typeof showYouTubeOwnerManageModal === 'function'
+		&& typeof fetchYouTubeOwnerStreamsForGroup === 'function'
 		&& typeof buildYouTubeWebSocketQueryParams === 'function'
 		&& typeof createYoutubeWebSocketWindowFromSource === 'function', 'YouTube workflow functions were not available');
 
@@ -222,6 +228,206 @@ const rendererWorkflow = String.raw`
 	};
 
 	try {
+		const normalizedWatchUrl = normalizeYouTubePublicSourceInput('https://www.youtube.com/watch?v=urlroute001');
+		const normalizedShortUrl = normalizeYouTubePublicSourceInput('youtu.be/urlroute002');
+		assertRenderer(normalizedWatchUrl.value === 'https://www.youtube.com/watch?v=urlroute001' && normalizedWatchUrl.isChannelName === false,
+			'watch URL should remain a video URL');
+		assertRenderer(normalizedShortUrl.value === 'https://youtu.be/urlroute002' && normalizedShortUrl.isChannelName === false,
+			'youtu.be URL should remain a video URL');
+
+		await newSource('youtube', normalizedWatchUrl.value, false, {}, normalizedWatchUrl.isChannelName);
+		await newSource('youtube', normalizedShortUrl.value, false, {}, normalizedShortUrl.isChannelName);
+		const watchUrlSource = stateManager.getSources().find(source => source.videoId === 'urlroute001');
+		const shortUrlSource = stateManager.getSources().find(source => source.videoId === 'urlroute002');
+		assertRenderer(watchUrlSource?.target === 'youtube' && /[?&]v=urlroute001(?:&|$)/.test(watchUrlSource.url || ''),
+			'watch URL should route through the direct video-source path');
+		assertRenderer(shortUrlSource?.target === 'youtube' && /[?&]v=urlroute002(?:&|$)/.test(shortUrlSource.url || ''),
+			'youtu.be URL should route through the direct video-source path');
+
+		const firstModePromise = showYouTubeAddModeModal();
+		const secondModePromise = showYouTubeAddModeModal();
+		document.querySelector('[data-youtube-add-mode="public"]').click();
+		const modeResults = await Promise.all([firstModePromise, secondModePromise]);
+		assertRenderer(modeResults[0] === null && modeResults[1] === 'public', 'reopened add-mode modal should settle both callers');
+
+		const testChannels = [
+			{ channelId: 'UCmodal000000000000000001', channelTitle: 'First Channel', thumbnails: {} },
+			{ channelId: 'UCmodal000000000000000002', channelTitle: 'Second Channel', thumbnails: {} }
+		];
+		const firstConfirmPromise = showYouTubeOwnerChannelConfirm({ channels: testChannels });
+		const secondConfirmPromise = showYouTubeOwnerChannelConfirm({ channels: testChannels });
+		document.getElementById('youtubeOwnerUseChannelButton').click();
+		const confirmResults = await Promise.all([firstConfirmPromise, secondConfirmPromise]);
+		assertRenderer(confirmResults[0] === null && confirmResults[1]?.channelId === testChannels[0].channelId,
+			'reopened owner-channel modal should cancel the old caller and resolve the new caller');
+
+		const manageGroup = { channelTitle: 'Manage Test', username: 'manage-test', channelId: testChannels[0].channelId };
+		const firstManagePromise = showYouTubeOwnerManageModal(manageGroup);
+		const secondManagePromise = showYouTubeOwnerManageModal(manageGroup);
+		document.getElementById('youtubeOwnerManageCloseButton').click();
+		const manageResults = await Promise.all([firstManagePromise, secondManagePromise]);
+		assertRenderer(manageResults[0] === 'close' && manageResults[1] === 'close', 'reopened owner-manage modal should settle both callers');
+
+		const ownerGroupId = stateManager.addGroup({
+			id: 'youtube-owner-e2e-auth',
+			target: 'youtube',
+			username: 'Owner E2E',
+			channelId: 'UCowner000000000000000001',
+			youtubeDiscoveryMode: 'owner',
+			youtubeAuthRef: 'youtube-owner:missing-e2e-auth',
+			autoActivate: false,
+			streams: []
+		});
+		const ownerGroup = stateManager.getGroup(ownerGroupId);
+		let ownerAuthError = null;
+		try {
+			await fetchYouTubeOwnerStreamsForGroup(ownerGroup);
+		} catch (error) {
+			ownerAuthError = { code: error.code, message: error.message };
+		}
+		assertRenderer(ownerAuthError?.code === 'SSAPP_YOUTUBE_OWNER_AUTH_REQUIRED',
+			'owner discovery should preserve its re-sign-in error code across Electron IPC');
+		const ownerActivationResult = await handleYouTubeActivation(
+			ownerGroup.username,
+			false,
+			false,
+			true,
+			false,
+			{ manualTrigger: true, groupId: ownerGroupId }
+		);
+		assertRenderer(ownerActivationResult?.type === 'auth_error', 'expired owner auth should return a visible auth error');
+
+		const schedulerGroupId = stateManager.addGroup({
+			id: 'youtube-owner-e2e-scheduler',
+			target: 'youtube',
+			username: 'Scheduler E2E',
+			channelId: 'UCowner000000000000000002',
+			youtubeDiscoveryMode: 'owner',
+			youtubeAuthRef: 'youtube-owner:scheduler-e2e',
+			autoActivate: true,
+			streams: []
+		});
+		stateManager.addSource({
+			id: 'youtube-owner-e2e-active',
+			target: 'youtube',
+			username: 'Scheduler E2E',
+			groupId: schedulerGroupId,
+			videoId: 'activee2e01',
+			url: 'https://www.youtube.com/live_chat?is_popout=1&v=activee2e01',
+			vid: 7654321,
+			status: 'active',
+			youtubeChatStatus: 'ready',
+			liveChatId: 'active-chat'
+		});
+		stateManager.addSource({
+			id: 'youtube-owner-e2e-waiting',
+			target: 'youtube',
+			username: 'Scheduler E2E',
+			groupId: schedulerGroupId,
+			videoId: 'waitinge2e1',
+			url: 'https://www.youtube.com/live_chat?is_popout=1&v=waitinge2e1',
+			status: 'inactive',
+			youtubeChatStatus: 'waiting'
+		});
+		const schedulerGroup = stateManager.getGroup(schedulerGroupId);
+		assertRenderer(groupHasActiveConnection(schedulerGroup), 'scheduler fixture should contain an active source');
+		assertRenderer(groupNeedsYouTubeOwnerChatPolling(schedulerGroup), 'waiting owner chat should keep polling beside an active source');
+
+		const originalDiscoveryCheck = checkYouTubeGroupForNewStreams;
+		const originalSetTimeout = window.setTimeout;
+		const originalClearTimeout = window.clearTimeout;
+		const capturedSchedulerTimers = [];
+		window.setTimeout = function (callback, delay, ...args) {
+			const isYouTubeSchedulerCallback = typeof callback === 'function'
+				&& String(callback).includes('checkYouTubeGroupForNewStreamsWithBackoff');
+			if (isYouTubeSchedulerCallback && delay >= 30000) {
+				const timer = { youtubeSchedulerE2E: true, callback, delay, cleared: false };
+				capturedSchedulerTimers.push(timer);
+				return timer;
+			}
+			return originalSetTimeout(callback, delay, ...args);
+		};
+		window.clearTimeout = function (timer) {
+			if (timer?.youtubeSchedulerE2E) {
+				timer.cleared = true;
+				return;
+			}
+			return originalClearTimeout(timer);
+		};
+		checkYouTubeGroupForNewStreams = async function () {
+			await new Promise(resolve => originalSetTimeout(resolve, 50));
+			return { type: 'no_eligible_streams' };
+		};
+		try {
+			startYouTubeGroupAutoCheck(schedulerGroupId);
+			stateManager.updateGroup(schedulerGroupId, { autoActivate: false });
+			stopYouTubeGroupAutoCheck(schedulerGroupId);
+			await new Promise(resolve => originalSetTimeout(resolve, 100));
+			assertRenderer(capturedSchedulerTimers.length === 0, 'stopped in-flight YouTube check must not reschedule itself');
+			assertRenderer(!youtubeGroupBackoffState.has(schedulerGroupId), 'stopped in-flight check should clear backoff state');
+
+			stateManager.updateGroup(schedulerGroupId, { autoActivate: true });
+			startYouTubeGroupAutoCheck(schedulerGroupId);
+			await new Promise(resolve => originalSetTimeout(resolve, 10));
+			startYouTubeGroupAutoCheck(schedulerGroupId);
+			await new Promise(resolve => originalSetTimeout(resolve, 150));
+			const activeTimers = capturedSchedulerTimers.filter(timer => !timer.cleared);
+			assertRenderer(activeTimers.length === 1, 'restarted YouTube auto-check should leave exactly one polling chain');
+		} finally {
+			stopYouTubeGroupAutoCheck(schedulerGroupId);
+			checkYouTubeGroupForNewStreams = originalDiscoveryCheck;
+			window.setTimeout = originalSetTimeout;
+			window.clearTimeout = originalClearTimeout;
+		}
+
+		const mixedGroupId = stateManager.addGroup({
+			id: 'youtube-owner-e2e-mixed',
+			target: 'youtube',
+			username: 'Mixed E2E',
+			channelId: 'UCowner000000000000000003',
+			youtubeDiscoveryMode: 'owner',
+			youtubeAuthRef: 'youtube-owner:mixed-e2e',
+			autoActivate: true,
+			streams: []
+		});
+		const originalOwnerFetch = fetchYouTubeOwnerStreamsForGroup;
+		const originalMixedSetTimeout = window.setTimeout;
+		fetchYouTubeOwnerStreamsForGroup = async function () {
+			return [
+				{
+					videoId: 'mixlivee2e1',
+					isShort: false,
+					status: 'live',
+					liveChatId: 'mixed-live-chat',
+					youtubeChatStatus: 'ready',
+					channelId: 'UCowner000000000000000003',
+					channelTitle: 'Mixed E2E'
+				},
+				{
+					videoId: 'mixwaite2e1',
+					isShort: false,
+					status: 'upcoming',
+					scheduledStartTime: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+					liveChatId: '',
+					youtubeChatStatus: 'waiting',
+					channelId: 'UCowner000000000000000003',
+					channelTitle: 'Mixed E2E'
+				}
+			];
+		};
+		window.setTimeout = function (callback, delay, ...args) {
+			if (delay === 500) return { mixedYouTubeE2E: true };
+			return originalMixedSetTimeout(callback, delay, ...args);
+		};
+		try {
+			const mixedResult = await checkYouTubeGroupForNewStreams(mixedGroupId);
+			assertRenderer(mixedResult?.type === 'waiting_for_chat' && mixedResult.waitingCount === 1,
+				'mixed live/waiting owner result should keep polling for the waiting chat');
+		} finally {
+			fetchYouTubeOwnerStreamsForGroup = originalOwnerFetch;
+			window.setTimeout = originalMixedSetTimeout;
+		}
+
 		await newSourceVideoID('youtube', 'IaZtam78ec0', false, { isAutoDiscovered: false, connectionMode: 'websocket' });
 		await Promise.resolve();
 		assertRenderer(confirmMessages.length === 0, 'first YouTube source should not prompt as duplicate');
@@ -305,6 +511,7 @@ const rendererWorkflow = String.raw`
 			shortsQuery,
 			markerQuery,
 			launchPlan,
+			ownerAuthError,
 			launchUrls: createWindowCalls.map(call => call.url)
 		};
 	} finally {

@@ -3224,6 +3224,15 @@ function resolveTikTokGiftContentImage(data = {}, giftData = {}, giftDetails = {
     return null;
 }
 
+function escapeTikTokHtmlAttribute(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/'/g, '&#39;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
 /**
  * Resolve the small icon shown inline with a normal gift chat message.
  * Rich sticker/media assets are handled separately by resolveTikTokGiftContentImage.
@@ -4043,7 +4052,7 @@ class GiftProcessor {
 
         let chatmessage = `Sent ${giftName} x${count}`;
         if (inlineGiftImage) {
-            chatmessage += ` <img src='${inlineGiftImage}' />`;
+            chatmessage += ` <img src='${escapeTikTokHtmlAttribute(inlineGiftImage)}' />`;
         }
 
         const msg = {
@@ -10334,6 +10343,7 @@ module.exports = {
 		renderTikTokChatWithEmotes,
 		resolveTikTokGiftContentImage,
 		resolveTikTokGiftInlineImage,
+		escapeTikTokHtmlAttribute,
 		resolveGiftMetricCount,
 		resolveGiftAggregatedCount,
 		resolveGiftId,

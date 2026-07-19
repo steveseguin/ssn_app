@@ -404,7 +404,8 @@ function escapeHtml(value) {
 }
 
 function formatTsvField(value) {
-    return String(value || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
+    const normalized = String(value || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
+    return /^\s*[=+\-@]/.test(normalized) ? `'${normalized}` : normalized;
 }
 
 function normalizeSourceType(value) {

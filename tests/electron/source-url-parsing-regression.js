@@ -63,7 +63,7 @@ const youtubeParsingBlock = [
 	"extractYoutubeID"
 ].map((name) => extractFunction(youtubeSource, name)).join("\n\n");
 
-vm.runInContext(`${youtubeParsingBlock}\n${helperBlock}\n${dependencyBlock}\n${extractFunction(indexSource, "normalizeUrlForMatch")}
+vm.runInContext(`${youtubeParsingBlock}\n${helperBlock}\n${dependencyBlock}\n${extractFunction(indexSource, "normalizeUrlForMatch")}\n${extractFunction(indexSource, "normalizeYouTubePublicSourceInput")}
 this.helpers = {
 	extractYoutubeVideoId,
 	parseYoutubeUrl,
@@ -77,6 +77,7 @@ this.helpers = {
 	getWebSocketScriptPathForSource,
 	buildWebSocketLaunchPlan,
 	buildYouTubeWebSocketQueryParams,
+	normalizeYouTubePublicSourceInput,
 	normalizeUrlForMatch,
 	normalizeVpzoneChannel
 };`, context);
@@ -94,6 +95,7 @@ const {
 	getWebSocketScriptPathForSource,
 	buildWebSocketLaunchPlan,
 	buildYouTubeWebSocketQueryParams,
+	normalizeYouTubePublicSourceInput,
 	normalizeUrlForMatch,
 	normalizeVpzoneChannel
 } = context.helpers;
@@ -145,6 +147,37 @@ for (const testCase of parseYoutubeUrlCases) {
 	);
 }
 console.log(`parseYoutubeUrl: ${parseYoutubeUrlCases.length} cases passed`);
+
+const normalizedYouTubeInputCases = [
+	{
+		name: "watch URL stays a video URL",
+		input: "https://www.youtube.com/watch?v=abcdefghijk",
+		expected: { value: "https://www.youtube.com/watch?v=abcdefghijk", isChannelName: false }
+	},
+	{
+		name: "short URL stays a video URL",
+		input: "youtu.be/abcdefghijk",
+		expected: { value: "https://youtu.be/abcdefghijk", isChannelName: false }
+	},
+	{
+		name: "channel ID URL becomes a channel ID",
+		input: "https://www.youtube.com/channel/UC1234567890123456789012",
+		expected: { value: "UC1234567890123456789012", isChannelName: true }
+	},
+	{
+		name: "handle URL becomes a handle",
+		input: "https://www.youtube.com/@creator/live",
+		expected: { value: "@creator", isChannelName: false }
+	}
+];
+for (const testCase of normalizedYouTubeInputCases) {
+	assert.deepStrictEqual(
+		JSON.parse(JSON.stringify(normalizeYouTubePublicSourceInput(testCase.input))),
+		testCase.expected,
+		`normalizeYouTubePublicSourceInput: ${testCase.name}`
+	);
+}
+console.log(`normalizeYouTubePublicSourceInput: ${normalizedYouTubeInputCases.length} cases passed`);
 
 const extractYoutubeIDCases = [
 	{
