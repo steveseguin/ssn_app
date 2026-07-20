@@ -1,0 +1,104 @@
+name: Build Signed macOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Optional branch, tag, or SHA to build
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-macos-${{ github.event.inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-macos:
+    runs-on: macos-15
+    env:
+      CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 0
+          submodules: recursive
+          ssh-key: ${{ secrets.SUBMODULE_SSH_KEY }}
+        continue-on-error: true
+
+      - name: Checkout code (fallback without submodules)
+        if: failure()
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Validate Apple signing secrets
+        shell: bash
+        run: |
+          missing=()
+          [ -n "$CSC_LINK" ] || missing+=("MAC_CSC_LINK")
+          [ -n "$CSC_KEY_PASSWORD" ] || missing+=("MAC_CSC_KEY_PASSWORD")
+          [ -n "$APPLE_ID" ] || missing+=("APPLE_ID")
+          [ -n "$APPLE_TEAM_ID" ] || missing+=("APPLE_TEAM_ID")
+          [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ] || missing+=("APPLE_APP_SPECIFIC_PASSWORD")
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::Missing required macOS signing secrets: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Prepare macOS build
+        run: npm run prebuild:darwin
+
+      - name: Build, sign, and notarize Intel macOS package
+        run: npx electron-builder --mac --x64 --publish never --config.mac.forceCodeSigning=true
+
+      - name: Build, sign, and notarize Apple Silicon macOS package
+        run: npx electron-builder --mac --arm64 --publish never --config.mac.forceCodeSigning=true
+
+      - name: Verify signatures and stapled tickets
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apps=(dist/mac/*.app dist/mac-arm64/*.app)
+          if [ ${#apps[@]} -ne 2 ]; then
+            echo "::error::Expected signed Intel and Apple Silicon app bundles; found ${#apps[@]}"
+            exit 1
+          fi
+
+          for app in "${apps[@]}"; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+            signature="$(codesign --display --verbose=4 "$app" 2>&1)"
+            grep -q '^Authority=Developer ID Application:' <<< "$signature"
+            grep -q "^TeamIdentifier=${APPLE_TEAM_ID}$" <<< "$signature"
+            xcrun stapler validate "$app"
+            spctl --assess --type execute --verbose=2 "$app"
+          done
+
+      - name: Upload signed macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-macos-builds
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
