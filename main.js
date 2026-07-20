@@ -38,15 +38,119 @@ const {
     globalShortcut,
     session,
     safeStorage,
-    dialog
+    dialog,
+    clipboard
 } = require('electron')
 const { exec, spawn } = require('child_process');
 const http = require('http');
 const url = require('url');
 const contextMenu = require("electron-context-menu");
 const Yargs = require("yargs");
+const {
+    resolveEarlyDataPaths,
+    prepareEarlyDataPaths,
+    initializePortableProfile,
+    markPortableProfileInitialized
+} = require('./resources/portable-data-paths');
 
+let earlyDataPaths = resolveEarlyDataPaths();
+let portableMigrationPending = null;
+if (earlyDataPaths) {
+    try {
+        prepareEarlyDataPaths(earlyDataPaths);
+        if (earlyDataPaths.mode === 'portable') {
+            const legacyOverride = String(process.env.SSAPP_PORTABLE_LEGACY_USER_DATA_DIR || '').trim();
+            const legacyUserData = legacyOverride
+                ? path.resolve(legacyOverride)
+                : path.join(app.getPath('appData'), app.name);
+            const migration = initializePortableProfile(earlyDataPaths, {
+                legacyUserData,
+                choice: process.env.SSAPP_PORTABLE_MIGRATION_CHOICE
+            });
+            if (migration.action === 'pending') portableMigrationPending = migration;
+            console.log(`[SSAPP] Portable profile initialization: ${migration.action}`);
+        }
+        app.setPath('userData', earlyDataPaths.userData);
+        app.setPath('sessionData', earlyDataPaths.sessionData);
+        app.setPath('crashDumps', earlyDataPaths.crashes);
+        app.setAppLogsPath(earlyDataPaths.logs);
+        console.log(`[SSAPP] Using ${earlyDataPaths.mode} data directory: ${earlyDataPaths.dataRoot}`);
+    } catch (error) {
+        const detail = error && error.message ? error.message : String(error);
+        if (earlyDataPaths.mode === 'portable') {
+            const message = [
+                'Social Stream Ninja cannot write its portable data folder.',
+                '',
+                `Data folder: ${earlyDataPaths.dataRoot}`,
+                `Windows reported: ${detail}`,
+                '',
+                'Move the portable EXE to a writable folder, close other Social Stream Ninja windows, then try again.'
+            ].join('\n');
+            console.error('[SSAPP] Portable data directory is not writable:', detail);
+            electron.dialog.showErrorBox('Portable data folder unavailable', message);
+            process.exit(1);
+        }
+        console.warn('[SSAPP] Failed to apply SSAPP_USER_DATA_DIR override:', detail);
+        earlyDataPaths = null;
+    }
+}
 
+function spawnPortableMigrationRunner(legacyUserData) {
+    const runnerPath = path.join(__dirname, 'resources', 'portable-migration-runner.js');
+    const portableExecutablePath = String(process.env.PORTABLE_EXECUTABLE_FILE || '').trim();
+    if (!portableExecutablePath || !fs.existsSync(portableExecutablePath)) {
+        throw new Error('The original portable executable could not be found for restart.');
+    }
+
+    const child = spawn(process.execPath, [runnerPath], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        stdio: ['pipe', 'ignore', 'ignore'],
+        detached: true
+    });
+    child.stdin.end(JSON.stringify({
+        legacyUserData,
+        dataRoot: earlyDataPaths.dataRoot,
+        userData: earlyDataPaths.userData,
+        parentPid: process.pid,
+        execPath: portableExecutablePath,
+        appArgs: process.argv.slice(1)
+    }));
+    child.unref();
+}
+
+async function handlePendingPortableMigration() {
+    if (!portableMigrationPending || !earlyDataPaths || earlyDataPaths.mode !== 'portable') return false;
+    const legacyUserData = portableMigrationPending.legacyUserData;
+    const result = await dialog.showMessageBox({
+        type: 'question',
+        buttons: ['Copy existing data and restart', 'Start fresh'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'Set up portable data',
+        message: 'Existing Social Stream Ninja data was found in Windows AppData.',
+        detail: [
+            'Copy it into the portable data folder?',
+            '',
+            'This includes settings, browser sessions, sign-ins, and downloaded models. Disposable caches will start fresh.',
+            'The original AppData files will remain unchanged.',
+            'Close any other Social Stream Ninja window before copying.',
+            '',
+            `Existing data: ${legacyUserData}`,
+            `Portable data: ${earlyDataPaths.userData}`
+        ].join('\n')
+    });
+
+    if (result.response !== 0) {
+        markPortableProfileInitialized(earlyDataPaths, 'fresh');
+        portableMigrationPending = null;
+        return false;
+    }
+
+    spawnPortableMigrationRunner(legacyUserData);
+    markStabilitySessionGraceful('portable-profile-migration');
+    app.quit();
+    return true;
+}
 
 const fetch = require("electron-fetch").default;
 const TikTokAuthModule = require('./tiktok-auth');
@@ -65,17 +169,19 @@ try {
     console.warn('[TikTok] Signing helper unavailable:', error && error.message ? error.message : error);
 }
 const { setupWebSocketMonitor } = require('./websocket-monitor');
-const youTubeGrpcStreamManager = require('./youtube-grpc-client');
 const {
     setupSpotifyOAuthWithLocalServer,
     setupSpotifyOAuthWithIntercept
 } = require('./resources/electron-spotify-handler');
-const { setupYouTubeOAuthHandler } = require('./resources/electron-youtube-handler');
+const { setupYouTubeOAuthHandler, clearYouTubeOwnerAuthStore } = require('./resources/electron-youtube-handler');
 const { setupTwitchOAuthHandler } = require('./resources/electron-twitch-handler');
 const { setupFacebookOAuthHandler } = require('./resources/electron-facebook-handler');
 const { setupVeloraOAuthHandler } = require('./resources/electron-velora-handler');
 const { setupKickOAuthHandler } = require('./resources/electron-kick-handler');
 const { setupVpzoneOAuthHandler } = require('./resources/electron-vpzone-handler');
+const { setupMediaUploadHandler } = require('./resources/electron-media-upload-handler');
+const { setupElectronLocalMedia } = require('./resources/electron-local-media-server');
+const { createControlApiRouter } = require('./resources/electron-control-api');
 const { KickWsClient } = require('./resources/kick-ws-client');
 
 const SOCIAL_STREAM_REMOTE_HOSTS = new Set([
@@ -114,14 +220,12 @@ const {
 } = require('undici');
 const isMac = process.platform === "darwin";
 const WebSocket = require('ws');
-const {
-    Worker,
-    workerData
-} = require('worker_threads');
+const { Worker } = require('worker_threads');
 
 
 const Store = require("electron-store");
 const store = new Store();
+let localMediaService = null;
 const reporter = require('./error-reporter');
 reporter.init(store);
 const POPUP_UNCLICKABLE_ALL_KEY = 'popupUnclickableAll';
@@ -182,6 +286,16 @@ const WINDOW_STATE_DIAGNOSTICS_REPORT_PATH = (() => {
     if (!arg) return null;
     return arg.slice('--window-state-report='.length);
 })();
+const TTS_DIAGNOSTICS_ENABLED = process.argv.includes('--tts-diagnostics');
+const TTS_DIAGNOSTICS_REPORT_PATH = (() => {
+    const arg = process.argv.find((value) => typeof value === 'string' && value.startsWith('--tts-report='));
+    if (!arg) return null;
+    return arg.slice('--tts-report='.length);
+})();
+const DIAGNOSTICS_SAFE_GPU =
+    TTS_DIAGNOSTICS_ENABLED ||
+    parseBooleanLikeFlag(process.env.SSAPP_TTS_DIAGNOSTICS_SAFE_GPU) === true ||
+    parseBooleanLikeFlag(process.env.SSAPP_DIAGNOSTICS_SAFE_GPU) === true;
 
 const win10TransparencyCompatRequested = (() => {
     const envFlag = parseBooleanLikeFlag(process.env.SSAPP_WIN10_TRANSPARENCY_COMPAT);
@@ -216,12 +330,15 @@ if (process.platform === 'win32' && WINDOWS_BUILD_NUMBER) {
 const STABILITY_RUNTIME_STORE_KEY = 'stabilityRuntime';
 const STABILITY_CRASH_WINDOW_MS = 15 * 60 * 1000;
 const STABILITY_REVERT_UPTIME_MS = 45 * 60 * 1000;
-const STABILITY_MAX_GPU_FALLBACK_LEVEL = 3;
+const STABILITY_GPU_RASTERIZATION_FALLBACK_LEVEL = 3;
+const STABILITY_GPU_SANDBOX_FALLBACK_LEVEL = 4;
+const STABILITY_MAX_GPU_FALLBACK_LEVEL = STABILITY_GPU_SANDBOX_FALLBACK_LEVEL;
 const STABILITY_GPU_PROFILE_LABELS = {
     0: 'Default GPU profile',
     1: 'Stability profile L1 (WebGPU disabled)',
     2: 'Stability profile L2 (blocklist respected)',
-    3: 'Stability profile L3 (rasterization relaxed)'
+    3: 'Stability profile L3 (rasterization relaxed)',
+    4: 'Stability profile L4 (GPU sandbox relaxed)'
 };
 const STABILITY_CRASH_REASONS = new Set(['abnormal-exit', 'crashed', 'oom', 'launch-failed', 'integrity-failure']);
 
@@ -299,6 +416,10 @@ function isStabilityCrashReason(reason) {
     return STABILITY_CRASH_REASONS.has(normalized);
 }
 
+function isGpuChildProcessCrashReason(reason) {
+    return String(reason || '').trim().toLowerCase() === 'child-process-gone:gpu:crashed';
+}
+
 function isStabilityGracefulExitReason(reason) {
     const normalized = String(reason || '').trim().toLowerCase();
     if (!normalized || normalized === 'unknown') return false;
@@ -312,7 +433,8 @@ function buildGpuProfileFromFallbackLevel(level) {
         level: normalizedLevel,
         disableUnsafeWebGpu: process.platform === 'win32' && normalizedLevel >= 1,
         disableIgnoreGpuBlocklist: process.platform === 'win32' && normalizedLevel >= 2,
-        disableGpuRasterization: process.platform === 'win32' && normalizedLevel >= 3
+        disableGpuRasterization: process.platform === 'win32' && normalizedLevel >= STABILITY_GPU_RASTERIZATION_FALLBACK_LEVEL,
+        disableGpuSandbox: process.platform === 'win32' && normalizedLevel >= STABILITY_GPU_SANDBOX_FALLBACK_LEVEL
     };
 }
 
@@ -329,7 +451,14 @@ function initializeStabilityRuntimeForStartup() {
 
     let crashEvents = pruneCrashEvents(state.crashEvents, now);
     let level = clampGpuFallbackLevel(state.gpuFallbackLevel);
+    let latestCrashReason = null;
     const notices = [];
+
+    if (DIAGNOSTICS_SAFE_GPU && level < STABILITY_GPU_SANDBOX_FALLBACK_LEVEL) {
+        level = STABILITY_GPU_SANDBOX_FALLBACK_LEVEL;
+        state.lastFallbackChangeAt = now;
+        notices.push('[Stability] Diagnostics forcing stability GPU profile L4.');
+    }
 
     if (previousSessionActive) {
         const inferredCrashAt = Number(state.lastCrashSignalAt) > 0
@@ -337,6 +466,7 @@ function initializeStabilityRuntimeForStartup() {
             : (previousSessionStartAt || now);
         crashEvents.push(inferredCrashAt);
         const crashReason = state.lastCrashReason || 'unclean-exit';
+        latestCrashReason = crashReason;
         state.lastExitReason = crashReason;
         state.lastExitAt = inferredCrashAt;
         notices.push(`[Stability] Unclean exit detected (${crashReason}).`);
@@ -352,7 +482,9 @@ function initializeStabilityRuntimeForStartup() {
     }
 
     crashEvents = pruneCrashEvents(crashEvents, now);
-    if (crashEvents.length >= 2 && level < STABILITY_MAX_GPU_FALLBACK_LEVEL) {
+    const canEscalateStandardGpuFallback = level < STABILITY_GPU_RASTERIZATION_FALLBACK_LEVEL;
+    const canEscalateGpuSandboxFallback = level === STABILITY_GPU_RASTERIZATION_FALLBACK_LEVEL && isGpuChildProcessCrashReason(latestCrashReason);
+    if (crashEvents.length >= 2 && (canEscalateStandardGpuFallback || canEscalateGpuSandboxFallback)) {
         level += 1;
         state.lastFallbackChangeAt = now;
         state.pendingNotice = {
@@ -449,6 +581,70 @@ function queueStabilityStartupNotice() {
 
 function shouldUseWin10TransparencyCompat(frame, transparent) {
     return WIN10_TRANSPARENCY_COMPAT_ENABLED && frame === false && transparent === true;
+}
+
+function getUrlSearchParams(url) {
+    if (!url || typeof url !== "string") return null;
+    try {
+        return new URL(url).searchParams;
+    } catch (_) {
+        try {
+            return new URL(url, "https://socialstream.local/").searchParams;
+        } catch (_) {
+            return null;
+        }
+    }
+}
+
+function hasUrlSearchParam(url, key) {
+    const params = getUrlSearchParams(url);
+    if (params) return params.has(key);
+    return url.includes(`?${key}`) || url.includes(`&${key}`);
+}
+
+function getUrlSearchParamValue(url, key) {
+    const params = getUrlSearchParams(url);
+    if (params) return params.get(key);
+
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = String(url || "").match(new RegExp(`[?&]${escapedKey}=([^&#]*)`));
+    if (!match) return null;
+
+    try {
+        return decodeURIComponent(match[1].replace(/\+/g, " "));
+    } catch (_) {
+        return match[1];
+    }
+}
+
+function isTranslucentChromaValue(value) {
+    if (value === null || value === undefined) return false;
+    const normalized = String(value).trim().replace(/^#/, "");
+
+    if (/^0{3}[0-9a-f]$/i.test(normalized)) {
+        return parseInt(normalized.slice(-1), 16) < 15;
+    }
+    if (/^0{6}[0-9a-f]{2}$/i.test(normalized)) {
+        return parseInt(normalized.slice(-2), 16) < 255;
+    }
+
+    return false;
+}
+
+function shouldUseFramelessForUrl(url) {
+    return (
+        hasUrlSearchParam(url, "transparent") ||
+        hasUrlSearchParam(url, "transparency") ||
+        hasUrlSearchParam(url, "chroma")
+    );
+}
+
+function shouldUseTransparentWindowForUrl(url) {
+    return (
+        hasUrlSearchParam(url, "transparent") ||
+        hasUrlSearchParam(url, "transparency") ||
+        isTranslucentChromaValue(getUrlSearchParamValue(url, "chroma"))
+    );
 }
 
 function applyPlatformWindowCompatibility(config) {
@@ -1617,6 +1813,7 @@ setupFacebookOAuthHandler();
 setupVeloraOAuthHandler();
 setupKickOAuthHandler();
 setupVpzoneOAuthHandler();
+setupMediaUploadHandler();
 
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
 
@@ -1675,21 +1872,86 @@ function attachSourceAccountMetaToPayload(payload, tabID) {
     return payload;
 }
 
-const remoteControlEnabled = (
+const legacyRemoteControlEnabled = (
     process.argv.includes('--remote-control') ||
     (process.env.SSAPP_REMOTE_CONTROL || '').trim() === '1'
 );
+const headlessControlEnabled = process.argv.includes('--ssapp-headless-control')
+    || (process.env.SSAPP_HEADLESS_CONTROL || '').trim() === '1';
+const controlApiEnabled = legacyRemoteControlEnabled
+    || headlessControlEnabled
+    || process.argv.includes('--ssapp-control-api')
+    || (process.env.SSAPP_CONTROL_API || '').trim() === '1'
+    || store.get('controlApi.enabled', false) === true;
+const remoteControlEnabled = controlApiEnabled;
 const remoteControlPort = (() => {
-    const raw = (process.env.SSAPP_REMOTE_CONTROL_PORT || '').trim();
+    const inline = process.argv.find(value => typeof value === 'string' && value.startsWith('--ssapp-control-port='));
+    const index = process.argv.indexOf('--ssapp-control-port');
+    const raw = (inline ? inline.slice('--ssapp-control-port='.length) : (index >= 0 ? process.argv[index + 1] : ''))
+        || (process.env.SSAPP_CONTROL_PORT || '').trim()
+        || (process.env.SSAPP_REMOTE_CONTROL_PORT || '').trim();
     const parsed = parseInt(raw, 10);
-    return Number.isFinite(parsed) ? parsed : 17777;
+    return Number.isInteger(parsed) && parsed >= 1024 && parsed <= 65535 ? parsed : 17777;
 })();
 const remoteControlToken = (() => {
-    const env = (process.env.SSAPP_REMOTE_CONTROL_TOKEN || '').trim();
+    const inline = process.argv.find(value => typeof value === 'string' && value.startsWith('--ssapp-control-token='));
+    const index = process.argv.indexOf('--ssapp-control-token');
+    const tokenFileInline = process.argv.find(value => typeof value === 'string' && value.startsWith('--ssapp-control-token-file='));
+    const tokenFileIndex = process.argv.indexOf('--ssapp-control-token-file');
+    const tokenFile = (tokenFileInline ? tokenFileInline.slice('--ssapp-control-token-file='.length) : (tokenFileIndex >= 0 ? process.argv[tokenFileIndex + 1] : ''))
+        || (process.env.SSAPP_CONTROL_TOKEN_FILE || '').trim();
+    let fileToken = '';
+    if (tokenFile) {
+        try {
+            fileToken = fs.readFileSync(path.resolve(tokenFile), 'utf8').trim();
+        } catch (error) {
+            console.warn('[Control API] Unable to read token file:', error && error.message ? error.message : error);
+        }
+    }
+    const env = fileToken
+        || (process.env.SSAPP_CONTROL_TOKEN || '').trim()
+        || (inline ? inline.slice('--ssapp-control-token='.length) : (index >= 0 ? process.argv[index + 1] : ''))
+        || (process.env.SSAPP_REMOTE_CONTROL_TOKEN || '').trim();
     if (env) return env;
-    // Generate a random token when none is configured so endpoints are never open by default
-    return crypto.randomBytes(24).toString('hex');
+    const stored = String(store.get('controlApi.token', '') || '').trim();
+    if (stored.length >= 32) return stored;
+    const generated = crypto.randomBytes(32).toString('hex');
+    store.set('controlApi.token', generated);
+    return generated;
 })();
+const remoteControlFileSelections = [];
+let llmControlCommandHandler = null;
+let controlApiRouter = null;
+
+function matchesRemoteControlToken(value) {
+    const supplied = Buffer.from(String(value || ''), 'utf8');
+    const expected = Buffer.from(remoteControlToken, 'utf8');
+    return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+}
+
+if (headlessControlEnabled) {
+    app.on('browser-window-created', (_event, window) => {
+        const keepHidden = () => {
+            try {
+                if (!window || window.isDestroyed()) return;
+                window.setSkipTaskbar(true);
+                window.hide();
+            } catch (_) { }
+        };
+        keepHidden();
+        window.on('show', keepHidden);
+        window.on('ready-to-show', keepHidden);
+    });
+}
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+    try {
+        process.once(signal, () => {
+            markStabilitySessionGraceful(`control-api-${signal.toLowerCase()}`);
+            app.quit();
+        });
+    } catch (_) { }
+}
 
 
 function normalizeKickSlug(value) {
@@ -1772,7 +2034,7 @@ function stopKickWsEntry(entry, reason) {
 function findYouTubeOAuthView() {
     try {
         for (const view of Object.values(browserViews)) {
-            if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
+            if (isBrowserViewDestroyed(view)) {
                 continue;
             }
             const wc = view.webContents;
@@ -1813,7 +2075,7 @@ async function triggerYouTubeExternalAuth() {
 function findTwitchOAuthView() {
     try {
         for (const view of Object.values(browserViews)) {
-            if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
+            if (isBrowserViewDestroyed(view)) {
                 continue;
             }
             const wc = view.webContents;
@@ -1854,7 +2116,7 @@ async function triggerTwitchExternalAuth() {
 function findKickOAuthView() {
     try {
         for (const view of Object.values(browserViews)) {
-            if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
+            if (isBrowserViewDestroyed(view)) {
                 continue;
             }
             const wc = view.webContents;
@@ -1915,15 +2177,67 @@ function setupRemoteControlServer() {
         return;
     }
 
+    const executeControlCommand = async (command) => {
+        if (!llmControlCommandHandler) {
+            return { ok: false, error: { code: 'SSAPP_UNAVAILABLE', message: 'SSApp controller is not ready.' } };
+        }
+        return llmControlCommandHandler(command);
+    };
+    controlApiRouter = createControlApiRouter({
+        getSsappVersion: () => app.getVersion(),
+        executeCommand: executeControlCommand,
+        getStatus: async () => {
+            const sources = await executeControlCommand({ action: 'getSources' });
+            return {
+                ok: !!(sources && sources.ok),
+                app: {
+                    version: app.getVersion(),
+                    session: currentSessionName,
+                    headless: headlessControlEnabled,
+                    mainWindowReady: !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents),
+                    mainWindowVisible: !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+                    localMedia: localMediaService ? localMediaService.getStatus() : null
+                },
+                sources: sources && sources.ok ? sources.payload.sources : [],
+                error: sources && !sources.ok ? sources.error : undefined
+            };
+        },
+        reloadApp: () => {
+            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
+        },
+        shutdownApp: () => {
+            markStabilitySessionGraceful('control-api-shutdown');
+            app.quit();
+        }
+    });
+
     const server = http.createServer(async (req, res) => {
         const parsed = url.parse(req.url, true);
         const token = (parsed.query && parsed.query.token) || req.headers['x-ssapp-token'];
         // Always enforce token auth — token is auto-generated if not configured
-        if (token !== remoteControlToken) {
+        if (!matchesRemoteControlToken(token)) {
             res.writeHead(403, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
             return;
         }
+
+        try {
+            if (await controlApiRouter.handle(req, res, parsed)) return;
+        } catch (error) {
+            console.error('[Control API] Request failed:', error && error.stack ? error.stack : error);
+            if (!res.headersSent) {
+                res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+                res.end(JSON.stringify({ ok: false, error: 'internal_error' }));
+            } else {
+                res.destroy();
+            }
+            return;
+        }
+
+        const sendJson = (statusCode, payload) => {
+            res.writeHead(statusCode, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify(payload));
+        };
 
         if (parsed.pathname === '/ping') {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1932,6 +2246,27 @@ function setupRemoteControlServer() {
                 version: app.getVersion(),
                 windows: BrowserWindow.getAllWindows().length
             }));
+            return;
+        }
+
+        if (!legacyRemoteControlEnabled) {
+            sendJson(404, { ok: false, error: 'not_found' });
+            return;
+        }
+
+        if (parsed.pathname === '/queue-file-selection' && req.method === 'POST') {
+            try {
+                const body = JSON.parse(await readBodyLimited(req));
+                const filePath = path.resolve(String(body.filePath || ''));
+                const stat = await fsp.stat(filePath);
+                if (!stat.isFile()) throw new Error('filePath must identify an existing file');
+                remoteControlFileSelections.push(filePath);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true, queued: remoteControlFileSelections.length }));
+            } catch (error) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: error && error.message ? error.message : String(error) }));
+            }
             return;
         }
 
@@ -2127,13 +2462,48 @@ function setupRemoteControlServer() {
         if (parsed.pathname === '/views') {
             const views = [];
             for (const [key, view] of Object.entries(browserViews)) {
-                if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) continue;
+                if (isBrowserViewDestroyed(view)) continue;
                 const wc = view.webContents;
                 if (!wc || (typeof wc.isDestroyed === 'function' && wc.isDestroyed())) continue;
                 views.push({ key, url: wc.getURL ? wc.getURL() : 'unknown' });
             }
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: true, views }));
+            return;
+        }
+
+        if (parsed.pathname === '/view-exec' && req.method === 'POST') {
+            readBodyLimited(req).then(async (body) => {
+                try {
+                    const { key, code } = JSON.parse(body);
+                    if (!key || !code || typeof code !== 'string') {
+                        res.writeHead(400, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ ok: false, error: 'key and code are required' }));
+                        return;
+                    }
+                    const view = browserViews[key];
+                    if (isBrowserViewDestroyed(view)) {
+                        res.writeHead(404, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ ok: false, error: 'view_not_found' }));
+                        return;
+                    }
+                    const wc = view.webContents;
+                    if (!wc || (typeof wc.isDestroyed === 'function' && wc.isDestroyed())) {
+                        res.writeHead(404, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ ok: false, error: 'webcontents_not_found' }));
+                        return;
+                    }
+                    const result = await wc.executeJavaScript(code, true);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: true, result }));
+                } catch (err) {
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ ok: false, error: err.message }));
+                }
+            }).catch(err => {
+                res.writeHead(413, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: err.message }));
+            });
             return;
         }
 
@@ -2183,9 +2553,6 @@ function setupRemoteControlServer() {
 
     server.listen(remoteControlPort, '127.0.0.1', () => {
         console.log(`[Remote Control] Listening on http://127.0.0.1:${remoteControlPort}`);
-        if (!process.env.SSAPP_REMOTE_CONTROL_TOKEN) {
-            console.log(`[Remote Control] Auto-generated token: ${remoteControlToken}`);
-        }
     });
 }
 
@@ -2222,6 +2589,7 @@ let TikTokPollingFallbackClass = null;
 let usingLegacyTikTokConnector = false;
 let ConnectionManager = null;
 let cleanupConnection = () => { };
+let registerActiveTikTokSourceConnection = () => [];
 let sendToBackground = () => { };
 let sendBatchToBackground = () => { };
 let logTikTokForwardedMessage = () => { };
@@ -2309,9 +2677,7 @@ try {
                             enriched.tt_target_idc = ttCookie.value;
                         }
                     }
-                    if (!enriched.allCookies) {
-                        enriched.allCookies = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-                    }
+                    enriched.allCookies = cookies.map(c => `${c.name}=${c.value}`).join('; ');
                 }
             } catch (cookieError) {
                 console.warn('[TikTok] Failed to collect cookies for local signer payload:', cookieError);
@@ -2343,6 +2709,7 @@ try {
 
     ConnectionManager = tikTokEnv.ConnectionManager;
     cleanupConnection = tikTokEnv.cleanupConnection;
+    registerActiveTikTokSourceConnection = tikTokEnv.registerActiveTikTokSourceConnection;
     sendToBackground = tikTokEnv.sendToBackground;
     sendBatchToBackground = tikTokEnv.sendBatchToBackground;
     logTikTokForwardedMessage = tikTokEnv.logTikTokForwardedMessage;
@@ -2359,6 +2726,7 @@ try {
     console.warn('[TikTok] tiktok-live-connector not available:', e && e.message ? e.message : e);
     TikTokLiveConnectionClass = null; // Allow app to boot; TikTok features disabled until module present
     ConnectionManager = null;
+    registerActiveTikTokSourceConnection = () => [];
 }
 
 // --- AUTOMATED TEST HARNESS ---
@@ -2658,6 +3026,10 @@ if (!IS_MAC_BALANCED_MODE) {
     } else {
         console.warn('[Stability] Respecting GPU blocklist due to fallback level', stabilityGpuProfile.level);
     }
+    if (stabilityGpuProfile.disableGpuSandbox) {
+        app.commandLine.appendSwitch('disable-gpu-sandbox');
+        console.warn('[Stability] Disabled GPU sandbox due to repeated GPU child process crashes.');
+    }
 }
 
 // User data directory for persistent profile
@@ -2778,7 +3150,8 @@ app.on('child-process-gone', (_event, details) => {
         reason,
         type: details && details.type ? details.type : null,
         serviceName: details && details.serviceName ? details.serviceName : null,
-        name: details && details.name ? details.name : null
+        name: details && details.name ? details.name : null,
+        exitCode: details && Number.isFinite(details.exitCode) ? details.exitCode : null
     });
 });
 
@@ -2976,10 +3349,16 @@ function normalizeForLogging(value, seen = new WeakMap()) {
 const SOCIAL_STREAM_CACHE_DIR = 'social_stream_cache';
 const SOCIAL_STREAM_FALLBACK_DIR = 'social_stream_fallback';
 const SOCIAL_STREAM_REMOTE_TIMEOUT_MS = 5000;
+const SOCIAL_STREAM_ALLOWED_BRANCHES = new Set(['main', 'beta']);
 const socialStreamLoadPromises = new Map();
 const pendingInjectorToasts = [];
 const seenInjectorToastKeys = new Set();
 let mainWindowReadyForInjectorToasts = false;
+
+function normalizeSocialStreamBranch(input) {
+    const normalized = typeof input === 'string' ? input.trim().toLowerCase() : '';
+    return SOCIAL_STREAM_ALLOWED_BRANCHES.has(normalized) ? normalized : 'main';
+}
 
 function normalizeSocialStreamRelativePath(input) {
     if (!input || typeof input !== 'string') return null;
@@ -2995,6 +3374,21 @@ function normalizeSocialStreamRelativePath(input) {
     }
     if (!normalized.length) return null;
     return normalized.join(path.sep);
+}
+
+function extractSocialStreamRelativePath(input) {
+    if (!input || typeof input !== 'string') return null;
+    let rawPath = input;
+    try {
+        rawPath = new URL(input).pathname || '';
+    } catch (_) { }
+    rawPath = rawPath.replace(/\\/g, '/').replace(/^\/+/, '');
+    const marker = 'sources/';
+    const markerIndex = rawPath.indexOf(marker);
+    if (markerIndex !== -1) {
+        rawPath = rawPath.slice(markerIndex);
+    }
+    return normalizeSocialStreamRelativePath(rawPath);
 }
 
 async function ensureDirectoryFor(filePath) {
@@ -3019,21 +3413,49 @@ async function readTextIfExists(filePath) {
     }
 }
 
+function isPathInsideDirectory(rootDir, targetPath) {
+    const root = path.resolve(rootDir);
+    const target = path.resolve(targetPath);
+    const relative = path.relative(root, target);
+    return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolvePathInsideRoot(rootDir, relativePath) {
+    const normalizedPath = normalizeSocialStreamRelativePath(relativePath);
+    if (!normalizedPath) return null;
+
+    const targetPath = path.resolve(rootDir, normalizedPath);
+    if (!isPathInsideDirectory(rootDir, targetPath)) {
+        return null;
+    }
+    return targetPath;
+}
+
 function getSocialStreamCachePath(branch, relativePath) {
-    const sanitizedBranch = branch && typeof branch === 'string' ? branch : 'main';
+    const sanitizedBranch = normalizeSocialStreamBranch(branch);
     const userDataPath = app.getPath('userData');
-    return path.join(userDataPath, SOCIAL_STREAM_CACHE_DIR, sanitizedBranch, relativePath);
+    const cacheRoot = path.join(userDataPath, SOCIAL_STREAM_CACHE_DIR, sanitizedBranch);
+    return resolvePathInsideRoot(cacheRoot, relativePath);
 }
 
 function getCandidateBundledPaths(branch, relativePath) {
+    const sanitizedBranch = normalizeSocialStreamBranch(branch);
     const candidates = [];
+    const roots = [];
     if (process.resourcesPath) {
-        candidates.push(path.join(process.resourcesPath, SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
-        candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
-        candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'resources', SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
+        roots.push(path.join(process.resourcesPath, SOCIAL_STREAM_FALLBACK_DIR, sanitizedBranch));
+        roots.push(path.join(process.resourcesPath, 'app.asar.unpacked', SOCIAL_STREAM_FALLBACK_DIR, sanitizedBranch));
+        roots.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'resources', SOCIAL_STREAM_FALLBACK_DIR, sanitizedBranch));
     }
-    candidates.push(path.join(__dirname, 'resources', SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
-    candidates.push(path.join(__dirname, SOCIAL_STREAM_FALLBACK_DIR, branch, relativePath));
+    roots.push(path.join(__dirname, 'resources', SOCIAL_STREAM_FALLBACK_DIR, sanitizedBranch));
+    roots.push(path.join(__dirname, SOCIAL_STREAM_FALLBACK_DIR, sanitizedBranch));
+
+    for (const root of roots) {
+        const candidate = resolvePathInsideRoot(root, relativePath);
+        if (candidate) {
+            candidates.push(candidate);
+        }
+    }
     return candidates;
 }
 
@@ -3095,7 +3517,7 @@ function validateSocialStreamSourceText(text, relativePath = '', remoteUrl = '')
 }
 
 async function loadSocialStreamSource(remoteUrl, options = {}) {
-    const branch = options.branch || 'main';
+    const branch = normalizeSocialStreamBranch(options.branch || 'main');
     const relativePath = normalizeSocialStreamRelativePath(options.relativePath || '');
     const cacheKey = `${branch}::${remoteUrl || 'none'}::${relativePath || 'inline'}`;
 
@@ -3114,8 +3536,10 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
                 if (relativePath) {
                     try {
                         cachePath = getSocialStreamCachePath(branch, relativePath);
-                        await ensureDirectoryFor(cachePath);
-                        await fsp.writeFile(cachePath, text, 'utf8');
+                        if (cachePath) {
+                            await ensureDirectoryFor(cachePath);
+                            await fsp.writeFile(cachePath, text, 'utf8');
+                        }
                     } catch (cacheWriteError) {
                         console.warn('Failed to update Social Stream cache:', cacheWriteError);
                     }
@@ -3134,16 +3558,18 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
         if (relativePath) {
             try {
                 cachePath = cachePath || getSocialStreamCachePath(branch, relativePath);
-                const cachedText = await readTextIfExists(cachePath);
-                if (typeof cachedText === 'string') {
-                    return {
-                        text: cachedText,
-                        origin: 'cache',
-                        meta: {
-                            path: cachePath,
-                            reason: remoteError ? remoteError.message : 'remote unavailable'
-                        }
-                    };
+                if (cachePath) {
+                    const cachedText = await readTextIfExists(cachePath);
+                    if (typeof cachedText === 'string') {
+                        return {
+                            text: cachedText,
+                            origin: 'cache',
+                            meta: {
+                                path: cachePath,
+                                reason: remoteError ? remoteError.message : 'remote unavailable'
+                            }
+                        };
+                    }
                 }
             } catch (cacheReadError) {
                 console.warn('Failed to read Social Stream cache:', cacheReadError);
@@ -3231,7 +3657,7 @@ function notifySocialStreamFallback(relativePath, fromBranch, toBranch) {
 }
 
 async function locateBundledSocialStreamFile(branch, relativePath, options = {}) {
-    const sanitizedBranch = (branch && typeof branch === 'string' && branch.trim()) ? branch.trim() : 'main';
+    const sanitizedBranch = normalizeSocialStreamBranch(branch);
     const normalizedPath = normalizeSocialStreamRelativePath(relativePath);
     if (!normalizedPath) {
         return null;
@@ -3331,8 +3757,11 @@ ipcMain.handle('socialstream:resolve-cache-url', async (_event, relativePath, op
         if (!normalized) {
             return { success: false, error: 'INVALID_PATH' };
         }
-        const branch = options.branch || 'main';
+        const branch = normalizeSocialStreamBranch(options.branch || 'main');
         const cachePath = getSocialStreamCachePath(branch, normalized);
+        if (!cachePath) {
+            return { success: false, error: 'INVALID_PATH' };
+        }
         try {
             await fsp.access(cachePath, fs.constants.R_OK);
             return {
@@ -3369,33 +3798,61 @@ ipcMain.handle('ssapp:get-environment', async () => {
     };
 });
 
-ipcMain.handle('youtube-livechat-grpc:start', async (event, options = {}) => {
-    try {
-        const sourceWindow = BrowserWindow.fromWebContents(event.sender);
-        const sourceArgs = sourceWindow && sourceWindow.args ? sourceWindow.args : {};
-        const result = youTubeGrpcStreamManager.startStream({
-            ...options,
-            socialStreamRoot: options.socialStreamRoot || sourceArgs.filesource || Argv.filesource || ''
-        }, event.sender);
-        return { success: true, streamId: result.streamId };
-    } catch (error) {
-        console.warn('[YouTube][gRPC] Failed to start live chat stream:', error && error.message ? error.message : error);
-        return {
-            success: false,
-            error: {
-                message: error && error.message ? error.message : 'Failed to start YouTube live chat gRPC stream.',
-                code: typeof error?.code === 'number' ? error.code : null
-            }
-        };
+function normalizeUiLanguagePreference(lang) {
+    if (!lang || typeof lang !== 'string') return '';
+    const trimmed = lang.trim();
+    if (!trimmed) return '';
+    const lower = trimmed.toLowerCase();
+    if (lower === 'test') return 'test';
+    if (lower === 'zh' || lower === 'zh-cn' || lower === 'zh-hans') return 'zh-CN';
+    if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-hant') return 'zh-TW';
+    if (lower === 'en-gb' || lower === 'en-uk') return 'en-uk';
+    if (lower === 'en' || lower.startsWith('en-')) return 'en-us';
+    if (lower === 'pt-br' || lower.startsWith('pt')) return 'pt-br';
+    if (lower.startsWith('ar')) return 'ar';
+    if (lower.startsWith('es')) return 'es';
+    if (lower.startsWith('de')) return 'de';
+    if (lower.startsWith('cs')) return 'cs';
+    if (lower.startsWith('th')) return 'th';
+    if (lower.startsWith('tr')) return 'tr';
+    if (lower.startsWith('uk')) return 'uk';
+    return 'en-us';
+}
+
+ipcMain.handle('ssapp:set-language', async (_event, payload) => {
+    const language = payload && typeof payload === 'object' ? payload.language : payload;
+    const source = payload && typeof payload === 'object' && typeof payload.source === 'string' ? payload.source : 'user';
+    const normalized = normalizeUiLanguagePreference(language) || 'en-us';
+    if (source === 'startup') {
+        const currentRaw = store.get('language');
+        const currentNormalized = normalizeUiLanguagePreference(currentRaw);
+        if (currentRaw && currentNormalized && currentNormalized !== normalized) {
+            store.set('language', currentNormalized);
+            return { ok: true, language: currentNormalized, preserved: true };
+        }
     }
+    store.set('language', normalized);
+    return { ok: true, language: normalized };
 });
 
-ipcMain.handle('youtube-livechat-grpc:stop', async (_event, streamId) => {
-    if (typeof streamId !== 'string' || !streamId) {
-        return { success: false, error: { message: 'streamId is required.' } };
+ipcMain.handle('ssapp:get-source-window-config', async (event) => {
+    try {
+        const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+        const args = sourceWindow && sourceWindow.args ? sourceWindow.args : {};
+        return {
+            ok: true,
+            platform: typeof args.domain === 'string' ? args.domain : '',
+            config: args.config && typeof args.config === 'object' ? args.config : {},
+            rumbleApiTracker: !!args.rumbleApiTracker,
+            rumbleApiUrl: typeof args.rumbleApiUrl === 'string' ? args.rumbleApiUrl : '',
+            rumbleFollowerCountMode: typeof args.rumbleFollowerCountMode === 'string' ? args.rumbleFollowerCountMode : ''
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            error: error?.message || 'Unable to read source window config.'
+        };
     }
-    const stopped = youTubeGrpcStreamManager.stopStream(streamId);
-    return { success: stopped };
 });
 
 function queueInjectorToast(level, title, message) {
@@ -4069,6 +4526,163 @@ async function runWindowStateDiagnostics() {
     return report;
 }
 
+function getTtsDiagnosticBuffer(value) {
+    if (!value) return null;
+    if (Buffer.isBuffer(value)) return value;
+    if (value instanceof Uint8Array) {
+        return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+    }
+    if (value instanceof ArrayBuffer) {
+        return Buffer.from(value);
+    }
+    if (Array.isArray(value)) {
+        return Buffer.from(value);
+    }
+    if (value.type === 'Buffer' && Array.isArray(value.data)) {
+        return Buffer.from(value.data);
+    }
+    if (value.buffer instanceof ArrayBuffer) {
+        return Buffer.from(value.buffer, value.byteOffset || 0, value.byteLength || value.length || 0);
+    }
+    return null;
+}
+
+function validateTtsDiagnosticResponse(response) {
+    const errors = [];
+    if (!response || typeof response !== 'object') {
+        errors.push('No response object returned.');
+    } else {
+        if (!Number.isFinite(response.byteLength) || response.byteLength <= 44) {
+            errors.push(`WAV response is too small: ${response.byteLength}`);
+        }
+        if (response.riffSignature !== 'RIFF') {
+            errors.push(`Missing RIFF signature: ${response.riffSignature}`);
+        }
+        if (response.waveSignature !== 'WAVE') {
+            errors.push(`Missing WAVE signature: ${response.waveSignature}`);
+        }
+    }
+    return errors;
+}
+
+async function runTtsDiagnosticRequest(text, settings) {
+    const startedAt = Date.now();
+    const wavBuffer = await enqueueTtsRequest({ text, settings });
+    const bytes = getTtsDiagnosticBuffer(wavBuffer);
+    const response = bytes
+        ? {
+            byteLength: bytes.byteLength,
+            riffSignature: bytes.toString('ascii', 0, 4),
+            waveSignature: bytes.toString('ascii', 8, 12),
+            elapsedMs: Date.now() - startedAt
+        }
+        : {
+            byteLength: 0,
+            riffSignature: '',
+            waveSignature: '',
+            elapsedMs: Date.now() - startedAt
+        };
+    const errors = validateTtsDiagnosticResponse(response);
+    return {
+        text,
+        settings,
+        ...response,
+        passed: errors.length === 0,
+        errors
+    };
+}
+
+async function runTtsDiagnostics() {
+    const report = {
+        startedAt: new Date().toISOString(),
+        platform: process.platform,
+        requests: [],
+        snapshots: {},
+        summary: {
+            passed: 0,
+            failed: 0,
+            workerCreateDelta: 0,
+            completedRequestDelta: 0,
+            workerModelLoadCount: 0
+        }
+    };
+
+    report.snapshots.before = getTtsDiagnosticsSnapshot();
+
+    const cases = [
+        {
+            text: 'Social Stream local TTS diagnostic one.',
+            settings: { voice: 'af_aoede', speed: 1 }
+        },
+        {
+            text: 'Social Stream local TTS diagnostic two.',
+            settings: { voice: 'af_aoede', speed: 1 }
+        }
+    ];
+
+    for (const testCase of cases) {
+        let result;
+        try {
+            result = await runTtsDiagnosticRequest(testCase.text, testCase.settings);
+        } catch (error) {
+            result = {
+                text: testCase.text,
+                settings: testCase.settings,
+                byteLength: 0,
+                riffSignature: '',
+                waveSignature: '',
+                elapsedMs: 0,
+                passed: false,
+                errors: [error && error.message ? error.message : String(error)]
+            };
+        }
+        report.requests.push(result);
+        if (result.passed) {
+            report.summary.passed += 1;
+        } else {
+            report.summary.failed += 1;
+        }
+    }
+
+    report.snapshots.after = getTtsDiagnosticsSnapshot();
+    report.summary.workerCreateDelta =
+        report.snapshots.after.workerCreateCount - report.snapshots.before.workerCreateCount;
+    report.summary.completedRequestDelta =
+        report.snapshots.after.completedRequestCount - report.snapshots.before.completedRequestCount;
+    report.summary.workerModelLoadCount = report.snapshots.after.workerModelLoadCount;
+
+    if (report.summary.workerCreateDelta !== 1) {
+        report.summary.failed += 1;
+        report.requests.push({
+            passed: false,
+            errors: [`Expected one TTS worker for two requests; created ${report.summary.workerCreateDelta}.`]
+        });
+    }
+    if (report.summary.completedRequestDelta !== cases.length) {
+        report.summary.failed += 1;
+        report.requests.push({
+            passed: false,
+            errors: [`Expected ${cases.length} completed TTS requests; completed ${report.summary.completedRequestDelta}.`]
+        });
+    }
+    if (report.summary.workerModelLoadCount !== 1) {
+        report.summary.failed += 1;
+        report.requests.push({
+            passed: false,
+            errors: [`Expected one Kokoro model load in the worker; observed ${report.summary.workerModelLoadCount}.`]
+        });
+    }
+
+    report.finishedAt = new Date().toISOString();
+    report.success = report.summary.failed === 0;
+
+    if (TTS_DIAGNOSTICS_REPORT_PATH) {
+        await fsp.writeFile(TTS_DIAGNOSTICS_REPORT_PATH, JSON.stringify(report, null, 2), 'utf8');
+    }
+
+    return report;
+}
+
 const DEFAULT_SOURCE_WINDOW_X = 635;
 const DEFAULT_SOURCE_WINDOW_Y = 100;
 const DEFAULT_SOURCE_WINDOW_WIDTH = 1366;
@@ -4241,13 +4855,9 @@ function getActiveBrowserView(id) {
     const view = browserViews[id];
     if (!view) return null;
     try {
-        if (typeof view.isDestroyed === 'function' && view.isDestroyed()) {
+        if (isBrowserViewDestroyed(view)) {
             delete browserViews[id];
             releaseWindowId(id);
-            return null;
-        }
-        const wc = view.webContents;
-        if (wc && typeof wc.isDestroyed === 'function' && wc.isDestroyed()) {
             return null;
         }
     } catch (error) {
@@ -4255,6 +4865,23 @@ function getActiveBrowserView(id) {
         return null;
     }
     return view;
+}
+
+function isBrowserViewDestroyed(view) {
+    if (!view) return true;
+    try {
+        if (typeof view.isDestroyed === 'function') {
+            return !!view.isDestroyed();
+        }
+        const wc = view.webContents;
+        if (wc && typeof wc.isDestroyed === 'function') {
+            return !!wc.isDestroyed();
+        }
+    } catch (error) {
+        console.warn('Error checking browser view state:', error);
+        return true;
+    }
+    return false;
 }
 
 function generateUniqueWindowId() {
@@ -5018,7 +5645,7 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
     }
 
     try {
-        ses.webRequest.onBeforeSendHeaders({ urls: ['*://*/*'] }, (details, callback) => {
+        ses.webRequest.onBeforeSendHeaders({ urls: ['*://*/*', 'ws://*/*', 'wss://*/*'] }, (details, callback) => {
             const requestHeaders = details && details.requestHeaders ? details.requestHeaders : {};
             let shouldStripElectron = hooks.stripElectronGlobally;
             try {
@@ -5156,7 +5783,7 @@ function resolveHeaderOverridesFromConfig(config, baseUrl) {
 }
 
 function registerActivatedWindowSessionHooks(view, args = {}) {
-    if (!view || (typeof view.isDestroyed === 'function' && view.isDestroyed())) {
+    if (isBrowserViewDestroyed(view)) {
         return () => { };
     }
     if (!view.webContents || !view.webContents.session) {
@@ -5262,6 +5889,12 @@ async function clearAllData() {
             store.clear();
         } catch (storeError) {
             console.error('Failed to clear settings store during reset:', storeError);
+        }
+
+        try {
+            clearYouTubeOwnerAuthStore();
+        } catch (ownerAuthStoreError) {
+            console.error('Failed to clear YouTube owner auth store during reset:', ownerAuthStoreError);
         }
 
         try {
@@ -6165,9 +6798,63 @@ function getVirtualScreenBounds() {
     }
 }
 
+function sourceWindowIntersectsVirtualScreen(bounds) {
+    try {
+        if (!bounds || typeof bounds !== 'object') return true;
+        const vb = getVirtualScreenBounds();
+        const overlapX = Math.max(0, Math.min(bounds.x + bounds.width, vb.x + vb.width) - Math.max(bounds.x, vb.x));
+        const overlapY = Math.max(0, Math.min(bounds.y + bounds.height, vb.y + vb.height) - Math.max(bounds.y, vb.y));
+        return overlapX > 0 && overlapY > 0;
+    } catch (_) {
+        return true;
+    }
+}
+
+function getSourceWindowOffscreenCandidates(view) {
+    let currentBounds = null;
+    try {
+        currentBounds = view && view.__prevBounds ? view.__prevBounds : view.getBounds();
+    } catch (_) {
+        currentBounds = null;
+    }
+
+    const width = Math.max(parseInt(currentBounds && currentBounds.width, 10) || 800, 100);
+    const height = Math.max(parseInt(currentBounds && currentBounds.height, 10) || 600, 100);
+    const vb = getVirtualScreenBounds();
+    const margin = Math.max(10000, width + height + 1000);
+
+    return [
+        { x: Math.floor(vb.x - width - margin), y: Math.floor(vb.y - height - margin), width, height },
+        { x: Math.floor(vb.x + vb.width + margin), y: Math.floor(vb.y + vb.height + margin), width, height },
+        { x: Math.floor(vb.x - width - margin), y: Math.floor(vb.y + vb.height + margin), width, height },
+        { x: Math.floor(vb.x + vb.width + margin), y: Math.floor(vb.y - height - margin), width, height }
+    ];
+}
+
+function parkSourceWindowOffscreen(view) {
+    if (isBrowserViewDestroyed(view)) return false;
+
+    let lastBounds = null;
+    const candidates = getSourceWindowOffscreenCandidates(view);
+    for (const candidate of candidates) {
+        try {
+            view.setBounds(candidate);
+            lastBounds = view.getBounds();
+            if (!sourceWindowIntersectsVirtualScreen(lastBounds)) {
+                return true;
+            }
+        } catch (_) { }
+    }
+
+    try {
+        console.warn('[SourceWindow] Failed to park source window fully off-screen:', lastBounds);
+    } catch (_) { }
+    return false;
+}
+
 function notifySourceWindowVisibilityChange(view, visible) {
     try {
-        if (!mainWindow || mainWindow.isDestroyed() || !view || view.isDestroyed()) return;
+        if (!mainWindow || mainWindow.isDestroyed() || isBrowserViewDestroyed(view)) return;
         mainWindow.webContents.send(visible ? 'window-shown' : 'window-hidden', {
             tabID: view.tabID,
             url: view.args && view.args.url
@@ -6189,7 +6876,7 @@ function installWindowsSourceWindowMinimizeGuard(view) {
         } catch (_) { }
         setTimeout(() => {
             try {
-                if (!view || view.isDestroyed()) return;
+                if (isBrowserViewDestroyed(view)) return;
                 try {
                     if (typeof view.isMinimized === 'function' && view.isMinimized()) {
                         view.restore();
@@ -6205,7 +6892,7 @@ function installWindowsSourceWindowMinimizeGuard(view) {
 // Stealth-hide: keep window visible to the OS, but move/resize it off-screen
 function stealthHideView(view) {
     try {
-        if (!view || view.isDestroyed()) return false;
+        if (isBrowserViewDestroyed(view)) return false;
         const wasVisible = view.__ss_visible !== false;
         // Mark logical visibility
         view.__ss_visible = false;
@@ -6213,23 +6900,15 @@ function stealthHideView(view) {
         if (wasVisible || !view.__prevBounds) {
             try { view.__prevBounds = view.getBounds(); } catch (_) { view.__prevBounds = null; }
         }
-        if (process.platform === 'linux') {
-            try { view.setSkipTaskbar(true); } catch (_) { }
-            try { view.minimize(); } catch (_) { }
-            return false;
-        }
-        // Compute an off-screen coordinate
-        const vb = getVirtualScreenBounds();
-        // Place far to the left/top but keep original size to avoid triggering
-        // viewport-based throttling in pages like TikTok
-        const offX = Math.floor(vb.x - 10000);
-        const offY = Math.floor(vb.y - 10000);
-        const currentBounds = view.__prevBounds || { width: 800, height: 600 };
-        view.setBounds({ x: offX, y: offY, width: currentBounds.width, height: currentBounds.height });
+
         // Avoid taskbar clutter while hidden
         try { view.setSkipTaskbar(true); } catch (_) { }
+
+        // Keep the window visible to Chromium, but park it outside the virtual desktop.
+        const parked = parkSourceWindowOffscreen(view);
+
         // Keep window technically visible; do not call hide()/minimize()
-        return false;
+        return parked;
     } catch (_) {
         return false;
     }
@@ -6238,7 +6917,7 @@ function stealthHideView(view) {
 // Restore from stealth-hide
 function stealthShowView(view, options = {}) {
     try {
-        if (!view || view.isDestroyed()) return true;
+        if (isBrowserViewDestroyed(view)) return true;
         view.__ss_visible = true;
         const bringToFront = !!(options && options.bringToFront);
         if (process.platform === 'linux') {
@@ -6278,6 +6957,10 @@ function stealthShowView(view, options = {}) {
 ipcMain.handle('showWindow', (event, args) => {
     const view = browserViews[args.vid];
     if (!view) return false;
+    if (headlessControlEnabled) {
+        stealthHideView(view);
+        return { newState: false };
+    }
     const hasExplicitUserInitiated = !!(args && Object.prototype.hasOwnProperty.call(args, 'userInitiated'));
     const userInitiatedReveal = hasExplicitUserInitiated ? !!args.userInitiated : false;
 
@@ -6306,13 +6989,11 @@ ipcMain.handle('checkWindowExists', (event, args) => {
     const view = browserViews[args.vid];
     if (!view) return false;
     try {
-        if (typeof view.isDestroyed === 'function') {
-            if (view.isDestroyed()) {
-                // Clean up stale reference
-                delete browserViews[args.vid];
-                releaseWindowId(args.vid);
-                return false;
-            }
+        if (isBrowserViewDestroyed(view)) {
+            // Clean up stale reference
+            delete browserViews[args.vid];
+            releaseWindowId(args.vid);
+            return false;
         }
     } catch (_) { }
     return true;
@@ -6327,7 +7008,7 @@ ipcMain.handle('closeWindow', async (event, args) => {
 
     try {
         // Attempt a clean destroy regardless of custom close handlers
-        if (typeof view.destroy === 'function' && !view.isDestroyed()) {
+        if (typeof view.destroy === 'function' && !isBrowserViewDestroyed(view)) {
             view.destroy();
         } else if (typeof view.close === 'function') {
             view.close();
@@ -6534,6 +7215,55 @@ ipcMain.handle('store-get', async (event, key) => {
 
 let tray = null;
 
+function isTikTokWindowArgs(args = {}) {
+    if (!args || typeof args !== 'object') return false;
+    const platform = String(args.platform || args.target || '').trim().toLowerCase();
+    if (platform === 'tiktok') return true;
+
+    const sourcePath = String(args.source || '').trim().replace(/\\/g, '/').toLowerCase();
+    if (sourcePath.endsWith('/tiktok.js') || sourcePath === 'sources/tiktok.js' || sourcePath === 'tiktok.js') {
+        return true;
+    }
+
+    const domain = String(args.domain || '').trim().toLowerCase().replace(/^www\./, '');
+    if (domain === 'tiktok.com' || domain.endsWith('.tiktok.com')) {
+        return true;
+    }
+
+    try {
+        const parsed = new URL(args.url);
+        const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+        return host === 'tiktok.com' || host.endsWith('.tiktok.com');
+    } catch (_) {
+        return false;
+    }
+}
+
+function shouldPreserveManualTikTokStandardNavigation(args = {}) {
+    if (!args || typeof args !== 'object') return false;
+    if (args.manualActivation !== true) return false;
+    if (args.wss) return false;
+    const mode = String(args.connectionMode || args.activeConnectionMode || 'classic').trim().toLowerCase();
+    const isStandardMode = !mode || mode === 'classic' || mode === 'standard';
+    return isStandardMode && isTikTokWindowArgs(args);
+}
+
+function sendWindowNavigationWarning(view, args = {}, navUrl = '', reason = 'navigate', mode = 'prefix') {
+    try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('window-navigation-warning', {
+                tabID: view && view.tabID,
+                sourceId: (view && view.args && view.args.sourceId) || args.sourceId,
+                reason,
+                mode,
+                initialUrl: args.url,
+                newUrl: navUrl,
+                platform: args.platform || args.target || args.domain || null
+            });
+        }
+    } catch (_) { }
+}
+
 async function createWindow(args, reuse = false, mainApp = false) {
     try {
         var webSecurity = true;
@@ -6637,6 +7367,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             URI += "&sourcemode=" + encodeURIComponent(runningLocally);
         } else {
             URI += "?sourcemode=" + encodeURIComponent(runningLocally);
+        }
+        if (mainApp && preferLocalAssetsFlag) {
+            URI += "&hostedlinks=1";
         }
     }
 
@@ -7090,29 +7823,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
             features
         }) => {
 
-            var frame = true;
-            if (url.includes("&transparent")) {
-                frame = false;
-            } else if (url.includes("&chroma=")) {
-                frame = false;
-            } else if (url.includes("?transparent")) {
-                frame = false;
-            } else if (url.includes("?chroma=")) {
-                frame = false;
-            }
+            var frame = !shouldUseFramelessForUrl(url);
             log(url);
             if ((isSocialStreamRemoteUrl(url) && matchesSocialStreamPagePath(url, "chathistory")) || (url == "./chathistory.html")) {
                 url = path.join(__dirname, "chathistory.html");
             }
 
             var backgroundColor = "#DDD";
-            var useTransparency = false;
+            var useTransparency = shouldUseTransparentWindowForUrl(url);
             if (!frame) {
                 backgroundColor = "#0000";
-                // Check if we actually need transparency
-                if (url.includes("&transparent") || url.includes("?transparent")) {
-                    useTransparency = true;
-                }
             }
             const forceWin10Compatibility = shouldUseWin10TransparencyCompat(frame, useTransparency);
 
@@ -7152,7 +7872,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     },
                     show: true,
                     backgroundColor: backgroundColor,
-                    transparent: forceWin10Compatibility ? useTransparency : !frame,
+                    transparent: useTransparency,
                     resizable: !forceWin10Compatibility,
                     frame: frame,
                     autoHideMenuBar: false,
@@ -7182,7 +7902,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (process.platform === "win32" && restoredWindowBounds) {
                 const applyDesiredBounds = () => {
                     try {
-                        if (!view || view.isDestroyed()) return;
+                        if (isBrowserViewDestroyed(view)) return;
                         applyBrowserWindowBounds(view, restoredWindowBounds);
                     } catch (_) { }
                 };
@@ -7200,7 +7920,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                 // Apply initial fix after a short delay
                 setTimeout(() => {
-                    if (view && !view.isDestroyed()) {
+                    if (!isBrowserViewDestroyed(view)) {
                         // Force a resize to trigger proper rendering
                         const bounds = view.getBounds();
                         view.setBounds({
@@ -7220,7 +7940,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     if (blurTimeout) clearTimeout(blurTimeout);
 
                     blurTimeout = setTimeout(() => {
-                        if (view && !view.isDestroyed()) {
+                        if (!isBrowserViewDestroyed(view)) {
                             // Store current bounds
                             const currentBounds = view.getBounds();
 
@@ -7292,6 +8012,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     const enforceCloseOnNavigate = (!args.wss && args.config && args.config.closeOnNavigate === true);
                     if (enforceCloseOnNavigate) {
                         const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact'
+                        const preserveManualTikTokStandard = shouldPreserveManualTikTokStandardNavigation(args);
+                        let navigationWarningSent = false;
                         let initialHref = '';
                         let initialOrigin = '';
                         let initialNoHash = '';
@@ -7326,6 +8048,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                         const maybeClose = (navUrl, reason) => {
                             if (!isAllowed(navUrl)) {
+                                if (preserveManualTikTokStandard) {
+                                    try { log(`Keeping manual TikTok Standard window open after navigation (${reason}): ${navUrl}`); } catch (_) { }
+                                    if (!navigationWarningSent) {
+                                        navigationWarningSent = true;
+                                        sendWindowNavigationWarning(view, args, navUrl, reason, mode);
+                                    }
+                                    return;
+                                }
                                 try { log(`Auto-closing activated window due to navigation (${reason}): ${navUrl}`); } catch (_) { }
                                 try {
                                     // Inform renderer (best-effort)
@@ -7333,7 +8063,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                         mainWindow.webContents.send(`window-closed-${view.tabID}`);
                                     }
                                 } catch (_) { }
-                                try { if (!view.isDestroyed()) view.destroy(); } catch (_) { }
+                                try { if (!isBrowserViewDestroyed(view)) view.destroy(); } catch (_) { }
                                 try { delete browserViews[view.tabID]; releaseWindowId(view.tabID); } catch (_) { }
                             }
                         };
@@ -8117,18 +8847,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
         if (isMainAppWindow) {
             // This is the main app window, inject language preference
             try {
-                const normalizeUiLanguage = (lang) => {
-                    if (!lang || typeof lang !== 'string') return lang;
-                    const trimmed = lang.trim();
-                    if (!trimmed) return lang;
-                    const lower = trimmed.toLowerCase();
-                    if (lower === 'zh' || lower === 'zh-cn' || lower === 'zh-hans') return 'zh-CN';
-                    if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-hant') return 'zh-TW';
-                    return trimmed;
-                };
-
                 const savedLanguageRaw = store.get('language');
-                const savedLanguage = normalizeUiLanguage(savedLanguageRaw);
+                const savedLanguage = normalizeUiLanguagePreference(savedLanguageRaw);
                 if (savedLanguage) {
                     if (savedLanguageRaw && savedLanguage !== savedLanguageRaw) {
                         store.set('language', savedLanguage);
@@ -8147,24 +8867,24 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     let uiLanguage = SYSTEM_LOCALE;
                     const languageMap = {
                         'tr-TR': 'tr',
-                        'pt-BR': 'pt-BR', // Keep as is
+                        'pt-BR': 'pt-br',
+                        'ar-SA': 'ar',
+                        'ar-EG': 'ar',
+                        'ar-AE': 'ar',
                         'es-ES': 'es',
                         'es-MX': 'es',
-                        'fr-FR': 'fr',
-                        'fr-CA': 'fr',
                         'de-DE': 'de',
                         'de-AT': 'de',
                         'de-CH': 'de',
                         'cs-CZ': 'cs',
-                        'it-IT': 'it',
-                        'ja-JP': 'ja',
+                        'th-TH': 'th',
                         'zh-CN': 'zh-CN',
                         'zh-TW': 'zh-TW',
                         'zh-HK': 'zh-TW',
                         'zh-Hans': 'zh-CN',
                         'zh-Hant': 'zh-TW',
-                        'ko-KR': 'ko',
-                        'ru-RU': 'ru'
+                        'en-GB': 'en-uk',
+                        'en-US': 'en-us'
                     };
 
                     // Use mapped language or extract the base language code
@@ -8173,7 +8893,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     } else if (SYSTEM_LOCALE.includes('-')) {
                         uiLanguage = SYSTEM_LOCALE.split('-')[0];
                     }
-                    uiLanguage = normalizeUiLanguage(uiLanguage);
+                    uiLanguage = normalizeUiLanguagePreference(uiLanguage);
 
                     executeJavaScriptQuietly(mainWindow.webContents, `
                         localStorage.setItem('language', ${JSON.stringify(uiLanguage)});
@@ -8466,9 +9186,24 @@ async function createWindow(args, reuse = false, mainApp = false) {
         // Handle generic WebSocket status signals (from WSS pages)
         try {
             if (args[0] && args[0].wssStatus) {
+                const statusPayload = args[0].wssStatus || {};
+                let sourceId = statusPayload.sourceId || null;
+                if (!sourceId && Number.isFinite(tabID)) {
+                    try {
+                        const sourceView = getActiveBrowserView(tabID) || browserViews[tabID];
+                        sourceId = sourceView?.args?.sourceId || null;
+                    } catch (_) { }
+                }
+                if (!sourceId) {
+                    try {
+                        const sourceWindow = BrowserWindow.fromWebContents(eventRet.sender);
+                        sourceId = sourceWindow?.args?.sourceId || null;
+                    } catch (_) { }
+                }
                 const payload = {
                     tabID,
-                    ...(args[0].wssStatus || {})
+                    ...statusPayload,
+                    sourceId
                 };
                 if (mainWindow && mainWindow.webContents) {
                     mainWindow.webContents.send('wssStatus', payload);
@@ -8628,6 +9363,346 @@ async function createWindow(args, reuse = false, mainApp = false) {
             name: error?.name || null
         };
     }
+
+    function getJsonErrorMessage(json, fallback) {
+        if (json && json.error_description) return String(json.error_description);
+        if (json && typeof json.error === "string") return json.error;
+        if (json && json.error && json.error.message) return String(json.error.message);
+        if (json && json.message) return String(json.message);
+        return fallback;
+    }
+
+    function normalizeVpzoneApiUrlValue(value) {
+        let parsed;
+        try {
+            parsed = new URL(String(value || ""));
+        } catch (_) {
+            return null;
+        }
+        if (parsed.protocol !== "https:" || !["vpzone.tv", "www.vpzone.tv"].includes(parsed.hostname) || !parsed.pathname.startsWith("/api/")) {
+            return null;
+        }
+        parsed.hash = "";
+        return parsed;
+    }
+
+    async function fetchVpzoneJsonResponse(request = {}) {
+        const parsedUrl = normalizeVpzoneApiUrlValue(request.url);
+        if (!parsedUrl) {
+            throw new Error("VPZone fetch URL not allowed");
+        }
+
+        const method = String(request.method || "GET").toUpperCase();
+        const isOAuthTokenPost = method === "POST" && parsedUrl.pathname === "/api/oauth/token";
+        const isChatMessagePost = method === "POST" && /^\/api\/v1\/channels\/[^\/]+\/chat$/.test(parsedUrl.pathname);
+        if (method !== "GET" && !isOAuthTokenPost && !isChatMessagePost) {
+            throw new Error("VPZone fetch method not allowed");
+        }
+
+        const headers = {
+            Accept: "application/json"
+        };
+        if (isOAuthTokenPost) {
+            headers["Content-Type"] = "application/x-www-form-urlencoded";
+        } else if (isChatMessagePost) {
+            headers["Content-Type"] = "application/json";
+            if (request.authToken && typeof request.authToken === "string") {
+                headers.Authorization = "Bearer " + request.authToken.replace(/[\r\n]/g, "");
+            }
+        }
+
+        const response = await fetch(parsedUrl.toString(), {
+            method,
+            cache: "no-store",
+            headers,
+            body: method === "POST" ? String(request.body || "") : undefined
+        });
+        const responseText = await response.text();
+        let responseJson = {};
+        try {
+            responseJson = responseText ? JSON.parse(responseText) : {};
+        } catch (_) {
+            responseJson = null;
+        }
+        if (!response.ok) {
+            const error = new Error(getJsonErrorMessage(responseJson, "HTTP " + response.status));
+            error.status = response.status;
+            throw error;
+        }
+        if (responseJson == null) {
+            const error = new Error("Invalid JSON response");
+            error.status = response.status;
+            throw error;
+        }
+        return {
+            status: response.status,
+            data: responseJson
+        };
+    }
+
+    async function handleVpzoneFetchJsonCommand(request) {
+        try {
+            const vpzoneResponse = await fetchVpzoneJsonResponse(request);
+            return { ok: true, status: vpzoneResponse.status, data: vpzoneResponse.data };
+        } catch (error) {
+            return {
+                ok: false,
+                status: error && typeof error.status !== "undefined" ? error.status : undefined,
+                error: error?.message || "VPZone fetch failed"
+            };
+        }
+    }
+
+    function normalizeJoystickApiUrlValue(value) {
+        let parsed;
+        try {
+            parsed = new URL(String(value || ""));
+        } catch (_) {
+            return null;
+        }
+        if (parsed.protocol !== "https:" || parsed.hostname !== "api.joystick.tv") {
+            return null;
+        }
+        parsed.hash = "";
+        return parsed;
+    }
+
+    async function fetchJoystickJsonResponse(request = {}) {
+        const parsedUrl = normalizeJoystickApiUrlValue(request.url);
+        if (!parsedUrl) {
+            throw new Error("Joystick API URL not allowed");
+        }
+
+        const method = String(request.method || "GET").toUpperCase();
+        const isOAuthTokenPost = method === "POST" && parsedUrl.pathname === "/api/oauth/token";
+        const isStreamSettingsGet = method === "GET" && parsedUrl.pathname === "/api/users/stream-settings";
+        if (!isOAuthTokenPost && !isStreamSettingsGet) {
+            throw new Error("Joystick API request not allowed");
+        }
+
+        const headers = {
+            Accept: "application/json"
+        };
+        const authHeader = typeof request.auth === "string" ? request.auth.replace(/[\r\n]/g, "") : "";
+        if (isOAuthTokenPost) {
+            headers["Content-Type"] = "application/x-www-form-urlencoded";
+            if (request.authType === "basic" && authHeader.startsWith("Basic ")) {
+                headers.Authorization = authHeader;
+            }
+        } else if (isStreamSettingsGet) {
+            headers["Content-Type"] = "application/json";
+            if (request.authType === "bearer" && authHeader.startsWith("Bearer ")) {
+                headers.Authorization = authHeader;
+            }
+        }
+
+        const response = await fetch(parsedUrl.toString(), {
+            method,
+            cache: "no-store",
+            headers,
+            body: isOAuthTokenPost ? String(request.body || "") : undefined
+        });
+        const responseText = await response.text();
+        let responseJson = {};
+        try {
+            responseJson = responseText ? JSON.parse(responseText) : {};
+        } catch (_) {
+            responseJson = null;
+        }
+        if (!response.ok) {
+            const error = new Error(getJsonErrorMessage(responseJson, "HTTP " + response.status));
+            error.status = response.status;
+            throw error;
+        }
+        if (responseJson == null) {
+            const error = new Error("Invalid JSON response");
+            error.status = response.status;
+            throw error;
+        }
+        return {
+            status: response.status,
+            data: responseJson
+        };
+    }
+
+    async function handleJoystickFetchJsonCommand(request) {
+        try {
+            const joystickResponse = await fetchJoystickJsonResponse(request);
+            return { ok: true, status: joystickResponse.status, data: joystickResponse.data };
+        } catch (error) {
+            return {
+                ok: false,
+                status: error && typeof error.status !== "undefined" ? error.status : undefined,
+                error: error?.message || "Joystick API fetch failed"
+            };
+        }
+    }
+
+    function normalizeRumbleApiUrlValue(value) {
+        let raw = typeof value === "string" ? value.trim() : "";
+        let parsed;
+        if (!raw) return "";
+        if (!/^[a-z]+:\/\//i.test(raw) && raw.indexOf("rumble.com") >= 0) {
+            raw = "https://" + raw.replace(/^\/+/, "");
+        }
+        try {
+            parsed = new URL(raw);
+        } catch (_) {
+            return "";
+        }
+        parsed.hash = "";
+        return parsed.toString();
+    }
+
+    async function fetchRumbleJsonResponse(url) {
+        const normalizedUrl = normalizeRumbleApiUrlValue(url);
+        const parsedUrl = normalizedUrl ? new URL(normalizedUrl) : null;
+        if (!parsedUrl || parsedUrl.protocol !== "https:" || !["rumble.com", "www.rumble.com"].includes(parsedUrl.hostname)) {
+            throw new Error("Rumble fetch URL not allowed");
+        }
+
+        const response = await fetch(parsedUrl.toString(), {
+            method: "GET",
+            cache: "no-store",
+            headers: {
+                Accept: "application/json,text/plain;q=0.9,*/*;q=0.8"
+            }
+        });
+        const text = await response.text();
+        let data = null;
+        try {
+            data = text ? JSON.parse(text) : {};
+        } catch (_) {
+            if (text && /^\s*</.test(text)) {
+                throw new Error("Rumble returned an HTML page instead of JSON data.");
+            }
+            throw new Error("Rumble did not return valid JSON.");
+        }
+        if (!response.ok) {
+            const error = new Error((data && (data.error || data.message)) || ("HTTP " + response.status));
+            error.status = response.status;
+            throw error;
+        }
+        return {
+            status: response.status,
+            data
+        };
+    }
+
+    ipcMain.handle("rumble-fetch-json", async (_event, args = {}) => {
+        try {
+            const rumbleResponse = await fetchRumbleJsonResponse(args.url);
+            return { ok: true, status: rumbleResponse.status, data: rumbleResponse.data };
+        } catch (error) {
+            return {
+                ok: false,
+                status: error && typeof error.status !== "undefined" ? error.status : undefined,
+                error: error?.message || "Rumble fetch failed"
+            };
+        }
+    });
+
+    async function handleStreamDeckSourceCommand(request = {}) {
+        const command = request && request.request && typeof request.request === "object"
+            ? request.request
+            : {
+                action: request && typeof request.action === "string" ? request.action : "",
+                value: request ? request.value : undefined,
+                target: request ? request.target : undefined,
+                get: request ? request.get : undefined
+            };
+
+        if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents) {
+            return {
+                ok: false,
+                error: {
+                    code: "SSAPP_UNAVAILABLE",
+                    message: "SSApp renderer is unavailable."
+                }
+            };
+        }
+
+        try {
+            const script = `
+                (async () => {
+                    const request = ${JSON.stringify(command)};
+                    if (!window.SSAppStreamDeckBridge || typeof window.SSAppStreamDeckBridge.handleCommand !== "function") {
+                        return {
+                            ok: false,
+                            error: {
+                                code: "SSAPP_UNAVAILABLE",
+                                message: "SSApp source bridge is not ready."
+                            }
+                        };
+                    }
+                    return await window.SSAppStreamDeckBridge.handleCommand(request);
+                })()
+            `;
+            return await mainWindow.webContents.executeJavaScript(script, true);
+        } catch (error) {
+            return {
+                ok: false,
+                error: {
+                    code: "SSAPP_UNAVAILABLE",
+                    message: error?.message || "SSApp source command failed."
+                }
+            };
+        }
+    }
+
+    llmControlCommandHandler = handleStreamDeckSourceCommand;
+
+    const backgroundCommandHandlers = {
+        streamDeckSourceCommand: handleStreamDeckSourceCommand,
+        vpzoneFetchJson: handleVpzoneFetchJsonCommand,
+        joystickFetchJson: handleJoystickFetchJsonCommand
+    };
+
+    function isTrustedStreamDeckSourceCommandSender(event) {
+        const sender = event && event.sender;
+        if (!(
+            sender &&
+            mainWindow &&
+            !mainWindow.isDestroyed() &&
+            mainWindow.webContents &&
+            sender.id === mainWindow.webContents.id
+        )) {
+            return false;
+        }
+
+        const frame = event.senderFrame;
+        if (!frame) return false;
+
+        try {
+            if (frame === mainWindow.webContents.mainFrame) {
+                return true;
+            }
+        } catch (_) { }
+
+        const frameUrl = typeof frame.url === "string" ? frame.url : "";
+        if (!frameUrl || !matchesSocialStreamPagePath(frameUrl, "background")) {
+            return false;
+        }
+        return frameUrl.startsWith("file://") || isSocialStreamRemoteUrl(frameUrl);
+    }
+
+    ipcMain.handle("ssapp:background-command", async (event, request = {}) => {
+        const command = request && typeof request.cmd === "string" ? request.cmd : "";
+        const handler = backgroundCommandHandlers[command];
+        if (!handler) {
+            return { ok: false, error: "Unsupported background command" };
+        }
+        if (command === "streamDeckSourceCommand" && !isTrustedStreamDeckSourceCommandSender(event)) {
+            return {
+                ok: false,
+                error: {
+                    code: "SSAPP_FORBIDDEN",
+                    message: "Stream Deck source commands are only available to the SSApp controller."
+                }
+            };
+        }
+        return handler(request);
+    });
 
     // Keep the synchronous version for backward compatibility
     ipcMain.on("nodefetch", function (eventRet, args) {
@@ -8840,7 +9915,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         return platform;
     }
 
-    ipcMain.on("signIn", function (eventRet, args2) {
+    async function handleSignInRequest(args2) {
         log("IPC CREATE WINDOW - SIGN IN");
         var args = Object.assign({}, Argv, args2);
 
@@ -8868,8 +9943,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         if (!args.url) {
             log("No URL; can't load");
-            eventRet.returnValue = null;
-            return;
+            return null;
         }
 
         args.url = args.url.trim();
@@ -8910,20 +9984,29 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     } else {
                         existingView.webContents.loadURL(args.url);
                     }
-                    eventRet.returnValue = args.tab;
-                    return;
+                    return args.tab;
                 } catch (e) {
                     console.error(e);
                 }
             }
         }
 
-        // Create new window
-        createSignInWindow(args).then(windowId => {
-            eventRet.returnValue = windowId;
-        }).catch(error => {
+        try {
+            return await createSignInWindow(args);
+        } catch (error) {
             console.error('Failed to create sign-in window:', error);
-            eventRet.returnValue = null;
+            return null;
+        }
+    }
+
+    ipcMain.handle("signIn", async (_event, args2) => {
+        return await handleSignInRequest(args2);
+    });
+
+    ipcMain.on("signIn", function (eventRet, args2) {
+        eventRet.returnValue = null;
+        handleSignInRequest(args2).catch(error => {
+            console.error('Failed to create sign-in window:', error);
         });
     });
 
@@ -8965,6 +10048,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const platform = resolveSessionPlatform(args, domain);
 
             const signInHeaderOverrides = resolveHeaderOverridesFromConfig(args.config, args.url);
+            const isLocalSocialStreamSignIn = /^file:/i.test(String(args.url || ""))
+                && /[\\/]sources[\\/]websocket[\\/]/i.test(String(args.url || "").replace(/\//g, path.sep));
 
             // Always use in-app sign-in (never system browser)
 
@@ -9003,7 +10088,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             let shouldClearSession = false;
 
-            if (hasExistingSession) {
+            if (hasExistingSession && !isLocalSocialStreamSignIn) {
                 // Show confirmation dialog
                 const result = await dialog.showMessageBox(mainWindow, {
                     type: 'question',
@@ -9108,6 +10193,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                 // Small delay to ensure clearing operations complete
                 await new Promise(resolve => setTimeout(resolve, 100));
+            } else if (hasExistingSession && isLocalSocialStreamSignIn) {
+                log(`Keeping existing local Social Stream sign-in session for ${domain}`);
             } else {
                 log(`User chose to keep existing session for ${domain}`);
             }
@@ -9768,7 +10855,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     if (errorCode === -7) {
                         log("Connection timed out - retrying in 2 seconds...");
                         setTimeout(() => {
-                            if (!view.isDestroyed()) {
+                            if (!isBrowserViewDestroyed(view)) {
                                 view.webContents.reload();
                             }
                         }, 2000);
@@ -9793,13 +10880,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 // Handle window closure
                 view.on('closed', () => {
                     const tabID = view.tabID; // Store it immediately
-                    log("Sign-in window closed, destroyed: " + view.isDestroyed());
+                    log("Sign-in window closed, destroyed: " + isBrowserViewDestroyed(view));
                     try {
                         releaseSignInWindowSessionHooks();
                     } catch (_) { }
 
                     // Clean up if possible
-                    if (!view.isDestroyed()) {
+                    if (!isBrowserViewDestroyed(view)) {
                         try {
                             view.destroy();
                         } catch (e) {
@@ -9830,148 +10917,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     }
 
-
-    // Universal IPC Request Handler
-    ipcMain.on('ipc-request', async (event, request) => {
-        const { channel, callbackId, data, timestamp } = request;
-
-        // Log all IPC requests for debugging
-        log(`IPC Request: ${channel} [${callbackId}]`);
-
-        try {
-            let result;
-
-            // Route to appropriate handler based on channel
-            switch (channel) {
-                case 'createWindow':
-                    // Handle window creation
-                    result = await handleCreateWindowAsync(data);
-                    break;
-
-                case 'storageSave':
-                    result = await handleStorageSave(data);
-                    break;
-
-                case 'storageLoad':
-                    result = await handleStorageLoad(data);
-                    break;
-
-                case 'nodefetch':
-                    result = await handleNodeFetch(data);
-                    break;
-
-                case 'closeWindow':
-                    result = await handleCloseWindow(data);
-                    break;
-
-                case 'reloadWindow':
-                    result = await handleReloadWindow(data);
-                    break;
-
-                case 'getWindowInfo':
-                    result = await handleGetWindowInfo(data);
-                    break;
-
-                default:
-                    throw new Error(`Unknown IPC channel: ${channel}`);
-            }
-
-            // Send success response
-            event.sender.send('ipc-response', {
-                callbackId,
-                result
-            });
-
-        } catch (error) {
-            log(`IPC Error in ${channel}: ${error.message}`);
-
-            // Send error response
-            event.sender.send('ipc-response', {
-                callbackId,
-                error: error.message
-            });
-        }
-    });
-
-    // Async window creation handler
-    async function handleCreateWindowAsync(args2) {
-        return new Promise((resolve, reject) => {
-            try {
-                var args = Object.assign({}, Argv, args2);
-                if (!args.url) {
-                    reject(new Error("No URL provided"));
-                    return;
-                }
-
-                const isBetaMode = args.isBetaMode || false;
-
-                // Check if we're already creating a window for this source to prevent duplicates
-                if (args.sourceId) {
-                    for (const [id, view] of Object.entries(browserViews)) {
-                        if (view.args && view.args.sourceId === args.sourceId && !view.isDestroyed()) {
-                            log("Window already exists for source: " + args.sourceId);
-                            resolve(id);
-                            return;
-                        }
-                    }
-                }
-
-                // If updating existing window
-                if (args.tab) {
-                    const existingView = getActiveBrowserView(args.tab);
-                    if (existingView && existingView.webContents) {
-                        try {
-                            existingView.args = { ...(existingView.args || {}), ...args };
-                            if (args?.config?.userAgent) {
-                                existingView.webContents.loadURL(args.url, {
-                                    userAgent: args.config.userAgent
-                                });
-                            } else {
-                                existingView.webContents.loadURL(args.url);
-                            }
-                            resolve(args.tab);
-                            return;
-                        } catch (e) {
-                            reject(e);
-                            return;
-                        }
-                    }
-                }
-
-                // For now, run the sync handler in a non-blocking way
-                setImmediate(() => {
-                    const mockEvent = {
-                        returnValue: null
-                    };
-
-                    try {
-                        log("Calling originalCreateWindowHandler for async request");
-                        originalCreateWindowHandler(mockEvent, args2);
-
-                        if (mockEvent.returnValue) {
-                            log(`Async handler got window ID: ${mockEvent.returnValue}`);
-                            resolve(mockEvent.returnValue);
-                        } else {
-                            log("Async handler got no window ID");
-                            reject(new Error("No window ID returned"));
-                        }
-                    } catch (e) {
-                        log(`Error in async window creation: ${e.message}`);
-                        reject(e);
-                    }
-                });
-
-            } catch (error) {
-                log(`Outer error in handleCreateWindowAsync: ${error.message}`);
-                reject(error);
-            }
-        });
-    }
-
     // Keep the old sync handler for backward compatibility  
   const originalCreateWindowHandler = async function (eventRet, args2) {
         log("IPC CREATE WINDOW");
         var args = Object.assign({}, Argv, args2);
+        let runningLocally = args.filesource || "";
+        if (runningLocally && !runningLocally.endsWith("/") && !runningLocally.endsWith("\\")) {
+            runningLocally += "/";
+        }
         if (!args.url) {
             log("No URL; can't load");
             eventRet.returnValue = null;
@@ -9983,7 +10936,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         // Check if we're already creating a window for this source to prevent duplicates
         if (args.sourceId) {
             for (const [id, view] of Object.entries(browserViews)) {
-                if (view.args && view.args.sourceId === args.sourceId && !view.isDestroyed()) {
+                if (view.args && view.args.sourceId === args.sourceId && !isBrowserViewDestroyed(view)) {
                     log("Window already exists for source: " + args.sourceId);
                     eventRet.returnValue = id;
                     return;
@@ -10015,7 +10968,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         var loaded = false;
         var timeout = false;
 
-        let visibibility = true;
+        let visibibility = !headlessControlEnabled;
         if ("visible" in args && !args.visible) {
             visibibility = false;
         }
@@ -10135,17 +11088,36 @@ async function createWindow(args, reuse = false, mainApp = false) {
             view.tabID = generateUniqueWindowId();;
             browserViews[view.tabID] = view;
             const sourceWindowMode = args.wss ? "wss" : "classic";
-            view.setBounds(loadRememberedSourceWindowBounds(args, sourceWindowMode));
+            const rememberedSourceWindowBounds = loadRememberedSourceWindowBounds(args, sourceWindowMode);
+            view.__prevBounds = rememberedSourceWindowBounds;
+            view.setBounds(rememberedSourceWindowBounds);
             installRememberedSourceWindowBoundsTracking(view, sourceWindowMode);
             installWindowsSourceWindowMinimizeGuard(view);
 
             // Show without stealing focus if visibility is enabled
             if (visibibility) {
+                view.__ss_visible = true;
+                try { view.setSkipTaskbar(false); } catch (_) { }
                 view.showInactive();
-            } else if (process.platform === 'win32') {
+            } else {
+                view.__ss_visible = false;
                 try { view.setSkipTaskbar(true); } catch (_) { }
-                try { view.showInactive(); } catch (_) { }
                 stealthHideView(view);
+                try { view.showInactive(); } catch (_) { }
+                const reparkHiddenWindow = () => {
+                    try {
+                        if (!isBrowserViewDestroyed(view) && view.__ss_visible === false) {
+                            stealthHideView(view);
+                        }
+                    } catch (_) { }
+                };
+                view.once('ready-to-show', reparkHiddenWindow);
+                if (view.webContents) {
+                    view.webContents.once('did-finish-load', () => {
+                        setTimeout(reparkHiddenWindow, 0);
+                    });
+                }
+                setTimeout(reparkHiddenWindow, 100);
             }
 
             if (view.webContents) {
@@ -10154,6 +11126,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     const enforceCloseOnNavigate = (!args.wss && args.config && args.config.closeOnNavigate === true);
                     if (enforceCloseOnNavigate) {
                         const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact'
+                        const preserveManualTikTokStandard = shouldPreserveManualTikTokStandardNavigation(args);
+                        let navigationWarningSent = false;
                         let initialHref = '';
                         let initialOrigin = '';
                         let initialNoHash = '';
@@ -10188,6 +11162,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                         const maybeClose = (navUrl, reason) => {
                             if (!isAllowed(navUrl)) {
+                                if (preserveManualTikTokStandard) {
+                                    try { log(`Keeping manual TikTok Standard window open after navigation (${reason}): ${navUrl}`); } catch (_) { }
+                                    if (!navigationWarningSent) {
+                                        navigationWarningSent = true;
+                                        sendWindowNavigationWarning(view, args, navUrl, reason, mode);
+                                    }
+                                    return;
+                                }
                                 try { log(`Auto-closing activated window due to navigation (${reason}): ${navUrl}`); } catch (_) { }
 
                                 // Best-effort UI notification with details for toast
@@ -10212,7 +11194,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 } catch (_) { }
 
                                 // Destroy the window and clean up bookkeeping
-                                try { if (!view.isDestroyed()) view.destroy(); } catch (_) { }
+                                try { if (!isBrowserViewDestroyed(view)) view.destroy(); } catch (_) { }
                                 try { delete browserViews[view.tabID]; releaseWindowId(view.tabID); } catch (_) { }
                             }
                         };
@@ -10245,7 +11227,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     if (errorCode === -7) {
                         log("Connection timed out - retrying in 2 seconds...");
                         setTimeout(() => {
-                            if (!view.isDestroyed()) {
+                            if (!isBrowserViewDestroyed(view)) {
                                 view.webContents.reload();
                             }
                         }, 2000);
@@ -10413,9 +11395,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 }
 
                 try { stealthHideView(view); } catch (_) {
-                    try { if (view && !view.isDestroyed()) view.hide(); } catch (_) { }
+                    try { if (!isBrowserViewDestroyed(view)) view.hide(); } catch (_) { }
                 }
-                if (mainWindow && view && !mainWindow.isDestroyed() && !view.isDestroyed()) {
+                if (mainWindow && !mainWindow.isDestroyed() && !isBrowserViewDestroyed(view)) {
                     mainWindow.webContents.send('window-hidden', {
                         tabID: view.tabID,
                         url: view.args.url
@@ -10792,7 +11774,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     return;
                 }
 
-                if (!view || (typeof view.isDestroyed === "function" && view.isDestroyed())) {
+                if (isBrowserViewDestroyed(view)) {
                     log("Cannot start injection; view is already destroyed");
                     return;
                 }
@@ -10858,6 +11840,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     if (!value || typeof value !== "string") return "";
                     return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
                 };
+                const isAbsoluteScriptUrl = (value) => /^https?:\/\//i.test(String(value || ""));
                 let explicitSourceFiles = Array.isArray(args.sourceFiles)
                     ? args.sourceFiles.map((value) => normalizeSelectedSourcePath(value)).filter(Boolean)
                     : [];
@@ -10867,7 +11850,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     : (args.source ? [normalizeSelectedSourcePath(args.source)] : []);
                 let sourceInjectionHandled = false;
 
-                if (runningLocally && selectedSourceFiles.length && selectedSourceFiles.every((value) => value && !value.startsWith("https://"))) {
+                if (runningLocally && selectedSourceFiles.length && selectedSourceFiles.every((value) => value && !isAbsoluteScriptUrl(value))) {
                     const normalizeRoot = (value) => {
                         if (!value || typeof value !== "string") return "";
                         return (value.endsWith("/") || value.endsWith("\\")) ? value : `${value}/`;
@@ -10973,7 +11956,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             var code =
                                 `
 								// Get the random flag from contextBridge if available
-								var injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
+								var __ssappInjectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 								window.__SSAPP_TAB_ID__ = ${view.tabID};
 								var __SSAPP_MESSAGE_TARGET__ = window;
 								try {
@@ -11060,7 +12043,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 										const outgoingMessage = {
 											...messageData
 										};
-										outgoingMessage[injectedScriptFlag] = true;
+										outgoingMessage[__ssappInjectedScriptFlag] = true;
 										outgoingMessage.__tabID__ = window.__SSAPP_TAB_ID__;
 										__SSAPP_MESSAGE_TARGET__.postMessage(outgoingMessage, '*');
 										
@@ -11093,9 +12076,26 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                     }
                                     (function(){
                                       try {
+                                        function __ss_hasActiveYouTubeOAuthState(){
+                                          try { if (sessionStorage.getItem('youtubeOAuthState')) return true; } catch(_){ }
+                                          var storedState = '';
+                                          try { storedState = localStorage.getItem('youtubeOAuthState') || ''; } catch(_){ }
+                                          if (!storedState) return false;
+                                          try {
+                                            var params = new URLSearchParams(location.search || '');
+                                            var callbackState = params.get('state') || '';
+                                            if (params.has('code') && callbackState && callbackState === storedState) return true;
+                                          } catch(_){ }
+                                          try { localStorage.removeItem('youtubeOAuthState'); } catch(_){ }
+                                          return false;
+                                        }
                                         var hasToken = false;
+                                        var hasRefreshToken = false;
+                                        var hasPendingAuth = false;
                                         try { hasToken = !!localStorage.getItem('youtubeOAuthToken'); } catch(_){ }
-                                        if (!hasToken) __ss_wssNotify('signin_required','Sign in with YouTube to continue');
+                                        try { hasRefreshToken = !!localStorage.getItem('youtubeRefreshToken'); } catch(_){ }
+                                        hasPendingAuth = __ss_hasActiveYouTubeOAuthState();
+                                        if (!hasToken && !hasRefreshToken && !hasPendingAuth) __ss_wssNotify('signin_required','Sign in with YouTube to continue');
                                       } catch(_){ }
                                     })();
                                     (function(){
@@ -11181,16 +12181,20 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     sourceInjectionHandled = true;
                     (async () => {
                         try {
-                            const branch = (typeof args.assetBranch === 'string' && args.assetBranch.trim())
-                                ? args.assetBranch.trim()
-                                : (isBetaMode ? 'beta' : 'main');
+                            const branch = normalizeSocialStreamBranch(
+                                (typeof args.assetBranch === 'string' && args.assetBranch.trim())
+                                    ? args.assetBranch
+                                    : (isBetaMode ? 'beta' : 'main')
+                            );
                             const loadedSourceTexts = [];
                             const sourceLoadFailures = [];
 
                             for (const sourceValue of selectedSourceFiles) {
                                 try {
-                                    const jsSource = sourceValue.startsWith("https://") ? sourceValue : `https://raw.githubusercontent.com/steveseguin/social_stream/${branch}/${sourceValue}`;
-                                    const relativeSource = sourceValue.startsWith("https://") ? '' : sourceValue;
+                                    const isUrlSource = isAbsoluteScriptUrl(sourceValue);
+                                    const relativeSource = extractSocialStreamRelativePath(sourceValue) || '';
+                                    const remoteSourcePath = (relativeSource || sourceValue).replace(/\\/g, '/');
+                                    const jsSource = isUrlSource ? sourceValue : `https://raw.githubusercontent.com/steveseguin/social_stream/${branch}/${remoteSourcePath}`;
 
                                     log(jsSource);
 
@@ -11239,7 +12243,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 										console.log("[Injection Remote] window.ninjafy._authToken:", window.ninjafy?._authToken);
                                             
                                             // Get the random flag from contextBridge if available
-										var injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
+										var __ssappInjectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 										window.__SSAPP_TAB_ID__ = ${view.tabID};
 										var __SSAPP_MESSAGE_TARGET__ = window;
 										try {
@@ -11321,7 +12325,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 												const outgoingMessage = {
 													...messageData
 												};
-												outgoingMessage[injectedScriptFlag] = true;
+												outgoingMessage[__ssappInjectedScriptFlag] = true;
 												outgoingMessage.__tabID__ = window.__SSAPP_TAB_ID__;
 												__SSAPP_MESSAGE_TARGET__.postMessage(outgoingMessage, '*');
 												
@@ -11360,7 +12364,26 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                                   } catch(e){}
                                                 }
                                                 (function(){
-                                                  try { var hasToken=false; try{ hasToken = !!localStorage.getItem('youtubeOAuthToken'); } catch(_){ } if (!hasToken) __ss_wssNotify('signin_required','Sign in with YouTube to continue'); } catch(_){ }
+                                                  try {
+                                                    function __ss_hasActiveYouTubeOAuthState(){
+                                                      try{ if (sessionStorage.getItem('youtubeOAuthState')) return true; } catch(_){ }
+                                                      var storedState = '';
+                                                      try{ storedState = localStorage.getItem('youtubeOAuthState') || ''; } catch(_){ }
+                                                      if (!storedState) return false;
+                                                      try {
+                                                        var params = new URLSearchParams(location.search || '');
+                                                        var callbackState = params.get('state') || '';
+                                                        if (params.has('code') && callbackState && callbackState === storedState) return true;
+                                                      } catch(_){ }
+                                                      try{ localStorage.removeItem('youtubeOAuthState'); } catch(_){ }
+                                                      return false;
+                                                    }
+                                                    var hasToken=false, hasRefreshToken=false, hasPendingAuth=false;
+                                                    try{ hasToken = !!localStorage.getItem('youtubeOAuthToken'); } catch(_){ }
+                                                    try{ hasRefreshToken = !!localStorage.getItem('youtubeRefreshToken'); } catch(_){ }
+                                                    hasPendingAuth = __ss_hasActiveYouTubeOAuthState();
+                                                    if (!hasToken && !hasRefreshToken && !hasPendingAuth) __ss_wssNotify('signin_required','Sign in with YouTube to continue');
+                                                  } catch(_){ }
                                                 })();
                                                 (function(){
                                                   try {
@@ -11445,7 +12468,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     var code =
                         `
 					// Get the random flag from contextBridge if available
-					var injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
+					var __ssappInjectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 					window.__SSAPP_TAB_ID__ = ${view.tabID};
 					var __SSAPP_MESSAGE_TARGET__ = window;
 					try {
@@ -11485,7 +12508,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 						const outgoingMessage = {
 							...messageData
 						};
-						outgoingMessage[injectedScriptFlag] = true;
+						outgoingMessage[__ssappInjectedScriptFlag] = true;
 						outgoingMessage.__tabID__ = window.__SSAPP_TAB_ID__;
 						__SSAPP_MESSAGE_TARGET__.postMessage(outgoingMessage, '*');
 						
@@ -11527,9 +12550,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
                 });
             }
-            // Initialize logical visibility flag for stealth-hide/show
-            view.__ss_visible = true;
-            try { view.setSkipTaskbar(false); } catch (_) { }
+            // Preserve the logical visibility decided during window creation.
+            if (view.__ss_visible === false) {
+                try { view.setSkipTaskbar(true); } catch (_) { }
+                const reparkHiddenWindow = () => {
+                    try {
+                        if (!isBrowserViewDestroyed(view) && view.__ss_visible === false) {
+                            stealthHideView(view);
+                        }
+                    } catch (_) { }
+                };
+                setTimeout(reparkHiddenWindow, 0);
+                setTimeout(reparkHiddenWindow, 250);
+            } else {
+                view.__ss_visible = true;
+                try { view.setSkipTaskbar(false); } catch (_) { }
+            }
             eventRet.returnValue = view.tabID;
             log(`Window created successfully with ID: ${view.tabID}`);
         } catch (e) {
@@ -11540,37 +12576,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     // Register the sync handler for backward compatibility
     ipcMain.on("createWindow", originalCreateWindowHandler);
-
-    // Add async handlers for other IPC channels
-    async function handleStorageSave(data) {
-        // TODO: Implement async storage save
-        throw new Error("Not implemented yet - use sync handler");
-    }
-
-    async function handleStorageLoad(data) {
-        // TODO: Implement async storage load
-        throw new Error("Not implemented yet - use sync handler");
-    }
-
-    async function handleNodeFetch(data) {
-        // TODO: Implement async node fetch
-        throw new Error("Not implemented yet - use sync handler");
-    }
-
-    async function handleCloseWindow(data) {
-        // TODO: Implement async close window
-        throw new Error("Not implemented yet - use sync handler");
-    }
-
-    async function handleReloadWindow(data) {
-        // TODO: Implement async reload window
-        throw new Error("Not implemented yet - use sync handler");
-    }
-
-    async function handleGetWindowInfo(data) {
-        // TODO: Implement async get window info
-        throw new Error("Not implemented yet - use sync handler");
-    }
 
     ipcMain.on("getVersion", function (eventRet) {
         eventRet.returnValue = app.getVersion();
@@ -11909,7 +12914,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Collect metrics for each window/tab
             for (const [id, view] of Object.entries(browserViews)) {
-                if (view && view.webContents && !view.isDestroyed()) {
+                if (view && view.webContents && !isBrowserViewDestroyed(view)) {
                     try {
                         const wcMetrics = await view.webContents.executeJavaScript(`
                             ({
@@ -12303,6 +13308,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
     }
 
     mainWindow.once("ready-to-show", () => {
+        if (headlessControlEnabled) {
+            try { mainWindow.setSkipTaskbar(true); } catch (_) { }
+            return;
+        }
         if (MINIMIZED) {
             mainWindow.minimize();
             //+ KravchenkoAndrey 08.01.2022
@@ -13176,6 +14185,14 @@ app.on("before-quit", (event) => {
             console.warn('[TikTok] Failed to dispose signing window during quit:', error);
         }
     }
+    shutdownTtsWorker();
+    shutdownSttWorker();
+    if (localMediaService) {
+        localMediaService.stop().catch(() => { });
+    }
+    if (controlApiRouter) {
+        controlApiRouter.close();
+    }
 });
 
 app.on("will-quit", () => {
@@ -13183,7 +14200,7 @@ app.on("will-quit", () => {
     safeUnregisterGlobalShortcuts('will-quit');
 });
 
-const folder = path.join(app.getPath("appData"), `${app.name}`);
+const folder = earlyDataPaths ? earlyDataPaths.userData : path.join(app.getPath("appData"), `${app.name}`);
 if (!fs.existsSync(folder)) {
     fs.mkdirSync(folder, {
         recursive: true
@@ -13934,6 +14951,8 @@ app.whenReady().then(async function () {
     //app.allowRendererProcessReuse = false;
     log("APP READY");
 
+    if (await handlePendingPortableMigration()) return;
+
     // Log actual app locale to see what Electron is using
     log(`Electron app.getLocale(): ${app.getLocale()}`);
     log(`Expected SYSTEM_LOCALE: ${SYSTEM_LOCALE}`);
@@ -14000,6 +15019,34 @@ app.whenReady().then(async function () {
             console.error(e);
         }
     });
+
+    if (TTS_DIAGNOSTICS_ENABLED) {
+        try {
+            const report = await runTtsDiagnostics();
+            console.log('[TtsDiagnostics] Summary:', JSON.stringify(report.summary));
+            shutdownTtsWorker();
+            app.exit(report.success ? 0 : 1);
+        } catch (error) {
+            const failureReport = {
+                startedAt: new Date().toISOString(),
+                finishedAt: new Date().toISOString(),
+                success: false,
+                error: error && error.message ? error.message : String(error),
+                snapshots: {
+                    after: getTtsDiagnosticsSnapshot()
+                }
+            };
+            if (TTS_DIAGNOSTICS_REPORT_PATH) {
+                try {
+                    await fsp.writeFile(TTS_DIAGNOSTICS_REPORT_PATH, JSON.stringify(failureReport, null, 2), 'utf8');
+                } catch (_) { }
+            }
+            console.error('[TtsDiagnostics] Failed:', failureReport.error);
+            shutdownTtsWorker();
+            app.exit(1);
+        }
+        return;
+    }
 
 	    try {
 	        const diskResult = loadCachedStateWithBackupSource({ logSelection: true });
@@ -14088,6 +15135,56 @@ app.whenReady().then(async function () {
         }
     }
 
+    localMediaService = setupElectronLocalMedia({
+        ipcMain,
+        dialog,
+        shell,
+        store,
+        isTrustedSender: (event) => {
+            const frame = event && event.senderFrame;
+            if (!frame || (frame.mainFrame && frame !== frame.mainFrame)) return false;
+            const senderUrl = String(frame.url || (event.sender && event.sender.getURL()) || '');
+            if (isSocialStreamRemoteUrl(senderUrl)) return true;
+            try {
+                if (!senderUrl.startsWith('file:')) return false;
+                const senderPath = fileURLToPath(senderUrl);
+                const trustedRoots = [path.resolve(__dirname)];
+                if (Argv.filesource) {
+                    try {
+                        trustedRoots.push(path.resolve(String(Argv.filesource).startsWith('file:')
+                            ? fileURLToPath(Argv.filesource)
+                            : String(Argv.filesource)));
+                    } catch (_) { }
+                }
+                return trustedRoots.some((root) => isPathInsideDirectory(root, senderPath));
+            } catch (_) {
+                return false;
+            }
+        },
+        getRuntimeRoot: async () => {
+            if (Argv.filesource) return Argv.filesource;
+            return resolveBundledSocialStreamRoot('main');
+        },
+        showOpenDialog: remoteControlEnabled ? async (dialogOptions) => {
+            const filePath = remoteControlFileSelections.shift();
+            if (filePath) {
+                console.log('[Remote Control] Supplying queued local media selection:', path.basename(filePath));
+                return { canceled: false, filePaths: [filePath] };
+            }
+            if (headlessControlEnabled) {
+                const error = new Error('A visible app session is required to choose a local file.');
+                error.code = 'USER_INTERACTION_REQUIRED';
+                throw error;
+            }
+            return dialog.showOpenDialog(dialogOptions);
+        } : undefined
+    });
+    try {
+        await localMediaService.start();
+    } catch (error) {
+        console.warn('[Local Media] Server did not start:', error && error.message ? error.message : error);
+    }
+
     createWindow(Argv, false, true);
     queueStabilityStartupNotice();
     setupRemoteControlServer();
@@ -14126,47 +15223,486 @@ app.whenReady().then(async function () {
 })
     .catch(console.error);
 
-ipcMain.handle("tts", async (event, data) => {
-    return new Promise((resolve, reject) => {
-        // Determine the correct path to the Kokoro-82M-ONNX directory
-        let appPath;
-        if (app.isPackaged) {
-            // In production: use the path relative to the application's root
-            appPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'Kokoro-82M-ONNX');
+const STT_WORKER_PATH = path.join(__dirname, 'stt-worker.js');
+const STT_MODEL_ID = String(process.env.SSAPP_STT_MODEL_ID || 'Xenova/whisper-tiny.en').trim() || 'Xenova/whisper-tiny.en';
+const STT_SAMPLE_RATE = 16000;
+const STT_MIN_SAMPLES = Math.round(STT_SAMPLE_RATE * 0.25);
+const STT_MAX_SAMPLES = STT_SAMPLE_RATE * 20;
+const STT_MAX_QUEUE_DEPTH = 3;
+const STT_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+let sttWorker = null;
+let sttActiveRequest = null;
+let sttRequestId = 0;
+let sttWorkerCreateCount = 0;
+let sttWorkerModelLoadCount = 0;
+let sttCompletedRequestCount = 0;
+const sttQueue = [];
+
+function createSttError(code, message) {
+    const error = new Error(`[${code}] ${message}`);
+    error.code = code;
+    return error;
+}
+
+function getSttModelCacheDir() {
+    const override = String(process.env.SSAPP_STT_MODEL_CACHE_DIR || '').trim();
+    if (override) return path.resolve(override);
+    return path.join(app.getPath('userData'), 'models', 'whisper');
+}
+
+function getSttSenderUrl(event) {
+    if (!event || !event.sender || !event.senderFrame) return '';
+    if (!event.sender.mainFrame || event.senderFrame !== event.sender.mainFrame) return '';
+    return String(event.senderFrame.url || event.sender.getURL() || '');
+}
+
+function isTrustedSttSender(event) {
+    const senderUrl = getSttSenderUrl(event);
+    if (!senderUrl) return false;
+    if (isSocialStreamRemoteUrl(senderUrl) && matchesSocialStreamPagePath(senderUrl, 'cohost')) return true;
+    return senderUrl.startsWith('file://') && matchesSocialStreamPagePath(senderUrl, 'cohost');
+}
+
+function assertTrustedSttSender(event) {
+    if (!isTrustedSttSender(event)) {
+        throw createSttError('SSAPP_STT_FORBIDDEN', 'Local speech recognition is only available to the main cohost page.');
+    }
+}
+
+function normalizeSttAudioPayload(payload) {
+    const sampleRate = Number(payload && payload.sampleRate);
+    if (sampleRate !== STT_SAMPLE_RATE) {
+        throw createSttError('SSAPP_STT_SAMPLE_RATE', `Expected ${STT_SAMPLE_RATE} Hz mono PCM audio.`);
+    }
+    const rawAudio = payload && payload.audio;
+    const isArrayBuffer = rawAudio instanceof ArrayBuffer;
+    const isView = ArrayBuffer.isView(rawAudio);
+    const byteLength = isArrayBuffer ? rawAudio.byteLength : isView ? rawAudio.byteLength : 0;
+    if (!byteLength || byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) {
+        throw createSttError('SSAPP_STT_AUDIO', 'Expected mono Float32 PCM audio.');
+    }
+    const sampleCount = byteLength / Float32Array.BYTES_PER_ELEMENT;
+    if (sampleCount < STT_MIN_SAMPLES) {
+        throw createSttError('SSAPP_STT_AUDIO_SHORT', 'Speech segment was too short to transcribe.');
+    }
+    if (sampleCount > STT_MAX_SAMPLES) {
+        throw createSttError('SSAPP_STT_AUDIO_LONG', 'Speech segment exceeded the 20 second limit.');
+    }
+    const audioBuffer = isArrayBuffer
+        ? rawAudio.slice(0)
+        : rawAudio.buffer.slice(rawAudio.byteOffset, rawAudio.byteOffset + rawAudio.byteLength);
+    return {
+        audioBuffer,
+        sampleCount,
+    };
+}
+
+function isSttModelCached() {
+    try {
+        const modelParts = STT_MODEL_ID.split('/').filter(Boolean);
+        const onnxDir = path.join(getSttModelCacheDir(), ...modelParts, 'onnx');
+        return fs.existsSync(path.join(onnxDir, 'encoder_model_quantized.onnx'))
+            && fs.existsSync(path.join(onnxDir, 'decoder_model_merged_quantized.onnx'));
+    } catch (_) {
+        return false;
+    }
+}
+
+function sendSttStatus(request, status) {
+    if (!request || !request.sender || request.sender.isDestroyed()) return;
+    try {
+        request.sender.send('stt:status', {
+            requestId: request.id,
+            engine: 'whisper',
+            model: STT_MODEL_ID,
+            ...status,
+        });
+    } catch (_) { }
+}
+
+function createSttWorker() {
+    sttWorkerCreateCount += 1;
+    const cacheDir = getSttModelCacheDir();
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const worker = new Worker(STT_WORKER_PATH, {
+        workerData: {
+            cacheDir,
+            modelId: STT_MODEL_ID,
+        },
+    });
+    sttWorker = worker;
+    worker.on('message', (message) => {
+        if (sttWorker !== worker || !message) return;
+        const request = sttActiveRequest;
+        if (message.type === 'status') {
+            if (request && (message.id === request.id || message.id === null || message.id === undefined)) {
+                sendSttStatus(request, message);
+            }
+            return;
+        }
+        if (message.type !== 'result' || !request) return;
+        clearTimeout(request.timeoutId);
+        sttActiveRequest = null;
+        sttCompletedRequestCount += 1;
+        if (Number.isFinite(message.modelLoadCount)) {
+            sttWorkerModelLoadCount = message.modelLoadCount;
+        }
+        if (message.id !== request.id) {
+            request.reject(createSttError('SSAPP_STT_RESPONSE', 'Whisper returned an unexpected response.'));
+        } else if (message.error) {
+            request.reject(createSttError('SSAPP_STT_TRANSCRIBE', message.error));
         } else {
-            // In development: use the path relative to the current directory
-            appPath = path.join(__dirname, 'Kokoro-82M-ONNX');
+            request.resolve({
+                text: String(message.text || '').slice(0, 4000),
+                engine: 'whisper',
+                model: STT_MODEL_ID,
+                elapsedMs: Number(message.elapsedMs) || 0,
+                modelLoadCount: sttWorkerModelLoadCount,
+            });
+        }
+        processSttQueue();
+    });
+    worker.on('error', (error) => {
+        if (sttWorker !== worker) return;
+        sttWorker = null;
+        const request = sttActiveRequest;
+        sttActiveRequest = null;
+        if (request) {
+            clearTimeout(request.timeoutId);
+            request.reject(createSttError('SSAPP_STT_WORKER', error && error.message ? error.message : 'Whisper worker failed.'));
+        }
+        try {
+            worker.terminate();
+        } catch (_) { }
+        processSttQueue();
+    });
+    worker.on('exit', (code) => {
+        if (sttWorker !== worker) return;
+        sttWorker = null;
+        const request = sttActiveRequest;
+        sttActiveRequest = null;
+        if (request) {
+            clearTimeout(request.timeoutId);
+            request.reject(createSttError('SSAPP_STT_WORKER', `Whisper worker exited with code ${code}.`));
+        }
+        processSttQueue();
+    });
+    return worker;
+}
+
+function getSttWorker() {
+    return sttWorker || createSttWorker();
+}
+
+function processSttQueue() {
+    if (sttActiveRequest || sttQueue.length === 0) return;
+    const request = sttQueue.shift();
+    if (!request.sender || request.sender.isDestroyed()) {
+        request.reject(createSttError('SSAPP_STT_CLOSED', 'The cohost window closed before transcription started.'));
+        processSttQueue();
+        return;
+    }
+    let worker;
+    try {
+        worker = getSttWorker();
+        sttActiveRequest = request;
+        request.timeoutId = setTimeout(() => {
+            if (sttActiveRequest !== request) return;
+            sttActiveRequest = null;
+            request.reject(createSttError('SSAPP_STT_TIMEOUT', 'Local Whisper transcription timed out.'));
+            if (sttWorker === worker) sttWorker = null;
+            try {
+                worker.terminate();
+            } catch (_) { }
+            processSttQueue();
+        }, STT_REQUEST_TIMEOUT_MS);
+        sendSttStatus(request, {
+            type: 'status',
+            phase: isSttModelCached() ? 'queued' : 'model-download-needed',
+        });
+        worker.postMessage({
+            id: request.id,
+            audioBuffer: request.audioBuffer,
+        }, [request.audioBuffer]);
+    } catch (error) {
+        if (sttActiveRequest === request) sttActiveRequest = null;
+        request.reject(error instanceof Error ? error : createSttError('SSAPP_STT_WORKER', String(error)));
+        if (worker && sttWorker === worker) {
+            sttWorker = null;
+            try {
+                worker.terminate();
+            } catch (_) { }
+        }
+        processSttQueue();
+    }
+}
+
+function enqueueSttRequest(sender, normalizedAudio) {
+    if (sttQueue.length + (sttActiveRequest ? 1 : 0) >= STT_MAX_QUEUE_DEPTH) {
+        return Promise.reject(createSttError('SSAPP_STT_BUSY', 'Local Whisper is busy; wait for the current speech segment to finish.'));
+    }
+    return new Promise((resolve, reject) => {
+        sttQueue.push({
+            id: ++sttRequestId,
+            sender,
+            audioBuffer: normalizedAudio.audioBuffer,
+            sampleCount: normalizedAudio.sampleCount,
+            timeoutId: null,
+            resolve,
+            reject,
+        });
+        processSttQueue();
+    });
+}
+
+function shutdownSttWorker() {
+    const shutdownError = createSttError('SSAPP_STT_SHUTDOWN', 'Local Whisper is shutting down.');
+    if (sttActiveRequest) {
+        clearTimeout(sttActiveRequest.timeoutId);
+        sttActiveRequest.reject(shutdownError);
+        sttActiveRequest = null;
+    }
+    while (sttQueue.length > 0) {
+        sttQueue.shift().reject(shutdownError);
+    }
+    if (sttWorker) {
+        const worker = sttWorker;
+        sttWorker = null;
+        try {
+            worker.terminate();
+        } catch (_) { }
+    }
+}
+
+ipcMain.handle('stt:get-capabilities', async (event) => {
+    assertTrustedSttSender(event);
+    return {
+        available: true,
+        engine: 'whisper',
+        model: STT_MODEL_ID,
+        sampleRate: STT_SAMPLE_RATE,
+        modelCached: isSttModelCached(),
+        maxDurationMs: Math.round((STT_MAX_SAMPLES / STT_SAMPLE_RATE) * 1000),
+    };
+});
+
+ipcMain.handle('stt:transcribe', async (event, payload) => {
+    assertTrustedSttSender(event);
+    return enqueueSttRequest(event.sender, normalizeSttAudioPayload(payload));
+});
+
+ipcMain.handle('stt:get-diagnostics', async (event) => {
+    assertTrustedSttSender(event);
+    return {
+        hasWorker: !!sttWorker,
+        activeRequestId: sttActiveRequest ? sttActiveRequest.id : null,
+        queueLength: sttQueue.length,
+        workerCreateCount: sttWorkerCreateCount,
+        completedRequestCount: sttCompletedRequestCount,
+        workerModelLoadCount: sttWorkerModelLoadCount,
+        modelCached: isSttModelCached(),
+        model: STT_MODEL_ID,
+    };
+});
+
+ipcMain.handle("tts", async (event, data) => {
+    return enqueueTtsRequest(data);
+});
+
+const TTS_WORKER_PATH = path.join(__dirname, 'tts-worker.js');
+let ttsWorker = null;
+let ttsActiveRequest = null;
+let ttsRequestId = 0;
+const ttsQueue = [];
+let ttsWorkerShuttingDown = false;
+let ttsWorkerCreateCount = 0;
+let ttsCompletedRequestCount = 0;
+let ttsWorkerModelLoadCount = 0;
+
+function getKokoroModelPath() {
+    if (app.isPackaged) {
+        return path.join(process.resourcesPath, 'app.asar.unpacked', 'Kokoro-82M-ONNX');
+    }
+    return path.join(__dirname, 'Kokoro-82M-ONNX');
+}
+
+function normalizeTtsError(error, fallbackMessage) {
+    if (error instanceof Error) return error;
+    if (error && typeof error.message === 'string') return new Error(error.message);
+    if (typeof error === 'string' && error.trim()) return new Error(error);
+    return new Error(fallbackMessage || 'TTS request failed');
+}
+
+function createTtsWorker() {
+    const appPath = getKokoroModelPath();
+    log("Using Kokoro model path:" + appPath);
+    ttsWorkerShuttingDown = false;
+    ttsWorkerCreateCount += 1;
+
+    const worker = new Worker(TTS_WORKER_PATH, {
+        workerData: {
+            appPath
+        }
+    });
+
+    ttsWorker = worker;
+
+    worker.on('message', (result) => {
+        handleTtsWorkerMessage(worker, result);
+    });
+
+    worker.on('error', (error) => {
+        handleTtsWorkerCrash(worker, error);
+    });
+
+    worker.on('exit', (code) => {
+        if (ttsWorker !== worker) return;
+        ttsWorker = null;
+
+        if (ttsWorkerShuttingDown) {
+            ttsWorkerShuttingDown = false;
+            return;
         }
 
-        log("Using Kokoro model path:" + appPath);
-
-        // Create a worker thread with model path information
-        const worker = new Worker(path.join(__dirname, 'tts-worker.js'), {
-            workerData: {
-                appPath
-            }
-        });
-
-        // Send the text to the worker
-        worker.postMessage(data);
-
-        // Handle the result from the worker
-        worker.on('message', (result) => {
-            if (result.error) {
-                reject(result.error);
-            } else {
-                resolve(result.wavBuffer);
-            }
-            worker.terminate();
-        });
-
-        worker.on('error', (error) => {
-            console.error("TTS Worker Error:", error);
-            reject(error);
-            worker.terminate();
-        });
+        const error = new Error(code === 0 ? 'TTS worker exited unexpectedly' : `TTS worker exited with code ${code}`);
+        console.error("TTS Worker Error:", error);
+        failActiveTtsRequest(error);
+        scheduleNextTtsRequest();
     });
-});
+
+    return worker;
+}
+
+function getTtsWorker() {
+    return ttsWorker || createTtsWorker();
+}
+
+function handleTtsWorkerMessage(worker, result) {
+    if (ttsWorker !== worker) return;
+
+    const request = ttsActiveRequest;
+    if (!request) {
+        console.warn('[TTS] Worker returned a result with no active request.');
+        return;
+    }
+
+    if (!result || result.id !== request.id) {
+        ttsActiveRequest = null;
+        request.reject(new Error('TTS worker returned an unexpected response.'));
+        scheduleNextTtsRequest();
+        return;
+    }
+
+    ttsActiveRequest = null;
+    ttsCompletedRequestCount += 1;
+    if (result && Number.isFinite(result.modelLoadCount)) {
+        ttsWorkerModelLoadCount = result.modelLoadCount;
+    }
+    if (result.error) {
+        request.reject(normalizeTtsError(result.error, 'TTS request failed'));
+    } else {
+        request.resolve(result.wavBuffer);
+    }
+    scheduleNextTtsRequest();
+}
+
+function handleTtsWorkerCrash(worker, error) {
+    if (ttsWorker !== worker) return;
+
+    ttsWorker = null;
+    const normalizedError = normalizeTtsError(error, 'TTS worker crashed');
+    console.error("TTS Worker Error:", normalizedError);
+    failActiveTtsRequest(normalizedError);
+
+    try {
+        worker.terminate();
+    } catch (_) { }
+
+    scheduleNextTtsRequest();
+}
+
+function failActiveTtsRequest(error) {
+    const request = ttsActiveRequest;
+    ttsActiveRequest = null;
+    if (request) {
+        request.reject(normalizeTtsError(error, 'TTS request failed'));
+    }
+}
+
+function scheduleNextTtsRequest() {
+    if (ttsQueue.length > 0) {
+        setImmediate(processTtsQueue);
+    }
+}
+
+function processTtsQueue() {
+    if (ttsActiveRequest || ttsQueue.length === 0) return;
+
+    const request = ttsQueue.shift();
+    let worker;
+    try {
+        worker = getTtsWorker();
+        ttsActiveRequest = request;
+        worker.postMessage({
+            id: request.id,
+            data: request.data
+        });
+    } catch (error) {
+        if (ttsActiveRequest === request) {
+            ttsActiveRequest = null;
+        }
+        request.reject(normalizeTtsError(error, 'Failed to send TTS request to worker'));
+        if (worker && ttsWorker === worker) {
+            ttsWorker = null;
+            try {
+                worker.terminate();
+            } catch (_) { }
+        }
+        scheduleNextTtsRequest();
+    }
+}
+
+function enqueueTtsRequest(data) {
+    return new Promise((resolve, reject) => {
+        ttsQueue.push({
+            id: ++ttsRequestId,
+            data,
+            resolve,
+            reject
+        });
+        processTtsQueue();
+    });
+}
+
+function getTtsDiagnosticsSnapshot() {
+    return {
+        hasWorker: !!ttsWorker,
+        activeRequestId: ttsActiveRequest ? ttsActiveRequest.id : null,
+        queueLength: ttsQueue.length,
+        workerCreateCount: ttsWorkerCreateCount,
+        completedRequestCount: ttsCompletedRequestCount,
+        workerModelLoadCount: ttsWorkerModelLoadCount
+    };
+}
+
+function shutdownTtsWorker() {
+    ttsWorkerShuttingDown = true;
+    const shutdownError = new Error('TTS worker is shutting down');
+
+    failActiveTtsRequest(shutdownError);
+    while (ttsQueue.length > 0) {
+        const request = ttsQueue.shift();
+        request.reject(shutdownError);
+    }
+
+    if (ttsWorker) {
+        const worker = ttsWorker;
+        ttsWorker = null;
+        try {
+            worker.terminate();
+        } catch (_) { }
+    }
+}
 
 app.on("ready", () => {
     app.on('web-contents-created', (event, contents) => {
@@ -14180,16 +15716,9 @@ app.on("ready", () => {
         contents.setWindowOpenHandler(({ url, features }) => {
             // Always open links in-app, inheriting the opener's session
             // Apply a sensible default window configuration
-            let frame = true;
-            let backgroundColor = '#DDD';
-            let useTransparency = false;
-
-            if (url.includes('&transparent') || url.includes('?transparent') ||
-                url.includes('&chroma=') || url.includes('?chroma=')) {
-                frame = false;
-                backgroundColor = '#0000';
-                useTransparency = url.includes('&transparent') || url.includes('?transparent');
-            }
+            const frame = !shouldUseFramelessForUrl(url);
+            const backgroundColor = frame ? '#DDD' : '#0000';
+            const useTransparency = shouldUseTransparentWindowForUrl(url);
             const forceWin10Compatibility = shouldUseWin10TransparencyCompat(frame, useTransparency);
             const overrideBrowserWindowOptions = applyPlatformWindowCompatibility({
                 width: 800,
@@ -15192,6 +16721,30 @@ function showReporterMessageBox(options) {
     return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
 }
 
+function getTikTokDiagnosticReportContext() {
+    const connections = [];
+    try {
+        for (const [rawWssID, manager] of Object.entries(websocketConnections || {})) {
+            if (!manager || typeof manager.getTikTokDiagnosticStats !== 'function') {
+                continue;
+            }
+            const numericWssID = Number(rawWssID);
+            connections.push({
+                wssID: Number.isFinite(numericWssID) ? numericWssID : rawWssID,
+                sourceId: typeof manager.sourceId === 'string' ? manager.sourceId : null,
+                ...manager.getTikTokDiagnosticStats()
+            });
+        }
+    } catch (error) {
+        return {
+            error: error && error.message ? error.message : String(error)
+        };
+    }
+    return {
+        connections
+    };
+}
+
 async function uploadDiagnosticReport(type, message, context = {}) {
     return reporter.send(type, message, context, { bypassRateLimit: true });
 }
@@ -15213,7 +16766,8 @@ async function sendErrorReportingEnabledSnapshot() {
             'User enabled error reporting; sending current settings snapshot.',
             {
                 trigger: 'enable_error_reporting',
-                platform: process.platform
+                platform: process.platform,
+                tiktokDiagnostics: getTikTokDiagnosticReportContext()
             }
         );
         return true;
@@ -15274,7 +16828,8 @@ async function promptAndSendManualIssueReport() {
             {
                 trigger: 'manual_issue_report',
                 description: cleanedDescription,
-                platform: process.platform
+                platform: process.platform,
+                tiktokDiagnostics: getTikTokDiagnosticReportContext()
             }
         );
         await showReporterMessageBox({
@@ -15349,6 +16904,85 @@ function createMenu() {
                             click: async () => {
                                 await importSettingsBackupWithDialog();
                             }
+                        }
+                    ]
+                },
+                {
+                    label: 'Set Up Stream Deck',
+                    click: () => {
+                        if (mainWindow && mainWindow.webContents) {
+                            mainWindow.show();
+                            mainWindow.focus();
+                            mainWindow.webContents.send('open-streamdeck-setup');
+                        }
+                    }
+                },
+                {
+                    label: 'AI / LLM Control',
+                    submenu: [
+                        {
+                            label: 'Enable Control API',
+                            type: 'checkbox',
+                            checked: store.get('controlApi.enabled', false) === true,
+                            click: async menuItem => {
+                                store.set('controlApi.enabled', menuItem.checked === true);
+                                const result = await dialog.showMessageBox({
+                                    type: 'info',
+                                    buttons: ['Restart Now', 'Later'],
+                                    defaultId: 0,
+                                    cancelId: 1,
+                                    title: 'AI / LLM Control',
+                                    message: menuItem.checked ? 'Control API enabled.' : 'Control API disabled.',
+                                    detail: 'Restart Social Stream Ninja to apply this change.'
+                                });
+                                if (result.response === 0) {
+                                    markStabilitySessionGraceful('control-api-setting-restart');
+                                    app.relaunch();
+                                    app.exit();
+                                }
+                            }
+                        },
+                        {
+                            label: 'Copy Control Connection',
+                            enabled: controlApiEnabled,
+                            click: async () => {
+                                clipboard.writeText(JSON.stringify({
+                                    url: `http://127.0.0.1:${remoteControlPort}`,
+                                    token: remoteControlToken,
+                                    ssappVersion: app.getVersion()
+                                }, null, 2));
+                                await dialog.showMessageBox({
+                                    type: 'info',
+                                    buttons: ['OK'],
+                                    title: 'Control Connection Copied',
+                                    message: 'The private localhost connection was copied.',
+                                    detail: 'Treat the token like a password. Do not paste it into public chats or logs.'
+                                });
+                            }
+                        },
+                        {
+                            label: 'Rotate Control Token',
+                            click: async () => {
+                                const confirmation = await dialog.showMessageBox({
+                                    type: 'warning',
+                                    buttons: ['Rotate and Restart', 'Cancel'],
+                                    defaultId: 1,
+                                    cancelId: 1,
+                                    title: 'Rotate Control Token',
+                                    message: 'Existing AI and automation clients will be disconnected.',
+                                    detail: 'You will need to copy the new connection after restart.'
+                                });
+                                if (confirmation.response !== 0) return;
+                                store.set('controlApi.token', crypto.randomBytes(32).toString('hex'));
+                                markStabilitySessionGraceful('control-api-token-rotation');
+                                app.relaunch();
+                                app.exit();
+                            }
+                        },
+                        { type: 'separator' },
+                        {
+                            label: 'Open AI Control Guide',
+                            click: () => shell.openExternal('https://socialstream.ninja/docs/llm-control-guide.html')
                         }
                     ]
                 },
@@ -15731,7 +17365,7 @@ function createMenu() {
                 }
             },
             {
-                label: 'Send error reports to developer',
+                label: 'Enable automatic bug reports',
                 type: 'checkbox',
                 checked: store.get('errorReportingEnabled', false),
                 async click(item) {
@@ -16234,6 +17868,20 @@ function normalizeTikTokSigningArgs(input) {
     return Object.keys(payload).length ? payload : null;
 }
 
+function normalizeTikTokConnectionHandle(value) {
+    let parsed = null;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        parsed = value;
+    } else if (typeof value === 'string' && value.trim()) {
+        const numeric = Number(value);
+        parsed = Number.isFinite(numeric) ? numeric : null;
+    }
+    if (!parsed) {
+        return null;
+    }
+    return parsed >= 900001 ? parsed - 900000 : parsed;
+}
+
 ipcMain.handle("createTikTokConnection", async function (_event, args) {
     if (runtimeForceTikTokClassic) {
         console.info('[TikTok] Skipping WebSocket connection - classic mode is forced.');
@@ -16306,6 +17954,16 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     manager.accountRole = normalizeSourceAccountRole(args?.accountRole);
     manager.customSession = args?.customSession || null;
     manager.sourceId = sourceIdFromRenderer || null;
+    if (manager.sourceId) {
+        const retiredWssIds = registerActiveTikTokSourceConnection(manager, 'createTikTokConnection');
+        if (retiredWssIds && retiredWssIds.length) {
+            console.info('[TikTok] Retired stale connection(s) for source before creating replacement:', {
+                sourceId: manager.sourceId,
+                replacementWssID: wssID,
+                retiredWssIds
+            });
+        }
+    }
     websocketConnections[wssID] = manager;
 
     connectionStates.set(wssID, {
@@ -16376,6 +18034,11 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
         await manager.initialize();
     } catch (e) {
         console.error('Error creating TikTok connection:', e);
+        try {
+            cleanupConnection(wssID);
+        } catch (cleanupError) {
+            console.warn('[TikTok] Failed to clean up failed connection:', cleanupError?.message || cleanupError);
+        }
         // Propagate the error to the renderer so the UI can react accordingly
         throw e;
     }
@@ -16391,17 +18054,18 @@ ipcMain.on("disconnectTikTokConnection", function (eventRet, args) {
     }
 
     try {
-        const managerMeta = websocketConnections[args.wssID];
+        const normalizedWssID = normalizeTikTokConnectionHandle(args.wssID) || args.wssID;
+        const managerMeta = websocketConnections[normalizedWssID] || websocketConnections[args.wssID];
         const sourceId = managerMeta && managerMeta.sourceId ? managerMeta.sourceId : null;
         try {
             // Notify renderer to clear UI/countdowns
             mainWindow.webContents.send('tiktokConnectionStatus', {
-                wssID: args.wssID,
+                wssID: normalizedWssID,
                 status: 'stopped_by_user',
                 sourceId
             });
         } catch (_) { }
-        cleanupConnection(args.wssID);
+        cleanupConnection(normalizedWssID);
         eventRet.returnValue = true;
     } catch (e) {
         console.error('Error in disconnectTikTokConnection:', e);

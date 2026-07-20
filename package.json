@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.3.122",
+  "version": "0.4.5",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "main": "main.js",
@@ -14,7 +14,28 @@
     "test:settings-loss": "node tests/electron/settings-loss-diagnostics.js",
     "test:settings-rootcause": "node tests/electron/settings-rootcause-diagnostics.js",
     "test:settings-transfer": "node tests/electron/settings-transfer-e2e.js",
+    "test:portable-paths": "node tests/electron/portable-data-paths-regression.js",
+    "test:portable-migration": "node tests/electron/portable-migration-runner-regression.js",
+    "test:portable:e2e": "node tests/electron/portable-build-e2e.js",
     "test:stability-recovery": "node tests/electron/stability-recovery-diagnostics.js",
+    "test:streamdeck-bridge": "node tests/electron/streamdeck-bridge-e2e.js",
+    "test:tts": "node tests/electron/tts-diagnostics.js",
+    "test:cohost-stt": "node tests/electron/cohost-stt-e2e.js",
+    "test:cohost-stt:matrix": "node tests/electron/cohost-stt-audio-matrix.js",
+    "test:local-media": "node tests/electron/local-media-library-regression.js",
+    "test:local-media:e2e": "node tests/electron/local-media-library-e2e.js",
+    "test:popup-fallback-links:e2e": "node tests/electron/popup-fallback-links-e2e.js",
+    "test:llm-control:e2e": "node tests/electron/llm-control-headless-e2e.js",
+    "test:mcp-control:e2e": "node tests/electron/ssapp-mcp-e2e.js",
+    "mcp": "node resources/ssapp-mcp.js",
+    "test:socialstream-path-security": "node tests/electron/socialstream-path-security-regression.js",
+    "test:ipc-scaffold": "node tests/electron/ipc-scaffold-regression.js",
+    "test:source-url-parsing": "node tests/electron/source-url-parsing-regression.js",
+    "test:youtube-workflow": "node tests/electron/youtube-workflow-e2e.js",
+    "test:youtube-owner-discovery": "node tests/electron/youtube-owner-discovery-regression.js",
+    "test:youtube-oauth-loopback": "node tests/electron/youtube-oauth-loopback-e2e.js",
+    "test:chathistory-export": "node tests/electron/chathistory-export-regression.js",
+    "test:packaging-prune": "node tests/electron/prune-packaged-native-binaries-regression.js",
     "test:tiktok-auto-mode": "node tests/tiktok/auto-mode-regression.js",
     "test:tiktok-gift-regression": "node tests/tiktok/gift-count-regression.js",
     "test:tiktok-social-signals": "node tests/tiktok/social-signal-regression.js",
@@ -61,12 +82,12 @@
       "settings-backup.js",
       "worker-tts.js",
       "tts-worker.js",
+      "stt-worker.js",
       "transfer-backup.js",
       "transfer-backup-runner.js",
       "transfer-restore-runner.js",
       "websocket-monitor.js",
       "youtube.js",
-      "youtube-grpc-client.js",
       "tiktok-auth.js",
       "tiktok-badges.js",
       "error-reporter.js",
@@ -97,6 +118,8 @@
       "!certs/**",
       "!old-certs-backup/**",
       "!dist/**",
+      "!cloudflare/**",
+      "!sso-worker/**",
       "!aur/**",
       "!aur-repo/**",
       "!tests/**",
@@ -211,11 +234,12 @@
         "releaseType": "release"
       }
     ],
+    "afterPack": "./scripts/prunePackagedNativeBinaries.js",
     "afterSign": "./afterSign.js",
     "afterAllArtifactBuild": "./afterPack.js"
   },
   "devDependencies": {
-    "electron": "^42.2.0",
+    "electron": "^43.1.1",
     "electron-builder": "^26.5.0",
     "electron-notarize": "git+https://github.com/electron/notarize.git",
     "fs-extra": "^11.3.4",
@@ -227,8 +251,6 @@
   },
   "dependencies": {
     "@eulerstream/euler-websocket-sdk": "^0.0.6",
-    "@grpc/grpc-js": "^1.14.0",
-    "@grpc/proto-loader": "^0.8.0",
     "@huggingface/transformers": "git+https://github.com/steveseguin/transformers.js",
     "app-builder-lib": "^26.0.12",
     "archiver": "^7.0.1",
@@ -255,6 +277,11 @@
     "utf-8-validate": "^6.0.5",
     "ws": "^8.18.1",
     "yargs": "^17.7.2"
+  },
+  "overrides": {
+    "tiktok-live-connector": {
+      "protobufjs": "7.6.1"
+    }
   },
   "engines": {
     "node": ">=18.0.0",

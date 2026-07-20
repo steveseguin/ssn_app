@@ -8,6 +8,9 @@ Electron desktop application for aggregating social media live stream chat. Comm
 
 - When replying to Steve, prefer plain, everyday language over jargon.
 - Keep explanations direct and practical; explain technical terms briefly when they matter.
+- When Steve asks for a TLDR, keep it genuinely short: a few lines max, no long explanation.
+- When Steve asks to remember an instruction, save it into the relevant instruction file or memory mechanism when possible; do not merely say it will be kept in mind.
+- If Steve says "remember", treat it as a request to persist the instruction. Check for writable instruction targets, especially the repo `AGENTS.md` for project-specific behavior and `C:\Users\steve\.codex\AGENTS.md` for global behavior. Update the most appropriate file, or both when the instruction applies globally and to the current repo. Do not say memory tools are unavailable unless no writable instruction or memory target exists after checking.
 
 ## Source Of Truth
 
@@ -15,6 +18,13 @@ Electron desktop application for aggregating social media live stream chat. Comm
 - `ssapp` loads Social Stream source files remotely from `C:\Users\steve\Code\social_stream` at app startup; treat that repo as the primary runtime source.
 - Do not treat `C:\Users\steve\Code\ssapp\resources\social_stream_fallback\main` as the source repo; it is a fallback mirror/bundle target.
 - The `resources/social_stream_fallback/main` folder is replaced at build/update time and should be treated only as a backup, not the primary source.
+- **Do not read, browse, edit, or add changes in `resources/social_stream_fallback` during normal app work.**  
+  This folder is disposable/rebuilt on every build/update (`npm run update:fallback`), so spending time on it is not productive.
+
+## Social Stream Payload Rules
+
+- Donation-style chat rows should use `hasDonation` and optional `donoValue`; do not set `event: "donation"` just because a chat/tip row has a donation value.
+- Use existing payload fields first. Only populate `meta` when there is additional structured data that downstream consumers actually need and no existing field handles it well.
 
 ## Build/Run Commands
 
@@ -29,9 +39,33 @@ Electron desktop application for aggregating social media live stream chat. Comm
 | `npm run clean` | Remove dist folder |
 | `npm run update:fallback` | Update Social Stream fallback bundle |
 
+## Release Rules
+
+- Read `RELEASE.md` before any release, deploy, tag, or artifact-upload work.
+- Critical rule: never create git tags or GitHub releases in `ssapp` / `ssn_app`; app release tags and artifacts belong in `steveseguin/social_stream`.
+- GitHub release notes should follow the existing Social Stream style, including the heading `### What's new in this version:`.
+- The `What's new` bullets must summarize every important user-facing change included in the release package, not only the final version bump. For example, if `v0.3.128` is being released after `v0.3.113`, include the important user-facing changes from `v0.3.114` through `v0.3.128`.
+- Before writing or updating release notes, check recent `steveseguin/social_stream` releases so the notes match the existing release-note style and include the right range of changes.
+- Do not add redundant platform intro text such as "Windows, macOS, and Linux pre-release" or "This pre-release includes Windows, macOS, and Linux builds." The Downloads table already shows platforms.
+
 ## Testing
 
 No formal test framework (Jest/Mocha). Manual integration tests only.
+
+### LLM Control Maintenance
+
+- Whenever the SSApp control API, MCP adapter, command endpoints, capabilities, schemas, or version compatibility changes, update the checked-in skill under `C:\Users\steve\Code\social_stream\docs\skills\control-social-stream` in the same work.
+- Record each such change in the skill's version log, including the minimum SSApp version required for newly added or changed capabilities.
+- Keep the running SSApp version exposed through the control API and MCP responses so agents can select only skill capabilities supported by that app version.
+
+### VERY IMPORTANT: What Counts As Testing
+
+- Testing is not complete if it relies only on unit tests, smoke tests, static checks, syntax checks, or mocked/headless checks.
+- Unit tests and smoke tests are **not** considered actual testing for this project. They are only supporting sanity checks.
+- Only functional in-app, end-to-end testing of the real user workflow is considered actual testing.
+- For Electron/app changes, actual testing means starting the app in an appropriate isolated profile/environment and verifying the behavior inside the running app over time, including side effects such as reloads, persistence, network/server calls, background jobs, and repeated events.
+- Do not report a change as tested unless functional in-app/e2e testing was performed, or clearly state that only sanity checks were run and actual testing remains incomplete.
+- For website-loading and capture issues, reproduce them in SSApp's real Electron source window using the same session, user agent, preload, request hooks, and injected source configuration. Do not use the OpenAI in-app Browser or an unrelated browser as evidence of SSApp behavior.
 
 ### TikTok Connection Tests
 

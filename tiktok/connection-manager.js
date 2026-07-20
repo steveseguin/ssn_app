@@ -5,10 +5,20 @@ const path = require('path');
 const os = require('os');
 const { EventEmitter } = require('events');
 const WebSocket = require('ws');
+const {
+    ControlAction,
+    GiftMessageIgnoreConfig,
+    WebcastEvent,
+    WebcastEventMap,
+    WebcastImEnterRoomMessage: PublicWebcastImEnterRoomMessage,
+    createBaseWebcastPushFrame: publicCreateBaseWebcastPushFrame,
+    deserializeMessage: publicDeserializeMessage
+} = require('tiktok-live-connector');
 
 const {
     cleanVisibleString,
     firstNonEmptyVisibleString,
+    normalizeTikTokBadgeLevel,
     normalizeTikTokImageUrl,
     collectTikTokBadges,
     getBadgeImageUrl
@@ -16,11 +26,18 @@ const {
 const giftMapping = require('./gift-mapping.json');
 const reporter = require('../error-reporter');
 
-let connectorDeserializeMessage = null;
+let connectorDeserializeMessage = publicDeserializeMessage || null;
+let connectorCreateBaseWebcastPushFrame = publicCreateBaseWebcastPushFrame || null;
 try {
-    ({ deserializeMessage: connectorDeserializeMessage } = require('tiktok-live-connector/dist/lib/utilities'));
+    if (!connectorDeserializeMessage || !connectorCreateBaseWebcastPushFrame) {
+        ({
+            deserializeMessage: connectorDeserializeMessage,
+            createBaseWebcastPushFrame: connectorCreateBaseWebcastPushFrame
+        } = require('tiktok-live-connector/dist/lib/utilities'));
+    }
 } catch (_) {
-    connectorDeserializeMessage = null;
+    connectorDeserializeMessage = connectorDeserializeMessage || null;
+    connectorCreateBaseWebcastPushFrame = connectorCreateBaseWebcastPushFrame || null;
 }
 
 let SendRoomChatRoute = null;
@@ -41,20 +58,14 @@ const {
     deserializeWebSocketMessage,
     SchemaVersion
 } = require('@eulerstream/euler-websocket-sdk');
-const { WebcastEventMap, WebcastEvent } = require('tiktok-live-connector/dist/types/events');
-const { ControlAction, GiftMessageIgnoreConfig } = require('tiktok-live-connector/dist/types/tiktok/enums');
-
-(function applyAnchorIdentityPatch() {
-    try {
-        const wsClientPath = require.resolve('tiktok-live-connector/dist/lib/ws/lib/ws-client.js');
-        const content = fs.readFileSync(wsClientPath, 'utf8');
-        if (content.includes("identity: 'audience',") && !content.includes("identity: 'anchor',")) {
-            const patched = content.replace("identity: 'audience',", "identity: 'anchor',");
-            fs.writeFileSync(wsClientPath, patched, 'utf8');
-            console.log('[TikTok] Applied runtime anchor identity patch to ws-client.js');
-        }
-    } catch (_) { }
-})();
+let ConnectorWebcastImEnterRoomMessage = PublicWebcastImEnterRoomMessage || null;
+try {
+    if (!ConnectorWebcastImEnterRoomMessage) {
+        ({ WebcastImEnterRoomMessage: ConnectorWebcastImEnterRoomMessage } = require('tiktok-live-connector/dist/types'));
+    }
+} catch (_) {
+    ConnectorWebcastImEnterRoomMessage = ConnectorWebcastImEnterRoomMessage || null;
+}
 
 const env = {
     shouldEnableTikTokLogging: false,
@@ -92,6 +103,7 @@ const SHARED_EULER_PROXY_FALLBACK_KEY = (process.env.SSAPP_TIKTOK_SHARED_EULER_P
 const TIKTOK_LOG_SUBDIR = 'tiktok-logs';
 let cachedTikTokLogDir = null;
 let connectionStates = new Map();
+let activeTikTokConnectionBySourceId = new Map();
 let TikTokLiveConnectionClass = null;
 let TikTokPollingFallbackClass = null;
 let usingLegacyTikTokConnector = false;
@@ -99,6 +111,7 @@ let EulerSignerClass = null;
 const SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD = 3;
 const DEFAULT_TIKTOK_WEB_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36';
 const EULER_WS_PROVIDER = 'euler-ws';
+const STARTUP_HISTORY_CHAT_GRACE_MS = 5000;
 const GIFT_IGNORE_CONFIG_NOT_IGNORE = Number.isFinite(Number(GiftMessageIgnoreConfig?.GIFT_MESSAGE_IGNORE_CONFIG_NOT_IGNORE))
     ? Number(GiftMessageIgnoreConfig.GIFT_MESSAGE_IGNORE_CONFIG_NOT_IGNORE)
     : 0;
@@ -449,9 +462,21 @@ const localSignerSessionGate = {
     perUniqueIdNextAllowedAt: new Map()
 };
 
+const tiktokConnectAttemptGate = {
+    tail: Promise.resolve(),
+    nextAllowedAt: 0,
+    perKeyNextAllowedAt: new Map(),
+    cooldowns: new Map()
+};
+
 function getLocalSignerMinAttemptIntervalMs() {
     const raw = Number(CONFIG?.CONNECTION?.LOCAL_SIGNER_MIN_ATTEMPT_INTERVAL_MS);
     return Number.isFinite(raw) && raw > 0 ? raw : 10000;
+}
+
+function getLocalSignerCooldownRemainingMs(now = Date.now()) {
+    const until = Number(localSignerSessionGate.cooldownUntil) || 0;
+    return Math.max(0, until - now);
 }
 
 function setLocalSignerCooldown(untilEpochMs, reason) {
@@ -462,6 +487,119 @@ function setLocalSignerCooldown(untilEpochMs, reason) {
     if (until > localSignerSessionGate.cooldownUntil) {
         localSignerSessionGate.cooldownUntil = until;
         localSignerSessionGate.cooldownReason = typeof reason === 'string' && reason.trim() ? reason.trim() : null;
+    }
+}
+
+function getTikTokConnectAttemptIntervalMs(manager = null) {
+    const managerValue = Number(manager?.connectAttemptMinIntervalMs);
+    if (Number.isFinite(managerValue) && managerValue >= 0) {
+        return managerValue;
+    }
+    const raw = Number(CONFIG?.CONNECTION?.CONNECT_ATTEMPT_MIN_INTERVAL_MS);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 1500;
+}
+
+function getTikTokConnectAttemptProviderIntervalMs(manager = null) {
+    const managerValue = Number(manager?.connectAttemptProviderIntervalMs);
+    if (Number.isFinite(managerValue) && managerValue >= 0) {
+        return managerValue;
+    }
+    const raw = Number(CONFIG?.CONNECTION?.CONNECT_ATTEMPT_PROVIDER_INTERVAL_MS);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 2500;
+}
+
+function getTikTokConnectAttemptGateKey(manager = null) {
+    if (!manager || typeof manager !== 'object') {
+        return 'unknown';
+    }
+    if (manager.pollingFallbackActivated || manager.preferredStrategy === 'legacy' || manager.connectionStrategy === 'legacy') {
+        return 'legacy';
+    }
+    if (manager.signingProvider === 'local' || manager.autoLocalSignerFallbackActive) {
+        return 'local';
+    }
+    if (manager.signingProvider === EULER_WS_PROVIDER || manager.autoEulerProxyFallbackActive) {
+        return manager.hasUserProvidedSigningApiKey?.() ? 'euler-ws:user-key' : 'euler-ws:shared';
+    }
+    if (manager.signingProvider === 'custom') {
+        return 'custom';
+    }
+    return manager.hasUserProvidedSigningApiKey?.() ? 'auto:user-key' : 'auto:shared';
+}
+
+function setTikTokConnectAttemptCooldown(key, untilEpochMs, reason) {
+    const normalizedKey = typeof key === 'string' && key.trim() ? key.trim() : null;
+    const until = Number(untilEpochMs);
+    if (!normalizedKey || !Number.isFinite(until) || until <= 0) {
+        return;
+    }
+    const existing = tiktokConnectAttemptGate.cooldowns.get(normalizedKey);
+    if (!existing || until > existing.until) {
+        tiktokConnectAttemptGate.cooldowns.set(normalizedKey, {
+            until,
+            reason: typeof reason === 'string' && reason.trim() ? reason.trim() : null
+        });
+    }
+}
+
+async function waitForTikTokConnectAttemptSlot(manager, taskName = 'connect') {
+    const minIntervalMs = getTikTokConnectAttemptIntervalMs(manager);
+    const providerIntervalMs = getTikTokConnectAttemptProviderIntervalMs(manager);
+    if (minIntervalMs <= 0 && providerIntervalMs <= 0) {
+        return;
+    }
+
+    const previous = tiktokConnectAttemptGate.tail;
+    let release = null;
+    tiktokConnectAttemptGate.tail = new Promise((resolve) => { release = resolve; });
+    await previous;
+
+    try {
+        if (manager && manager.isStopped) {
+            const stoppedError = new Error('Connection stopped');
+            stoppedError.code = 'SSAPP_TIKTOK_STOPPED';
+            throw stoppedError;
+        }
+
+        const now = Date.now();
+        const key = getTikTokConnectAttemptGateKey(manager);
+        const cooldown = tiktokConnectAttemptGate.cooldowns.get(key);
+        if (cooldown && cooldown.until <= now) {
+            tiktokConnectAttemptGate.cooldowns.delete(key);
+        }
+
+        const globalAllowedAt = Number(tiktokConnectAttemptGate.nextAllowedAt) || 0;
+        const keyAllowedAt = Number(tiktokConnectAttemptGate.perKeyNextAllowedAt.get(key)) || 0;
+        const cooldownUntil = cooldown && cooldown.until > now ? cooldown.until : 0;
+        const allowedAt = Math.max(globalAllowedAt, keyAllowedAt, cooldownUntil);
+        const waitMs = allowedAt - now;
+
+        if (waitMs > 0) {
+            manager?.logDebug?.('lifecycle.connect.gate_wait', {
+                task: taskName || null,
+                key,
+                waitMs,
+                cooldownReason: cooldown?.reason || null
+            });
+            await sleepWithStop(manager, waitMs);
+        }
+
+        const nextAt = Date.now();
+        tiktokConnectAttemptGate.nextAllowedAt = Math.max(
+            Number(tiktokConnectAttemptGate.nextAllowedAt) || 0,
+            nextAt + minIntervalMs
+        );
+        if (key) {
+            if (tiktokConnectAttemptGate.perKeyNextAllowedAt.size > 500) {
+                const pruneAt = Date.now();
+                for (const [entryKey, allowedAtMs] of tiktokConnectAttemptGate.perKeyNextAllowedAt) {
+                    if (allowedAtMs < pruneAt) tiktokConnectAttemptGate.perKeyNextAllowedAt.delete(entryKey);
+                }
+            }
+            tiktokConnectAttemptGate.perKeyNextAllowedAt.set(key, nextAt + providerIntervalMs);
+        }
+    } finally {
+        try { release && release(); } catch (_) { /* noop */ }
     }
 }
 
@@ -513,6 +651,54 @@ async function runWithLocalSignerSessionGate(manager, uniqueId, taskName, fn) {
             localSignerSessionGate.perUniqueIdNextAllowedAt.set(key, Math.max(existing, nextAt));
         }
         try { release && release(); } catch (_) { /* noop */ }
+    }
+}
+
+function getLocalSignerAttemptTimeoutMs(manager = null) {
+    const managerValue = Number(manager?.localSignerAttemptTimeoutMs);
+    if (Number.isFinite(managerValue) && managerValue >= 0) {
+        return managerValue;
+    }
+    const raw = Number(CONFIG?.CONNECTION?.LOCAL_SIGNER_ATTEMPT_TIMEOUT_MS);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 45000;
+}
+
+async function runLocalSignerTaskWithTimeout(manager, taskName, fn) {
+    const timeoutMs = getLocalSignerAttemptTimeoutMs(manager);
+    const sourcePromise = Promise.resolve().then(fn);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        return sourcePromise;
+    }
+
+    let timeoutId = null;
+    let timedOut = false;
+    sourcePromise.catch((error) => {
+        if (timedOut && error?.code !== 'SSAPP_TIKTOK_STOPPED') {
+            manager?.logDebug?.('sign.local.late_failure', {
+                task: taskName || null,
+                error: normalizeForLogging(error)
+            });
+        }
+    });
+
+    const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+            timedOut = true;
+            const err = new Error(`TikTok local signer timed out after ${timeoutMs}ms`);
+            err.name = 'TikTokLocalSignerTimeoutError';
+            err.code = 'SSAPP_TIKTOK_LOCAL_SIGNER_TIMEOUT';
+            err.source = 'local_signer_timeout';
+            err.timeoutMs = timeoutMs;
+            reject(err);
+        }, timeoutMs);
+    });
+
+    try {
+        return await Promise.race([sourcePromise, timeoutPromise]);
+    } finally {
+        if (timeoutId) {
+            clearTimeout(timeoutId);
+        }
     }
 }
 
@@ -1109,6 +1295,8 @@ function installTikTokProtoFetchTap(connector) {
  * @returns {{
  *   ConnectionManager: typeof ConnectionManager,
  *   connectionStates: Map,
+ *   registerActiveTikTokSourceConnection: function,
+ *   retireTikTokConnectionsForSource: function,
  *   usingLegacyConnector: boolean,
  *   TikTokLiveConnectionClass: any,
  *   TikTokPollingFallbackClass: any
@@ -1209,10 +1397,13 @@ function createTikTokEnvironment(options = {}) {
     } else {
         connectionStates = new Map();
     }
+    activeTikTokConnectionBySourceId = new Map();
 
     return {
         ConnectionManager,
         cleanupConnection,
+        registerActiveTikTokSourceConnection,
+        retireTikTokConnectionsForSource,
         sendToBackground,
         sendBatchToBackground,
         sendToTikTok,
@@ -1747,6 +1938,93 @@ function resolveTikTokSubscriberStatus(data = {}) {
 	return false;
 }
 
+function resolveTikTokFollowerStatus(data = {}) {
+    const userIdentity = isPlainObject(data.userIdentity)
+        ? data.userIdentity
+        : isPlainObject(data?.user?.userIdentity)
+            ? data.user.userIdentity
+            : isPlainObject(data?.author?.userIdentity)
+                ? data.author.userIdentity
+                : null;
+
+    const candidates = [
+        data.isFollowerOfAnchor,
+        userIdentity?.isFollowerOfAnchor,
+        data?.user?.isFollowerOfAnchor,
+        data.followRole,
+        data?.user?.followRole,
+        data?.followInfo?.followStatus,
+        data?.user?.followInfo?.followStatus,
+        data.followStatus,
+        data?.user?.followStatus,
+        data.isFollower,
+        data?.user?.isFollower,
+        data.follower,
+        data?.user?.follower
+    ];
+
+    let sawFalse = false;
+    for (const candidate of candidates) {
+        const coerced = coerceTikTokBoolean(candidate);
+        if (coerced === true) {
+            return true;
+        }
+        if (coerced === false) {
+            sawFalse = true;
+        }
+    }
+
+    return sawFalse ? false : null;
+}
+
+function resolveTikTokMemberLevel(data = {}, badgeSources = null) {
+    const candidates = [
+        data.memberLevel,
+        data.teamMemberLevel,
+        data.fansLevel,
+        data.fanLevel,
+        data?.user?.memberLevel,
+        data?.user?.teamMemberLevel,
+        data?.user?.fansLevel,
+        data?.user?.fanLevel,
+        data?.user?.fansClubInfo?.fansLevel,
+        data?.user?.fansClubInfo?.level,
+        data?.user?.fansClub?.data?.level,
+        data?.author?.fansClubInfo?.fansLevel,
+        data?.author?.fansClubInfo?.level,
+        data?.author?.fansClub?.data?.level
+    ];
+
+    for (const candidate of candidates) {
+        const level = normalizeTikTokBadgeLevel(candidate);
+        if (level !== null) {
+            return level;
+        }
+    }
+
+    const badges = Array.isArray(badgeSources) ? badgeSources : collectTikTokBadges(data);
+    for (const badge of badges) {
+        if (!badge || typeof badge !== 'object') continue;
+        const sceneType = Number(badge.badgeSceneType ?? badge.badgeScene ?? badge.sceneType ?? badge.scene);
+        if (sceneType !== 10) continue;
+
+        const level = normalizeTikTokBadgeLevel(
+            badge.level
+            ?? badge.badgeLevel
+            ?? badge.badge_level
+            ?? badge.fanLevel
+            ?? badge.fan_level
+            ?? badge.displayLevel
+            ?? badge.display_level
+        );
+        if (level !== null) {
+            return level;
+        }
+    }
+
+    return null;
+}
+
 const LIKELY_EMOTE_PLACEHOLDER_HINTS = /\b(?:emoji|emote|sticker|smiley|smile|face|heart|laugh|grin|wink|kiss|sad|cry|angry|fire|rose|love|happy|joy|thumb|clap)\b/i;
 
 function normalizeEmoteLabelForMatching(value) {
@@ -2050,6 +2328,21 @@ function composeTikTokChatMessage(data = {}, options = {}) {
 
     message.moderator = resolveTikTokModeratorStatus(data);
     message.membership = resolveTikTokSubscriberStatus(data);
+    const genericMeta = {};
+    const followerStatus = resolveTikTokFollowerStatus(data);
+    if (followerStatus === true) {
+        genericMeta.follower = true;
+    }
+    const memberLevel = resolveTikTokMemberLevel(data, badgeSources);
+    if (memberLevel !== null) {
+        genericMeta.memberLevel = memberLevel;
+    }
+    if (Object.keys(genericMeta).length) {
+        if (!message.meta || typeof message.meta !== 'object' || Array.isArray(message.meta)) {
+            message.meta = {};
+        }
+        Object.assign(message.meta, genericMeta);
+    }
 
     const identity = extractTikTokIdentity(data);
     const resolvedUserId = resolveTikTokUserId(data, identity);
@@ -2089,6 +2382,266 @@ function sendChatMessage(data, virtualTabId) {
 
 let wssID = 0;
 
+function parseTikTokNumericId(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    }
+    if (typeof value === 'string' && value.trim()) {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+}
+
+function normalizeTikTokConnectionId(value) {
+    const parsed = parseTikTokNumericId(value);
+    if (!parsed) {
+        return null;
+    }
+    return parsed >= 900001 ? parsed - 900000 : parsed;
+}
+
+function normalizeTikTokSourceId(value) {
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function getTikTokWssIdFromMessage(msg) {
+    const tid = parseTikTokNumericId(msg?.tid);
+    if (!tid || tid < 900001) {
+        return null;
+    }
+    return tid - 900000;
+}
+
+function getRegisteredTikTokConnection(wssID) {
+    const normalizedWssID = normalizeTikTokConnectionId(wssID);
+    if (!normalizedWssID || !env.websocketConnections) {
+        return null;
+    }
+    return env.websocketConnections[normalizedWssID] || null;
+}
+
+function getLatestRegisteredWssIdForSource(sourceId) {
+    const normalizedSourceId = normalizeTikTokSourceId(sourceId);
+    if (!normalizedSourceId || !env.websocketConnections) {
+        return null;
+    }
+
+    let latestWssID = null;
+    for (const [rawWssID, manager] of Object.entries(env.websocketConnections)) {
+        const candidateWssID = normalizeTikTokConnectionId(rawWssID);
+        if (!candidateWssID || !manager || manager.isStopped) {
+            continue;
+        }
+        if (normalizeTikTokSourceId(manager.sourceId) !== normalizedSourceId) {
+            continue;
+        }
+        if (latestWssID === null || candidateWssID > latestWssID) {
+            latestWssID = candidateWssID;
+        }
+    }
+    return latestWssID;
+}
+
+function getActiveTikTokWssIdForSource(sourceId) {
+    const normalizedSourceId = normalizeTikTokSourceId(sourceId);
+    if (!normalizedSourceId) {
+        return null;
+    }
+
+    const mappedWssID = normalizeTikTokConnectionId(activeTikTokConnectionBySourceId.get(normalizedSourceId));
+    const mappedManager = mappedWssID ? getRegisteredTikTokConnection(mappedWssID) : null;
+    if (mappedManager && !mappedManager.isStopped && normalizeTikTokSourceId(mappedManager.sourceId) === normalizedSourceId) {
+        return mappedWssID;
+    }
+
+    if (mappedWssID) {
+        activeTikTokConnectionBySourceId.delete(normalizedSourceId);
+    }
+
+    const latestWssID = getLatestRegisteredWssIdForSource(normalizedSourceId);
+    if (latestWssID) {
+        activeTikTokConnectionBySourceId.set(normalizedSourceId, latestWssID);
+    }
+    return latestWssID;
+}
+
+function getTikTokConnectionEligibility(manager) {
+    if (!manager || typeof manager !== 'object') {
+        return {
+            allowed: false,
+            reason: 'missing_manager'
+        };
+    }
+
+    let normalizedWssID = normalizeTikTokConnectionId(manager.wssID);
+    if (!normalizedWssID && manager.virtualTabId) {
+        normalizedWssID = getTikTokWssIdFromMessage({ tid: manager.virtualTabId });
+    }
+    if (!normalizedWssID) {
+        return {
+            allowed: false,
+            reason: 'missing_wss_id'
+        };
+    }
+
+    if (manager.isStopped) {
+        return {
+            allowed: false,
+            reason: 'stopped',
+            wssID: normalizedWssID
+        };
+    }
+
+    const sourceId = normalizeTikTokSourceId(manager.sourceId);
+    const registered = getRegisteredTikTokConnection(normalizedWssID);
+    if (registered !== manager) {
+        if (!sourceId && !registered) {
+            return {
+                allowed: true,
+                wssID: normalizedWssID,
+                sourceId: null,
+                unregisteredStandalone: true
+            };
+        }
+        return {
+            allowed: false,
+            reason: registered ? 'replaced_manager' : 'unregistered_manager',
+            wssID: normalizedWssID
+        };
+    }
+
+    if (sourceId) {
+        const activeWssID = getActiveTikTokWssIdForSource(sourceId);
+        if (activeWssID && activeWssID !== normalizedWssID) {
+            return {
+                allowed: false,
+                reason: 'stale_source_connection',
+                wssID: normalizedWssID,
+                activeWssID,
+                sourceId
+            };
+        }
+    }
+
+    return {
+        allowed: true,
+        wssID: normalizedWssID,
+        sourceId
+    };
+}
+
+function logTikTokInactiveForwardDrop(manager, context, eligibility) {
+    if (!manager || typeof manager.logDebug !== 'function') {
+        return;
+    }
+    const now = Date.now();
+    const reason = eligibility?.reason || 'inactive';
+    const cacheKey = `${context || 'event'}:${reason}:${eligibility?.activeWssID || ''}`;
+    if (!manager._inactiveForwardDropLogState) {
+        manager._inactiveForwardDropLogState = {
+            key: null,
+            at: 0
+        };
+    }
+    const previous = manager._inactiveForwardDropLogState;
+    if (previous.key === cacheKey && now - previous.at < 10000) {
+        return;
+    }
+    manager._inactiveForwardDropLogState = {
+        key: cacheKey,
+        at: now
+    };
+    manager.logDebug('event.forwarded.skipped', {
+        reason,
+        context: context || 'event',
+        sourceId: manager.sourceId || null,
+        wssID: normalizeTikTokConnectionId(manager.wssID),
+        activeWssID: eligibility?.activeWssID || null
+    });
+}
+
+function canForwardFromTikTokConnection(manager, context = 'event') {
+    const eligibility = getTikTokConnectionEligibility(manager);
+    if (eligibility.allowed) {
+        return true;
+    }
+    logTikTokInactiveForwardDrop(manager, context, eligibility);
+    return false;
+}
+
+function retireTikTokConnectionsForSource(sourceId, exceptWssID = null, reason = 'source_replaced') {
+    const normalizedSourceId = normalizeTikTokSourceId(sourceId);
+    if (!normalizedSourceId || !env.websocketConnections) {
+        return [];
+    }
+
+    const except = normalizeTikTokConnectionId(exceptWssID);
+    const retired = [];
+    for (const [rawWssID, manager] of Object.entries(env.websocketConnections)) {
+        const candidateWssID = normalizeTikTokConnectionId(rawWssID);
+        if (!candidateWssID || candidateWssID === except) {
+            continue;
+        }
+        if (!manager || normalizeTikTokSourceId(manager.sourceId) !== normalizedSourceId) {
+            continue;
+        }
+        try {
+            if (typeof manager.logDebug === 'function') {
+                manager.logDebug('lifecycle.retired', {
+                    reason,
+                    sourceId: normalizedSourceId,
+                    replacementWssID: except || null
+                });
+            }
+            cleanupConnection(candidateWssID);
+            retired.push(candidateWssID);
+        } catch (error) {
+            console.warn('[TikTok] Failed to retire stale source connection:', {
+                sourceId: normalizedSourceId,
+                wssID: candidateWssID,
+                error: error?.message || String(error)
+            });
+        }
+    }
+    return retired;
+}
+
+function registerActiveTikTokSourceConnection(manager, reason = 'source_activation') {
+    if (!manager || typeof manager !== 'object') {
+        return [];
+    }
+    const sourceId = normalizeTikTokSourceId(manager.sourceId);
+    const normalizedWssID = normalizeTikTokConnectionId(manager.wssID);
+    if (!sourceId || !normalizedWssID) {
+        return [];
+    }
+
+    activeTikTokConnectionBySourceId.set(sourceId, normalizedWssID);
+    const retired = retireTikTokConnectionsForSource(sourceId, normalizedWssID, reason);
+    if (typeof manager.logDebug === 'function') {
+        manager.logDebug('lifecycle.source.active_registered', {
+            sourceId,
+            wssID: normalizedWssID,
+            retiredWssIDs: retired
+        });
+    }
+    return retired;
+}
+
+function shouldDropTikTokMessageForInactiveConnection(msg, context = 'single') {
+    const wssID = getTikTokWssIdFromMessage(msg);
+    if (!wssID) {
+        return false;
+    }
+
+    const manager = getRegisteredTikTokConnection(wssID);
+    if (!manager) {
+        return true;
+    }
+    return !canForwardFromTikTokConnection(manager, context);
+}
+
 // Function to send messages to TikTok chat
 async function sendToTikTok(args) {
     try {
@@ -2103,6 +2656,14 @@ async function sendToTikTok(args) {
             return {
                 success: false,
                 error: 'Connection not found'
+            };
+        }
+
+        if (!canForwardFromTikTokConnection(manager, 'chat_send')) {
+            log(`TikTok chat send blocked for inactive wssID: ${wssID}`);
+            return {
+                success: false,
+                error: 'Connection is no longer active'
             };
         }
 
@@ -2162,6 +2723,15 @@ const CONFIG = {
 	        RATE_LIMIT_FALLBACK_THRESHOLD: 2,
 	        // Local signer connect throttle (reduces 429s caused by session-start storms)
 	        LOCAL_SIGNER_MIN_ATTEMPT_INTERVAL_MS: 10000, // 10 seconds
+	        // Local signer must fail fast so AUTO can continue to Euler fallback paths
+	        LOCAL_SIGNER_ATTEMPT_TIMEOUT_MS: 45000,
+	        // Skip auto local-signer fallback briefly after a signer timeout/failure
+	        LOCAL_SIGNER_FAILURE_COOLDOWN_MS: 300000, // 5 minutes
+	        // Shared guard to avoid simultaneous TikTok connect/fallback bursts
+	        CONNECT_ATTEMPT_MIN_INTERVAL_MS: 1500,
+	        CONNECT_ATTEMPT_PROVIDER_INTERVAL_MS: 2500,
+	        // Short pause before recursive fallback restarts
+	        FALLBACK_RESTART_MIN_DELAY_MS: 2500,
 	        // Maximum time to wait for the Euler sign server before failing fast
 	        SIGN_REQUEST_TIMEOUT_MS: 25000,
 	        // Increase timeout if the first attempt times out (added incrementally to avoid long hangs)
@@ -2240,8 +2810,18 @@ global.intervals.push(connectionCleanupInterval);
 
 function cleanupConnection(wssID) {
     try {
-        const manager = env.websocketConnections[wssID];
+        const normalizedWssID = normalizeTikTokConnectionId(wssID);
+        const rawWssID = parseTikTokNumericId(wssID);
+        const manager = (normalizedWssID ? env.websocketConnections[normalizedWssID] : null)
+            || env.websocketConnections[wssID]
+            || (rawWssID ? env.websocketConnections[rawWssID] : null);
         if (manager) {
+            const sourceId = normalizeTikTokSourceId(manager.sourceId);
+            if (sourceId && activeTikTokConnectionBySourceId.get(sourceId) === normalizedWssID) {
+                activeTikTokConnectionBySourceId.delete(sourceId);
+            }
+            manager.isStopped = true;
+            manager.activeConnectPromise = null;
             // If it's a ConnectionManager instance
             if (manager.connection) {
                 manager.connection.disconnect();
@@ -2262,6 +2842,12 @@ function cleanupConnection(wssID) {
             if (typeof manager.clearPendingStreamEndConfirmation === 'function') {
                 manager.clearPendingStreamEndConfirmation('cleanupConnection');
             }
+            if (manager.messageProcessor && typeof manager.messageProcessor.stop === 'function') {
+                manager.messageProcessor.stop('cleanupConnection');
+            }
+            if (manager.giftProcessor && typeof manager.giftProcessor.stop === 'function') {
+                manager.giftProcessor.stop('cleanupConnection');
+            }
             if (manager.activityBuckets instanceof Map) {
                 manager.activityBuckets.clear();
             }
@@ -2270,8 +2856,6 @@ function cleanupConnection(wssID) {
                     manager.resetGoalAggregates({ flush: false });
                 } catch (_) { /* noop */ }
             }
-            // Mark as stopped
-            manager.isStopped = true;
             if (typeof manager.logDebug === 'function') {
                 manager.logDebug('lifecycle.cleanup', { triggeredBy: 'cleanupConnection' });
             }
@@ -2285,10 +2869,26 @@ function cleanupConnection(wssID) {
                 log("Removed virtual tab: " + manager.virtualTabId);
             }
 
-            delete env.websocketConnections[wssID];
+            const connectionIdsToDelete = new Set([
+                wssID,
+                rawWssID,
+                normalizedWssID,
+                manager.wssID,
+                normalizeTikTokConnectionId(manager.wssID)
+            ].filter((value) => value !== null && value !== undefined));
+            for (const id of connectionIdsToDelete) {
+                delete env.websocketConnections[id];
+            }
         }
-        connectionStates.delete(wssID);
-        log("deleting connectionStates: " + wssID);
+        const stateIdsToDelete = new Set([
+            wssID,
+            rawWssID,
+            normalizedWssID
+        ].filter((value) => value !== null && value !== undefined));
+        for (const id of stateIdsToDelete) {
+            connectionStates.delete(id);
+        }
+        log("deleting connectionStates: " + (normalizedWssID || wssID));
     } catch (e) {
         console.error('Error during connection cleanup:', e);
     }
@@ -2624,18 +3224,20 @@ function resolveTikTokGiftContentImage(data = {}, giftData = {}, giftDetails = {
     return null;
 }
 
-/**
- * Resolve a display image for a gift.  Prefers sticker/media-style images
- * (the existing resolveTikTokGiftContentImage path), then falls back to the
- * generic gift icon fields (giftPictureUrl, iconUrl, pictureUrl, etc.) that
- * were previously commented out.
- */
-function resolveTikTokGiftDisplayImage(data = {}, giftData = {}, giftDetails = {}, extendedGiftInfo = {}) {
-    // 1. Sticker / media / asset images (preferred for rich gifts)
-    const stickerImage = resolveTikTokGiftContentImage(data, giftData, giftDetails, extendedGiftInfo);
-    if (stickerImage) return stickerImage;
+function escapeTikTokHtmlAttribute(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/'/g, '&#39;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
 
-    // 2. Generic gift icon fields
+/**
+ * Resolve the small icon shown inline with a normal gift chat message.
+ * Rich sticker/media assets are handled separately by resolveTikTokGiftContentImage.
+ */
+function resolveTikTokGiftInlineImage(data = {}, giftData = {}, giftDetails = {}, extendedGiftInfo = {}) {
     const iconCandidates = [
         data.giftPictureUrl,
         giftData.giftPictureUrl,
@@ -2868,6 +3470,9 @@ class MessageProcessor {
     }
 
     addToQueue(data) {
+        if (!canForwardFromTikTokConnection(this.manager, 'chat_queue')) {
+            return;
+        }
 
         // Dedupe: drop chat messages already seen (replay history is seeded
         // upstream in handleProtoFetch so reconnect overlaps are caught here
@@ -2877,6 +3482,10 @@ class MessageProcessor {
         }
 
         const timestamp = this.extractMessageTimestamp(data);
+        if (timestamp !== null && this.manager?.shouldDropStartupHistoryChat?.(timestamp, data)) {
+            return;
+        }
+
         const graceWindow = CONFIG.CHAT.STALE_MESSAGE_GRACE_MS || (3 * 60 * 1000);
         if (timestamp !== null && this.lastProcessedTimestamp > 0) {
             const cutoff = this.lastProcessedTimestamp - graceWindow;
@@ -2942,6 +3551,7 @@ class MessageProcessor {
 
     extractMessageTimestamp(data = {}) {
         const candidates = [
+            data?.common?.createTime,
             data?.createTime,
             data?.eventTime,
             data?.timestamp,
@@ -3006,6 +3616,10 @@ class MessageProcessor {
     }
 
     scheduleProcessing(interval) {
+        if (!canForwardFromTikTokConnection(this.manager, 'chat_schedule')) {
+            this.stop('inactive_schedule');
+            return;
+        }
         if (this.isProcessing) {
             return;
         }
@@ -3048,6 +3662,10 @@ class MessageProcessor {
             clearTimeout(this.processTimer);
             this.processTimer = null;
             this.pendingProcessInterval = null;
+        }
+        if (!canForwardFromTikTokConnection(this.manager, 'chat_process')) {
+            this.stop('inactive_process');
+            return;
         }
         // Check if queue is empty properly for both CircularBuffer and array
         const getSize = () => (this.queue.getSize ? this.queue.getSize() : this.queue.length);
@@ -3135,6 +3753,10 @@ class MessageProcessor {
     }
 
     addToPendingBatch(batch) {
+        if (!canForwardFromTikTokConnection(this.manager, 'chat_batch')) {
+            this.stop('inactive_batch');
+            return;
+        }
         // Add messages to pending batch
         batch.forEach(data => {
             const msg = this.formatChatMessage(data);
@@ -3167,10 +3789,40 @@ class MessageProcessor {
             this.batchTimer = null;
         }
 
+        if (!canForwardFromTikTokConnection(this.manager, 'chat_flush')) {
+            this.pendingBatch = [];
+            return;
+        }
+
         // Send the batch
         sendBatchToBackground(this.pendingBatch);
         this.pendingBatch = [];
         this.lastSendTime = Date.now();
+    }
+
+    stop(reason = 'stop') {
+        if (this.processTimer) {
+            clearTimeout(this.processTimer);
+            this.processTimer = null;
+        }
+        if (this.batchTimer) {
+            clearTimeout(this.batchTimer);
+            this.batchTimer = null;
+        }
+        this.pendingProcessInterval = null;
+        this.pendingBatch = [];
+        this.isProcessing = false;
+        if (this.queue && typeof this.queue.clear === 'function') {
+            this.queue.clear();
+        } else if (Array.isArray(this.queue)) {
+            this.queue.length = 0;
+        }
+        if (this.manager && typeof this.manager.logDebug === 'function') {
+            this.manager.logDebug('event.queue.cleared', {
+                reason,
+                queue: 'chat'
+            });
+        }
     }
 }
 
@@ -3180,10 +3832,14 @@ class GiftProcessor {
         this.queue = [];
         this.isProcessing = false;
         this.streaks = new Map();
+        this.processTimer = null;
     }
 
     addToQueue(data) {
         if (!data || typeof data !== 'object') {
+            return;
+        }
+        if (!canForwardFromTikTokConnection(this.manager, 'gift_queue')) {
             return;
         }
 
@@ -3280,6 +3936,11 @@ class GiftProcessor {
     flushStreak(streakKey) {
         const streak = this.streaks.get(streakKey);
         if (!streak) return;
+        if (!canForwardFromTikTokConnection(this.manager, 'gift_streak')) {
+            clearTimeout(streak.timer);
+            this.streaks.delete(streakKey);
+            return;
+        }
         clearTimeout(streak.timer);
         this.streaks.delete(streakKey);
         const safeCount = Math.max(1, streak.count || 1);
@@ -3291,12 +3952,24 @@ class GiftProcessor {
     }
 
     startProcessing() {
+        if (!canForwardFromTikTokConnection(this.manager, 'gift_schedule')) {
+            this.stop('inactive_schedule');
+            return;
+        }
         if (!this.isProcessing) {
             this.processQueue();
         }
     }
 
     async processQueue() {
+        if (this.processTimer) {
+            clearTimeout(this.processTimer);
+            this.processTimer = null;
+        }
+        if (!canForwardFromTikTokConnection(this.manager, 'gift_process')) {
+            this.stop('inactive_process');
+            return;
+        }
         if (this.queue.length === 0) {
             this.isProcessing = false;
             return;
@@ -3314,10 +3987,16 @@ class GiftProcessor {
             console.error('[GiftProcessor] sendGiftMessage failed:', error?.message || error);
         }
 
-        setTimeout(() => this.processQueue(), CONFIG.GIFT.PROCESSING_INTERVAL);
+        this.processTimer = setTimeout(() => {
+            this.processTimer = null;
+            this.processQueue();
+        }, CONFIG.GIFT.PROCESSING_INTERVAL);
     }
 
     sendGiftMessage(data, count) {
+        if (!canForwardFromTikTokConnection(this.manager, 'gift_send')) {
+            return;
+        }
         const giftData = isPlainObject(data?.gift) ? data.gift : {};
         const giftDetails = isPlainObject(data?.giftDetails) ? data.giftDetails : {};
         const extendedGiftInfo = isPlainObject(data?.extendedGiftInfo) ? data.extendedGiftInfo : {};
@@ -3366,9 +4045,15 @@ class GiftProcessor {
         const textOnly = explicitTextOnly || isTextOnlyModeEnabled();
         const contentImage = textOnly
             ? null
-            : resolveTikTokGiftDisplayImage(data, giftData, giftDetails, extendedGiftInfo);
+            : resolveTikTokGiftContentImage(data, giftData, giftDetails, extendedGiftInfo);
+        const inlineGiftImage = textOnly || contentImage
+            ? null
+            : resolveTikTokGiftInlineImage(data, giftData, giftDetails, extendedGiftInfo);
 
         let chatmessage = `Sent ${giftName} x${count}`;
+        if (inlineGiftImage) {
+            chatmessage += ` <img src='${escapeTikTokHtmlAttribute(inlineGiftImage)}' />`;
+        }
 
         const msg = {
             chatmessage,
@@ -3441,6 +4126,27 @@ class GiftProcessor {
 
         sendToBackground(msg);
     }
+
+    stop(reason = 'stop') {
+        if (this.processTimer) {
+            clearTimeout(this.processTimer);
+            this.processTimer = null;
+        }
+        for (const streak of this.streaks.values()) {
+            if (streak && streak.timer) {
+                clearTimeout(streak.timer);
+            }
+        }
+        this.streaks.clear();
+        this.queue.length = 0;
+        this.isProcessing = false;
+        if (this.manager && typeof this.manager.logDebug === 'function') {
+            this.manager.logDebug('event.queue.cleared', {
+                reason,
+                queue: 'gift'
+            });
+        }
+    }
 }
 
 class ConnectionManager {
@@ -3461,6 +4167,11 @@ class ConnectionManager {
         this.messageProcessor = new MessageProcessor(this);
         this.giftProcessor = new GiftProcessor(this);
         this.activityBuckets = new Map();
+        this.diagnosticStats = {
+            rawFrames: 0,
+            decodedFrames: 0,
+            forwardedEvents: 0
+        };
         this.recentShoppingEvents = new Map();
         this.recentEventDedupes = new Map();
         this.nextEventDedupePruneAt = 0;
@@ -3487,6 +4198,10 @@ class ConnectionManager {
         this.autoEulerProxyFallbackActive = false;
         this.autoLocalSignerFallbackAttempted = false;
         this.autoLocalSignerFallbackActive = false;
+        this.autoLocalSignerFallbackPreviousProvider = null;
+        this.autoLocalSignerFallbackPreviousSigningConfig = null;
+        this.autoLocalSignerFallbackPreviousEulerProxyActive = false;
+        this.autoLocalSignerFallbackStartedAt = 0;
         this.localSigner = env.localSigner || null;
 	        this.signServerFailureCount = 0;
 	        this.tiktokRateLimitCount = 0;
@@ -3504,6 +4219,26 @@ class ConnectionManager {
         this.signRequestImmediateRetryDelayMs = CONFIG.CONNECTION.SIGN_REQUEST_IMMEDIATE_RETRY_DELAY_MS;
         if (!Number.isFinite(this.signRequestImmediateRetryDelayMs) || this.signRequestImmediateRetryDelayMs < 0) {
             this.signRequestImmediateRetryDelayMs = 750;
+        }
+        this.localSignerAttemptTimeoutMs = CONFIG.CONNECTION.LOCAL_SIGNER_ATTEMPT_TIMEOUT_MS;
+        if (!Number.isFinite(this.localSignerAttemptTimeoutMs) || this.localSignerAttemptTimeoutMs < 0) {
+            this.localSignerAttemptTimeoutMs = 45000;
+        }
+        this.localSignerFailureCooldownMs = CONFIG.CONNECTION.LOCAL_SIGNER_FAILURE_COOLDOWN_MS;
+        if (!Number.isFinite(this.localSignerFailureCooldownMs) || this.localSignerFailureCooldownMs < 0) {
+            this.localSignerFailureCooldownMs = 300000;
+        }
+        this.connectAttemptMinIntervalMs = CONFIG.CONNECTION.CONNECT_ATTEMPT_MIN_INTERVAL_MS;
+        if (!Number.isFinite(this.connectAttemptMinIntervalMs) || this.connectAttemptMinIntervalMs < 0) {
+            this.connectAttemptMinIntervalMs = 1500;
+        }
+        this.connectAttemptProviderIntervalMs = CONFIG.CONNECTION.CONNECT_ATTEMPT_PROVIDER_INTERVAL_MS;
+        if (!Number.isFinite(this.connectAttemptProviderIntervalMs) || this.connectAttemptProviderIntervalMs < 0) {
+            this.connectAttemptProviderIntervalMs = 2500;
+        }
+        this.fallbackRestartMinDelayMs = CONFIG.CONNECTION.FALLBACK_RESTART_MIN_DELAY_MS;
+        if (!Number.isFinite(this.fallbackRestartMinDelayMs) || this.fallbackRestartMinDelayMs < 0) {
+            this.fallbackRestartMinDelayMs = 2500;
         }
         this.lastSignerPayload = null;
         this.eulerChatClient = null;
@@ -3542,7 +4277,83 @@ class ConnectionManager {
         this.websocketFailureCount = 0;
         this.WEBSOCKET_FAILURE_THRESHOLD = 3;
         this.lastConnectTimestamp = 0;
+        this.startupChatCutoffMs = 0;
         this.rapidDisconnectCount = 0;
+    }
+
+    canForwardEvents(context = 'event') {
+        return canForwardFromTikTokConnection(this, context);
+    }
+
+    shouldDropStartupHistoryChat(timestamp, data = {}) {
+        const cutoff = Number(this.startupChatCutoffMs) || 0;
+        if (!cutoff || !Number.isFinite(timestamp)) {
+            return false;
+        }
+        if (timestamp >= cutoff) {
+            return false;
+        }
+        this.logDebug('event.suppressed.startup_history', {
+            event: 'chat',
+            timestamp,
+            cutoff,
+            msgId: data?.common?.msgId || data?.msgId || data?.msg_id || null
+        });
+        return true;
+    }
+
+    shouldApplyStartupHistoryChatCutoff() {
+        return this.connectionStrategy === 'websocket'
+            && this.preferredStrategy !== 'legacy'
+            && !this.pollingFallbackActivated
+            && !usingLegacyTikTokConnector;
+    }
+
+    isActiveSourceConnection() {
+        return getTikTokConnectionEligibility(this).allowed;
+    }
+
+    buildStoppedError(stage = 'connection') {
+        const stoppedError = new Error('Connection stopped');
+        stoppedError.code = 'SSAPP_TIKTOK_STOPPED';
+        stoppedError.stage = stage;
+        return stoppedError;
+    }
+
+    assertConnectionCanContinue(stage = 'connection') {
+        if (this.isStopped) {
+            throw this.buildStoppedError(stage);
+        }
+        if (!this.isActiveSourceConnection()) {
+            const stoppedError = this.buildStoppedError(stage);
+            stoppedError.reason = 'inactive_source_connection';
+            cleanupConnection(this.wssID);
+            throw stoppedError;
+        }
+    }
+
+    recordTikTokDiagnosticCounter(counterName, amount = 1) {
+        if (!this.diagnosticStats || typeof this.diagnosticStats !== 'object') {
+            this.diagnosticStats = {
+                rawFrames: 0,
+                decodedFrames: 0,
+                forwardedEvents: 0
+            };
+        }
+        if (!Object.prototype.hasOwnProperty.call(this.diagnosticStats, counterName)) {
+            return;
+        }
+        const increment = Number(amount);
+        this.diagnosticStats[counterName] += Number.isFinite(increment) && increment > 0 ? increment : 1;
+    }
+
+    getTikTokDiagnosticStats() {
+        const stats = this.diagnosticStats || {};
+        return {
+            rawFrames: Number(stats.rawFrames) || 0,
+            decodedFrames: Number(stats.decodedFrames) || 0,
+            forwardedEvents: Number(stats.forwardedEvents) || 0
+        };
     }
 
     getLogContext() {
@@ -3694,11 +4505,19 @@ class ConnectionManager {
 	        };
 	        const usingLocalSigner = this.shouldUseLocalSigner();
 	        if (usingLocalSigner) {
+	            const webcastIdentity = this.resolveLocalSignerWebcastIdentity();
 	            // Local signer connections should be as gentle as possible: avoid extra preflight
 	            // calls (room info, gift catalog) and rely on the signing window to resolve room_id.
 	            options.fetchRoomInfoOnConnect = false;
 	            options.enableExtendedGiftInfo = false;
 	            options.connectWithUniqueId = true;
+	            options.disableEulerFallbacks = true;
+	            options.wsClientParams = {
+	                ...options.wsClientParams,
+	                host: 'https://webcast.tiktok.com',
+	                debug: 'false',
+	                identity: webcastIdentity
+	            };
 	        }
 	        if (this.signingConfig?.apiKey && !usingLocalSigner && this.signingProvider !== 'local') {
 	            options.signApiKey = this.signingConfig.apiKey;
@@ -3716,6 +4535,80 @@ class ConnectionManager {
         }
 
         return options;
+    }
+
+    resolveLocalSignerWebcastIdentity() {
+        return normalizeSourceAccountRole(this.accountRole) === 'host' ? 'anchor' : 'audience';
+    }
+
+    applyLocalSignerWebcastIdentityOverride(connection, identity = this.resolveLocalSignerWebcastIdentity()) {
+        if (!connection || typeof connection.setupWebsocket !== 'function') {
+            return false;
+        }
+        const normalizedIdentity = identity === 'anchor' ? 'anchor' : 'audience';
+        if (connection.__ssappWebcastIdentityOverride === normalizedIdentity) {
+            return true;
+        }
+
+        const originalSetupWebsocket = connection.setupWebsocket;
+        const manager = this;
+        connection.setupWebsocket = async function setupWebsocketWithSsappIdentity(wsUrl, wsParams) {
+            const nextWsParams = {
+                ...(wsParams && typeof wsParams === 'object' ? wsParams : {}),
+                identity: normalizedIdentity
+            };
+            const wsClient = await originalSetupWebsocket.call(this, wsUrl, nextWsParams);
+            manager.applyWebcastRoomEnterIdentityOverride(wsClient, normalizedIdentity);
+            return wsClient;
+        };
+        connection.__ssappWebcastIdentityOverride = normalizedIdentity;
+        this.logDebug('sign.local.identity.override_installed', { identity: normalizedIdentity });
+        return true;
+    }
+
+    applyWebcastRoomEnterIdentityOverride(wsClient, identity) {
+        const normalizedIdentity = identity === 'anchor' ? 'anchor' : 'audience';
+        if (normalizedIdentity === 'audience') {
+            return false;
+        }
+        if (
+            !wsClient ||
+            typeof wsClient !== 'object' ||
+            typeof wsClient.sendBytes !== 'function' ||
+            typeof wsClient.sendHeartbeat !== 'function' ||
+            typeof connectorCreateBaseWebcastPushFrame !== 'function' ||
+            !ConnectorWebcastImEnterRoomMessage ||
+            typeof ConnectorWebcastImEnterRoomMessage.encode !== 'function'
+        ) {
+            this.logDebug('sign.local.identity.roomEnterOverrideUnavailable', { identity: normalizedIdentity });
+            return false;
+        }
+
+        wsClient.switchRooms = function switchRoomsWithSsappIdentity(roomId) {
+            this.seqId = 1;
+            const imEnterRoomMessage = ConnectorWebcastImEnterRoomMessage.encode({
+                roomId,
+                roomTag: '',
+                liveRegion: '',
+                liveId: '12',
+                identity: normalizedIdentity,
+                cursor: '',
+                accountType: '0',
+                enterUniqueId: '',
+                filterWelcomeMsg: '0',
+                isAnchorContinueKeepMsg: false
+            });
+            const webcastPushFrame = connectorCreateBaseWebcastPushFrame({
+                payloadEncoding: 'pb',
+                payloadType: 'im_enter_room',
+                payload: imEnterRoomMessage.finish()
+            });
+            this.sendBytes(Buffer.from(webcastPushFrame.finish()));
+            clearInterval(this.pingInterval);
+            this.pingInterval = setInterval(() => this.sendHeartbeat(), this.webSocketPingIntervalMs);
+        };
+        wsClient.__ssappRoomEnterIdentity = normalizedIdentity;
+        return true;
     }
 
     shouldUseLocalSigner() {
@@ -3863,11 +4756,17 @@ class ConnectionManager {
 	        };
 	        let signerPayload;
 	        try {
+	            const webcastIdentity = this.resolveLocalSignerWebcastIdentity();
+	            const localFetchUrl = `https://webcast.tiktok.com/webcast/im/fetch/?identity=${encodeURIComponent(webcastIdentity)}`;
 	            signerPayload = await runWithLocalSignerSessionGate(
 	                this,
 	                uniqueId || this.username,
 	                'local_signer_im_fetch',
-	                async () => this.localSigner.sign('https://webcast.tiktok.com/webcast/im/fetch/?identity=anchor', signOptions)
+	                async () => runLocalSignerTaskWithTimeout(
+	                    this,
+	                    'local_signer_im_fetch',
+	                    () => this.localSigner.sign(localFetchUrl, signOptions)
+	                )
 	            );
 	        } catch (error) {
 	            if (error?.code !== 'SSAPP_TIKTOK_STOPPED') {
@@ -3886,6 +4785,14 @@ class ConnectionManager {
 
 	        // Update credentials immediately so we persist the session even if we return early
 	        this.updateSessionCredentialsFromSigner(signerPayload);
+	        if (this.resolveLocalSignerWebcastIdentity() === 'anchor' && (!this.sessionId || !this.ttTargetIdc)) {
+	            this.logDebug('sign.local.identity.anchor_without_session', {
+	                hasSessionId: !!this.sessionId,
+	                hasTtTargetIdc: !!this.ttTargetIdc,
+	                accountRole: normalizeSourceAccountRole(this.accountRole)
+	            });
+	        }
+	        this.applyLocalSignerWebsocketHeaders(signerPayload);
 
 	        const fetchResult = signerPayload.fetchResult && typeof signerPayload.fetchResult === 'object'
 	            ? signerPayload.fetchResult
@@ -3955,9 +4862,28 @@ class ConnectionManager {
                             proto = connectorDeserializeMessage('ProtoMessageFetchResult', bytes);
                         }
 
+                        const wsUrlSummary = (() => {
+                            const wsUrl = proto && typeof proto.wsUrl === 'string' ? proto.wsUrl.trim() : '';
+                            if (!wsUrl) {
+                                return null;
+                            }
+                            try {
+                                const parsed = new URL(wsUrl);
+                                return {
+                                    protocol: parsed.protocol,
+                                    host: parsed.host,
+                                    pathname: parsed.pathname,
+                                    hasSearch: !!parsed.search,
+                                    searchKeys: Array.from(parsed.searchParams.keys()).slice(0, 20)
+                                };
+                            } catch (_) {
+                                return { invalid: true, length: wsUrl.length };
+                            }
+                        })();
                         this.logDebug('sign.local.fetchResult', {
                             hasCursor: Boolean(proto?.cursor),
                             wsUrl: proto?.wsUrl ? '[present]' : '[missing]',
+                            wsUrlSummary,
                             internalExtLength: proto?.internalExt ? String(proto.internalExt).length : 0,
                             wsParamKeys: proto?.wsParams ? Object.keys(proto.wsParams) : null,
                             messageCount: Array.isArray(proto?.messages) ? proto.messages.length : null
@@ -4322,6 +5248,29 @@ class ConnectionManager {
         return cookies.length ? cookies.join('; ') : null;
     }
 
+    applyLocalSignerWebsocketHeaders(payload) {
+        if (!this.connection || !this.connection.options) {
+            return;
+        }
+        const headers = this.buildLocalSignerHeaders(payload);
+        if (!headers || typeof headers !== 'object') {
+            return;
+        }
+        const existing = this.connection.options.wsClientHeaders && typeof this.connection.options.wsClientHeaders === 'object'
+            ? this.connection.options.wsClientHeaders
+            : {};
+        this.connection.options.wsClientHeaders = {
+            ...existing,
+            ...headers
+        };
+        this.logDebug('sign.local.websocketHeaders.applied', {
+            hasUserAgent: !!headers['User-Agent'],
+            hasReferer: !!headers.Referer,
+            hasOrigin: !!headers.Origin,
+            hasCookie: !!headers.Cookie
+        });
+    }
+
     getEulerChatClient() {
         if (this.eulerChatClient) {
             return this.eulerChatClient;
@@ -4496,6 +5445,9 @@ class ConnectionManager {
         }
         this.applyResumeCursorToConnection();
         this.applySignRequestTimeout(this.signRequestTimeoutMs);
+        if (!useLegacyConnector && this.shouldUseLocalSigner()) {
+            this.applyLocalSignerWebcastIdentityOverride(this.connection);
+        }
         this.logDebug('lifecycle.initialize.signTimeoutConfigured', {
             timeoutMs: this.signRequestTimeoutMs,
             maxTimeoutMs: this.signRequestTimeoutMaxMs,
@@ -4753,6 +5705,14 @@ class ConnectionManager {
 
     restartConnectionAttempt(primaryError = null, context = 'fallback_restart') {
         const reconnectPromise = (async () => {
+            const delayMs = this.getFallbackRestartDelayMs();
+            if (delayMs > 0) {
+                this.logDebug('lifecycle.connect.restart.delay', {
+                    context,
+                    delayMs
+                });
+                await sleepWithStop(this, delayMs);
+            }
             try {
                 this.ensureConnectionInstance(context);
             } catch (error) {
@@ -4772,6 +5732,14 @@ class ConnectionManager {
     }
 
     async tryFallbackToPolling(primaryError, stage = 'connect') {
+        if (this.signingProvider === 'local' && !this.autoLocalSignerFallbackActive) {
+            this.logDebug('lifecycle.fallback.polling.skipped', {
+                reason: 'explicit_local_signer',
+                stage,
+                message: primaryError?.message || null
+            });
+            return false;
+        }
         if (!this.pollingFallbackSupported || this.pollingFallbackActivated || this.preferredStrategy === 'legacy') {
             this.logDebug('lifecycle.fallback.polling.skipped', {
                 reason: !this.pollingFallbackSupported ? 'unsupported' : (this.preferredStrategy === 'legacy' ? 'legacy_forced' : 'already_activated'),
@@ -4938,28 +5906,113 @@ class ConnectionManager {
         return true;
     }
 
+    getAutoLocalSignerFailureCooldownMs() {
+        const raw = Number(this.localSignerFailureCooldownMs);
+        return Number.isFinite(raw) && raw >= 0 ? raw : 300000;
+    }
+
+    getFallbackRestartDelayMs() {
+        const raw = Number(this.fallbackRestartMinDelayMs);
+        return Number.isFinite(raw) && raw >= 0 ? raw : 2500;
+    }
+
+    isAutoLocalSignerFallbackFailure(primaryError = null) {
+        if (!this.autoLocalSignerFallbackActive || this.signingProvider !== 'local') {
+            return false;
+        }
+        if (primaryError?.code === 'SSAPP_TIKTOK_STOPPED') {
+            return false;
+        }
+        return true;
+    }
+
+    async restoreAutoFlowAfterLocalSignerFailure(primaryError, stage = 'local_signer_failed') {
+        if (!this.autoLocalSignerFallbackActive) {
+            return false;
+        }
+
+        const failureMessage = typeof primaryError?.message === 'string' && primaryError.message.trim()
+            ? primaryError.message.trim()
+            : 'Local signer failed.';
+        const previousProvider = this.autoLocalSignerFallbackPreviousProvider || 'auto';
+        const previousSigningConfig = this.autoLocalSignerFallbackPreviousSigningConfig
+            ? { ...this.autoLocalSignerFallbackPreviousSigningConfig }
+            : null;
+        const previousEulerProxyActive = !!this.autoLocalSignerFallbackPreviousEulerProxyActive;
+        const cooldownMs = this.getAutoLocalSignerFailureCooldownMs();
+        if (cooldownMs > 0) {
+            setLocalSignerCooldown(Date.now() + cooldownMs, failureMessage);
+        }
+
+        this.logDebug('lifecycle.fallback.localSigner.failed_restore', {
+            stage,
+            message: failureMessage,
+            previousProvider,
+            cooldownMs
+        });
+        console.warn(`[TikTok] Local signer fallback failed for ${this.username}; returning to Euler flow: ${failureMessage}`);
+
+        this.signingProvider = previousProvider;
+        this.signingConfig = previousSigningConfig;
+        this.autoLocalSignerFallbackActive = false;
+        this.autoEulerProxyFallbackActive = previousEulerProxyActive;
+        this.autoLocalSignerFallbackPreviousProvider = null;
+        this.autoLocalSignerFallbackPreviousSigningConfig = null;
+        this.autoLocalSignerFallbackPreviousEulerProxyActive = false;
+        this.autoLocalSignerFallbackStartedAt = 0;
+
+        try {
+            await this.teardownConnection({ silent: true });
+        } catch (error) {
+            this.logDebug('lifecycle.fallback.localSigner.restoreTeardownError', normalizeForLogging(error));
+        }
+
+        try {
+            this.initializeConnectionInstance({ forceLegacy: false, context: 'local_signer_failed_restore' });
+        } catch (error) {
+            this.logDebug('lifecycle.fallback.localSigner.restoreInstantiateError', normalizeForLogging(error));
+            console.error('[TikTok] Failed to restore Euler flow after local signer failure:', error);
+            return false;
+        }
+
+        try {
+            emitStatus({
+                wssID: this.wssID,
+                status: 'reconnecting',
+                reason: 'Local signer failed. Trying Euler signing.',
+                signServer: true,
+                localSignerFallbackFailed: true
+            });
+        } catch (_) { /* renderer may be gone */ }
+
+        return true;
+    }
+
     async tryFallbackToLocalSigner(primaryError, stage = 'connect') {
         const isAutoFlow = this.signingProvider === 'auto'
             || this.autoEulerProxyFallbackActive
             || this.autoLocalSignerFallbackActive;
+        const localCooldownRemainingMs = getLocalSignerCooldownRemainingMs();
+        const localSignerUnavailable = !this.localSigner || typeof this.localSigner.sign !== 'function';
+        const legacyActive = this.pollingFallbackActivated || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy';
+        const skipReason = !isAutoFlow
+            ? 'provider_not_auto_flow'
+            : (this.autoLocalSignerFallbackAttempted
+                ? 'already_activated'
+                : (localSignerUnavailable
+                    ? 'local_signer_unavailable'
+                    : (localCooldownRemainingMs > 0
+                        ? 'local_signer_cooldown'
+                        : (legacyActive ? 'legacy_active' : 'unknown'))));
         if (!isAutoFlow ||
             this.autoLocalSignerFallbackAttempted ||
-            !this.localSigner ||
-            typeof this.localSigner.sign !== 'function' ||
-            this.pollingFallbackActivated ||
-            this.preferredStrategy === 'legacy' ||
-            this.connectionStrategy === 'legacy') {
+            localSignerUnavailable ||
+            localCooldownRemainingMs > 0 ||
+            legacyActive) {
             this.logDebug('lifecycle.fallback.localSigner.skipped', {
-                reason: !isAutoFlow
-                    ? 'provider_not_auto_flow'
-                    : (this.autoLocalSignerFallbackAttempted
-                        ? 'already_activated'
-                        : (!this.localSigner || typeof this.localSigner.sign !== 'function'
-                            ? 'local_signer_unavailable'
-                            : (this.pollingFallbackActivated || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy'
-                                ? 'legacy_active'
-                                : 'unknown'))),
+                reason: skipReason,
                 stage,
+                cooldownRemainingMs: localCooldownRemainingMs || null,
                 message: primaryError?.message || null
             });
             return false;
@@ -4987,10 +6040,15 @@ class ConnectionManager {
         } catch (_) { /* renderer may be gone */ }
 
         const previousProvider = this.signingProvider;
+        const previousSigningConfig = this.signingConfig ? { ...this.signingConfig } : null;
         const previousAutoEulerProxyFallbackActive = this.autoEulerProxyFallbackActive;
         this.signingProvider = 'local';
         this.autoLocalSignerFallbackActive = true;
         this.autoEulerProxyFallbackActive = false;
+        this.autoLocalSignerFallbackPreviousProvider = previousProvider;
+        this.autoLocalSignerFallbackPreviousSigningConfig = previousSigningConfig;
+        this.autoLocalSignerFallbackPreviousEulerProxyActive = previousAutoEulerProxyFallbackActive;
+        this.autoLocalSignerFallbackStartedAt = Date.now();
 
         try {
             await this.teardownConnection({ silent: true });
@@ -5002,8 +6060,13 @@ class ConnectionManager {
             this.initializeConnectionInstance({ forceLegacy: false, context: 'local_signer_fallback' });
         } catch (error) {
             this.signingProvider = previousProvider;
+            this.signingConfig = previousSigningConfig;
             this.autoEulerProxyFallbackActive = previousAutoEulerProxyFallbackActive;
             this.autoLocalSignerFallbackActive = false;
+            this.autoLocalSignerFallbackPreviousProvider = null;
+            this.autoLocalSignerFallbackPreviousSigningConfig = null;
+            this.autoLocalSignerFallbackPreviousEulerProxyActive = false;
+            this.autoLocalSignerFallbackStartedAt = 0;
             this.clearFallbackTransitionStarted(primaryError, 'local');
             this.logDebug('lifecycle.fallback.localSigner.instantiateError', normalizeForLogging(error));
             console.error('[TikTok] Failed to instantiate local signer fallback connection:', error);
@@ -5546,6 +6609,7 @@ class ConnectionManager {
             // Any raw websocket traffic proves the connection is alive.
             // Without this, quiet rooms with only heartbeat traffic look
             // "stale" to the health check and trigger unnecessary reconnects.
+            this.recordTikTokDiagnosticCounter('rawFrames');
             this.noteConnectionActivity('websocketData');
             let preview = null;
             let length = null;
@@ -5575,6 +6639,7 @@ class ConnectionManager {
             });
         });
         this.connection.on('decodedData', (messageType, decodedData, rawPayload) => {
+            this.recordTikTokDiagnosticCounter('decodedFrames');
             this.noteConnectionActivity(`decodedData:${messageType}`);
             const suppressed = suppressedDecodedLogTypes.has(messageType);
             const logEntry = {
@@ -6273,6 +7338,14 @@ class ConnectionManager {
         }
 
         this.healthCheckInterval = setInterval(() => {
+            if (!this.isActiveSourceConnection()) {
+                this.logDebug('lifecycle.health.skipped', {
+                    reason: 'inactive_source_connection',
+                    sourceId: this.sourceId || null
+                });
+                cleanupConnection(this.wssID);
+                return;
+            }
             const now = Date.now();
             const timeSinceLastMessage = now - this.lastMessageTime;
             const connectionDuration = now - this.connectionStartTime;
@@ -6298,6 +7371,14 @@ class ConnectionManager {
 
         // Send viewer count every 30 seconds
         this.viewerUpdateInterval = setInterval(() => {
+            if (!this.isActiveSourceConnection()) {
+                this.logDebug('lifecycle.viewer_update.skipped', {
+                    reason: 'inactive_source_connection',
+                    sourceId: this.sourceId || null
+                });
+                cleanupConnection(this.wssID);
+                return;
+            }
             if (this.connection && this.connection.isConnected) {
                 if (isViewerUpdateAllowed()) {
                     sendToBackground({
@@ -6314,6 +7395,14 @@ class ConnectionManager {
     async connect(options = {}) {
         const { bypassActivePromise = false } = options || {};
         if (this.isStopped) return false;
+        if (!this.isActiveSourceConnection()) {
+            this.logDebug('lifecycle.connect.skipped', {
+                reason: 'inactive_source_connection',
+                sourceId: this.sourceId || null
+            });
+            cleanupConnection(this.wssID);
+            return false;
+        }
 
         if (this.connection && this.connection.isConnected) {
             console.info('Already connected, skipping reconnect');
@@ -6406,6 +7495,7 @@ class ConnectionManager {
                     }
                 }
 
+                this.assertConnectionCanContinue('before_ensure_connection');
                 this.ensureConnectionInstance('connect');
                 const activeConnection = this.connection;
                 if (!activeConnection || typeof activeConnection.connect !== 'function') {
@@ -6419,10 +7509,16 @@ class ConnectionManager {
                     this.resetConnectionBootstrapState();
                 }
 
+                await waitForTikTokConnectAttemptSlot(this, usingLocalSigner ? 'local_signer_connect' : 'connect');
+                this.assertConnectionCanContinue('before_connector_connect');
                 await activeConnection.connect();
                 if (typeof restoreAuthenticatedWsBootstrapEnv === 'function') {
                     restoreAuthenticatedWsBootstrapEnv();
                     restoreAuthenticatedWsBootstrapEnv = null;
+                }
+                if (this.isStopped || !this.isActiveSourceConnection()) {
+                    await this.teardownConnection({ silent: true });
+                    return false;
                 }
 
                 const modeDetails = this.getConnectionModeDetails();
@@ -6467,6 +7563,16 @@ class ConnectionManager {
                 const primaryError = err instanceof Error ? err : (err && err.exception instanceof Error ? err.exception : err);
                 const errorName = primaryError && primaryError.name;
                 const errorMessage = primaryError && primaryError.message ? primaryError.message : '';
+                if (this.isStopped || primaryError?.code === 'SSAPP_TIKTOK_STOPPED') {
+                    this.logDebug('lifecycle.connect.stopped', {
+                        stage: primaryError?.stage || null,
+                        reason: primaryError?.reason || null
+                    });
+                    try {
+                        await this.teardownConnection({ silent: true });
+                    } catch (_) { /* noop */ }
+                    return false;
+                }
                 const handledReconnectPromise = this.getFallbackReconnectPromise(primaryError);
                 if (this.hasFallbackTransitionStarted(primaryError)) {
                     this.logDebug('lifecycle.connect.fallbackTransitionHandled', {
@@ -6474,6 +7580,12 @@ class ConnectionManager {
                         message: errorMessage || null
                     });
                     return handledReconnectPromise || false;
+                }
+                if (this.isAutoLocalSignerFallbackFailure(primaryError)) {
+                    const restored = await this.restoreAutoFlowAfterLocalSignerFailure(primaryError, 'connect');
+                    if (restored) {
+                        return this.restartConnectionAttempt(primaryError, 'local_signer_failed_restore');
+                    }
                 }
                 if (primaryError?.ssappFallback) {
                     const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, 'connect_ssapp_local_fallback');
@@ -6634,7 +7746,10 @@ class ConnectionManager {
                     emitStatus({
                         wssID: this.wssID,
                         status: 'failed',
-                        error: userFacingMessage
+                        error: userFacingMessage,
+                        offline: isOffline,
+                        rateLimited: isRateLimited,
+                        connectionMethod: this.getConnectionMethodForDisplay()
                     });
                 } catch (sendErr) {
                     console.warn('Failed to send TikTok connection failure status:', sendErr);
@@ -7241,6 +8356,13 @@ class ConnectionManager {
     }
 
     handleConnect() {
+        if (!this.isActiveSourceConnection()) {
+            this.logDebug('control.connected.staleIgnored', {
+                sourceId: this.sourceId || null
+            });
+            cleanupConnection(this.wssID);
+            return;
+        }
         const existingState = connectionStates.get(this.wssID);
         if (existingState?.isConnected && !existingState?.attemptInProgress) {
             this.logDebug('control.connected.duplicateIgnored', {
@@ -7250,19 +8372,25 @@ class ConnectionManager {
         }
         const modeDetails = this.getConnectionModeDetails();
         const connectionLabel = modeDetails.label || 'Websocket connected';
+        const connectedAt = Date.now();
         console.info(`${connectionLabel}, starting health check`);
         connectionStates.set(this.wssID, {
             isConnected: true,
-            lastAttempt: Date.now(),
+            lastAttempt: connectedAt,
             isReconnecting: false,
             attemptInProgress: false
         });
         this.clearPendingStreamEndConfirmation('connected');
-        this.lastMessageTime = Date.now();
+        this.lastMessageTime = connectedAt;
         this.startHealthCheck();
         this.startViewerUpdateInterval();
         this.reconnectAttempts = 0;
-        this.lastConnectTimestamp = Date.now();
+        this.lastConnectTimestamp = connectedAt;
+        if (this.shouldApplyStartupHistoryChatCutoff()) {
+            this.startupChatCutoffMs = connectedAt - STARTUP_HISTORY_CHAT_GRACE_MS;
+        } else {
+            this.startupChatCutoffMs = 0;
+        }
         this.offlineRetry = false;
         this.offlineRetryCount = 0;
         this.offlineReason = null;
@@ -7467,6 +8595,12 @@ class ConnectionManager {
                 message: msg || null
             });
             return handledReconnectPromise || null;
+        }
+        if (this.isAutoLocalSignerFallbackFailure(primaryError)) {
+            const restored = await this.restoreAutoFlowAfterLocalSignerFailure(primaryError, 'control_error');
+            if (restored) {
+                return this.restartConnectionAttempt(primaryError, 'local_signer_failed_restore');
+            }
         }
         const errorMessageCandidates = [
             msg,
@@ -7866,6 +9000,12 @@ class ConnectionManager {
 	            delayMs
 	        });
 
+	        setTikTokConnectAttemptCooldown(
+	            getTikTokConnectAttemptGateKey(this),
+	            now + delayMs,
+	            'rate_limit'
+	        );
+
 	        if (this.shouldUseLocalSigner()) {
 	            setLocalSignerCooldown(now + delayMs, 'tiktok_rate_limit');
 	        }
@@ -7951,6 +9091,14 @@ class ConnectionManager {
         const isOfflineFlow = !!(offline || this.offlineRetry);
 
         if (this.isStopped) return;
+        if (!this.isActiveSourceConnection()) {
+            this.logDebug('lifecycle.reconnect.skipped', {
+                reason: 'inactive_source_connection',
+                sourceId: this.sourceId || null
+            });
+            cleanupConnection(this.wssID);
+            return;
+        }
 
         // Guard: avoid scheduling duplicate reconnect timers
         const st = connectionStates.get(this.wssID);
@@ -8086,6 +9234,14 @@ class ConnectionManager {
 
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
+            if (!this.isActiveSourceConnection()) {
+                this.logDebug('lifecycle.reconnect.timer_skipped', {
+                    reason: 'inactive_source_connection',
+                    sourceId: this.sourceId || null
+                });
+                cleanupConnection(this.wssID);
+                return;
+            }
             // Mark the active attempt so cleanup logic does not dispose the manager mid-connect.
             try {
                 connectionStates.set(this.wssID, {
@@ -8180,6 +9336,9 @@ class ConnectionManager {
     }
 
     sendEventMessage(data, eventType, message, extraMeta = {}) {
+        if (!this.canForwardEvents('event_send')) {
+            return;
+        }
         // Per-connection reply-only guard
         if (this.replyOnly) {
             return; // do not forward captured events from this connection
@@ -8194,9 +9353,9 @@ class ConnectionManager {
         if (!canonicalEventType) {
             return;
         }
-        if (canonicalEventType === 'liked' && !isCaptureLikedEventEnabled()) {
-            return;
-        }
+        const directTarget = canonicalEventType === 'liked' && !isCaptureLikedEventEnabled()
+            ? 'reactions'
+            : null;
         if (this.shouldSuppressDuplicateEvent(canonicalEventType, data, message)) {
             return;
         }
@@ -8237,15 +9396,19 @@ class ConnectionManager {
             }
         }
 
-        const metaPayload = sanitizeEventMeta({
+        const eventMeta = {
             eventType: canonicalEventType,
             ...extraMeta
-        });
+        };
+        if (canonicalEventType === 'followed') {
+            eventMeta.follower = true;
+        }
+        const metaPayload = sanitizeEventMeta(eventMeta);
         if (metaPayload) {
             payload.meta = metaPayload;
         }
 
-        sendToBackground(payload);
+        sendToBackground(payload, directTarget);
     }
 
     shouldAllowEulerChatEndpoint() {
@@ -8859,6 +10022,13 @@ class ConnectionManager {
             };
         }
 
+        if (!this.canForwardEvents('chat_send_direct')) {
+            return {
+                success: false,
+                error: 'Connection is no longer active'
+            };
+        }
+
         if (!this.sessionId) {
             console.warn('Skipping TikTok chat send: sessionid cookie missing');
             return {
@@ -9001,6 +10171,9 @@ function logTikTokForwardedMessage(msg, context = 'single', meta = {}) {
         if (!tid || tid < 900001) return;
         const wssID = tid - 900000;
         const manager = env.websocketConnections ? env.websocketConnections[wssID] : null;
+        if (manager && typeof manager.recordTikTokDiagnosticCounter === 'function') {
+            manager.recordTikTokDiagnosticCounter('forwardedEvents');
+        }
         if (!manager || typeof manager.logDebug !== 'function') return;
         const summary = {
             context,
@@ -9021,7 +10194,63 @@ function logTikTokForwardedMessage(msg, context = 'single', meta = {}) {
     }
 }
 
-function sendToBackground(msg) {
+function isSocialStreamBackgroundFrame(frameUrl) {
+    if (!frameUrl || typeof frameUrl !== 'string') return false;
+    try {
+        const parsed = new URL(frameUrl);
+        const pathname = (parsed.pathname || '').replace(/\/+$/, '').toLowerCase();
+        return pathname.endsWith('/background.html') || pathname.endsWith('/background');
+    } catch (_) {
+        const pathname = frameUrl.split(/[?#]/)[0].replace(/\/+$/, '').toLowerCase();
+        return pathname.endsWith('background.html') || pathname.endsWith('/background');
+    }
+}
+
+const TIKTOK_BACKGROUND_RELAY_RETRIES = 3;
+const TIKTOK_BACKGROUND_RELAY_RETRY_MS = 250;
+
+function retryTikTokBackgroundRelay(payload, attempt) {
+    if (attempt >= TIKTOK_BACKGROUND_RELAY_RETRIES) return false;
+    setTimeout(() => {
+        postTikTokPayloadToBackground(payload, attempt + 1);
+    }, TIKTOK_BACKGROUND_RELAY_RETRY_MS);
+    return true;
+}
+
+function postTikTokPayloadToBackground(payload, attempt = 0) {
+    const mainWindow = getMainWindow();
+    const mainFrame = mainWindow && mainWindow.webContents ? mainWindow.webContents.mainFrame : null;
+    const frames = mainFrame ? mainFrame.frames : null;
+
+    if (!Array.isArray(frames)) {
+        return retryTikTokBackgroundRelay(payload, attempt);
+    }
+
+    let posted = false;
+    frames.forEach((frame) => {
+        if (!isSocialStreamBackgroundFrame(frame && frame.url)) return;
+        try {
+            frame.postMessage('fromMain', payload);
+            posted = true;
+        } catch (error) {
+            console.warn('Failed to forward TikTok payload to background frame:', error);
+        }
+    });
+
+    if (!posted) {
+        return retryTikTokBackgroundRelay(payload, attempt);
+    }
+
+    return true;
+}
+
+function sendToBackground(msg, target = null) {
+    if (shouldDropTikTokMessageForInactiveConnection(msg, 'single')) {
+        return;
+    }
+
+    const directTarget = typeof target === 'string' && target.trim() ? target.trim() : null;
+
     try {
         if (msg && typeof msg === 'object' && typeof msg.tid === 'number') {
             const tid = msg.tid;
@@ -9043,25 +10272,24 @@ function sendToBackground(msg) {
 
     msg = attachSourceAccountMeta(msg);
     logTikTokForwardedMessage(msg);
-    try { env.onEvent(msg); } catch (error) { console.warn('onEvent callback failed:', error); }
-
-    const mainWindow = getMainWindow();
-    if (mainWindow && mainWindow.webContents && mainWindow.webContents.mainFrame) {
-        try {
-            mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (frame.url.split('?')[0].endsWith('background.html')) {
-                    frame.postMessage('fromMain', {
-                        message: msg
-                    });
-                }
-            });
-        } catch (error) {
-            console.warn('Failed to forward TikTok message to background:', error);
-        }
+    if (!directTarget) {
+        try { env.onEvent(msg); } catch (error) { console.warn('onEvent callback failed:', error); }
     }
+
+    postTikTokPayloadToBackground({
+        message: msg,
+        ...(directTarget ? { target: directTarget } : {})
+    });
 }
 
 function sendBatchToBackground(messages) {
+    if (Array.isArray(messages)) {
+        messages = messages.filter((message) => !shouldDropTikTokMessageForInactiveConnection(message, 'batch'));
+        if (!messages.length) {
+            return;
+        }
+    }
+
     try {
         if (Array.isArray(messages)) {
             messages = messages.filter(m => {
@@ -9098,20 +10326,9 @@ function sendBatchToBackground(messages) {
         });
     }
 
-    const mainWindow = getMainWindow();
-    if (mainWindow && mainWindow.webContents && mainWindow.webContents.mainFrame) {
-        try {
-            mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (frame.url.split('?')[0].endsWith('background.html')) {
-                    frame.postMessage('fromMain', {
-                        messages
-                    });
-                }
-            });
-        } catch (error) {
-            console.warn('Failed to forward TikTok batch to background:', error);
-        }
-    }
+    postTikTokPayloadToBackground({
+        messages
+    });
 }
 
 module.exports = {
@@ -9125,7 +10342,8 @@ module.exports = {
 		normalizeTikTokEmoteEntries,
 		renderTikTokChatWithEmotes,
 		resolveTikTokGiftContentImage,
-		resolveTikTokGiftDisplayImage,
+		resolveTikTokGiftInlineImage,
+		escapeTikTokHtmlAttribute,
 		resolveGiftMetricCount,
 		resolveGiftAggregatedCount,
 		resolveGiftId,
@@ -9134,6 +10352,9 @@ module.exports = {
         MessageProcessor,
         ConnectionManager,
         buildChatDedupeKey,
-        buildGiftDedupeKey
+        buildGiftDedupeKey,
+        getTikTokConnectionEligibility,
+        registerActiveTikTokSourceConnection,
+        retireTikTokConnectionsForSource
     }
 };

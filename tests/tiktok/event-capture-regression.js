@@ -23,13 +23,24 @@ function buildConnectorStub() {
 
 function createHarness({ captureLikedEvent = false } = {}) {
   const emitted = [];
+  const postedMessages = [];
   const websocketConnections = {};
+  const mainWindow = {
+    webContents: {
+      mainFrame: {
+        frames: [{
+          url: 'file:///background.html',
+          postMessage: (channel, payload) => postedMessages.push({ channel, payload })
+        }]
+      }
+    }
+  };
 
   const env = createTikTokEnvironment({
     connector: buildConnectorStub(),
     shouldEnableTikTokLogging: false,
     resolveLogDirectory: () => null,
-    getMainWindow: () => null,
+    getMainWindow: () => mainWindow,
     websocketConnections,
     browserViews: {},
     log: () => { },
@@ -48,7 +59,7 @@ function createHarness({ captureLikedEvent = false } = {}) {
   manager.virtualTabId = 900001;
   websocketConnections[1] = manager;
 
-  return { emitted, manager };
+  return { emitted, manager, postedMessages };
 }
 
 function runCanonicalizationAssertions() {
@@ -79,7 +90,7 @@ function runCanonicalizationAssertions() {
 }
 
 function runLikeGateAssertions() {
-  const { emitted, manager } = createHarness({ captureLikedEvent: false });
+  const { emitted, manager, postedMessages } = createHarness({ captureLikedEvent: false });
 
   manager.sendEventMessage(
     { uniqueId: 'dave', nickname: 'Dave' },
@@ -87,7 +98,12 @@ function runLikeGateAssertions() {
     'Dave liked the stream!'
   );
 
-  assert.strictEqual(emitted.length, 0, 'liked events should be gated when capturelikeevent is disabled');
+  assert.strictEqual(emitted.length, 0, 'liked events should be gated from the main stream when capturelikeevent is disabled');
+  assert.strictEqual(postedMessages.length, 1, 'liked events should still be forwarded to the reactions target');
+  assert.strictEqual(postedMessages[0].channel, 'fromMain', 'liked event should use the background frame bridge');
+  assert.strictEqual(postedMessages[0].payload.target, 'reactions', 'liked event should be routed to reactions only');
+  assert.strictEqual(postedMessages[0].payload.message.event, 'liked', 'reactions payload should preserve liked event type');
+  assert.strictEqual(postedMessages[0].payload.message.chatname, 'Dave', 'reactions payload should preserve viewer name');
 }
 
 function runFollowShareDedupeAssertions() {

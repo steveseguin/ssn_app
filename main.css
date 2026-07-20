@@ -54,6 +54,74 @@ a {
   color: lightblue;
 }
 
+/* Local replacement for the few Line Awesome icons used by the app shell. */
+.las {
+  display: inline-block;
+  width: 1em;
+  min-width: 1em;
+  line-height: 1;
+  text-align: center;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.la-sync::before {
+  content: "\21BB";
+}
+
+.la-check-circle::before {
+  content: "\2713";
+}
+
+.la-exclamation-circle::before {
+  content: "!";
+}
+
+.la-hand-paper::before {
+  content: "\270B";
+}
+
+.la-exclamation-triangle::before {
+  content: "\26A0";
+}
+
+.la-info-circle::before {
+  content: "i";
+}
+
+.la-sign-in-alt::before {
+  content: "\2192";
+}
+
+.la-edit::before {
+  content: "\270E";
+}
+
+.la-trash::before {
+  content: "\1F5D1";
+}
+
+.la-times::before {
+  content: "\00D7";
+}
+
+.la-stop::before {
+  content: "\25A0";
+}
+
+.fa-spin {
+  animation: ssapp-icon-spin 1s linear infinite;
+}
+
+@keyframes ssapp-icon-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* TikTok authentication button styles */
 button[data-tiktok-signin].authenticated {
   background-color: #10b981 !important;
@@ -348,6 +416,27 @@ body {
   width: 100%;
   height: 100%;
   border: none;
+}
+
+#welcomeFrame {
+  scrollbar-width: thin;
+  scrollbar-color: #ffffff40 #00000080;
+}
+
+#welcomeFrame::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+  background-color: #00000080;
+  -webkit-border-radius: 100px;
+}
+
+#welcomeFrame::-webkit-scrollbar-thumb {
+  background-color: #ffffff40;
+  -webkit-border-radius: 100px;
+}
+
+#welcomeFrame::-webkit-scrollbar-thumb:active {
+  background-color: #ffffff80;
 }
 
 ::-webkit-scrollbar {
@@ -1080,6 +1169,17 @@ button.group-control {
   margin: 20px 0;
 }
 
+.yt-stream-discovery-message {
+  margin: 0 0 12px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 152, 0, 0.45);
+  border-radius: 4px;
+  background: rgba(255, 152, 0, 0.12);
+  color: #ffd18a;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .yt-stream-item {
   position: relative;
   display: flex;
@@ -1146,6 +1246,126 @@ button.group-control {
 .yt-stream-button.secondary {
   background: rgba(255, 255, 255, 0.2);
   color: white;
+}
+
+.youtube-owner-modal {
+  max-width: 560px;
+}
+
+.youtube-source-choice-list {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0 8px;
+}
+
+.modal-content button.youtube-source-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  margin: 0;
+  padding: 14px;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+}
+
+.modal-content button.youtube-source-choice:hover {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: var(--border-accent);
+}
+
+.youtube-source-choice-icon-wrap {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.youtube-source-choice-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+}
+
+.youtube-source-choice-copy {
+  display: block;
+  min-width: 0;
+}
+
+.youtube-source-choice-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+
+.youtube-source-choice-title {
+  display: inline-block;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.youtube-source-choice-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.youtube-source-choice-description {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.youtube-owner-channel-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.youtube-owner-channel-option {
+  display: grid;
+  grid-template-columns: 20px 36px 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.youtube-owner-channel-option img {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+}
+
+.youtube-owner-channel-option span {
+  display: grid;
+  gap: 2px;
+}
+
+.youtube-owner-channel-option small,
+.youtube-owner-profile {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-line;
 }
 
 .beta-toggle {
@@ -1341,6 +1561,11 @@ button.group-control {
   color: white;
 }
 
+.stream-status-badge.video {
+  background-color: #475569;
+  color: white;
+}
+
 .yt-stream-item.selected::before {
   opacity: 1;
 }
@@ -1360,6 +1585,38 @@ button.group-control {
   font-size: 12px;
   margin-left: 10px;
   background: rgba(255, 255, 255, 0.2);
+}
+
+.yt-stream-meta-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.yt-stream-meta-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  text-transform: uppercase;
+  background: rgba(148, 163, 184, 0.24);
+  color: #dbeafe;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.yt-stream-meta-badge.chat-ready {
+  background: rgba(34, 197, 94, 0.18);
+  color: #bbf7d0;
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.yt-stream-meta-badge.chat-waiting {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fde68a;
+  border-color: rgba(245, 158, 11, 0.4);
 }
 
 .stream-status {
@@ -1411,6 +1668,11 @@ button.group-control {
   opacity: 0.6;
   background: rgba(255, 255, 255, 0.05);
   pointer-events: none;
+}
+
+.yt-stream-item.not-live-stream {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .yt-stream-item.already-added .yt-stream-controls {
@@ -1620,7 +1882,6 @@ to {
 .entry:has(i.la-stop:not(.hidden)) .mode-selector,
 .entry:has([data-stophtml]:not(.hidden)) .mode-selector {
   pointer-events: none !important;
-  opacity: 0.5 !important;
   position: relative !important;
 }
 
@@ -1656,7 +1917,7 @@ to {
 .entry:has(i.la-stop:not(.hidden)) .mode-option,
 .entry:has([data-stophtml]:not(.hidden)) .mode-option {
   cursor: not-allowed !important;
-  opacity: 0.6 !important;
+  opacity: 0.42 !important;
   background: rgba(0, 0, 0, 0.3) !important;
 }
 
@@ -1668,7 +1929,7 @@ to {
 
 .entry:has(i.la-stop:not(.hidden)) .mode-option.active,
 .entry:has([data-stophtml]:not(.hidden)) .mode-option.active {
-  opacity: 0.8 !important;
+  opacity: 1 !important;
 }
 
 .mode-selector-label {
@@ -1711,6 +1972,17 @@ to {
   justify-content: center;
 }
 
+.mode-option::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.28;
+  box-shadow: none;
+  flex: 0 0 auto;
+}
+
 .mode-option:hover {
   background: rgba(255, 255, 255, 0.15);
   color: white !important;
@@ -1722,6 +1994,56 @@ to {
   color: white;
   font-weight: 600 !important;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2) !important;
+}
+
+.mode-option.active::before {
+  opacity: 1;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.12);
+}
+
+.mode-option[data-mode="classic"].active {
+  background: rgba(148, 163, 184, 0.28) !important;
+  border-color: rgba(203, 213, 225, 0.38) !important;
+  color: #f8fafc !important;
+}
+
+.mode-option[data-mode="websocket"].active,
+.mode-option[data-mode="tiktok-websocket"].active {
+  background: rgba(56, 189, 248, 0.24) !important;
+  border-color: rgba(56, 189, 248, 0.58) !important;
+  color: #e0f2fe !important;
+}
+
+.mode-option[data-mode="tiktok-legacy"].active {
+  background: rgba(245, 158, 11, 0.24) !important;
+  border-color: rgba(245, 158, 11, 0.55) !important;
+  color: #ffedd5 !important;
+}
+
+.entry:has(i.la-stop:not(.hidden)) .mode-option[data-mode="classic"].active,
+.entry:has([data-stophtml]:not(.hidden)) .mode-option[data-mode="classic"].active {
+  opacity: 1 !important;
+  background: rgba(148, 163, 184, 0.28) !important;
+  border-color: rgba(203, 213, 225, 0.38) !important;
+  color: #f8fafc !important;
+}
+
+.entry:has(i.la-stop:not(.hidden)) .mode-option[data-mode="websocket"].active,
+.entry:has([data-stophtml]:not(.hidden)) .mode-option[data-mode="websocket"].active,
+.entry:has(i.la-stop:not(.hidden)) .mode-option[data-mode="tiktok-websocket"].active,
+.entry:has([data-stophtml]:not(.hidden)) .mode-option[data-mode="tiktok-websocket"].active {
+  opacity: 1 !important;
+  background: rgba(56, 189, 248, 0.24) !important;
+  border-color: rgba(56, 189, 248, 0.58) !important;
+  color: #e0f2fe !important;
+}
+
+.entry:has(i.la-stop:not(.hidden)) .mode-option[data-mode="tiktok-legacy"].active,
+.entry:has([data-stophtml]:not(.hidden)) .mode-option[data-mode="tiktok-legacy"].active {
+  opacity: 1 !important;
+  background: rgba(245, 158, 11, 0.24) !important;
+  border-color: rgba(245, 158, 11, 0.55) !important;
+  color: #ffedd5 !important;
 }
 
 .control-panel .auto-activate-toggle {
@@ -1890,6 +2212,35 @@ button[data-activatehtml].hidden {
   background: #95a5a6 !important;
   border-color: #7f8c8d !important;
   opacity: 1 !important;
+}
+
+.entry button.icon-button[data-togglehtml].tiktok-standard-action {
+  background: rgba(245, 158, 11, 0.32) !important;
+  border-color: rgba(245, 158, 11, 0.9) !important;
+  color: #fff7df !important;
+  opacity: 1 !important;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2), 0 2px 8px rgba(0, 0, 0, 0.35) !important;
+  animation: tiktok-standard-action-pulse 1.8s ease-in-out infinite;
+}
+
+.entry button.icon-button[data-togglehtml].tiktok-standard-action:hover {
+  background: rgba(245, 158, 11, 0.46) !important;
+  border-color: #fbbf24 !important;
+}
+
+.ws-status.error.action-needed {
+  background: rgba(245, 158, 11, 0.18);
+  color: #ffd98a;
+  border-color: rgba(245, 158, 11, 0.75) !important;
+}
+
+@keyframes tiktok-standard-action-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18), 0 2px 8px rgba(0, 0, 0, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.34), 0 2px 12px rgba(245, 158, 11, 0.2);
+  }
 }
 
 [data-togglehtml] {

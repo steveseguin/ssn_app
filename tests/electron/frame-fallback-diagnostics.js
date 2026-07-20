@@ -141,12 +141,14 @@ async function instantiateFunction(functionSource, contextValues, functionName) 
 
 async function testSetupIframeSource(indexSource) {
 	const fnSource = extractFunctionSource(indexSource, 'setupIframeSource');
+	const setupGlobals = { getLanguageExtraParams: () => [] };
 
 	const successFrame = createFrame();
 	const successToast = createToastRecorder();
 	const successConsole = createConsoleRecorder();
 	const successCalls = [];
 	const successHarness = await instantiateFunction(fnSource, {
+		...setupGlobals,
 		currentLanguage: 'en-US',
 		window: { initialEditorView: false },
 		sourcemode: false,
@@ -176,6 +178,7 @@ async function testSetupIframeSource(indexSource) {
 	const fallbackConsole = createConsoleRecorder();
 	const fallbackCalls = [];
 	const fallbackHarness = await instantiateFunction(fnSource, {
+		...setupGlobals,
 		currentLanguage: 'en-US',
 		window: { initialEditorView: true },
 		sourcemode: false,
@@ -208,6 +211,7 @@ async function testSetupIframeSource(indexSource) {
 	const failConsole = createConsoleRecorder();
 	const failCalls = [];
 	const failHarness = await instantiateFunction(fnSource, {
+		...setupGlobals,
 		currentLanguage: 'en-US',
 		window: { initialEditorView: false },
 		sourcemode: false,
@@ -242,12 +246,22 @@ async function testSetupIframeSource(indexSource) {
 
 async function testEnsurePopupPanelLoaded(indexSource) {
 	const fnSource = extractFunctionSource(indexSource, 'ensurePopupPanelLoaded');
+	const popupGlobals = {
+		sourcemode: false,
+		devmode: false,
+		forceHostedGeneratedLinks: false,
+		isBetaMode: false,
+		getSsappHostedBase: (branch) => branch === 'beta' ? 'https://beta.socialstream.ninja' : 'https://socialstream.ninja',
+		getLanguageExtraParams: () => [],
+		postLanguageToPopupFrameAfterLoad: () => {},
+	};
 
 	const successFrame = createFrame();
 	const successToast = createToastRecorder();
 	const successConsole = createConsoleRecorder();
 	const successCalls = [];
 	const successHarness = await instantiateFunction(fnSource, {
+		...popupGlobals,
 		document: {
 			getElementById(id) {
 				return id === 'frame1' ? successFrame : null;
@@ -266,12 +280,14 @@ async function testEnsurePopupPanelLoaded(indexSource) {
 	assert(successFrame.src.includes('popup.html'), 'ensurePopupPanelLoaded should assign popup frame src on success');
 	assert(successToast.calls.length === 0, 'ensurePopupPanelLoaded should not toast on remote success');
 	assert(successCalls.length === 1, 'ensurePopupPanelLoaded should not retry when popup resolves remotely');
+	assert(successCalls[0].options.generatedLinkBase === 'https://socialstream.ninja/', 'popup should request canonical generated links');
 
 	const fallbackFrame = createFrame();
 	const fallbackToast = createToastRecorder();
 	const fallbackConsole = createConsoleRecorder();
 	const fallbackCalls = [];
 	const fallbackHarness = await instantiateFunction(fnSource, {
+		...popupGlobals,
 		document: {
 			getElementById(id) {
 				return id === 'frame1' ? fallbackFrame : null;
@@ -293,12 +309,14 @@ async function testEnsurePopupPanelLoaded(indexSource) {
 	assert(fallbackFrame.src.startsWith('file:///fallback/popup.html'), 'ensurePopupPanelLoaded should assign packaged popup src on fallback');
 	assert(fallbackToast.calls.some((call) => call.level === 'warning' && call.title === 'Popup Fallback'), 'ensurePopupPanelLoaded should warn when using packaged popup fallback');
 	assert(fallbackCalls.length === 2, 'ensurePopupPanelLoaded should retry popup resolution with forceLocal');
+	assert(fallbackCalls[1].options.generatedLinkBase === 'https://socialstream.ninja/', 'packaged popup fallback should preserve canonical generated links');
 
 	const failFrame = createFrame();
 	const failToast = createToastRecorder();
 	const failConsole = createConsoleRecorder();
 	const failCalls = [];
 	const failHarness = await instantiateFunction(fnSource, {
+		...popupGlobals,
 		document: {
 			getElementById(id) {
 				return id === 'frame1' ? failFrame : null;
@@ -402,7 +420,7 @@ async function testResponseValidation(indexSource, mainSource) {
 	];
 }
 
-function runStaticChecks(indexSource) {
+function runStaticChecks(indexSource, mainSource) {
 	const checks = [];
 
 	assert(/pageId === 'dashboard' \|\| pageId === 'event-flow-editor'[\s\S]*?await setupIframeSource\(\);/.test(indexSource), 'switchToPage should bootstrap frame2 via setupIframeSource when dashboard is opened');
@@ -413,6 +431,15 @@ function runStaticChecks(indexSource) {
 
 	assert(/const remoteResult = await resolveRemote\(\);[\s\S]*?const cachedResult = await resolveCache\(\);[\s\S]*?const localFallback = await resolvePackaged\(\);/.test(indexSource), 'resolveSocialStreamPage should try remote, then cache, then packaged assets');
 	checks.push('PASS resolveSocialStreamPage still falls back remote -> cache -> packaged');
+
+	assert(/getSsappRemoteBases\(remoteBranch\)/.test(indexSource), 'remote page resolution should try cache and canonical hosted origins');
+	checks.push('PASS remote page resolution tries cache host then canonical hosted origin');
+
+	assert(/generatedlinkbase=\$\{encodeURIComponent\(options\.generatedLinkBase\)\}/.test(indexSource), 'local popup fallback should carry the canonical generated-link base');
+	checks.push('PASS local popup fallback carries a separate canonical generated-link base');
+
+	assert(/mainApp && preferLocalAssetsFlag[\s\S]*?hostedlinks=1/.test(mainSource), 'prefer-local startup should keep user-facing links hosted');
+	checks.push('PASS prefer-local startup marks generated links as hosted');
 
 	return checks;
 }
@@ -425,7 +452,7 @@ async function main() {
 	const mainSource = readText(mainPath);
 
 	const results = [];
-	results.push(...runStaticChecks(indexSource));
+	results.push(...runStaticChecks(indexSource, mainSource));
 	results.push(...await testSetupIframeSource(indexSource));
 	results.push(...await testEnsurePopupPanelLoaded(indexSource));
 	results.push(...await testInitializeApplication(indexSource));

@@ -1,7 +1,8 @@
-const { ipcMain, shell } = require('electron');
+const { BrowserWindow, ipcMain, shell } = require('electron');
 const http = require('http');
 const url = require('url');
 const crypto = require('crypto');
+const path = require('path');
 
 function escapeHtml(str) {
     if (typeof str !== 'string') return '';
@@ -14,6 +15,120 @@ const CALLBACK_PATH = '/sources/websocket/kick.html';
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 let activeSession = null;
+
+function normalizeOpenMode(value) {
+    return value === 'local' ? 'local' : 'external';
+}
+
+function normalizeSize(size) {
+    if (!size || typeof size !== 'object') {
+        return { width: 1280, height: 720 };
+    }
+    const width = Number.parseInt(size.width, 10);
+    const height = Number.parseInt(size.height, 10);
+    return {
+        width: Number.isFinite(width) && width > 0 ? width : 1280,
+        height: Number.isFinite(height) && height > 0 ? height : 720
+    };
+}
+
+function getPreloadScript(preload) {
+    if (preload === 'none' || preload === false) {
+        return null;
+    }
+    if (preload === 'mock') {
+        return 'preload-mock.js';
+    }
+    if (preload === 'kasada') {
+        return 'preload-kasada.js';
+    }
+    if (preload === 'full' || preload === true) {
+        return 'preload.js';
+    }
+    return null;
+}
+
+function createLocalOAuthWindow(authUrl, payload, parentWebContents) {
+    const signin = payload && payload.signin && typeof payload.signin === 'object' ? payload.signin : {};
+    const size = normalizeSize(signin.size || payload.size);
+    const preloadScript = getPreloadScript(signin.preload);
+    const isKasadaPreload = preloadScript === 'preload-kasada.js';
+    const webPreferences = {
+        nodeIntegration: false,
+        contextIsolation: isKasadaPreload ? false : true,
+        sandbox: false,
+        webSecurity: true,
+        nativeWindowOpen: true,
+        plugins: true,
+        images: true,
+        javascript: true,
+        webgl: true
+    };
+
+    if (parentWebContents && parentWebContents.session) {
+        webPreferences.session = parentWebContents.session;
+    }
+    if (preloadScript) {
+        webPreferences.preload = path.join(__dirname, '..', preloadScript);
+    }
+    if (isKasadaPreload) {
+        webPreferences.additionalArguments = [
+            '--enable-blink-features=CSSColorSchemeUARendering',
+            '--enable-features=WebUIDarkMode',
+            '--force-color-profile=srgb',
+            '--metrics-recording-only',
+            '--no-first-run',
+            '--password-store=basic',
+            '--use-mock-keychain'
+        ];
+    }
+
+    const authWindow = new BrowserWindow({
+        width: size.width,
+        height: size.height,
+        minWidth: 400,
+        minHeight: 300,
+        backgroundColor: '#ffffff',
+        show: false,
+        frame: true,
+        hasShadow: true,
+        thickFrame: true,
+        titleBarStyle: 'default',
+        center: true,
+        movable: true,
+        resizable: true,
+        closable: true,
+        focusable: true,
+        fullscreenable: true,
+        minimizable: true,
+        maximizable: true,
+        webPreferences
+    });
+
+    authWindow.once('ready-to-show', () => {
+        if (!authWindow.isDestroyed()) {
+            authWindow.show();
+        }
+    });
+
+    authWindow.webContents.setWindowOpenHandler(({ url: popupUrl }) => {
+        if (popupUrl) {
+            authWindow.loadURL(popupUrl).catch(() => {});
+        }
+        return { action: 'deny' };
+    });
+
+    const loadOptions = {};
+    const userAgent = signin.userAgent || payload.userAgent || '';
+    if (userAgent) {
+        loadOptions.userAgent = userAgent;
+    }
+    authWindow.loadURL(authUrl, loadOptions).catch((error) => {
+        console.error('[Kick OAuth] Local auth window failed to load:', error);
+    });
+
+    return authWindow;
+}
 
 // PKCE helper functions
 function generateRandomString(length) {
@@ -80,13 +195,15 @@ async function tryStartServer(server) {
     throw error;
 }
 
-function runKickLoopbackOAuthSession(payload = {}) {
+function runKickLoopbackOAuthSession(payload = {}, parentWebContents = null) {
     return new Promise((resolve, reject) => {
         (async () => {
         let timeoutId = null;
         let settled = false;
         let server = null;
         let session = null;
+        let authWindow = null;
+        const openMode = normalizeOpenMode(payload.openMode || payload.authMethod);
 
         // Generate PKCE values
         const codeVerifier = generateRandomString(64);
@@ -101,6 +218,15 @@ function runKickLoopbackOAuthSession(payload = {}) {
             if (server) {
                 try { server.close(); } catch (_) { }
                 server = null;
+            }
+            if (authWindow) {
+                try {
+                    authWindow.removeAllListeners('closed');
+                    if (!authWindow.isDestroyed()) {
+                        authWindow.close();
+                    }
+                } catch (_) { }
+                authWindow = null;
             }
             if (activeSession === session) {
                 activeSession = null;
@@ -202,12 +328,26 @@ function runKickLoopbackOAuthSession(payload = {}) {
 
                 payload.redirectUri = redirectUri;
 
-                try {
-                    await shell.openExternal(authUrl, { activate: true });
-                    console.log('[Kick OAuth] Opening auth URL in default browser');
-                } catch (shellError) {
-                    console.error('[Kick OAuth] Failed to launch default browser:', shellError);
-                    fail(shellError);
+                if (openMode === 'local') {
+                    try {
+                        authWindow = createLocalOAuthWindow(authUrl, payload, parentWebContents);
+                        authWindow.once('closed', () => {
+                            authWindow = null;
+                            fail(new Error('Kick OAuth window was closed before authorization completed.'));
+                        });
+                        console.log('[Kick OAuth] Opening auth URL in local app window');
+                    } catch (windowError) {
+                        console.error('[Kick OAuth] Failed to launch local auth window:', windowError);
+                        fail(windowError);
+                    }
+                } else {
+                    try {
+                        await shell.openExternal(authUrl, { activate: true });
+                        console.log('[Kick OAuth] Opening auth URL in default browser');
+                    } catch (shellError) {
+                        console.error('[Kick OAuth] Failed to launch default browser:', shellError);
+                        fail(shellError);
+                    }
                 }
             } catch (err) {
                 if (err.code === 'PORTS_UNAVAILABLE') {
@@ -243,12 +383,12 @@ function setupKickOAuthHandler() {
     if (ipcMain.listenerCount('kick-oauth') > 0) {
         return;
     }
-    ipcMain.handle('kick-oauth', async (_event, payload = {}) => {
+    ipcMain.handle('kick-oauth', async (event, payload = {}) => {
         if (activeSession && typeof activeSession.fail === 'function') {
             console.warn('[Kick OAuth] Aborting previous pending session in favor of the new request.');
             activeSession.fail(new Error('Previous Kick authentication was interrupted by a new request.'));
         }
-        return runKickLoopbackOAuthSession(payload);
+        return runKickLoopbackOAuthSession(payload, event && event.sender ? event.sender : null);
     });
 }
 

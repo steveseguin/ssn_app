@@ -90,6 +90,15 @@ const ssappEnvironmentBridge = {
 	}
 };
 
+async function setSsappLanguagePreference(language) {
+	try {
+		return await ipcRenderer.invoke('ssapp:set-language', language);
+	} catch (error) {
+		console.error('[Preload] Failed to persist SSAPP language:', error);
+		return { ok: false, error: error?.message || 'Unable to persist language.' };
+	}
+}
+
 const ssappCustomJsBridge = {
 	getState: async () => {
 		try {
@@ -176,6 +185,16 @@ function scheduleStandaloneCustomJsInjection() {
 		setTimeout(() => {
 			injectStandaloneCustomJs('page-load');
 		}, 0);
+	}
+}
+
+async function getSourceWindowConfig() {
+	try {
+		const result = await ipcRenderer.invoke('ssapp:get-source-window-config');
+		return result || {};
+	} catch (error) {
+		console.error('[Preload] Failed to retrieve source window config:', error);
+		return {};
 	}
 }
 
@@ -338,6 +357,96 @@ var doSomethingInWebAppWrapper = function(message, sender, sendResponse) {
 		} catch (_) {}
 	}
 };
+
+function extractBackgroundCommandRequest(data) {
+	if (!data || typeof data !== 'object') return null;
+	if (data.type === 'toBackground' && data.data && typeof data.data === 'object') {
+		return data.data;
+	}
+	return null;
+}
+
+function sendBackgroundCommandIfNeeded(data, callback) {
+	const request = extractBackgroundCommandRequest(data);
+	if (!request || !request.cmd || typeof callback !== 'function') return false;
+	ipcRenderer.invoke('ssapp:background-command', request)
+		.then((response) => {
+			callback(response || { ok: false, error: 'Background command returned no response' });
+		})
+		.catch((error) => {
+			callback({
+				ok: false,
+				error: error && error.message ? error.message : 'Background command failed'
+			});
+		});
+	return true;
+}
+
+let sttStatusSubscriptionCounter = 0;
+const sttStatusSubscriptions = new Map();
+const STT_MAX_AUDIO_BYTE_LENGTH = 16000 * 20 * Float32Array.BYTES_PER_ELEMENT;
+
+function normalizeSttAudioBuffer(audio) {
+	const isArrayBuffer = audio instanceof ArrayBuffer;
+	const isView = ArrayBuffer.isView(audio) && audio.buffer instanceof ArrayBuffer;
+	const byteLength = isArrayBuffer ? audio.byteLength : isView ? audio.byteLength : 0;
+	if (!byteLength || byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) {
+		throw new TypeError('transcribeAudio expects non-empty Float32 PCM bytes.');
+	}
+	if (byteLength > STT_MAX_AUDIO_BYTE_LENGTH) {
+		throw new RangeError('transcribeAudio is limited to 20 seconds of 16 kHz audio.');
+	}
+	return isArrayBuffer
+		? audio.slice(0)
+		: audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength);
+}
+
+async function transcribeAudio(audio, options = {}) {
+	return await ipcRenderer.invoke('stt:transcribe', {
+		audio: normalizeSttAudioBuffer(audio),
+		sampleRate: Number(options.sampleRate) || 16000,
+	});
+}
+
+function subscribeToSttStatus(callback) {
+	if (typeof callback !== 'function') return '';
+	const subscriptionId = `stt-status-${++sttStatusSubscriptionCounter}`;
+	const listener = (_event, payload) => {
+		try {
+			callback(payload);
+		} catch (error) {
+			console.warn('[Preload] STT status callback failed:', error && error.message ? error.message : error);
+		}
+	};
+	sttStatusSubscriptions.set(subscriptionId, listener);
+	ipcRenderer.on('stt:status', listener);
+	return subscriptionId;
+}
+
+function unsubscribeFromSttStatus(subscriptionId) {
+	const id = String(subscriptionId || '');
+	const listener = sttStatusSubscriptions.get(id);
+	if (!listener) return false;
+	ipcRenderer.removeListener('stt:status', listener);
+	sttStatusSubscriptions.delete(id);
+	return true;
+}
+
+const localMediaBridge = {
+	select: async (payload = {}) => ipcRenderer.invoke('local-media:select', payload),
+	list: async () => ipcRenderer.invoke('local-media:list'),
+	get: async (assetId) => ipcRenderer.invoke('local-media:get', { assetId }),
+	remove: async (assetId) => ipcRenderer.invoke('local-media:remove', { assetId }),
+	status: async () => ipcRenderer.invoke('local-media:status'),
+	start: async () => ipcRenderer.invoke('local-media:start'),
+	stop: async () => ipcRenderer.invoke('local-media:stop'),
+	setPort: async (port) => ipcRenderer.invoke('local-media:set-port', { port }),
+	getFlowActionsUrl: async (payload = {}) => ipcRenderer.invoke('local-media:flow-url', payload),
+	getMediaUrl: async (assetId) => ipcRenderer.invoke('local-media:media-url', { assetId }),
+	reveal: async (assetId) => ipcRenderer.invoke('local-media:reveal', { assetId }),
+	rotateToken: async () => ipcRenderer.invoke('local-media:rotate-token'),
+};
+
 function configureContextBridge(){
 	try {
 		console.log('[Preload] Configuring contextBridge with ninjafy (including OAuth methods)');
@@ -358,6 +467,10 @@ function configureContextBridge(){
 		  },
 		  
 		  sendMessage: function(ignore=null, data=null, callback=false, tabID=false) {
+			if (sendBackgroundCommandIfNeeded(data, callback)) {
+				return;
+			}
+
 			// Add authentication token to messages
 			const authenticatedData = { ...data, _authToken: MESSAGE_AUTH_TOKEN };
 			
@@ -380,6 +493,24 @@ function configureContextBridge(){
 		  
 		  // Expose the injected script flag
 		  getInjectedScriptFlag: () => INJECTED_SCRIPT_FLAG,
+
+		  getSourceWindowConfig: getSourceWindowConfig,
+
+		  localMedia: localMediaBridge,
+
+		  getSttCapabilities: async () => {
+			return await ipcRenderer.invoke('stt:get-capabilities');
+		  },
+
+		  transcribeAudio,
+
+		  getSttDiagnostics: async () => {
+			return await ipcRenderer.invoke('stt:get-diagnostics');
+		  },
+
+		  onSttStatus: subscribeToSttStatus,
+
+		  offSttStatus: unsubscribeFromSttStatus,
 			  
 			  closeFileStream: async () => {
 				await ipcRenderer.invoke('close-file-stream');
@@ -440,6 +571,14 @@ function configureContextBridge(){
 			  noCORSFetch: async (args) => {
 				return await ipcRenderer.invoke("nodefetch", args || {});
 			  },
+
+			  fetchRumbleJson: async (url) => {
+				return await ipcRenderer.invoke('rumble-fetch-json', { url });
+			  },
+
+			  fetchJoystickJson: async (request) => {
+				return await ipcRenderer.invoke('ssapp:background-command', Object.assign({}, request || {}, { cmd: 'joystickFetchJson' }));
+			  },
 			  
 			  readStreamChunk: (streamId) => {},
 			  
@@ -455,6 +594,30 @@ function configureContextBridge(){
 
 			  refreshYouTubeOAuthToken: async (payload) => {
 				return await ipcRenderer.invoke('youtube-oauth-refresh', payload);
+			  },
+
+			  startYouTubeOwnerAuth: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-auth-start', payload || {});
+			  },
+
+			  confirmYouTubeOwnerAuth: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-auth-confirm', payload || {});
+			  },
+
+			  listYouTubeOwnerAuth: async () => {
+				return await ipcRenderer.invoke('youtube-owner-auth-list');
+			  },
+
+			  clearYouTubeOwnerAuth: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-auth-clear', payload || {});
+			  },
+
+			  fetchYouTubeOwnerBroadcasts: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-broadcasts', payload || {});
+			  },
+
+			  startMediaUpload: async (payload) => {
+				return await ipcRenderer.invoke('media-upload', payload || {});
 			  },
 
 			  startTwitchOAuth: async (payload) => {
@@ -511,32 +674,6 @@ function configureContextBridge(){
 				};
 			  })(),
 
-			  startYouTubeLiveChatGrpcStream: async (options) => {
-				return await ipcRenderer.invoke('youtube-livechat-grpc:start', options);
-			  },
-			  
-			  stopYouTubeLiveChatGrpcStream: async (streamId) => {
-				return await ipcRenderer.invoke('youtube-livechat-grpc:stop', streamId);
-			  },
-			  
-			  onYouTubeLiveChatGrpcEvent: (callback) => {
-				if (typeof callback !== 'function') {
-					return () => {};
-				}
-				const channel = 'youtube-livechat-grpc:event';
-				const handler = (_event, payload) => {
-					try {
-						callback(payload);
-					} catch (error) {
-						console.warn('[Preload] YouTube gRPC event handler failed', error);
-					}
-				};
-				ipcRenderer.on(channel, handler);
-				return () => {
-					ipcRenderer.removeListener(channel, handler);
-				};
-			  },
-			  
 			  // Performance monitoring
 			  requestPerformanceData: async () => {
 				return await ipcRenderer.invoke('getPerformanceMetrics');
@@ -554,7 +691,8 @@ function configureContextBridge(){
 			source: localeSource,
 			getLocale: () => effectiveLocale,
 			getAcceptLanguage: () => acceptLanguageHeader,
-			getSource: () => localeSource
+			getSource: () => localeSource,
+			setLanguage: setSsappLanguagePreference
 		});
 		contextBridge.exposeInMainWorld('ssappFallback', ssappFallbackBridge);
 		contextBridge.exposeInMainWorld('ssappEnvironment', ssappEnvironmentBridge);
@@ -580,9 +718,14 @@ try {
 			_authToken: MESSAGE_AUTH_TOKEN,
 			
 			getInjectedScriptFlag: () => INJECTED_SCRIPT_FLAG,
+
+			localMedia: localMediaBridge,
 			
 			sendMessage: (a, b, c, tabID) => {
 				const messageData = b || a;
+				if (sendBackgroundCommandIfNeeded(messageData, c)) {
+					return;
+				}
 				
 				// When tabID is provided, this is a message that should be routed to the background
 				// via postMessage handler, not directly to a tab
@@ -630,6 +773,10 @@ try {
 				return await ipcRenderer.invoke("nodefetch", args || {});
 			},
 
+			fetchJoystickJson: async (request) => {
+				return await ipcRenderer.invoke('ssapp:background-command', Object.assign({}, request || {}, { cmd: 'joystickFetchJson' }));
+			},
+
 			startYouTubeOAuth: async (payload) => {
 				return await ipcRenderer.invoke('youtube-oauth', payload);
 			},
@@ -640,6 +787,30 @@ try {
 
 			refreshYouTubeOAuthToken: async (payload) => {
 				return await ipcRenderer.invoke('youtube-oauth-refresh', payload);
+			},
+
+			startYouTubeOwnerAuth: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-auth-start', payload || {});
+			},
+
+			confirmYouTubeOwnerAuth: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-auth-confirm', payload || {});
+			},
+
+			listYouTubeOwnerAuth: async () => {
+				return await ipcRenderer.invoke('youtube-owner-auth-list');
+			},
+
+			clearYouTubeOwnerAuth: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-auth-clear', payload || {});
+			},
+
+			fetchYouTubeOwnerBroadcasts: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-broadcasts', payload || {});
+			},
+
+			startMediaUpload: async (payload) => {
+				return await ipcRenderer.invoke('media-upload', payload || {});
 			},
 
 			startTwitchOAuth: async (payload) => {
@@ -674,6 +845,24 @@ try {
 				return await ipcRenderer.invoke('kick-ws-disconnect', payload);
 			},
 
+			getSttCapabilities: async () => {
+				return await ipcRenderer.invoke('stt:get-capabilities');
+			},
+
+			transcribeAudio,
+
+			getSttDiagnostics: async () => {
+				return await ipcRenderer.invoke('stt:get-diagnostics');
+			},
+
+			onSttStatus: subscribeToSttStatus,
+
+			offSttStatus: unsubscribeFromSttStatus,
+
+			tts: async (text, settings) => {
+				return await ipcRenderer.invoke('tts', {text, settings});
+			},
+
 			onKickWsEvent: (() => {
 				let registered = false;
 				return (callback) => {
@@ -696,31 +885,6 @@ try {
 				};
 			})(),
 
-			startYouTubeLiveChatGrpcStream: async (options) => {
-				return await ipcRenderer.invoke('youtube-livechat-grpc:start', options);
-			},
-
-			stopYouTubeLiveChatGrpcStream: async (streamId) => {
-				return await ipcRenderer.invoke('youtube-livechat-grpc:stop', streamId);
-			},
-
-			onYouTubeLiveChatGrpcEvent: (callback) => {
-				if (typeof callback !== 'function') {
-					return () => {};
-				}
-				const channel = 'youtube-livechat-grpc:event';
-				const handler = (_event, payload) => {
-					try {
-						callback(payload);
-					} catch (error) {
-						console.warn('[Preload] YouTube gRPC event handler failed', error);
-					}
-				};
-				ipcRenderer.on(channel, handler);
-				return () => {
-					ipcRenderer.removeListener(channel, handler);
-				};
-			}
 		};
 		window.ssappLocale = {
 			locale: process.env.SSAPP_LOCALE_EFFECTIVE || 'en-US',
@@ -728,7 +892,8 @@ try {
 			source: process.env.SSAPP_LOCALE_SOURCE || 'system',
 			getLocale() { return this.locale; },
 			getAcceptLanguage() { return this.acceptLanguage; },
-			getSource() { return this.source; }
+			getSource() { return this.source; },
+			setLanguage: setSsappLanguagePreference
 		};
 		window.ssappFallback = ssappFallbackBridge;
 		window.ssappEnvironment = ssappEnvironmentBridge;

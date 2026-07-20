@@ -12,9 +12,8 @@ export default async function (params) {
     }
     console.log('afterSign hook triggered', params);
     
-    // Update appId to match package.json
-    let appId = 'socialstreamninja.electron'
-    let appPath = path.join(params.appOutDir, `${params.packager.appInfo.productFilename}.app`);
+    const appId = params.packager.config.appId || 'socialstream.electron';
+    const appPath = path.join(params.appOutDir, `${params.packager.appInfo.productFilename}.app`);
     
     try {
         await fs.access(appPath);
@@ -24,10 +23,24 @@ export default async function (params) {
     
     console.log(`Notarizing ${appId} found at ${appPath}`);
     
+    const keychainProfile = process.env.notarytoolProfile || process.env.NOTARYTOOL_KEYCHAIN_PROFILE || process.env.APPLE_NOTARY_KEYCHAIN_PROFILE;
+    const appleId = process.env.APPLE_ID || process.env.appleId;
+    const appleIdPassword = process.env.APPLE_APP_SPECIFIC_PASSWORD || process.env.appleIdPassword;
+    const teamId = process.env.APPLE_TEAM_ID || process.env.teamId;
+    const configuredCredentialCount = [appleId, appleIdPassword, teamId].filter(Boolean).length;
+
     // Skip notarization if credentials are not available
-    if (!process.env.appleId || !process.env.appleIdPassword || !process.env.teamId) {
+    if (!keychainProfile && configuredCredentialCount === 0) {
         console.log('Skipping notarization due to missing credentials');
         return;
+    }
+
+    if (!keychainProfile && configuredCredentialCount !== 3) {
+        const missing = [];
+        if (!appleId) missing.push('APPLE_ID');
+        if (!appleIdPassword) missing.push('APPLE_APP_SPECIFIC_PASSWORD');
+        if (!teamId) missing.push('APPLE_TEAM_ID');
+        throw new Error(`Cannot notarize because these environment variables are missing: ${missing.join(', ')}`);
     }
     
     try {
@@ -36,17 +49,21 @@ export default async function (params) {
         console.log(`Creating zip at ${zipPath}`);
         await execFilePromise('ditto', ['-c', '-k', '--keepParent', appPath, zipPath]);
         
-        // Store the credentials in the keychain
-        const profileName = `electron-notarize-${Date.now()}`;
-        console.log(`Storing credentials in keychain profile: ${profileName}`);
-        
-        // Store credentials in keychain
-        await execFilePromise('xcrun', [
-            'notarytool', 'store-credentials', profileName,
-            '--apple-id', process.env.appleId,
-            '--team-id', process.env.teamId,
-            '--password', process.env.appleIdPassword
-        ]);
+        const profileName = keychainProfile || `electron-notarize-${Date.now()}`;
+
+        if (keychainProfile) {
+            console.log(`Using existing keychain profile: ${profileName}`);
+        } else {
+            console.log(`Storing credentials in keychain profile: ${profileName}`);
+
+            // Store credentials in keychain
+            await execFilePromise('xcrun', [
+                'notarytool', 'store-credentials', profileName,
+                '--apple-id', appleId,
+                '--team-id', teamId,
+                '--password', appleIdPassword
+            ]);
+        }
         
         // Submit for notarization using the keychain profile
         console.log('Submitting for notarization...');
@@ -75,6 +92,7 @@ export default async function (params) {
         
     } catch (error) {
         console.error('Notarization error:', error);
+        throw error;
     }
     
     console.log(`Done notarizing ${appId}`);

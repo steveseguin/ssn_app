@@ -103,6 +103,11 @@ function createHarness(outcomesByMode, options) {
         signingProvider: 'auto',
         signing: opts.signing || null
     });
+    manager.connectAttemptMinIntervalMs = 0;
+    manager.connectAttemptProviderIntervalMs = 0;
+    manager.fallbackRestartMinDelayMs = 0;
+    manager.localSignerAttemptTimeoutMs = 0;
+    manager.localSignerFailureCooldownMs = 0;
     manager.sharedEulerApiKeyPool = [];
     manager.sharedEulerApiKeyAttempts = new Set();
     manager.logDebug = function() {};

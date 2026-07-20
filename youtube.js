@@ -7,6 +7,117 @@ const MANUAL_YOUTUBE_DISCOVERY_CACHE_TTL_MS = 5000;
 const manualYouTubeDiscoveryCache = new Map();
 const manualYouTubeDiscoveryInflight = new Map();
 
+function escapeYouTubeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    }[char]));
+}
+
+function getResolvedYouTubeVideoStatus(status, viewers) {
+    if (status === 'live') return 'live';
+    if (status === 'upcoming') return 'upcoming';
+    if (status === 'ended') return 'ended';
+    if (viewers && viewers > 0) return 'live';
+    return status || 'video';
+}
+
+function isSelectableYouTubeStreamStatus(status) {
+    return status === 'live' || status === 'upcoming';
+}
+
+function isYouTubeOwnerDiscoveryGroup(group) {
+    return !!(group && (group.target === 'youtube' || group.target === 'youtubeshorts') && group.youtubeDiscoveryMode === 'owner');
+}
+
+function isOwnerDiscoveredYouTubeStream(stream) {
+    return !!(stream && (stream.youtubeDiscoveryMode === 'owner' || stream.ownerDiscovered || stream.youtubeAuthRef));
+}
+
+function translateYouTubeMessage(key, fallback, values = {}) {
+    let text = fallback || key;
+    try {
+        if (typeof window !== 'undefined' && typeof window.translateTemplate === 'function') {
+            text = window.translateTemplate(key, values);
+        } else if (typeof translateTemplate === 'function') {
+            text = translateTemplate(key, values);
+        } else if (typeof window !== 'undefined' && typeof window.translate === 'function') {
+            text = window.translate(key);
+        } else if (typeof translate === 'function') {
+            text = translate(key);
+        }
+    } catch (_) { }
+
+    Object.keys(values || {}).forEach(name => {
+        text = String(text).replace(new RegExp(`\\{${name}\\}`, 'g'), values[name]);
+    });
+
+    return text;
+}
+
+function getYouTubeStreamStatusForMessaging(stream) {
+    if (!stream || typeof stream !== 'object') return '';
+    return getResolvedYouTubeVideoStatus(stream.status, stream.viewers);
+}
+
+function getYouTubeDiscoveryMessageKey(streams = []) {
+    const list = Array.isArray(streams) ? streams : [];
+    if (list.length && list.every(stream => getYouTubeStreamStatusForMessaging(stream) === 'ended')) {
+        return 'youtube.discovery.onlyEndedStreams';
+    }
+    return 'youtube.discovery.noEligibleStreams';
+}
+
+function getYouTubeDiscoveryMessage(streams = []) {
+    const key = getYouTubeDiscoveryMessageKey(streams);
+    const fallback = key === 'youtube.discovery.onlyEndedStreams'
+        ? 'Only ended YouTube streams were found. Auto-find only detects streams that are live/upcoming and public. If the stream is unlisted, add it with YouTube Video URL / ID. If you just went live, wait a minute and try again.'
+        : 'No public live or upcoming YouTube streams were found. Auto-find only detects streams that are live/upcoming and public. If the stream is unlisted, add it with YouTube Video URL / ID. If you just went live, wait a minute and try again.';
+    return translateYouTubeMessage(key, fallback);
+}
+
+function getYouTubeNoAutoActivationMessage(streams = []) {
+    const list = Array.isArray(streams) ? streams : [];
+    const hasLiveOrUpcomingStream = list.some(stream => {
+        const status = getYouTubeStreamStatusForMessaging(stream);
+        return status === 'live' || status === 'upcoming';
+    });
+    if (hasLiveOrUpcomingStream) {
+        return translateYouTubeMessage(
+            'youtube.discovery.noNewStreams',
+            'No new public live or upcoming YouTube streams were found.'
+        );
+    }
+    return getYouTubeDiscoveryMessage(list);
+}
+
+function getYouTubeOwnerDiscoveryMessage(streams = []) {
+    const list = Array.isArray(streams) ? streams : [];
+    if (list.some(stream => getResolvedYouTubeVideoStatus(stream.status, stream.viewers) === 'upcoming')) {
+        return 'Upcoming broadcasts were found, but YouTube chat is not ready yet. The source will stay waiting until chat becomes available.';
+    }
+    return 'No active or upcoming broadcasts were found for the signed-in YouTube channel.';
+}
+
+function getYouTubeOwnerNoAutoActivationMessage(streams = []) {
+    const list = Array.isArray(streams) ? streams : [];
+    if (list.some(stream => getResolvedYouTubeVideoStatus(stream.status, stream.viewers) === 'upcoming')) {
+        return 'Upcoming broadcasts were added or found, but chat is not ready yet.';
+    }
+    return getYouTubeOwnerDiscoveryMessage(list);
+}
+
+function isYouTubeStreamWithinWindow(stream, maxFutureMinutes) {
+    if (!stream || !stream.scheduledStartTime) return true;
+    const startMs = getYouTubeStreamSortTimestamp(stream);
+    if (startMs === Number.MAX_SAFE_INTEGER) return false;
+    const diffMins = (startMs - Date.now()) / (1000 * 60);
+    return diffMins >= -15 && diffMins <= maxFutureMinutes;
+}
+
 function cloneYouTubeStreams(streams) {
     if (!Array.isArray(streams)) return [];
     return streams.map(stream => (stream && typeof stream === 'object') ? { ...stream } : stream);
@@ -89,6 +200,10 @@ function createYouTubeDiscoveryNetworkError(fetchUrl, response) {
 
 function isYouTubeDiscoveryNetworkError(error) {
     return error && error.code === 'SSAPP_YOUTUBE_DISCOVERY_NETWORK';
+}
+
+function isYouTubeOwnerAuthError(error) {
+    return error && error.code === 'SSAPP_YOUTUBE_OWNER_AUTH_REQUIRED';
 }
 
 function mergeYouTubeStreams(primaryStreams = [], fallbackStreams = [], isShortDefault = false) {
@@ -248,12 +363,11 @@ class YouTubeStreamSelector {
 
         if (autoActivate) {
             return streams
-                .filter(stream => !stateManager.isVideoIdAdded(stream.videoId)) 
-                .map(stream => ({ 
-                    videoId: stream.videoId,
-                    title: stream.title,
-                    isShort: stream.isShort 
-                }));
+                .filter(stream => {
+                    const status = this.getVideoStatus(stream?.status, stream?.viewers);
+                    return !stateManager.isVideoIdAdded(stream.videoId) && isSelectableYouTubeStreamStatus(status);
+                })
+                .map(stream => ({ ...stream }));
         }
         return new Promise((resolve, reject) => {
             try {
@@ -280,11 +394,7 @@ class YouTubeStreamSelector {
     }
 
     getVideoStatus(status, viewers) { 
-        if (status === 'live') return 'live';
-        if (status === 'upcoming') return 'upcoming';
-        if (status === 'ended') return 'ended';
-        if (viewers && viewers > 0) return 'live'; 
-        return 'upcoming'; 
+        return getResolvedYouTubeVideoStatus(status, viewers);
     }
     formatViewers(count) { 
         try {
@@ -332,6 +442,17 @@ class YouTubeStreamSelector {
 
     async createStreamElements(streams, username) {
         if (!this.streamList) return;
+        const allStreamsEnded = streams.length && streams.every(stream => {
+            const status = this.getVideoStatus(stream?.status, stream?.viewers);
+            return status === 'ended';
+        });
+        if (allStreamsEnded) {
+            const message = getYouTubeDiscoveryMessage(streams);
+            const messageElement = document.createElement('div');
+            messageElement.className = 'yt-stream-discovery-message';
+            messageElement.textContent = message;
+            this.streamList.appendChild(messageElement);
+        }
         for (const stream of streams) {
             const isExisting = stateManager.isVideoIdAdded(stream.videoId);
             if (isExisting) {
@@ -354,17 +475,34 @@ class YouTubeStreamSelector {
             if (status === 'upcoming') statusBadge = '<span class="stream-status-badge upcoming">Upcoming</span>';
             else if (status === 'live') statusBadge = '<span class="stream-status-badge live">Live</span>';
             else if (status === 'ended') statusBadge = '<span class="stream-status-badge ended">Ended</span>';
+            else statusBadge = '<span class="stream-status-badge video">Video</span>';
+
+            const metaBadges = [];
+            if (stream.privacyStatus) {
+                metaBadges.push(`<span class="yt-stream-meta-badge privacy">${escapeYouTubeHtml(stream.privacyStatus)}</span>`);
+            }
+            if (isOwnerDiscoveredYouTubeStream(stream)) {
+                const chatReady = stream.youtubeChatStatus === 'ready' || !!stream.liveChatId;
+                const chatLabel = chatReady ? 'Chat ready' : 'Chat not ready yet';
+                metaBadges.push(`<span class="yt-stream-meta-badge ${chatReady ? 'chat-ready' : 'chat-waiting'}">${chatLabel}</span>`);
+            }
+            const metaBadgeHtml = metaBadges.length ? `<div class="yt-stream-meta-badges">${metaBadges.join('')}</div>` : '';
+            const viewerHtml = ("viewers" in stream && typeof stream.viewers === 'number')
+                ? `<div class="yt-stream-viewers">${this.formatViewers(stream.viewers)} viewers</div>`
+                : '';
+            const selectable = !isExisting && isSelectableYouTubeStreamStatus(status);
 
             element.innerHTML = `
                 ${statusBadge}
-                <img class="yt-stream-thumbnail" src="${thumbnailUrl}" alt="Stream thumbnail">
+                <img class="yt-stream-thumbnail" src="${escapeYouTubeHtml(thumbnailUrl)}" alt="Stream thumbnail">
                 <div class="yt-stream-info">
                   <div class="yt-stream-title">
-                    ${stream.title || 'Live Stream'}
+                    ${escapeYouTubeHtml(stream.title || 'Live Stream')}
                     <span class="yt-stream-type">${initialIsShort ? 'Shorts Live' : 'YouTube Live'}</span>
                   </div>
-                  <div class="yt-stream-channel">${stream.channelTitle || username || stream.channelId || ''}</div>
-                  <div class="yt-stream-viewers">${("viewers" in stream) ? (this.formatViewers(stream.viewers)) : "?"} viewers</div>
+                  <div class="yt-stream-channel">${escapeYouTubeHtml(stream.channelTitle || username || stream.channelId || '')}</div>
+                  ${viewerHtml}
+                  ${metaBadgeHtml}
                   ${status === 'upcoming' ? '<div class="stream-scheduled-time">' + this.formatScheduledTime(stream.scheduledStartTime) + '</div>' : ''}
                   ${isExisting ? '<span class="stream-status already-added">Already Added</span>' : ''}
                 </div>
@@ -375,21 +513,22 @@ class YouTubeStreamSelector {
                   </label>
                 </div>`;
 
-            if (!isExisting && status !== 'ended') {
+            if (selectable) {
                 element.addEventListener('click', (e) => {
                     if (!e.target.closest('.yt-stream-controls')) {
                         this.toggleStreamSelection(stream.videoId, element);
                     }
                 });
             } else {
-                element.classList.add(isExisting ? 'already-added' : 'ended-stream');
+                element.classList.add(isExisting ? 'already-added' : (status === 'ended' ? 'ended-stream' : 'not-live-stream'));
                 if (isExisting) element.title = "This stream is already in your sources list.";
                 if (status === 'ended') element.title = "This stream has ended and cannot be added.";
+                if (!isExisting && status !== 'ended') element.title = "This video is not currently live or upcoming.";
             }
 
             const checkbox = element.querySelector('.shorts-toggle-checkbox');
             if (checkbox) {
-                if (status === 'ended' || isExisting) checkbox.disabled = true;
+                if (!selectable) checkbox.disabled = true;
                 checkbox.addEventListener('change', (e) => {
                     e.stopPropagation();
                     const currentStreamData = this.streams.find(s => s.videoId === stream.videoId);
@@ -406,9 +545,9 @@ class YouTubeStreamSelector {
             if (shortsLabel) shortsLabel.addEventListener('click', (e) => e.stopPropagation());
             this.streamList.appendChild(element);
 
-            if (!isExisting && status !== 'ended') {
-                const nonEndedNonExistingStreams = streams.filter(s => !stateManager.isVideoIdAdded(s.videoId) && this.getVideoStatus(s.status, s.viewers) !== 'ended');
-                if (nonEndedNonExistingStreams.length === 1) {
+            if (selectable) {
+                const selectableStreams = streams.filter(s => !stateManager.isVideoIdAdded(s.videoId) && isSelectableYouTubeStreamStatus(this.getVideoStatus(s.status, s.viewers)));
+                if (selectableStreams.length === 1) {
                     this.toggleStreamSelection(stream.videoId, element);
                 } else if (status === 'live') {
                     this.toggleStreamSelection(stream.videoId, element);
@@ -426,7 +565,7 @@ class YouTubeStreamSelector {
     }
 
     toggleStreamSelection(videoId, element) { 
-        if (!element || element.classList.contains('already-added') || element.classList.contains('ended-stream')) return; 
+        if (!element || element.classList.contains('already-added') || element.classList.contains('ended-stream') || element.classList.contains('not-live-stream')) return;
 
         if (this.selectedStreams.has(videoId)) {
             this.selectedStreams.delete(videoId);
@@ -468,27 +607,46 @@ class YouTubeStreamSelector {
 
 
 async function handleYouTubeActivation(username, isShortDefault = false, showPrompts = true, autoActivateAll = false, isChannelName = false, options = {}) {
+    const manualTrigger = !!options.manualTrigger;
     try {
-        const manualTrigger = !!options.manualTrigger;
-        console.log("handleYouTubeActivation:", { username, isShortDefault, showPrompts, autoActivateAll, isChannelName, manualTrigger });
-        const combinedStreams = manualTrigger
-            ? await discoverYouTubeStreamsForManualAction(username, isShortDefault, isChannelName)
-            : await fetchYouTubeLiveStreams(username, {
-                isChannelOnly: isChannelName,
-                isUsernameOnly: !isChannelName && !username.startsWith("UC"),
-                isShortDefault,
-                cacheTtlMs: showPrompts ? 15000 : YOUTUBE_STREAM_DISCOVERY_CACHE_TTL_MS
-            });
+        const groupTargetType = isShortDefault ? 'youtubeshorts' : 'youtube';
+        const requestedGroup = options.groupId && typeof stateManager !== 'undefined'
+            ? stateManager.getGroup(options.groupId)
+            : null;
+        const ownerDiscoveryGroup = isYouTubeOwnerDiscoveryGroup(requestedGroup) ? requestedGroup : null;
+        console.log("handleYouTubeActivation:", {
+            username,
+            isShortDefault,
+            showPrompts,
+            autoActivateAll,
+            isChannelName,
+            manualTrigger,
+            ownerDiscovery: !!ownerDiscoveryGroup
+        });
+        const combinedStreams = ownerDiscoveryGroup
+            ? await fetchYouTubeOwnerStreamsForGroup(ownerDiscoveryGroup)
+            : (manualTrigger
+                ? await discoverYouTubeStreamsForManualAction(username, isShortDefault, isChannelName)
+                : await fetchYouTubeLiveStreams(username, {
+                    isChannelOnly: isChannelName,
+                    isUsernameOnly: !isChannelName && !username.startsWith("UC"),
+                    isShortDefault,
+                    cacheTtlMs: showPrompts ? 15000 : YOUTUBE_STREAM_DISCOVERY_CACHE_TTL_MS
+                }));
         
         if (!combinedStreams.length) {
-            Toast.warning("YouTube", `No live or upcoming streams found for ${username}.`);
+            const message = ownerDiscoveryGroup
+                ? getYouTubeOwnerDiscoveryMessage(combinedStreams)
+                : getYouTubeDiscoveryMessage(combinedStreams);
+            if (showPrompts || manualTrigger) {
+                Toast.warning("YouTube", message);
+            }
             // Removed throw new Error to allow proceeding if user wants to manually add.
             // The function will return, and if showPrompts is true, it might offer manual add.
-            return { type: 'no_streams_found' }; 
+            return { type: 'no_streams_found', message };
         }
         
-        const groupTargetType = isShortDefault ? 'youtubeshorts' : 'youtube';
-        let group = stateManager.getGroups().find(g => g.username === username && g.target === groupTargetType);
+        let group = ownerDiscoveryGroup || stateManager.getGroups().find(g => g.username === username && g.target === groupTargetType);
         let groupId = group ? group.id : null;
 
         if (!group) {
@@ -510,6 +668,13 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
         for (let stream of combinedStreams) {
             if (typeof stream.isShort !== 'boolean') {
                 stream.isShort = isShortDefault; 
+            }
+            if (ownerDiscoveryGroup) {
+                stream.groupId = groupId;
+                stream.youtubeDiscoveryMode = 'owner';
+                stream.youtubeAuthRef = ownerDiscoveryGroup.youtubeAuthRef;
+                stream.channelId = stream.channelId || ownerDiscoveryGroup.channelId;
+                stream.channelTitle = stream.channelTitle || ownerDiscoveryGroup.channelTitle || ownerDiscoveryGroup.username;
             }
              // Ensure statusDisplay is set for auto-activation logic
             if (!stream.statusDisplay) {
@@ -533,6 +698,7 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
             }
 
             let activatedCount = 0;
+            let waitingCount = 0;
             for (const selectedStream of selectionResult) { 
                 console.log("Processing selected stream:", selectedStream);
                 if (selectedStream && !stateManager.isVideoIdAdded(selectedStream.videoId)) {
@@ -546,6 +712,16 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
                             const sourceForActivation = stateManager.getSource(sourceElement.dataset.sourceId);
                             console.log("Source for activation:", sourceForActivation);
                             if (sourceForActivation && sourceForActivation.status !== 'active' && !sourceForActivation.vid && !sourceForActivation.wssId) {
+                                const shouldOpenNow = typeof shouldActivateYouTubeStreamNow === 'function'
+                                    ? shouldActivateYouTubeStreamNow(selectedStream, parentGroupData)
+                                    : true;
+                                if (!shouldOpenNow) {
+                                    if (typeof setYouTubeSourceWaitingForChat === 'function') {
+                                        setYouTubeSourceWaitingForChat(sourceForActivation.id, selectedStream);
+                                    }
+                                    waitingCount++;
+                                    continue;
+                                }
                                 console.log("Creating window for source");
                                 await createWindow(activateButton); 
                                 activatedCount++;
@@ -556,14 +732,21 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
                     }
                 }
             }
-            return { type: 'multiple_selected', count: activatedCount };
+            return {
+                type: 'multiple_selected',
+                count: activatedCount,
+                waitingCount,
+                message: waitingCount > 0 ? getYouTubeOwnerNoAutoActivationMessage(selectionResult) : ''
+            };
         } else { 
             let activatedCount = 0;
+            let waitingCount = 0;
             for (const stream of combinedStreams) {
                 const streamStatus = stream.statusDisplay; // Use pre-calculated statusDisplay
                 // Only consider live or upcoming within the next 180 minutes
                 if (streamStatus === 'ended') continue;
                 let shouldActivate = streamStatus === 'live';
+                let shouldAdd = shouldActivate;
                 if (!shouldActivate && streamStatus === 'upcoming' && stream.scheduledStartTime) {
                     let startMs = getYouTubeStreamSortTimestamp(stream);
                     if (startMs === Number.MAX_SAFE_INTEGER) continue;
@@ -571,11 +754,18 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
                     const now = new Date();
                     const diffMs = startTime - now;
                     const diffMins = diffMs / (1000 * 60);
-                    if (diffMins >= 0 && diffMins <= 180) {
-                        shouldActivate = true;
+                    const maxFutureMins = ownerDiscoveryGroup ? 24 * 60 : 180;
+                    if (diffMins >= -15 && diffMins <= maxFutureMins) {
+                        shouldAdd = true;
+                        shouldActivate = ownerDiscoveryGroup
+                            ? (typeof shouldActivateYouTubeStreamNow === 'function' && shouldActivateYouTubeStreamNow(stream, parentGroupData))
+                            : true;
                     }
+                } else if (ownerDiscoveryGroup && streamStatus === 'upcoming' && !stream.scheduledStartTime) {
+                    shouldAdd = true;
+                    shouldActivate = typeof shouldActivateYouTubeStreamNow === 'function' && shouldActivateYouTubeStreamNow(stream, parentGroupData);
                 }
-                if (!shouldActivate) continue;
+                if (!shouldAdd) continue;
 
                 if (!stateManager.isVideoIdAdded(stream.videoId)) {
                     // Create the source and activate it
@@ -585,6 +775,14 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
                         if (activateButton && parentGroupData) {
                             const sourceForActivation = stateManager.getSource(sourceElement.dataset.sourceId);
                             if (sourceForActivation && sourceForActivation.status !== 'active' && !sourceForActivation.vid && !sourceForActivation.wssId) {
+                                const shouldOpenNow = shouldActivate && (typeof shouldActivateYouTubeStreamNow !== 'function' || shouldActivateYouTubeStreamNow(stream, parentGroupData));
+                                if (!shouldOpenNow) {
+                                    if (typeof setYouTubeSourceWaitingForChat === 'function') {
+                                        setYouTubeSourceWaitingForChat(sourceForActivation.id, stream);
+                                    }
+                                    waitingCount++;
+                                    continue;
+                                }
                                 await createWindow(activateButton);
                                 activatedCount++;
                             }
@@ -595,6 +793,20 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
                     const existingSource = stateManager.getSources().find(s => s.videoId === stream.videoId);
                     if (existingSource && existingSource.status !== 'active' && !existingSource.vid && !existingSource.wssId) {
                         try {
+                            if (typeof getYouTubeStreamMetadataUpdates === 'function') {
+                                const updates = getYouTubeStreamMetadataUpdates(stream, parentGroupData);
+                                if (Object.keys(updates).length) {
+                                    stateManager.updateSource(existingSource.id, updates);
+                                }
+                            }
+                            const shouldOpenNow = shouldActivate && (typeof shouldActivateYouTubeStreamNow !== 'function' || shouldActivateYouTubeStreamNow(stream, parentGroupData));
+                            if (!shouldOpenNow) {
+                                if (typeof setYouTubeSourceWaitingForChat === 'function') {
+                                    setYouTubeSourceWaitingForChat(existingSource.id, stream);
+                                }
+                                waitingCount++;
+                                continue;
+                            }
                             // Ensure DOM element exists
                             let sourceElement = document.querySelector(`[data-source-id="${existingSource.id}"]`);
                             if (!sourceElement) {
@@ -614,14 +826,32 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
                     }
                 }
             }
-            if (activatedCount === 0) Toast.info("YouTube", `No new streams found to auto-activate for ${username}.`);
-            return { type: 'multiple_auto', count: activatedCount };
+            const emptyAutoMessage = activatedCount === 0
+                ? (ownerDiscoveryGroup ? getYouTubeOwnerNoAutoActivationMessage(combinedStreams) : getYouTubeNoAutoActivationMessage(combinedStreams))
+                : '';
+            if (activatedCount === 0 && (showPrompts || manualTrigger)) {
+                Toast.info("YouTube", emptyAutoMessage);
+            }
+            return { type: 'multiple_auto', count: activatedCount, waitingCount, message: emptyAutoMessage };
         }
     } catch (error) {
         console.error("Error in handleYouTubeActivation for " + username + ":", error);
+        if (isYouTubeOwnerAuthError(error)) {
+            const authMessage = 'YouTube sign-in expired or is unavailable. Use Manage sign-in to reconnect this channel.';
+            if (showPrompts || manualTrigger) {
+                Toast.warning('YouTube Sign-In', authMessage);
+            }
+            return { type: 'auth_error', message: authMessage };
+        }
         if (isYouTubeDiscoveryNetworkError(error)) {
-            Toast.warning("YouTube Network", `Could not reach YouTube while checking ${username}. This looks like a temporary DNS/network issue; try again shortly.`);
-            return { type: 'network_error', message: error.message };
+            const networkMessage = translateYouTubeMessage(
+                'youtube.discovery.networkRetry',
+                'Temporary YouTube network issue.'
+            );
+            if (showPrompts || manualTrigger) {
+                Toast.warning("YouTube Network", networkMessage);
+            }
+            return { type: 'network_error', message: networkMessage };
         }
         if (showPrompts && error.message && !error.message.includes("No video ID found") && !error.message.includes("User cancelled")) {
             // Check if ipcRenderer and window.confirm are available
@@ -1376,7 +1606,10 @@ async function fetchYoutube(username, alt = false, options = {}) {
                 console.log(`Scraped ${videos.length} potential videos for ${username}. First:`, videos[0]);
                 const liveOrUpcoming = videos.filter(v => v.status === 'live' || v.status === 'upcoming');
                 if (liveOrUpcoming.length > 0) return liveOrUpcoming;
-                return videos.slice(0, 5); 
+                const endedStreams = videos.filter(v => v.status === 'ended');
+                if (endedStreams.length > 0) return endedStreams;
+                console.warn(`YouTube scrape for ${username} returned videos, but none were live/upcoming broadcasts.`);
+                return [];
             }
 			console.warn("No video items extracted from YouTube scrape for:", username);
 			return false;
@@ -1811,6 +2044,16 @@ function detectVideoOrientation(imgElement) {
     return false;
 }
 function logDebugInfo(debug) { }
+function hasYoutubeShortsMarker(urlInput) {
+    if (!urlInput || typeof urlInput !== 'string') return false;
+    try {
+        const urlObj = new URL(urlInput);
+        return urlObj.searchParams.has('shorts') || urlObj.pathname.toLowerCase().includes('/shorts/');
+    } catch (_) {
+        return /(?:[?&]shorts(?:[=&]|$)|\/shorts(?:\/|$))/i.test(urlInput);
+    }
+}
+
 function extractYoutubeVideoId(url) { 
     if (!url || typeof url !== 'string') return null;
 	try {
@@ -1833,6 +2076,10 @@ function extractYoutubeVideoId(url) {
             }
             if (pathname.startsWith('/embed/')) {
                 const candidate = pathname.split('/embed/')[1].split(/[?\/#]/)[0];
+                return validVideoId(candidate) ? candidate : null;
+            }
+            if (pathname === '/live_chat' || pathname === '/live_chat_replay') {
+                const candidate = searchParams.get('v') || searchParams.get('videoId') || searchParams.get('video_id');
                 return validVideoId(candidate) ? candidate : null;
             }
             if (pathname === '/watch') {
@@ -1872,7 +2119,7 @@ function parseYoutubeUrl(url) {
 		const parsedUrl = new URL(urlString); 
         const videoId = extractYoutubeVideoId(urlString); 
         if (videoId) {
-            return { isYoutubeUrl: true, type: 'video', id: videoId, isShort: urlString.includes('/shorts/') };
+            return { isYoutubeUrl: true, type: 'video', id: videoId, isShort: hasYoutubeShortsMarker(urlString) };
         }
         const handleMatch = urlString.match(handleRegex);
         if (handleMatch && handleMatch[1]) {
@@ -1899,7 +2146,7 @@ function extractYoutubeID(urlInput) {
     if (!urlInput || typeof urlInput !== 'string') return null;
     const extracted = extractYoutubeVideoId(urlInput);
     if (extracted) {
-        return { id: extracted, isShorts: urlInput.includes('/shorts/') };
+        return { id: extracted, isShorts: hasYoutubeShortsMarker(urlInput) };
     }
     // If it's just an 11-char ID
     if (urlInput.length === 11 && /^[a-zA-Z0-9_-]+$/.test(urlInput)) {

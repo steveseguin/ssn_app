@@ -176,6 +176,11 @@ function createHarness(outcomesByMode, options = {}) {
 		signing
 	});
 
+	manager.connectAttemptMinIntervalMs = 0;
+	manager.connectAttemptProviderIntervalMs = 0;
+	manager.fallbackRestartMinDelayMs = 0;
+	manager.localSignerAttemptTimeoutMs = 0;
+	manager.localSignerFailureCooldownMs = 0;
 	manager.sharedEulerApiKeyPool = [];
 	manager.sharedEulerApiKeyAttempts = new Set();
 	manager.logDebug = () => {};
@@ -297,7 +302,10 @@ function buildScenario(seed) {
 			return {
 				kind,
 				outcomesByMode: {
-					auto: [{ error: createRateLimitError({ source: 'signing' }), emitErrorEvent: duplicateErrorEvent }],
+					auto: [
+						{ error: createRateLimitError({ source: 'signing' }), emitErrorEvent: duplicateErrorEvent },
+						{ error: createRateLimitError({ source: 'signing' }) }
+					],
 					local: [{ error: createRateLimitError({ name: 'TikTokRateLimitError', source: 'local_signer' }) }],
 					proxy: [{ ok: true }]
 				},
@@ -307,7 +315,10 @@ function buildScenario(seed) {
 			return {
 				kind,
 				outcomesByMode: {
-					auto: [{ error: createRateLimitError({ source: 'signing' }), emitErrorEvent: duplicateErrorEvent }],
+					auto: [
+						{ error: createRateLimitError({ source: 'signing' }), emitErrorEvent: duplicateErrorEvent },
+						{ error: createRateLimitError({ source: 'signing' }) }
+					],
 					local: [{ error: createRateLimitError({ name: 'TikTokRateLimitError', source: 'local_signer' }) }],
 					proxy: [{ error: createRateLimitError({ source: 'proxy' }) }],
 					polling: [{ ok: true }]
@@ -383,12 +394,12 @@ async function runScenario(seed) {
 			break;
 		case 'rate_limit_proxy':
 			assert.strictEqual(result, true, `seed ${seed}: proxy fallback scenario should connect`);
-			assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'proxy']);
+			assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy']);
 			assert.strictEqual(plan.reconnects.length, 0);
 			break;
 		case 'rate_limit_polling':
 			assert.strictEqual(result, true, `seed ${seed}: polling fallback scenario should connect`);
-			assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'proxy', 'polling']);
+			assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy', 'polling']);
 			assert.strictEqual(plan.reconnects.length, 0);
 			break;
 		case 'invalid_url_polling':

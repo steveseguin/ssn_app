@@ -14,6 +14,7 @@ old-certs-backup/
 referenceonly/
 vdoninja/
 /node_modules
+.DS_Store
 
 # Claude-related files
 .claude/
@@ -29,10 +30,26 @@ src/
 pkg/
 *.log
 .tmp_head_index.html
+.codex-tmp
+.codex-tmp/
+
+# Test and local run artifacts
+/test-results/
+/playwright-report/
+/coverage/
+/tmp/
+/tmp-codex-logs/
+/tmp-login-test/
+
+# Editor swap files
+*.swp
+*.swo
+*.swpx
 
 # Build configuration
 build-config.env
 .env
+.secret
 electron-builder.env
 social_stream_fallback/
 resources/social_stream_fallback/
@@ -40,3 +57,10 @@ resources/social_stream_fallback/
 # Cloudflare / Wrangler
 cloudflare/.wrangler/
 cloudflare/node_modules/
+cloudflare/.dev.vars
+cloudflare/.env
+cloudflare/.env.*
+cloudflare/wrangler.local.toml
+
+# Local Social Stream SSO Worker
+/sso-worker/

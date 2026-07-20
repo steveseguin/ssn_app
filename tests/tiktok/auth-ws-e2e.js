@@ -205,6 +205,34 @@ test('custom + session + no serviceUrl → authenticateWs undefined', () => {
 	assert.strictEqual(opts.authenticateWs, undefined);
 });
 
+test('local signer + normal role uses audience webcast identity', () => {
+	const m = createManager(null, null, 'local');
+	setLocalSigner(m);
+	const opts = m.buildConnectionOptions(false);
+	assert.strictEqual(opts.disableEulerFallbacks, true);
+	assert.strictEqual(opts.wsClientParams.identity, 'audience');
+	assert.strictEqual(m.resolveLocalSignerWebcastIdentity(), 'audience');
+});
+
+test('local signer + host role uses anchor webcast identity', () => {
+	const m = createManager(null, null, 'local');
+	setLocalSigner(m);
+	m.accountRole = 'host';
+	const opts = m.buildConnectionOptions(false);
+	assert.strictEqual(opts.disableEulerFallbacks, true);
+	assert.strictEqual(opts.wsClientParams.identity, 'anchor');
+	assert.strictEqual(m.resolveLocalSignerWebcastIdentity(), 'anchor');
+});
+
+test('local signer + bot role uses audience webcast identity', () => {
+	const m = createManager(null, null, 'local');
+	setLocalSigner(m);
+	m.accountRole = 'bot';
+	const opts = m.buildConnectionOptions(false);
+	assert.strictEqual(opts.wsClientParams.identity, 'audience');
+	assert.strictEqual(m.resolveLocalSignerWebcastIdentity(), 'audience');
+});
+
 console.log('\n==========================================================');
 console.log('E2E: prepareAuthenticatedWebsocketBootstrapEnv');
 console.log('==========================================================\n');
@@ -292,17 +320,16 @@ test('empty string session IDs are normalized to null', () => {
 });
 
 console.log('\n==========================================================');
-console.log('E2E: anchor identity runtime patch');
+console.log('E2E: websocket identity default');
 console.log('==========================================================\n');
 
-test('ws-client.js has identity:anchor after module load', () => {
+test('ws-client.js keeps default audience identity; anchor is applied per local host connection', () => {
 	const fs = require('fs');
 	const wsClientPath = require.resolve('tiktok-live-connector/dist/lib/ws/lib/ws-client.js');
 	const content = fs.readFileSync(wsClientPath, 'utf8');
-	const anchorMatch = content.match(/identity:\s*'anchor'/g);
-	assert.ok(anchorMatch && anchorMatch.length > 0, 'ws-client.js should contain identity: anchor');
 	const audienceMatch = content.match(/identity:\s*'audience'/g);
-	assert.strictEqual(audienceMatch, null, 'ws-client.js should NOT contain identity: audience');
+	assert.ok(audienceMatch && audienceMatch.length > 0, 'ws-client.js should contain identity: audience');
+	assert.ok(!/identity:\s*'anchor'/.test(content), 'ws-client.js should not be globally patched to anchor');
 });
 
 console.log('\n==========================================================');

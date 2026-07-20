@@ -35,12 +35,26 @@ function createRateLimitError(options = {}) {
 	return error;
 }
 
+function createLocalSignerTimeoutError() {
+	const error = new Error('TikTok local signer timed out after 10ms');
+	error.name = 'TikTokLocalSignerTimeoutError';
+	error.code = 'SSAPP_TIKTOK_LOCAL_SIGNER_TIMEOUT';
+	error.source = 'local_signer_timeout';
+	return error;
+}
+
 function createUserNotFoundLookupError() {
 	const error = new Error();
 	error.errors = [
 		new TypeError("Cannot read properties of undefined (reading 'liveRoomUserInfo')"),
 		Object.assign(new Error('API Error 19881007 (user_not_found)'), { name: 'InvalidResponseError' })
 	];
+	return error;
+}
+
+function createOfflineError() {
+	const error = new Error("The requested user isn't online :(");
+	error.name = 'UserOfflineError';
 	return error;
 }
 
@@ -154,6 +168,11 @@ function createHarness(outcomesByMode, options = {}) {
 		signingProvider: 'auto',
 		signing
 	});
+	manager.connectAttemptMinIntervalMs = 0;
+	manager.connectAttemptProviderIntervalMs = 0;
+	manager.fallbackRestartMinDelayMs = 0;
+	manager.localSignerAttemptTimeoutMs = 0;
+	manager.localSignerFailureCooldownMs = 0;
 
 	manager.sharedEulerApiKeyPool = [];
 	manager.sharedEulerApiKeyAttempts = new Set();
@@ -269,9 +288,48 @@ async function testAutoFallsBackToLocalSigner() {
 	assert.strictEqual(connected.connectionLabel, 'Websocket connected via local signer');
 }
 
+async function testInstalledConnectorHasNoRuntimePollingPath() {
+	const connectorDistPath = path.join(__dirname, '..', '..', 'node_modules', 'tiktok-live-connector', 'dist');
+	const legacyClientPath = path.join(connectorDistPath, 'lib', '_legacy', 'legacy-client.js');
+	const legacyPath = fs.existsSync(legacyClientPath)
+		? legacyClientPath
+		: path.join(connectorDistPath, 'legacy.js');
+	const oldClientPath = path.join(connectorDistPath, 'lib', 'client.js');
+	const bundledClientPath = fs.readdirSync(connectorDistPath)
+		.map(fileName => path.join(connectorDistPath, fileName))
+		.find(filePath => /^lib-.*\.js$/.test(path.basename(filePath)));
+	const clientPath = fs.existsSync(oldClientPath) ? oldClientPath : bundledClientPath;
+	assert.ok(clientPath, 'expected to find installed TikTok connector client code');
+	const clientSrc = fs.readFileSync(clientPath, 'utf8');
+	const legacySrc = fs.readFileSync(legacyPath, 'utf8');
+
+	const connectStart = clientSrc.indexOf('async _connect');
+	const disconnectStart = clientSrc.indexOf('async disconnect', connectStart);
+	assert.ok(connectStart >= 0 && disconnectStart > connectStart, 'expected to find TikTokLiveConnection._connect body');
+
+	const connectBody = clientSrc.slice(connectStart, disconnectStart);
+	assert.ok(
+		(connectBody.includes('signedWebSocketProvider') && connectBody.includes('fetchSignedWebSocketFromEuler'))
+			|| connectBody.includes('fetchSignedWebSocketFromProvider'),
+		'expected installed connector to bootstrap through signed websocket provider/Euler'
+	);
+	assert.ok(
+		connectBody.includes('setupWebsocket'),
+		'expected installed connector runtime path to open a websocket'
+	);
+	assert.ok(
+		!/enableRequestPolling|requestPollingIntervalMs/.test(connectBody),
+		'installed connector _connect should not have a runtime request-polling branch'
+	);
+	assert.ok(
+		/extends\s+(?:lib_1\.)?TikTokLiveConnection/.test(legacySrc),
+		'legacy WebcastPushConnection should be a wrapper over TikTokLiveConnection'
+	);
+}
+
 async function testAutoFallsBackFromLocalSignerToEulerProxy() {
 	const { manager, plan } = createHarness({
-		auto: [{ error: createRateLimitError() }],
+		auto: [{ error: createRateLimitError() }, { error: createRateLimitError() }],
 		local: [{ error: createRateLimitError({ name: 'TikTokRateLimitError', source: 'local_signer' }) }],
 		proxy: [{ ok: true }]
 	});
@@ -279,9 +337,10 @@ async function testAutoFallsBackFromLocalSignerToEulerProxy() {
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
 
 	assert.strictEqual(result, true);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'proxy']);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy']);
 	assert.deepStrictEqual(getReconnectingReasons(plan), [
 		'Sign server unavailable. Trying local signer.',
+		'Local signer failed. Trying Euler signing.',
 		'Sign server unavailable. Trying Euler Proxy with shared Euler proxy key.'
 	]);
 	assert.strictEqual(plan.reconnects.length, 0);
@@ -290,6 +349,55 @@ async function testAutoFallsBackFromLocalSignerToEulerProxy() {
 	assert(connected, 'expected a connected status');
 	assert.strictEqual(connected.connectionMethod, 'Euler WS relay (API key)');
 	assert.strictEqual(connected.connectionLabel, 'Websocket connected via Euler WS relay (API key)');
+}
+
+async function testAutoRestoresEulerSigningAfterLocalSignerFailure() {
+	const { manager, plan } = createHarness({
+		auto: [{ error: createRateLimitError() }, { ok: true }],
+		local: [{ error: createLocalSignerTimeoutError() }]
+	}, {
+		allowProxy: false
+	});
+
+	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
+
+	assert.strictEqual(result, true);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto']);
+	assert.strictEqual(manager.signingProvider, 'auto');
+	assert.strictEqual(manager.autoLocalSignerFallbackActive, false);
+	assert.strictEqual(manager.autoLocalSignerFallbackAttempted, true);
+	assert.strictEqual(plan.reconnects.length, 0);
+
+	const reasons = getReconnectingReasons(plan);
+	assert.ok(reasons.includes('Sign server unavailable. Trying local signer.'));
+	assert.ok(reasons.includes('Local signer failed. Trying Euler signing.'));
+
+	const connected = getLastStatus(plan, 'connected');
+	assert(connected, 'expected a connected status');
+	assert.strictEqual(connected.connectionMethod, 'Euler signing (auto)');
+}
+
+async function testAutoCanUseSharedEulerAfterLocalSignerFailure() {
+	const { manager, plan } = createHarness({
+		auto: [
+			{ error: createRateLimitError() },
+			{ error: createRateLimitError() },
+			{ ok: true }
+		],
+		local: [{ error: createLocalSignerTimeoutError() }]
+	}, {
+		allowProxy: false
+	});
+	manager.sharedEulerApiKeyPool = [
+		{ key: 'shared-signing-key', label: 'shared Euler signing key', scope: 'signing' }
+	];
+
+	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
+
+	assert.strictEqual(result, true);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'auto']);
+	assert.strictEqual(countStatuses(plan, entry => entry.sharedKeyRetry === true), 1);
+	assert.strictEqual(manager.signingConfig.apiKey, 'shared-signing-key');
 }
 
 async function testConfiguredEulerApiKeyIsReusedForProxyFallback() {
@@ -320,7 +428,7 @@ async function testConfiguredEulerApiKeyIsReusedForProxyFallback() {
 async function testAutoFallsBackFromProxyToPolling() {
 	const proxyRateLimit = createRateLimitError();
 	const { manager, plan } = createHarness({
-		auto: [{ error: createRateLimitError() }],
+		auto: [{ error: createRateLimitError() }, { error: createRateLimitError() }],
 		local: [{ error: createRateLimitError({ name: 'TikTokRateLimitError', source: 'local_signer' }) }],
 		proxy: [{ error: proxyRateLimit }],
 		polling: [{ ok: true }]
@@ -329,9 +437,10 @@ async function testAutoFallsBackFromProxyToPolling() {
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
 
 	assert.strictEqual(result, true);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'proxy', 'polling']);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy', 'polling']);
 	assert.deepStrictEqual(getReconnectingReasons(plan), [
 		'Sign server unavailable. Trying local signer.',
+		'Local signer failed. Trying Euler signing.',
 		'Sign server unavailable. Trying Euler Proxy with shared Euler proxy key.'
 	]);
 	assert.strictEqual(plan.reconnects.length, 0);
@@ -349,7 +458,7 @@ async function testAutoFallsBackFromProxyToPolling() {
 async function testAutoExhaustionSurfacesFailureMessage() {
 	const pollingRateLimit = createRateLimitError();
 	const { manager, plan } = createHarness({
-		auto: [{ error: createRateLimitError() }],
+		auto: [{ error: createRateLimitError() }, { error: createRateLimitError() }],
 		local: [{ error: createRateLimitError({ name: 'TikTokRateLimitError', source: 'local_signer' }) }],
 		proxy: [{ error: createRateLimitError() }],
 		polling: [{ error: pollingRateLimit }]
@@ -358,7 +467,7 @@ async function testAutoExhaustionSurfacesFailureMessage() {
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
 
 	assert.strictEqual(result, false);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'proxy', 'polling']);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy', 'polling']);
 
 	const failed = getLastStatus(plan, 'failed');
 	assert(failed, 'expected a failed status');
@@ -371,6 +480,112 @@ async function testAutoExhaustionSurfacesFailureMessage() {
 	assert.strictEqual(plan.reconnects[0].reason, 'Rate limited by TikTok');
 	assert.strictEqual(plan.reconnects[0].fixed, true);
 	assert.strictEqual(plan.reconnects[0].immediate, true);
+}
+
+async function testOfflineFailureStatusCarriesOfflineFlag() {
+	const { manager, plan } = createHarness({
+		auto: [{ error: createOfflineError() }]
+	}, {
+		allowProxy: false,
+		localSignerEnabled: false
+	});
+
+	const result = await manager.initialize();
+
+	assert.strictEqual(result, false);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto']);
+	assert.strictEqual(plan.reconnects.length, 1);
+	assert.strictEqual(plan.reconnects[0].fixed, true);
+	assert.strictEqual(plan.reconnects[0].offline, true);
+
+	const failed = getLastStatus(plan, 'failed');
+	assert(failed, 'expected an offline failed status');
+	assert.strictEqual(failed.offline, true);
+	assert.strictEqual(failed.rateLimited, false);
+	assert.strictEqual(failed.connectionMethod, 'Euler signing (auto)');
+	assert.strictEqual(failed.error, "The requested user isn't online :(");
+}
+
+async function testOfflineAutoActivateRetryCadenceBacksOff() {
+	const { manager } = createHarness({}, {
+		allowProxy: false,
+		localSignerEnabled: false
+	});
+	const sequence = manager.getOfflineRetrySequence();
+
+	manager.autoActivate = true;
+	const delays = [];
+	for (let attemptIndex = 0; attemptIndex < sequence.length + 2; attemptIndex += 1) {
+		manager.offlineRetryCount = attemptIndex;
+		const plan = manager.resolveOfflineReconnectPlan();
+		assert.strictEqual(plan.shouldRetry, true);
+		assert.strictEqual(plan.maxAttempts, null);
+		delays.push(plan.delay);
+	}
+
+	assert.deepStrictEqual(delays.slice(0, sequence.length), sequence);
+	assert.strictEqual(delays[sequence.length], sequence[sequence.length - 1]);
+	assert.strictEqual(delays[sequence.length + 1], sequence[sequence.length - 1]);
+
+	manager.autoActivate = false;
+	manager.offlineRetryCount = sequence.length;
+	const exhausted = manager.resolveOfflineReconnectPlan();
+	assert.strictEqual(exhausted.shouldRetry, false);
+	assert.strictEqual(exhausted.maxAttempts, sequence.length);
+}
+
+async function testOfflineRetryUiThrottlesLongCountdowns() {
+	const indexPath = path.join(__dirname, '..', '..', 'index.html');
+	const src = fs.readFileSync(indexPath, 'utf8');
+
+	assert.ok(
+		src.includes('const getTikTokRetryTimerDelay = (remainingMs, offlineRetry)'),
+		'expected renderer retry timer throttle helper'
+	);
+	assert.ok(
+		src.includes('if (remainingMs > 5 * 60 * 1000) return 30000;'),
+		'expected long offline waits to avoid one-second DOM updates'
+	);
+	assert.ok(
+		src.includes('entryElement._tiktokRetryTimer = setTimeout(update, delayMs);'),
+		'expected reconnect UI to reschedule with a dynamic timeout'
+	);
+}
+
+async function testTikTokDiagnosticCountersTrackDataFlow() {
+	const { manager } = createHarness({}, {
+		allowProxy: false,
+		localSignerEnabled: false
+	});
+
+	assert.deepStrictEqual(
+		manager.getTikTokDiagnosticStats(),
+		{ rawFrames: 0, decodedFrames: 0, forwardedEvents: 0 }
+	);
+
+	manager.recordTikTokDiagnosticCounter('rawFrames');
+	manager.recordTikTokDiagnosticCounter('decodedFrames', 2);
+	manager.recordTikTokDiagnosticCounter('forwardedEvents');
+	manager.recordTikTokDiagnosticCounter('unknownCounter');
+
+	assert.deepStrictEqual(
+		manager.getTikTokDiagnosticStats(),
+		{ rawFrames: 1, decodedFrames: 2, forwardedEvents: 1 }
+	);
+
+	const src = fs.readFileSync(path.join(__dirname, '..', '..', 'tiktok', 'connection-manager.js'), 'utf8');
+	assert.ok(
+		src.includes("this.recordTikTokDiagnosticCounter('rawFrames')"),
+		'expected raw websocket traffic to increment diagnostics'
+	);
+	assert.ok(
+		src.includes("this.recordTikTokDiagnosticCounter('decodedFrames')"),
+		'expected decoded payloads to increment diagnostics'
+	);
+	assert.ok(
+		src.includes("manager.recordTikTokDiagnosticCounter('forwardedEvents')"),
+		'expected forwarded overlay events to increment diagnostics'
+	);
 }
 
 async function testBlankRoomLookupErrorsBecomeUsefulMessages() {
@@ -469,8 +684,34 @@ async function testUiDoesNotAutoFallbackAfterFatalUserNotFound() {
 		'expected fatal user-not-found suppression rule'
 	);
 	assert.ok(
-		src.includes("if (!shouldSuppressTikTokUiAutoFallback('fatal_error', data.error || null))"),
+		src.includes("!shouldSuppressTikTokUiAutoFallback('fatal_error', data.error || null)"),
 		'expected fatal_error auto fallback call to be guarded'
+	);
+}
+
+async function testUiDoesNotAutoFallbackAfterOfflineFailure() {
+	const indexPath = path.join(__dirname, '..', '..', 'index.html');
+	const src = fs.readFileSync(indexPath, 'utf8');
+
+	assert.ok(
+		src.includes('function isTikTokOfflineFailureStatus'),
+		'expected renderer-side offline failure guard helper'
+	);
+	assert.ok(
+		src.includes("normalizedMessage.includes(\"isn't online\")"),
+		'expected renderer to recognize TikTok offline text'
+	);
+	assert.ok(
+		src.includes('const offlineFailure = isTikTokOfflineFailureStatus(data)'),
+		'expected failed status handler to classify offline failures'
+	);
+	assert.ok(
+		src.includes('const offlineRetryExhausted = offlineFailure && isTikTokOfflineRetryExhaustedStatus(data)'),
+		'expected offline retry exhaustion to be treated as terminal'
+	);
+	assert.ok(
+		src.includes('const shouldAdvanceToNextMode = !offlineFailure && !hasRetryScheduled && hasAlternateMode'),
+		'expected offline failures to suppress Auto fallback to the next mode'
 	);
 }
 
@@ -487,13 +728,73 @@ async function testManualStandardFatalDoesNotAutoCloseClassicWindow() {
 		'expected helper to key off explicit Standard mode'
 	);
 	assert.ok(
-		src.includes('source.autoActivate !== true'),
+		src.includes('source.autoActivate === true'),
 		'expected helper to keep auto-activate behavior separate from manual standard mode'
 	);
 	assert.ok(
 		src.includes("const classicTabId = normalizeNumericId(data.tabID) || normalizeNumericId(currentState.vid)")
 			&& src.includes("if (!keepClassicWindowOpen && !data.wssID && classicTabId && ipcRenderer)"),
 		'expected fatal_error closeWindow call to be skipped for manual classic mode'
+	);
+	assert.ok(
+		src.includes('function hasManualTikTokStandardCaptureWindow')
+			&& src.includes('const showManualTikTokStandardWindow = hasManualTikTokStandardCaptureWindow(source)')
+			&& src.includes('!showManualTikTokStandardWindow'),
+		'expected manual Standard classic windows to keep the Reveal capture button visible'
+	);
+}
+
+async function testManualStandardRecoverableFatalGuidesReveal() {
+	const indexPath = path.join(__dirname, '..', '..', 'index.html');
+	const cssPath = path.join(__dirname, '..', '..', 'main.css');
+	const src = fs.readFileSync(indexPath, 'utf8');
+	const css = fs.readFileSync(cssPath, 'utf8');
+
+	assert.ok(
+		src.includes('function getTikTokStandardActionStatusMessage')
+			&& src.includes('Reveal the capture page')
+			&& src.includes('complete the challenge or sign in'),
+		'expected recoverable Standard failures to tell the user to reveal/sign in/complete challenge'
+	);
+	assert.ok(
+		src.includes('applyTikTokStandardRevealPrompt')
+			&& src.includes('tiktok-standard-action')
+			&& css.includes('.entry button.icon-button[data-togglehtml].tiktok-standard-action'),
+		'expected recoverable Standard failures to highlight the Reveal capture button'
+	);
+	assert.ok(
+		src.includes('const shouldGuideTikTokStandard = shouldPromptTikTokStandardAction(standardActionSource, data)')
+			&& src.includes("if (!shouldGuideTikTokStandard && !shouldSuppressTikTokUiAutoFallback('fatal_error', data.error || null))"),
+		'expected manual Standard recoverable fatal errors to suppress automatic fallback while guiding the user'
+	);
+}
+
+async function testManualStandardNavigationWarnsInsteadOfClosing() {
+	const indexPath = path.join(__dirname, '..', '..', 'index.html');
+	const mainPath = path.join(__dirname, '..', '..', 'main.js');
+	const indexSrc = fs.readFileSync(indexPath, 'utf8');
+	const mainSrc = fs.readFileSync(mainPath, 'utf8');
+
+	assert.ok(
+		indexSrc.includes('manualActivation: wasManualActivation(source.id)'),
+		'expected renderer to pass manual activation intent into classic window creation'
+	);
+	assert.ok(
+		mainSrc.includes('function shouldPreserveManualTikTokStandardNavigation')
+			&& mainSrc.includes('args.manualActivation !== true')
+			&& mainSrc.includes('isTikTokWindowArgs(args)'),
+		'expected main process to identify manual TikTok Standard navigation separately from auto activation'
+	);
+	assert.ok(
+		mainSrc.includes('sendWindowNavigationWarning(view, args, navUrl, reason, mode)')
+			&& mainSrc.includes("mainWindow.webContents.send('window-navigation-warning'"),
+		'expected manual TikTok Standard redirects to warn the renderer instead of closing'
+	);
+	assert.ok(
+		indexSrc.includes("ipcRenderer.on('window-navigation-warning'")
+			&& indexSrc.includes('TikTok redirected the Standard capture page')
+			&& indexSrc.includes("updateConnectionStatus(entryElement, 'error', message, { tiktokStandardAction: true })"),
+		'expected renderer to show a Standard-mode action message and highlight Reveal'
 	);
 }
 
@@ -506,12 +807,35 @@ async function testClassicTerminalStatusesReleaseStaleHandles() {
 		'expected helper for clearing stale classic handles'
 	);
 	assert.ok(
-		src.includes("if (shouldReleaseTikTokClassicHandles(currentState, data, hasRetryScheduled))"),
+		src.includes("if (shouldReleaseTikTokClassicHandles(currentState, data, shouldPreserveRetryState))"),
 		'expected terminal status handlers to clear stale classic handles'
 	);
 	assert.ok(
 		src.includes('updatePayload.tiktokWssId = null;'),
 		'expected stale TikTok websocket IDs to be cleared when releasing handles'
+	);
+}
+
+async function testTikTokActivationHandleDoesNotOverwritePendingStatus() {
+	const indexPath = path.join(__dirname, '..', '..', 'index.html');
+	const src = fs.readFileSync(indexPath, 'utf8');
+
+	assert.ok(
+		src.includes('const tiktokWaitingForConnect = resolvedTarget === \'tiktok\''),
+		'expected TikTok activation to distinguish virtual handles from connected status'
+	);
+	assert.ok(
+		src.includes('error: nonTikTokWssReportedError')
+			&& src.includes(': (tiktokWaitingForConnect ? tiktokErrorAfterCreate : null)'),
+		'expected pending TikTok activation to preserve offline/retry errors'
+	);
+	assert.ok(
+		src.includes("} else if (tiktokStatusAfterCreate === 'error' && tiktokErrorAfterCreate)"),
+		'expected pending TikTok activation to keep retry/error UI instead of showing connected'
+	);
+	assert.ok(
+		src.includes("} else if (!entry._tiktokRetryEndAt && !entry._tiktokRetryOffline)"),
+		'expected retry countdown UI not to be overwritten by a generic connecting label'
 	);
 }
 
@@ -567,8 +891,46 @@ async function testHandleConnectIgnoresDuplicateConnectedEmission() {
 	assert.strictEqual(countStatuses(plan, entry => entry.status === 'connected'), 1);
 }
 
+async function testFallbackRestartDelayIsApplied() {
+	const { manager, plan } = createHarness({
+		auto: [{ ok: true }]
+	}, {
+		allowProxy: false,
+		localSignerEnabled: false
+	});
+	manager.fallbackRestartMinDelayMs = 25;
+
+	const startedAt = Date.now();
+	const result = await manager.restartConnectionAttempt(null, 'unit_restart_delay');
+	const elapsedMs = Date.now() - startedAt;
+
+	assert.strictEqual(result, true);
+	assert.ok(elapsedMs >= 20, `expected restart delay, got ${elapsedMs}ms`);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto']);
+}
+
+async function testLocalSignerProviderTimesOut() {
+	const { manager } = createHarness({}, {
+		allowProxy: false,
+		localSignerEnabled: true
+	});
+	manager.localSigner = {
+		sign: () => new Promise(() => {})
+	};
+	manager.localSignerAttemptTimeoutMs = 10;
+
+	await assert.rejects(
+		() => manager.fetchSignedWebSocketViaLocalSigner({ uniqueId: 'tester' }),
+		(error) => error && error.code === 'SSAPP_TIKTOK_LOCAL_SIGNER_TIMEOUT'
+	);
+}
+
 async function run() {
 	const tests = [
+		{
+			name: 'installed connector has no runtime polling path',
+			fn: testInstalledConnectorHasNoRuntimePollingPath
+		},
 		{
 			name: 'auto falls back to local signer',
 			fn: testAutoFallsBackToLocalSigner
@@ -576,6 +938,14 @@ async function run() {
 		{
 			name: 'auto falls back from local signer to Euler proxy',
 			fn: testAutoFallsBackFromLocalSignerToEulerProxy
+		},
+		{
+			name: 'auto restores Euler signing after local signer failure',
+			fn: testAutoRestoresEulerSigningAfterLocalSignerFailure
+		},
+		{
+			name: 'auto can use shared Euler after local signer failure',
+			fn: testAutoCanUseSharedEulerAfterLocalSignerFailure
 		},
 		{
 			name: 'configured Euler API key is reused for proxy fallback',
@@ -588,6 +958,22 @@ async function run() {
 		{
 			name: 'auto exhaustion surfaces a failed status message',
 			fn: testAutoExhaustionSurfacesFailureMessage
+		},
+		{
+			name: 'offline failure status carries offline flag',
+			fn: testOfflineFailureStatusCarriesOfflineFlag
+		},
+		{
+			name: 'offline auto-activate retry cadence backs off',
+			fn: testOfflineAutoActivateRetryCadenceBacksOff
+		},
+		{
+			name: 'offline retry UI throttles long countdowns',
+			fn: testOfflineRetryUiThrottlesLongCountdowns
+		},
+		{
+			name: 'TikTok diagnostic counters track data flow',
+			fn: testTikTokDiagnosticCountersTrackDataFlow
 		},
 		{
 			name: 'blank room lookup errors become useful messages',
@@ -610,12 +996,28 @@ async function run() {
 			fn: testUiDoesNotAutoFallbackAfterFatalUserNotFound
 		},
 		{
+			name: 'ui does not auto fallback after offline failure',
+			fn: testUiDoesNotAutoFallbackAfterOfflineFailure
+		},
+		{
 			name: 'manual standard fatal does not auto close classic window',
 			fn: testManualStandardFatalDoesNotAutoCloseClassicWindow
 		},
 		{
+			name: 'manual standard recoverable fatal guides reveal',
+			fn: testManualStandardRecoverableFatalGuidesReveal
+		},
+		{
+			name: 'manual standard navigation warns instead of closing',
+			fn: testManualStandardNavigationWarnsInsteadOfClosing
+		},
+		{
 			name: 'classic terminal statuses release stale handles',
 			fn: testClassicTerminalStatusesReleaseStaleHandles
+		},
+		{
+			name: 'TikTok activation handle does not overwrite pending status',
+			fn: testTikTokActivationHandleDoesNotOverwritePendingStatus
 		},
 		{
 			name: 'connect rehydrates a missing connection instance',
@@ -628,6 +1030,14 @@ async function run() {
 		{
 			name: 'handleConnect ignores duplicate connected emission',
 			fn: testHandleConnectIgnoresDuplicateConnectedEmission
+		},
+		{
+			name: 'fallback restart delay is applied',
+			fn: testFallbackRestartDelayIsApplied
+		},
+		{
+			name: 'local signer provider times out',
+			fn: testLocalSignerProviderTimesOut
 		}
 	];
 

@@ -10,6 +10,7 @@ function escapeHtml(str) {
 const LOOPBACK_HOST = '127.0.0.1';
 const LOOPBACK_PORTS = [8181, 8080];
 const CALLBACK_PATH = '/sources/websocket/twitch.html';
+const DEFAULT_HOSTED_AUTH_BASE = 'https://sso.socialstream.ninja/auth/twitch';
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 let activeSession = null;
@@ -22,6 +23,11 @@ function buildTwitchAuthUrl({ clientId, scopes, redirectUri, state }) {
         `&redirect_uri=${encodeURIComponent(redirectUri || '')}` +
         `&scope=${encodeURIComponent(scopeString)}` +
         `&state=${encodeURIComponent(state || '')}`;
+}
+
+function buildHostedTwitchAuthUrl({ authBase, returnTo }) {
+    const base = String(authBase || DEFAULT_HOSTED_AUTH_BASE).replace(/\/+$/, '');
+    return `${base}/start?return_to=${encodeURIComponent(returnTo || '')}`;
 }
 
 function tryListenOnPort(server, port) {
@@ -67,6 +73,7 @@ function runTwitchLoopbackOAuthSession(payload = {}) {
         let session = null;
         let redirectUri = null;
         const stateParam = payload.state || require('crypto').randomBytes(16).toString('hex');
+        const useHostedAuth = payload.authMode === 'hosted' || (!payload.authMode && !!payload.authBase);
 
         const cleanup = () => {
             if (timeoutId) {
@@ -130,9 +137,12 @@ function runTwitchLoopbackOAuthSession(payload = {}) {
                             complete({
                                 success: true,
                                 access_token: data.access_token,
+                                refresh_token: data.refresh_token || null,
+                                expires_in: data.expires_in || null,
                                 token_type: data.token_type || 'bearer',
                                 state: data.state || payload.state || null,
-                                scope: data.scope || null
+                                scope: data.scope || null,
+                                client_id: data.client_id || null
                             });
                         } else if (data.error) {
                             fail(new Error(data.error_description || data.error));
@@ -180,14 +190,32 @@ function runTwitchLoopbackOAuthSession(payload = {}) {
             // Parse the hash fragment
             const hash = window.location.hash.substring(1);
             const params = new URLSearchParams(hash);
+            const base64UrlToJson = function(value) {
+                try {
+                    const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+                    const padded = normalized + '==='.slice((normalized.length + 3) % 4);
+                    return JSON.parse(decodeURIComponent(Array.prototype.map.call(atob(padded), function(char) {
+                        return '%' + ('00' + char.charCodeAt(0).toString(16)).slice(-2);
+                    }).join('')));
+                } catch (e) {
+                    return null;
+                }
+            };
+
+            const hostedResult = base64UrlToJson(params.get('twitch_auth_result'));
+            const hostedError = base64UrlToJson(params.get('twitch_auth_error'));
+            const hostedTokens = hostedResult && (hostedResult.tokens || hostedResult);
 
             const data = {
-                access_token: params.get('access_token'),
-                token_type: params.get('token_type'),
-                state: params.get('state'),
-                scope: params.get('scope'),
-                error: params.get('error'),
-                error_description: params.get('error_description')
+                access_token: (hostedTokens && hostedTokens.access_token) || params.get('access_token'),
+                refresh_token: hostedTokens && hostedTokens.refresh_token,
+                expires_in: hostedTokens && hostedTokens.expires_in,
+                token_type: (hostedTokens && hostedTokens.token_type) || params.get('token_type'),
+                state: params.get('state') || new URLSearchParams(window.location.search).get('state'),
+                scope: (hostedTokens && hostedTokens.scope) || params.get('scope'),
+                client_id: hostedTokens && hostedTokens.client_id,
+                error: (hostedError && (hostedError.error || hostedError.message)) || params.get('error'),
+                error_description: (hostedError && hostedError.message) || params.get('error_description')
             };
 
             if (data.error) {
@@ -253,13 +281,19 @@ h1 { color: #eb0400; }</style></head>
             try {
                 const port = await tryStartServer(server);
                 redirectUri = `http://localhost:${port}${CALLBACK_PATH}`;
+                const returnTo = `${redirectUri}?ssapp=1&state=${encodeURIComponent(stateParam)}`;
 
-                const authUrl = buildTwitchAuthUrl({
-                    clientId: payload.clientId,
-                    scopes: payload.scopes,
-                    redirectUri,
-                    state: stateParam
-                });
+                const authUrl = useHostedAuth
+                    ? buildHostedTwitchAuthUrl({
+                        authBase: payload.authBase,
+                        returnTo
+                    })
+                    : buildTwitchAuthUrl({
+                        clientId: payload.clientId,
+                        scopes: payload.scopes,
+                        redirectUri,
+                        state: stateParam
+                    });
 
                 payload.redirectUri = redirectUri;
 
