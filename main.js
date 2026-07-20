@@ -10973,16 +10973,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
                             var code =
                                 `
 								// Get the random flag from contextBridge if available
-								const injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
+								var injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 								window.__SSAPP_TAB_ID__ = ${view.tabID};
-								let __SSAPP_MESSAGE_TARGET__ = window;
+								var __SSAPP_MESSAGE_TARGET__ = window;
 								try {
 									if (window.top && window.top !== window) {
 										__SSAPP_MESSAGE_TARGET__ = window.top;
 									}
 								} catch(_) {}
 								// Per-tab reply-only mode (disable capture forwarding)
-								const __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
+								var __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
 								
 								// Create a more complete chrome.runtime mock
 								chrome.runtime = {};
@@ -11239,15 +11239,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
 										console.log("[Injection Remote] window.ninjafy._authToken:", window.ninjafy?._authToken);
                                             
                                             // Get the random flag from contextBridge if available
-										const injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
+										var injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 										window.__SSAPP_TAB_ID__ = ${view.tabID};
-										let __SSAPP_MESSAGE_TARGET__ = window;
+										var __SSAPP_MESSAGE_TARGET__ = window;
 										try {
 											if (window.top && window.top !== window) {
 												__SSAPP_MESSAGE_TARGET__ = window.top;
 											}
 										} catch(_) {}
-										const __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
+										var __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
 										
 										chrome.runtime = {};
 										chrome.runtime.id = 1;
@@ -11445,16 +11445,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     var code =
                         `
 					// Get the random flag from contextBridge if available
-					const injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
+					var injectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
 					window.__SSAPP_TAB_ID__ = ${view.tabID};
-					let __SSAPP_MESSAGE_TARGET__ = window;
+					var __SSAPP_MESSAGE_TARGET__ = window;
 					try {
 						if (window.top && window.top !== window) {
 							__SSAPP_MESSAGE_TARGET__ = window.top;
 						}
 					} catch(_) {}
 					// Per-tab reply-only mode
-					const __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
+					var __SSAPP_REPLY_ONLY__ = ${args.replyOnly ? 'true' : 'false'};
 					
 					chrome.runtime = {};
 					chrome.runtime.id = 1;
