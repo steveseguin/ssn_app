@@ -10725,9 +10725,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                 const onFrameCreated = (_event, details = {}) => {
                     if (!frameInjectionCode || !details || !details.frame) return;
+          const processId = details.frame.processId;
+          const routingId = details.frame.routingId;
                     setTimeout(() => {
                         try {
-                            injectSourceIntoFrame(details.frame, "frame-created");
+              const frame = webFrameMain.fromId(processId, routingId);
+              if (frame) {
+                injectSourceIntoFrame(frame, "frame-created");
+              }
                         } catch (_) { }
                     }, 250);
                 };
