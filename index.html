@@ -8782,6 +8782,7 @@
                 ? source.sourceFiles.map((value) => normalizeSourceScriptPath(value)).filter(Boolean)
                 : [];
             sourceFiles = [...new Set(sourceFiles)];
+            sourceFiles = mergeSavedSourceFilesWithManifest(urlToLoad, sourceFiles);
             let scriptPath = normalizeSourceScriptPath(source.sourceFile || "") || `sources/${targetSourceFile}.js`;
             if (source.target === "bilibilicom" || (source.target === "bilibili" && /^https?:\/\/live\.bilibili\.com\//i.test(source.url || ""))) {
                 if (scriptPath === "sources/bilibili.js") {
@@ -10210,10 +10211,13 @@
                     lockProvider(false);
                     statusElement.classList.add('stopped');
                     statusElement.innerHTML = `<i class="las la-hand-paper"></i> ${statusText(message || 'Connection stopped')}`;
+                    const stoppedAutoHideMs = Number.isFinite(options.autoHideMs)
+                        ? Math.max(0, options.autoHideMs)
+                        : 5000;
                     statusElement._autoHideTimer = setTimeout(() => {
                         if (statusElement.classList.contains('stopped')) statusElement.style.display = 'none';
                         statusElement._autoHideTimer = null;
-                    }, 5000);
+                    }, stoppedAutoHideMs);
                     break;
                 case 'info':
                     lockProvider(false);
@@ -11991,8 +11995,7 @@
                             case 'signed_out':
                                 stateManager.updateSource(source.id, { status: 'inactive', activeConnectionMode: null });
                                 if (entryElement) {
-                                    updateConnectionStatus(entryElement, 'stopped', message || 'Disconnected');
-                                    setTimeout(() => updateConnectionStatus(entryElement, 'clear'), 2000);
+                                    updateConnectionStatus(entryElement, 'stopped', message || 'Disconnected', { autoHideMs: 2000 });
                                 }
                                 break;
                             case 'error':

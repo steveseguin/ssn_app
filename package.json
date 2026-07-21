@@ -19,6 +19,7 @@
     "test:portable:e2e": "node tests/electron/portable-build-e2e.js",
     "test:stability-recovery": "node tests/electron/stability-recovery-diagnostics.js",
     "test:streamdeck-bridge": "node tests/electron/streamdeck-bridge-e2e.js",
+    "test:streamdeck-plugin:e2e": "npm --prefix ../social_stream/ssn-streamdeck/plugin run build && node tests/electron/streamdeck-plugin-e2e.js",
     "test:tts": "node tests/electron/tts-diagnostics.js",
     "test:cohost-stt": "node tests/electron/cohost-stt-e2e.js",
     "test:cohost-stt:matrix": "node tests/electron/cohost-stt-audio-matrix.js",

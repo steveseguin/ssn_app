@@ -303,13 +303,29 @@ function checkSupported(str) {
 		dom.matches.forEach(dom2 => {
 			if (matchRuleShort(str, dom2)) {
 				log(dom2);
-				if (!matches.includes(dom.js[0])) {
-					matches.push(dom.js[0]);
-				}
+				(Array.isArray(dom.js) ? dom.js : []).forEach(scriptPath => {
+					if (!matches.includes(scriptPath)) {
+						matches.push(scriptPath);
+					}
+				});
 			}
 		});
 	});
 	return matches;
+}
+
+function mergeSavedSourceFilesWithManifest(str, sourceFiles) {
+	var normalizeScriptPath = value => {
+		if (!value || typeof value !== "string") return "";
+		return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
+	};
+	var savedFiles = Array.isArray(sourceFiles)
+		? sourceFiles.map(normalizeScriptPath).filter(Boolean)
+		: [];
+	if (!savedFiles.length) return savedFiles;
+
+	var manifestFiles = checkSupported(str).map(normalizeScriptPath).filter(Boolean);
+	return [...new Set([...manifestFiles, ...savedFiles])];
 }
 
 const tipsContent = {
