@@ -38,15 +38,15 @@ async function setupWebSocketMonitor(webContents, options = {}) {
                     if (!filter || filter(url)) {
                         // timestampDelta will be calculated in `Network.webSocketWillSendHandshakeRequest`
                         webSocketConnections.set(requestId, { url, requestId, timestampDelta: null });
-                        onOpen({ url, requestId });
+                        onOpen({ url, requestId, timestamp: Date.now() });
                     }
                 } break;
 
                 case 'Network.webSocketWillSendHandshakeRequest': {
                     const conn = webSocketConnections.get(params.requestId);
                     if (conn && params.wallTime && params.timestamp) {
-                        // The exact difference between MonotonicTime and Unix epoch clock time
-                        conn.timestampDelta = params.wallTime - params.timestamp;
+                        // The exact difference in ms between MonotonicTime (sec) and Unix epoch clock time (sec)
+                        conn.timestampDelta = (params.wallTime - params.timestamp) * 1000;
                     }
                 } break;
 
@@ -56,12 +56,12 @@ async function setupWebSocketMonitor(webContents, options = {}) {
                         let { timestampDelta } = connection;
                         if (timestampDelta === null) {
                             console.warn("Timestamp Delta missing in WS Connection data", connection.url, connection.requestId);
-                            timestampDelta = Date.now() - params.timestamp;
+                            timestampDelta = Date.now() - (params.timestamp * 1000);
                         }
                         onClose({
                             url: connection.url,
                             requestId: params.requestId,
-                            timestamp: params.timestamp + timestampDelta,
+                            timestamp: (params.timestamp * 1000) + timestampDelta,
                         });
                         webSocketConnections.delete(params.requestId);
                     }
@@ -73,13 +73,13 @@ async function setupWebSocketMonitor(webContents, options = {}) {
                         let { timestampDelta } = receivedConn;
                         if (timestampDelta === null) {
                             console.warn("Timestamp Delta missing in WS Connection data", receivedConn.url, receivedConn.requestId);
-                            timestampDelta = Date.now() - params.timestamp;
+                            timestampDelta = Date.now() - (params.timestamp * 1000);
                         }
                         onMessage({
                             url: receivedConn.url,
                             data: params.response.payloadData,
                             opcode: params.response.opcode,
-                            timestamp: params.timestamp + timestampDelta,
+                            timestamp: (params.timestamp * 1000) + timestampDelta,
                             requestId: params.requestId
                         });
                     } break;
@@ -90,12 +90,12 @@ async function setupWebSocketMonitor(webContents, options = {}) {
                         let { timestampDelta } = sentConn;
                         if (timestampDelta === null) {
                             console.warn("Timestamp Delta missing in WS Connection data", sentConn.url, sentConn.requestId);
-                            timestampDelta = Date.now() - params.timestamp;
+                            timestampDelta = Date.now() - (params.timestamp * 1000);
                         }
                         onSend({
                             url: sentConn.url,
                             data: params.response.payloadData,
-                            timestamp: params.timestamp + timestampDelta,
+                            timestamp: (params.timestamp * 1000) + timestampDelta,
                             opcode: params.response.opcode,
                             requestId: params.requestId
                         });
