@@ -11303,41 +11303,42 @@ async function createWindow(args, reuse = false, mainApp = false) {
           (async () => {
             try {
               if (view.isDestroyed()) return;
-              // 1. Load about:blank first to spawn a stable renderer target process
-              await view.webContents.loadURL('about:blank');
-
-              if (view.isDestroyed()) return;
-              // 2. Attach debugger & enable CDP Network and Runtime domains
+              // Attach debugger & enable CDP Network and Runtime domains
               const cleanup = await setupWebSocketMonitor(view.webContents, {
                             filter: websocketFilter,
+                            onAttached: () => loadURL(),
                             onMessage: (data) => {
                                 view.webContents.send('websocket-message', {
                                     type: 'message',
-                    data: normalizeWSData(data.data, data.opcode),
+                                    data: normalizeWSData(data.data, data.opcode),
                                     url: data.url,
-                                    timestamp: data.timestamp
+                                    timestamp: data.timestamp,
+                                    requestId: data.requestId
                                 });
                             },
                             onOpen: (data) => {
                                 view.webContents.send('websocket-message', {
                                     type: 'open',
                                     url: data.url,
-                    timestamp: data.timestamp
+                                    timestamp: data.timestamp,
+                                    requestId: data.requestId
                                 });
                             },
                             onClose: (data) => {
                                 view.webContents.send('websocket-message', {
                                     type: 'close',
                                     url: data.url,
-                    timestamp: data.timestamp
+                                    timestamp: data.timestamp,
+                                    requestId: data.requestId
                                 });
                             },
                             onSend: (data) => {
                                 view.webContents.send('websocket-message', {
                                     type: 'send',
-                    data: normalizeWSData(data.data, data.opcode),
+                                    data: normalizeWSData(data.data, data.opcode),
                                     url: data.url,
-                    timestamp: data.timestamp
+                                    timestamp: data.timestamp,
+                                    requestId: data.requestId
                                 });
                             }
                         });
@@ -11351,9 +11352,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         log(`WebSocket monitoring enabled${websocketFilter ? ' with filter' : ' for all WebSockets'}`);
                     } catch (error) {
                         log('Failed to set up WebSocket monitoring:', error);
-            } finally {
-              // 3. Load the actual target URL after monitoring is fully enabled and active
-              loadURL();
             }
           })();
                 } else {

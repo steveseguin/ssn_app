@@ -5,6 +5,7 @@ const { session } = require('electron');
  * @param {Electron.WebContents} webContents - The webContents to monitor
  * @param {Object} [options] - Configuration options
  * @param {(url: string) => boolean} [options.filter] - Optional filter function to limit which WebSockets to monitor
+ * @param {Function} [options.onAttached] - Optional async callback invoked immediately after debugger attaches, before CDP commands resolve
  * @param {Function} [options.onMessage] - Callback for WebSocket messages
  * @param {Function} [options.onOpen] - Callback for WebSocket open events
  * @param {Function} [options.onClose] - Callback for WebSocket close events
@@ -127,6 +128,13 @@ async function setupWebSocketMonitor(webContents, options = {}) {
     try {
         webContents.debugger.attach('1.3');
         monitoringActive = true;
+        if (typeof options.onAttached === 'function') {
+            try {
+                await options.onAttached();
+            } catch (err) {
+                console.error('Error executing onAttached callback:', err);
+            }
+        }
         await Promise.all([
             webContents.debugger.sendCommand('Network.enable'),
             // Enable runtime for WebSocket frame events
