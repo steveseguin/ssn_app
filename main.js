@@ -52,6 +52,7 @@ const {
     initializePortableProfile,
     markPortableProfileInitialized
 } = require('./resources/portable-data-paths');
+const { getTrustedStandaloneCustomJsPageType } = require('./resources/custom-js-page-trust');
 
 let earlyDataPaths = resolveEarlyDataPaths();
 let portableMigrationPending = null;
@@ -6742,7 +6743,19 @@ ipcMain.handle("ssapp:clear-custom-js-file", async () => {
     };
 });
 
-ipcMain.handle("ssapp:read-custom-js-file", async () => {
+ipcMain.handle("ssapp:read-custom-js-file", async (event) => {
+    let senderUrl = "";
+    try {
+        senderUrl = event?.senderFrame?.url || event?.sender?.getURL?.() || "";
+    } catch (_) { }
+    if (!getTrustedStandaloneCustomJsPageType(senderUrl)) {
+        return {
+            success: false,
+            error: "custom.js is only available to trusted Social Stream dock, featured, and bot pages.",
+            code: "UNTRUSTED_PAGE"
+        };
+    }
+
     const state = getCustomJsFileState();
     if (!state.enabled) {
         return {
@@ -6889,13 +6902,11 @@ function installWindowsSourceWindowMinimizeGuard(view) {
     });
 }
 
-// Stealth-hide: keep window visible to the OS, but move/resize it off-screen
+// Stealth-hide: keep capture windows renderable without leaving them accessible on-screen.
 function stealthHideView(view) {
     try {
         if (isBrowserViewDestroyed(view)) return false;
         const wasVisible = view.__ss_visible !== false;
-        // Mark logical visibility
-        view.__ss_visible = false;
         // Remember current bounds before parking, but do not overwrite with parked bounds.
         if (wasVisible || !view.__prevBounds) {
             try { view.__prevBounds = view.getBounds(); } catch (_) { view.__prevBounds = null; }
@@ -6904,10 +6915,41 @@ function stealthHideView(view) {
         // Avoid taskbar clutter while hidden
         try { view.setSkipTaskbar(true); } catch (_) { }
 
+        // Linux compositors may reject off-screen positions. Minimize instead so
+        // reveal can reliably restore the source window on both X11 and Wayland.
+        if (process.platform === 'linux') {
+            let hidden = false;
+            try {
+                const nativeVisible = typeof view.isVisible !== 'function' || view.isVisible();
+                if (!nativeVisible && typeof view.showInactive === 'function') {
+                    view.showInactive();
+                }
+                if (typeof view.minimize === 'function') {
+                    view.minimize();
+                }
+                hidden = typeof view.isMinimized === 'function' && view.isMinimized();
+            } catch (_) { }
+
+            if (!hidden) {
+                try {
+                    if (typeof view.hide === 'function') view.hide();
+                    hidden = typeof view.isVisible === 'function' ? !view.isVisible() : false;
+                } catch (_) { }
+            }
+
+            view.__ss_visible = !hidden;
+            if (!hidden) {
+                try { view.setSkipTaskbar(false); } catch (_) { }
+            }
+            return hidden;
+        }
+
         // Keep the window visible to Chromium, but park it outside the virtual desktop.
         const parked = parkSourceWindowOffscreen(view);
-
-        // Keep window technically visible; do not call hide()/minimize()
+        view.__ss_visible = !parked;
+        if (!parked) {
+            try { view.setSkipTaskbar(false); } catch (_) { }
+        }
         return parked;
     } catch (_) {
         return false;
@@ -6918,9 +6960,14 @@ function stealthHideView(view) {
 function stealthShowView(view, options = {}) {
     try {
         if (isBrowserViewDestroyed(view)) return true;
-        view.__ss_visible = true;
         const bringToFront = !!(options && options.bringToFront);
+        const previousBounds = view.__prevBounds && typeof view.__prevBounds.x === 'number'
+            ? view.__prevBounds
+            : null;
         if (process.platform === 'linux') {
+            if (previousBounds) {
+                try { view.setBounds(previousBounds); } catch (_) { }
+            }
             try { view.setSkipTaskbar(false); } catch (_) { }
             try {
                 if (typeof view.isMinimized === 'function' && view.isMinimized()) {
@@ -6934,11 +6981,28 @@ function stealthShowView(view, options = {}) {
                     view.showInactive();
                 }
             } catch (_) { }
-            return true;
+            if (previousBounds) {
+                try { view.setBounds(previousBounds); } catch (_) { }
+            }
+
+            let shown = true;
+            try {
+                const nativeVisible = typeof view.isVisible !== 'function' || view.isVisible();
+                const minimized = typeof view.isMinimized === 'function' && view.isMinimized();
+                const currentBounds = typeof view.getBounds === 'function' ? view.getBounds() : previousBounds;
+                shown = nativeVisible && !minimized && sourceWindowIntersectsVirtualScreen(currentBounds);
+            } catch (_) {
+                shown = false;
+            }
+            view.__ss_visible = shown;
+            if (!shown) {
+                try { view.setSkipTaskbar(true); } catch (_) { }
+            }
+            return shown;
         }
         // Restore size/position
-        if (view.__prevBounds && typeof view.__prevBounds.x === 'number') {
-            view.setBounds(view.__prevBounds);
+        if (previousBounds) {
+            view.setBounds(previousBounds);
         }
         try { view.setSkipTaskbar(false); } catch (_) { }
         try {
@@ -6948,9 +7012,10 @@ function stealthShowView(view, options = {}) {
                 view.showInactive();
             }
         } catch (_) { }
+        view.__ss_visible = true;
         return true;
     } catch (_) {
-        return true;
+        return false;
     }
 }
 
@@ -11103,7 +11168,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 view.__ss_visible = false;
                 try { view.setSkipTaskbar(true); } catch (_) { }
                 stealthHideView(view);
-                try { view.showInactive(); } catch (_) { }
+                if (process.platform !== 'linux') {
+                    try { view.showInactive(); } catch (_) { }
+                }
                 const reparkHiddenWindow = () => {
                     try {
                         if (!isBrowserViewDestroyed(view) && view.__ss_visible === false) {

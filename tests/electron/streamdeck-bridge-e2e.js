@@ -30,6 +30,25 @@ async function getFreePort() {
 	});
 }
 
+async function createCustomJsPageServer(host) {
+	const server = http.createServer((_request, response) => {
+		response.writeHead(200, {
+			'Content-Type': 'text/html; charset=utf-8',
+			'Cache-Control': 'no-store'
+		});
+		response.end('<!doctype html><html><head><title>custom.js trust test</title></head><body>fixture</body></html>');
+	});
+	await new Promise((resolve, reject) => {
+		server.once('error', reject);
+		server.listen(0, host, resolve);
+	});
+	const address = server.address();
+	return {
+		server,
+		url: `http://${host}:${address.port}/dock.html`
+	};
+}
+
 async function createRelayServer() {
 	const server = new WebSocket.WebSocketServer({ port: 0, host: '127.0.0.1' });
 	const clients = new Set();
@@ -224,8 +243,16 @@ async function execInRenderer(port, code, label = 'renderer exec') {
 
 async function run() {
 	const port = await getFreePort();
+	const customJsMarker = `custom-js-trust-${Date.now()}`;
+	const customJsPath = path.join(userDataDir, 'custom.js');
 	const untrustedHtmlPath = path.join(userDataDir, 'streamdeck-untrusted.html');
+	fs.writeFileSync(customJsPath, `window.__ssappCustomJsTrustMarker = ${JSON.stringify(customJsMarker)};`);
+	fs.writeFileSync(path.join(userDataDir, 'config.json'), JSON.stringify({
+		customJsFile: { filePath: customJsPath, updatedAt: Date.now() }
+	}, null, 2));
 	fs.writeFileSync(untrustedHtmlPath, '<!doctype html><meta charset="utf-8"><title>Untrusted Stream Deck Test</title>');
+	const trustedCustomJsServer = await createCustomJsPageServer('127.0.0.1');
+	const untrustedCustomJsServer = await createCustomJsPageServer('127.0.0.2');
 	const child = spawn(
 		electronPath,
 		[
@@ -277,6 +304,150 @@ async function run() {
 			|| (windows.windows || [])[0];
 		assert(mainWindow && mainWindow.id, `main window not found: ${JSON.stringify(windows)}`);
 		mainExecWindowId = mainWindow.id;
+		const customJsState = await execInRenderer(port, 'window.ssappCustomJs.getState()', 'custom.js configured state');
+		assert.equal(customJsState.enabled, true, `custom.js test file was not enabled: ${JSON.stringify(customJsState)}`);
+		assert.equal(customJsState.exists, true, `custom.js test file was unavailable: ${JSON.stringify(customJsState)}`);
+
+		const customJsSources = await execInRenderer(port, `
+			(async () => {
+				const started = Date.now();
+				while (
+					!window.SSAppStreamDeckBridge ||
+					!window.stateManager ||
+					!stateManager.initialized ||
+					typeof createSourceElement !== 'function' ||
+					typeof configReady !== 'undefined' && configReady !== true
+				) {
+					if (Date.now() - started > 45000) return { ready: false, sources: [] };
+					await new Promise(resolve => setTimeout(resolve, 100));
+				}
+
+				const fixtures = [
+					{ sourceId: 'custom-js-trusted-source', username: 'custom-js-trusted', url: ${JSON.stringify(trustedCustomJsServer.url)} },
+					{ sourceId: 'custom-js-untrusted-source', username: 'custom-js-untrusted', url: ${JSON.stringify(untrustedCustomJsServer.url)} }
+				];
+				for (const fixture of fixtures) {
+					if (!stateManager.getSource(fixture.sourceId)) {
+						stateManager.addSource({
+							id: fixture.sourceId,
+							target: 'instagram',
+							username: fixture.username,
+							url: fixture.url,
+							connectionMode: 'classic',
+							isMuted: true,
+							isVisible: false,
+							autoActivate: false,
+							status: 'inactive'
+						});
+					}
+					let entry = document.querySelector('[data-source-id="' + fixture.sourceId + '"]');
+					if (!entry) {
+						entry = createSourceElement(fixture.sourceId);
+						document.getElementById('sources').appendChild(entry);
+					}
+					fixture.startResult = await window.SSAppStreamDeckBridge.handleCommand({
+						action: 'startSource',
+						value: { sourceId: fixture.sourceId }
+					});
+				}
+
+				const activationStarted = Date.now();
+				while (Date.now() - activationStarted < 15000) {
+					if (fixtures.every(fixture => {
+						const source = stateManager.getSource(fixture.sourceId);
+						return source && source.status === 'active' && source.vid;
+					})) break;
+					await new Promise(resolve => setTimeout(resolve, 100));
+				}
+				return {
+					ready: true,
+					sources: fixtures.map(fixture => {
+						const source = stateManager.getSource(fixture.sourceId);
+						return {
+							sourceId: fixture.sourceId,
+							url: fixture.url,
+							startResult: fixture.startResult,
+							status: source && source.status,
+							vid: source && source.vid
+						};
+					})
+				};
+			})()
+		`, 'activate custom.js trust sources');
+		assert.equal(customJsSources.ready, true, `custom.js source setup was not ready: ${JSON.stringify(customJsSources)}`);
+		assert.equal(customJsSources.sources.length, 2);
+		for (const source of customJsSources.sources) {
+			assert.equal(source.startResult && source.startResult.ok, true, `custom.js source did not start: ${JSON.stringify(source)}`);
+			assert.equal(source.status, 'active', `custom.js source was not active: ${JSON.stringify(source)}`);
+			assert(source.vid, `custom.js source had no source-window handle: ${JSON.stringify(source)}`);
+		}
+
+		const trustedCustomJsWindow = await waitForWindow(
+			port,
+			win => win.id !== mainExecWindowId && win.url === trustedCustomJsServer.url
+		);
+		const trustedCustomJsResult = await execInWindow(port, trustedCustomJsWindow.id, `
+			new Promise(resolve => {
+				const started = Date.now();
+				const check = async () => {
+					const marker = window.__ssappCustomJsTrustMarker || '';
+					const script = document.getElementById('ssapp-standalone-custom-js');
+					if (marker) {
+						resolve({ marker, hasInjectedScript: !!script, href: location.href });
+						return;
+					}
+					if (Date.now() - started > 10000) {
+						const hasBridge = !!(window.ssappCustomJs && typeof window.ssappCustomJs.reload === 'function');
+						const reloadResult = hasBridge ? await window.ssappCustomJs.reload() : null;
+						await new Promise(done => setTimeout(done, 100));
+						resolve({
+							marker: window.__ssappCustomJsTrustMarker || '',
+							hasInjectedScript: !!document.getElementById('ssapp-standalone-custom-js'),
+							hasBridge,
+							reloadResult,
+							href: location.href
+						});
+						return;
+					}
+					setTimeout(check, 50);
+				};
+				check();
+			})
+		`, 'trusted custom.js injection');
+		assert.equal(trustedCustomJsResult.marker, customJsMarker, `trusted page did not run custom.js: ${JSON.stringify(trustedCustomJsResult)}`);
+		assert.equal(trustedCustomJsResult.hasInjectedScript, true, 'trusted page did not retain the injected custom.js script');
+
+		const untrustedCustomJsWindow = await waitForWindow(
+			port,
+			win => win.id !== mainExecWindowId && win.url === untrustedCustomJsServer.url
+		);
+		const untrustedCustomJsResult = await execInWindow(port, untrustedCustomJsWindow.id, `
+			(async () => {
+				await new Promise(resolve => setTimeout(resolve, 500));
+				const reloadResult = window.ssappCustomJs && typeof window.ssappCustomJs.reload === 'function'
+					? await window.ssappCustomJs.reload()
+					: null;
+				return {
+					marker: window.__ssappCustomJsTrustMarker || '',
+					hasInjectedScript: !!document.getElementById('ssapp-standalone-custom-js'),
+					reloadResult
+				};
+			})()
+		`, 'untrusted custom.js rejection');
+		assert.equal(untrustedCustomJsResult.marker, '', `untrusted page ran custom.js: ${JSON.stringify(untrustedCustomJsResult)}`);
+		assert.equal(untrustedCustomJsResult.hasInjectedScript, false, 'untrusted page could inspect the custom.js source');
+		assert.equal(untrustedCustomJsResult.reloadResult && untrustedCustomJsResult.reloadResult.skipped, true, `untrusted manual reload was not blocked: ${JSON.stringify(untrustedCustomJsResult)}`);
+		const customJsCleanup = await execInRenderer(port, `
+			(async () => {
+				const results = [];
+				for (const sourceId of ['custom-js-trusted-source', 'custom-js-untrusted-source']) {
+					results.push(await window.SSAppStreamDeckBridge.handleCommand({ action: 'stopSource', value: { sourceId } }));
+					results.push(await window.SSAppStreamDeckBridge.handleCommand({ action: 'removeSource', value: { sourceId } }));
+				}
+				return results;
+			})()
+		`, 'clean up custom.js trust sources');
+		assert(customJsCleanup.every(result => result && result.ok), `custom.js source cleanup failed: ${JSON.stringify(customJsCleanup)}`);
 
 		const seed = await execInRenderer(port, `
 			(async () => {
@@ -848,6 +1019,13 @@ async function run() {
 				await relay.close();
 			}
 		} catch (_) { }
+		for (const fixture of [trustedCustomJsServer, untrustedCustomJsServer]) {
+			try {
+				if (fixture.server.listening) {
+					await new Promise(resolve => fixture.server.close(resolve));
+				}
+			} catch (_) { }
+		}
 		try {
 			child.kill();
 		} catch (_) { }

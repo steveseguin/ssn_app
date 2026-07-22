@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 
-const CONTROL_API_VERSION = '1.1.3';
+const CONTROL_API_VERSION = '1.1.4';
 const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_OPERATIONS = 200;

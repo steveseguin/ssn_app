@@ -6736,11 +6736,21 @@
 
         function waitForNextRender() {
             return new Promise(resolve => {
-                if (typeof requestAnimationFrame === 'function') {
-                    requestAnimationFrame(() => resolve());
-                } else {
+                if (typeof requestAnimationFrame !== 'function' || document.hidden) {
                     setTimeout(resolve, 0);
+                    return;
                 }
+
+                let settled = false;
+                let fallbackTimer = null;
+                const finish = () => {
+                    if (settled) return;
+                    settled = true;
+                    if (fallbackTimer !== null) clearTimeout(fallbackTimer);
+                    resolve();
+                };
+                fallbackTimer = setTimeout(finish, 100);
+                requestAnimationFrame(finish);
             });
         }
 
@@ -6945,6 +6955,10 @@
                 'betaMode', 'youtubeAutoAdd', 'youtubeAutoCleanup', 'forceTikTokClassic', 'preferTikTokLegacy'
             ]);
             const booleanSourceSettings = new Set(['isVisible', 'isMuted', 'autoActivate', 'replyOnly']);
+            const inactiveOnlySourceSettings = new Set([
+                'url', 'username', 'videoId', 'connectionMode', 'isVisible', 'isMuted',
+                'replyOnly', 'accountRole', 'customSession'
+            ]);
             const settingDefinitions = Object.freeze({
                 betaMode: { type: 'boolean', default: false, restartRequired: false, sensitive: false },
                 youtubeAutoAdd: { type: 'boolean', default: false, restartRequired: false, sensitive: false },
@@ -7143,8 +7157,15 @@
                 if ('connectionMode' in updates && !supportedConnectionModesForSource(source).includes(updates.connectionMode)) {
                     return err('INVALID_TARGET', `Connection mode ${updates.connectionMode} is not supported for ${source.target}.`);
                 }
-                if (hasConnectionHandles(source) && ('url' in updates || 'username' in updates || 'videoId' in updates || 'connectionMode' in updates)) {
-                    return err('STATE_CONFLICT', 'Stop the source before changing its connection details.');
+                const activeUpdateConflicts = Object.keys(updates).filter(key => inactiveOnlySourceSettings.has(key));
+                if (hasConnectionHandles(source) && activeUpdateConflicts.length) {
+                    const liveControlHint = activeUpdateConflicts.some(key => key === 'isMuted' || key === 'isVisible')
+                        ? ' Use the dedicated mute or visibility command for those live changes.'
+                        : '';
+                    return err(
+                        'STATE_CONFLICT',
+                        `Stop the source before changing: ${activeUpdateConflicts.join(', ')}.${liveControlHint}`
+                    );
                 }
                 if (!('url' in updates) && source.urlGeneratedFromUsername && ('username' in updates || 'videoId' in updates)) {
                     const generatedUrl = buildSourceUrl(source.target, updates.username || source.username, '', updates.videoId || source.videoId);

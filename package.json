@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "main": "main.js",
@@ -28,6 +28,7 @@
     "test:eventflow-user-memory:e2e": "node tests/electron/eventflow-user-memory-e2e.js",
     "test:popup-fallback-links:e2e": "node tests/electron/popup-fallback-links-e2e.js",
     "test:llm-control:e2e": "node tests/electron/llm-control-headless-e2e.js",
+    "test:review-fixes": "node tests/electron/review-fixes-regression.js",
     "test:mcp-control:e2e": "node tests/electron/ssapp-mcp-e2e.js",
     "mcp": "node resources/ssapp-mcp.js",
     "test:socialstream-path-security": "node tests/electron/socialstream-path-security-regression.js",

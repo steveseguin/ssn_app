@@ -14,7 +14,7 @@ const { spawn, spawnSync } = require('child_process');
 const electronPath = require('electron');
 const repoRoot = path.resolve(__dirname, '..', '..');
 const expectedSsappVersion = require(path.join(repoRoot, 'package.json')).version;
-const expectedApiVersion = '1.1.3';
+const expectedApiVersion = '1.1.4';
 const sourceUrlSecret = 'CONTROL_API_SOURCE_SECRET';
 const socialStreamRoot = path.resolve(repoRoot, '..', 'social_stream');
 const socialStreamUrl = pathToFileURL(socialStreamRoot + path.sep).href;
@@ -31,6 +31,25 @@ function getFreePort() {
 			server.close(() => resolve(port));
 		});
 	});
+}
+
+async function createSourceFixtureServer() {
+	const server = http.createServer((_request, response) => {
+		response.writeHead(200, {
+			'Content-Type': 'text/html; charset=utf-8',
+			'Cache-Control': 'no-store',
+		});
+		response.end('<!doctype html><html><body><div id="chat">Headless source fixture</div></body></html>');
+	});
+	await new Promise((resolve, reject) => {
+		server.once('error', reject);
+		server.listen(0, '127.0.0.1', resolve);
+	});
+	const address = server.address();
+	return {
+		server,
+		url: `http://127.0.0.1:${address.port}/chat`,
+	};
 }
 
 function requestJson(port, pathname, body, authToken = token) {
@@ -173,6 +192,37 @@ async function command(port, action, value) {
 	return { ...response.data.payload, _meta: response.data.meta || {}, _versions: { ssapp: response.data.ssappVersion, api: response.data.apiVersion } };
 }
 
+async function waitForSource(port, sourceId, predicate, timeoutMs = 15000) {
+	const started = Date.now();
+	let lastSource = null;
+	while (Date.now() - started < timeoutMs) {
+		const response = await requestJson(port, '/api/v1/command', {
+			action: 'getSource',
+			value: { sourceId },
+		});
+		if (response.statusCode === 200 && response.data.ok) {
+			lastSource = response.data.payload.source;
+			if (predicate(lastSource)) return lastSource;
+		}
+		await new Promise(resolve => setTimeout(resolve, 100));
+	}
+	throw new Error(`Timed out waiting for source ${sourceId}. Last state: ${JSON.stringify(lastSource)}`);
+}
+
+async function withTimeout(promise, timeoutMs, message) {
+	let timer;
+	try {
+		return await Promise.race([
+			promise,
+			new Promise((_, reject) => {
+				timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+			}),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 async function runMcpChecks(port) {
 	const child = spawn(process.execPath, [path.join(repoRoot, 'resources', 'ssapp-mcp.js')], {
 		cwd: repoRoot,
@@ -243,7 +293,9 @@ async function run() {
 
 	let sourceId = '';
 	let appInstance;
+	let sourceFixture;
 	try {
+		sourceFixture = await createSourceFixtureServer();
 		const firstPort = await getFreePort();
 		appInstance = await startApp(firstPort);
 		assert.strictEqual(appInstance.status.app.headless, true);
@@ -274,7 +326,8 @@ async function run() {
 		const added = await command(firstPort, 'addSource', {
 			target: 'twitch',
 			username: 'ssapp_llm_test',
-			url: `https://www.twitch.tv/popout/ssapp_llm_test/chat?popout=&access_token=${sourceUrlSecret}`,
+			url: `${sourceFixture.url}?access_token=${sourceUrlSecret}`,
+			connectionMode: 'classic',
 			isMuted: true,
 			autoActivate: false,
 			idempotencyKey: 'headless-source-test',
@@ -303,6 +356,58 @@ async function run() {
 		});
 		assert.strictEqual(updated.source.username, 'ssapp_llm_test_updated');
 		assert.strictEqual(Object.prototype.hasOwnProperty.call(updated.source, 'url'), false);
+
+		const startedSource = await command(firstPort, 'startSource', { sourceId });
+		assert.strictEqual(startedSource.accepted, true);
+		const activeSource = await waitForSource(
+			firstPort,
+			sourceId,
+			source => source.status === 'active' && Number.isFinite(source.tabId)
+		);
+		assert.strictEqual(activeSource.connectionMode, 'classic');
+
+		const blockedActiveUpdates = {
+			url: `${sourceFixture.url}/changed`,
+			username: 'should_not_apply',
+			videoId: 'should_not_apply',
+			connectionMode: 'websocket',
+			isVisible: false,
+			isMuted: false,
+			replyOnly: false,
+			accountRole: 'bot',
+			customSession: 'should-not-apply',
+		};
+		for (const [setting, settingValue] of Object.entries(blockedActiveUpdates)) {
+			const response = await requestJson(firstPort, '/api/v1/command', {
+				action: 'updateSource',
+				value: { sourceId, updates: { [setting]: settingValue } },
+			});
+			assert.strictEqual(response.statusCode, 409, `${setting}: ${JSON.stringify(response.data)}`);
+			assert.strictEqual(response.data.error.code, 'STATE_CONFLICT', `${setting}: ${JSON.stringify(response.data)}`);
+		}
+
+		const futureActivationUpdate = await command(firstPort, 'updateSource', {
+			sourceId,
+			updates: { autoActivate: true },
+		});
+		assert.strictEqual(futureActivationUpdate.source.autoActivate, true);
+		const liveMuteUpdate = await command(firstPort, 'setSourceMute', { sourceId, isMuted: false });
+		assert.strictEqual(liveMuteUpdate.source.isMuted, false);
+		const liveVisibilityUpdate = await command(firstPort, 'setSourceVisibility', { sourceId, isVisible: false });
+		assert.strictEqual(liveVisibilityUpdate.source.isVisible, false);
+
+		await withTimeout(
+			command(firstPort, 'stopSource', { sourceId }),
+			10000,
+			'Headless stopSource timed out while waiting for renderer progress.'
+		);
+		await waitForSource(firstPort, sourceId, source => source.status === 'inactive' && source.tabId === null);
+		const resetFutureActivation = await command(firstPort, 'updateSource', {
+			sourceId,
+			updates: { autoActivate: false, isVisible: true },
+		});
+		assert.strictEqual(resetFutureActivation.source.autoActivate, false);
+		assert.strictEqual(resetFutureActivation.source.isVisible, true);
 
 		let settings;
 		await waitForEvent(firstPort, 'status.changed', async () => {
@@ -335,11 +440,14 @@ async function run() {
 		const removed = await command(secondPort, 'removeSource', { sourceId, confirm: true });
 		assert.strictEqual(removed.removed, true);
 
-		console.log('Headless LLM control API end-to-end checks passed, including CLI launch and persistence.');
+		console.log('Headless LLM control API end-to-end checks passed, including active-source guards, stop progress, CLI launch, and persistence.');
 	} catch (error) {
 		throw new Error(`${error.message}\n${appInstance ? appInstance.getOutput().slice(-5000) : ''}`);
 	} finally {
 		if (appInstance) await stopApp(appInstance.child);
+		if (sourceFixture && sourceFixture.server.listening) {
+			await new Promise(resolve => sourceFixture.server.close(resolve));
+		}
 		fs.rmSync(profileDir, { recursive: true, force: true });
 	}
 }

@@ -115,10 +115,24 @@ const ssappCustomJsBridge = {
 	reload: async () => injectStandaloneCustomJs('manual')
 };
 
+const trustedStandaloneCustomJsHostnames = new Set([
+	'127.0.0.1',
+	'localhost',
+	'socialstream.ninja',
+	'cache.socialstream.ninja',
+	'beta.socialstream.ninja'
+]);
+
 function getStandaloneCustomJsPageType() {
 	try {
-		const pathName = window.location && window.location.pathname ? window.location.pathname.toLowerCase() : '';
-		const match = pathName.match(/(?:^|\/)(dock|featured|bot)\.html$/i);
+		const pageUrl = new URL(window.location.href);
+		const protocol = String(pageUrl.protocol || '').toLowerCase();
+		if (protocol !== 'file:') {
+			if (protocol !== 'http:' && protocol !== 'https:') return '';
+			const hostname = String(pageUrl.hostname || '').toLowerCase().replace(/\.$/, '');
+			if (!trustedStandaloneCustomJsHostnames.has(hostname)) return '';
+		}
+		const match = String(pageUrl.pathname || '').match(/(?:^|\/)(dock|featured|bot)\.html$/i);
 		return match ? match[1].toLowerCase() : '';
 	} catch (_) {
 		return '';
