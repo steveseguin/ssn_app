@@ -112,6 +112,8 @@ const SIGN_SERVER_FAILURE_FALLBACK_THRESHOLD = 3;
 const DEFAULT_TIKTOK_WEB_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36';
 const EULER_WS_PROVIDER = 'euler-ws';
 const STARTUP_HISTORY_CHAT_GRACE_MS = 5000;
+const TIKTOK_LIKE_TOTAL_MIN_INTERVAL_MS = 5000;
+const TIKTOK_LIKE_TOTAL_HEARTBEAT_MS = 90000;
 const GIFT_IGNORE_CONFIG_NOT_IGNORE = Number.isFinite(Number(GiftMessageIgnoreConfig?.GIFT_MESSAGE_IGNORE_CONFIG_NOT_IGNORE))
     ? Number(GiftMessageIgnoreConfig.GIFT_MESSAGE_IGNORE_CONFIG_NOT_IGNORE)
     : 0;
@@ -1071,6 +1073,22 @@ function isCaptureLikedEventEnabled() {
     } catch (_) {
         return false;
     }
+}
+
+function isLikeTotalsEnabled() {
+    const settings = getCachedSettings();
+    const globalSetting = settings.captureliketotals;
+    const legacyYouTubeSetting = settings.captureyoutubelikes;
+    const isEnabled = (entry) => entry === true || !!(entry && typeof entry === 'object' && entry.setting === true);
+    return isEnabled(globalSetting) || isEnabled(legacyYouTubeSetting);
+}
+
+function normalizeTikTokLikeTotal(value) {
+    const total = Number(value);
+    if (!Number.isFinite(total) || total < 0) {
+        return null;
+    }
+    return Math.floor(total);
 }
 
 function isViewerUpdateAllowed() {
@@ -2835,6 +2853,9 @@ function cleanupConnection(wssID) {
             if (manager.viewerUpdateInterval) {
                 clearInterval(manager.viewerUpdateInterval);
             }
+            if (typeof manager.resetLikeTotalUpdateState === 'function') {
+                manager.resetLikeTotalUpdateState();
+            }
             if (manager.reconnectTimer) {
                 clearTimeout(manager.reconnectTimer);
                 manager.reconnectTimer = null;
@@ -4157,13 +4178,30 @@ class ConnectionManager {
         const normalizedTtTargetIdc = typeof ttTargetIdc === 'string' ? ttTargetIdc.trim() : null;
         this.sessionId = normalizedSessionId || null;
         this.ttTargetIdc = normalizedTtTargetIdc || null;
-        const { forceLegacyConnector = false, signing = null, autoActivate = false } = options || {};
+        const {
+            forceLegacyConnector = false,
+            signing = null,
+            autoActivate = false,
+            likeTotalMinIntervalMs = TIKTOK_LIKE_TOTAL_MIN_INTERVAL_MS,
+            likeTotalHeartbeatMs = TIKTOK_LIKE_TOTAL_HEARTBEAT_MS
+        } = options || {};
         this.preferredStrategy = (usingLegacyTikTokConnector || forceLegacyConnector) ? 'legacy' : 'websocket';
         this.connection = null;
         this.lastMessageTime = Date.now();
         this.healthCheckInterval = null;
         this.viewerUpdateInterval = null;
         this.lastViewerCount = 0;
+        this.likeTotalMinIntervalMs = Number.isFinite(Number(likeTotalMinIntervalMs))
+            ? Math.max(0, Number(likeTotalMinIntervalMs))
+            : TIKTOK_LIKE_TOTAL_MIN_INTERVAL_MS;
+        this.likeTotalHeartbeatMs = Number.isFinite(Number(likeTotalHeartbeatMs))
+            ? Math.max(this.likeTotalMinIntervalMs, Number(likeTotalHeartbeatMs))
+            : TIKTOK_LIKE_TOTAL_HEARTBEAT_MS;
+        this.lastKnownLikeTotal = null;
+        this.lastSentLikeTotal = null;
+        this.lastLikeTotalSentAt = 0;
+        this.pendingLikeTotal = null;
+        this.likeTotalTimer = null;
         this.messageProcessor = new MessageProcessor(this);
         this.giftProcessor = new GiftProcessor(this);
         this.activityBuckets = new Map();
@@ -6712,6 +6750,7 @@ class ConnectionManager {
             },
             like: (data) => {
                 this.recordActivity();
+                this.queueLikeTotalUpdate(data?.totalLikeCount);
                 const identity = extractTikTokIdentity(data);
                 const displayName = identity.nickname || identity.uniqueId || 'Viewer';
                 if (identity.nickname && !data.nickname) data.nickname = identity.nickname;
@@ -7365,9 +7404,99 @@ class ConnectionManager {
         }, CONFIG.CONNECTION.HEALTH_CHECK_INTERVAL);
     }
 
+    cancelPendingLikeTotalUpdate() {
+        if (this.likeTotalTimer) {
+            clearTimeout(this.likeTotalTimer);
+            this.likeTotalTimer = null;
+        }
+        this.pendingLikeTotal = null;
+    }
+
+    resetLikeTotalUpdateState() {
+        this.cancelPendingLikeTotalUpdate();
+        this.lastKnownLikeTotal = null;
+        this.lastSentLikeTotal = null;
+        this.lastLikeTotalSentAt = 0;
+    }
+
+    sendLikeTotalUpdate(total, { force = false } = {}) {
+        const normalizedTotal = normalizeTikTokLikeTotal(total);
+        if (normalizedTotal === null || !isLikeTotalsEnabled()) {
+            return false;
+        }
+        if (!this.canForwardEvents('like_total_send') || this.replyOnly || !isCaptureEventsEnabled()) {
+            return false;
+        }
+        if (!force && normalizedTotal === this.lastSentLikeTotal) {
+            return false;
+        }
+
+        sendToBackground({
+            meta: normalizedTotal,
+            type: 'tiktok',
+            event: 'likes_update',
+            tid: this.virtualTabId
+        });
+        this.lastKnownLikeTotal = normalizedTotal;
+        this.lastSentLikeTotal = normalizedTotal;
+        this.lastLikeTotalSentAt = Date.now();
+        return true;
+    }
+
+    flushPendingLikeTotalUpdate() {
+        const pendingTotal = this.pendingLikeTotal;
+        this.cancelPendingLikeTotalUpdate();
+        if (pendingTotal === null) {
+            return false;
+        }
+        return this.sendLikeTotalUpdate(pendingTotal);
+    }
+
+    queueLikeTotalUpdate(total) {
+        const normalizedTotal = normalizeTikTokLikeTotal(total);
+        if (normalizedTotal === null || !isLikeTotalsEnabled() || !isCaptureEventsEnabled()) {
+            return false;
+        }
+
+        this.lastKnownLikeTotal = normalizedTotal;
+        if (normalizedTotal === this.lastSentLikeTotal) {
+            return false;
+        }
+
+        const elapsed = Date.now() - this.lastLikeTotalSentAt;
+        if (this.lastSentLikeTotal === null || elapsed >= this.likeTotalMinIntervalMs) {
+            this.cancelPendingLikeTotalUpdate();
+            return this.sendLikeTotalUpdate(normalizedTotal);
+        }
+
+        this.pendingLikeTotal = normalizedTotal;
+        if (!this.likeTotalTimer) {
+            const delay = Math.max(0, this.likeTotalMinIntervalMs - elapsed);
+            this.likeTotalTimer = setTimeout(() => {
+                this.flushPendingLikeTotalUpdate();
+            }, delay);
+        }
+        return false;
+    }
+
+    maybeHeartbeatLikeTotalUpdate() {
+        if (
+            this.lastKnownLikeTotal === null ||
+            !isLikeTotalsEnabled() ||
+            Date.now() - this.lastLikeTotalSentAt < this.likeTotalHeartbeatMs
+        ) {
+            return false;
+        }
+
+        const latestTotal = this.pendingLikeTotal === null ? this.lastKnownLikeTotal : this.pendingLikeTotal;
+        this.cancelPendingLikeTotalUpdate();
+        return this.sendLikeTotalUpdate(latestTotal, { force: true });
+    }
+
     startViewerUpdateInterval() {
         // Clear any existing interval
         if (this.viewerUpdateInterval) clearInterval(this.viewerUpdateInterval);
+        this.resetLikeTotalUpdateState();
 
         // Send viewer count every 30 seconds
         this.viewerUpdateInterval = setInterval(() => {
@@ -7388,6 +7517,7 @@ class ConnectionManager {
                         tid: this.virtualTabId
                     });
                 }
+                this.maybeHeartbeatLikeTotalUpdate();
             }
         }, 30000); // 30 seconds
     }
@@ -8459,6 +8589,7 @@ class ConnectionManager {
         });
         if (this.healthCheckInterval) clearInterval(this.healthCheckInterval);
         if (this.viewerUpdateInterval) clearInterval(this.viewerUpdateInterval);
+        this.resetLikeTotalUpdateState();
 
         if (!this.isStopped) {
             const canTrySharedEulerWsKey = this.shouldTrySharedEulerApiKeyForEulerWsClose(code);
@@ -8819,6 +8950,13 @@ class ConnectionManager {
                 console.error('Failed to send final TikTok viewer update:', error);
             }
         }
+        if (isLikeTotalsEnabled()) {
+            this.cancelPendingLikeTotalUpdate();
+            this.lastKnownLikeTotal = 0;
+            this.sendLikeTotalUpdate(0, { force: true });
+        } else {
+            this.resetLikeTotalUpdateState();
+        }
         // Treat stream end as offline and keep retrying periodically
         if (!this.isStopped) {
             this.enterOfflineRetryMode('Live stream has ended');
@@ -8838,6 +8976,7 @@ class ConnectionManager {
         if (this.viewerUpdateInterval) {
             clearInterval(this.viewerUpdateInterval);
         }
+        this.resetLikeTotalUpdateState();
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;

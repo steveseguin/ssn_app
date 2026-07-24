@@ -21,10 +21,19 @@ function buildConnectorStub() {
   };
 }
 
-function createHarness({ captureLikedEvent = false } = {}) {
+function createHarness({
+  captureLikedEvent = false,
+  captureLikeTotals = false,
+  legacyYouTubeLikeTotals = false,
+  likeTotalMinIntervalMs = 5000,
+  likeTotalHeartbeatMs = 90000
+} = {}) {
   const emitted = [];
   const postedMessages = [];
   const websocketConnections = {};
+  const cachedSettings = {};
+  if (captureLikeTotals) cachedSettings.captureliketotals = { setting: true };
+  if (legacyYouTubeLikeTotals) cachedSettings.captureyoutubelikes = { setting: true };
   const mainWindow = {
     webContents: {
       mainFrame: {
@@ -46,7 +55,7 @@ function createHarness({ captureLikedEvent = false } = {}) {
     log: () => { },
     onStatus: () => { },
     onEvent: (event) => emitted.push(event),
-    getCachedSettings: () => ({}),
+    getCachedSettings: () => cachedSettings,
     isCaptureEventsEnabled: () => true,
     isCaptureJoinedEventEnabled: () => true,
     isCaptureLikedEventEnabled: () => captureLikedEvent,
@@ -55,7 +64,10 @@ function createHarness({ captureLikedEvent = false } = {}) {
     connectionStates: new Map()
   });
 
-  const manager = new env.ConnectionManager('unit_test', 1, null, null, {});
+  const manager = new env.ConnectionManager('unit_test', 1, null, null, {
+    likeTotalMinIntervalMs,
+    likeTotalHeartbeatMs
+  });
   manager.virtualTabId = 900001;
   websocketConnections[1] = manager;
 
@@ -154,6 +166,51 @@ function runLikePassthroughAssertions() {
   assert.strictEqual(emitted.length, 2, 'liked events should pass through without dedupe suppression');
 }
 
+function runLikeTotalAssertions() {
+  const { emitted, manager } = createHarness({ captureLikeTotals: true });
+
+  assert.strictEqual(manager.queueLikeTotalUpdate(100), true, 'first total should send immediately');
+  assert.deepStrictEqual(
+    emitted[0],
+    { type: 'tiktok', event: 'likes_update', meta: 100, tid: 900001 },
+    'TikTok total should use the shared likes_update contract'
+  );
+
+  assert.strictEqual(manager.queueLikeTotalUpdate(105), false, 'burst updates should be coalesced');
+  assert.strictEqual(manager.queueLikeTotalUpdate(110), false, 'the latest burst total should replace the pending total');
+  assert.strictEqual(emitted.length, 1, 'coalesced totals should not send early');
+  assert.strictEqual(manager.pendingLikeTotal, 110, 'the newest total should be retained');
+  assert.strictEqual(manager.flushPendingLikeTotalUpdate(), true, 'the trailing total should send');
+  assert.strictEqual(emitted.length, 2);
+  assert.strictEqual(emitted[1].meta, 110, 'the trailing update should contain the newest total');
+
+  assert.strictEqual(manager.queueLikeTotalUpdate(110), false, 'unchanged totals should be suppressed');
+  assert.strictEqual(emitted.length, 2);
+
+  manager.lastLikeTotalSentAt = Date.now() - manager.likeTotalHeartbeatMs;
+  assert.strictEqual(manager.maybeHeartbeatLikeTotalUpdate(), true, 'unchanged totals should heartbeat');
+  assert.strictEqual(emitted.length, 3);
+  assert.strictEqual(emitted[2].meta, 110);
+
+  manager.resetLikeTotalUpdateState();
+}
+
+function runLegacyLikeTotalGuardAssertions() {
+  const { emitted, manager } = createHarness({ legacyYouTubeLikeTotals: true });
+  assert.strictEqual(
+    manager.queueLikeTotalUpdate(42),
+    true,
+    'legacy captureyoutubelikes should enable the global total-like output'
+  );
+  assert.strictEqual(emitted[0].event, 'likes_update');
+  assert.strictEqual(emitted[0].meta, 42);
+  manager.resetLikeTotalUpdateState();
+
+  const disabled = createHarness();
+  assert.strictEqual(disabled.manager.queueLikeTotalUpdate(42), false, 'totals must remain opt-in');
+  assert.strictEqual(disabled.emitted.length, 0);
+}
+
 function runSparseSharePayloadAssertions() {
   const { emitted, manager } = createHarness({ captureLikedEvent: true });
 
@@ -219,6 +276,8 @@ function run() {
   runLikeGateAssertions();
   runFollowShareDedupeAssertions();
   runLikePassthroughAssertions();
+  runLikeTotalAssertions();
+  runLegacyLikeTotalGuardAssertions();
   runSparseSharePayloadAssertions();
   runEulerShareReplayDedupeAssertions();
   console.log('event-capture-regression: all checks passed');
