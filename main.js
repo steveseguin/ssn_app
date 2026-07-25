@@ -787,7 +787,16 @@ function probeDesktopNotificationSupport() {
     ];
 
     const tryNext = (index) => {
-        if (index >= attempts.length) return; // no probe tool; leave it to the first attempt
+        if (index >= attempts.length) {
+            // Nothing could confirm a notification service. Treat that as unavailable rather
+            // than finding out the expensive way: the cost of being wrong here is no desktop
+            // notifications, while the cost of guessing wrong the other way is a two minute
+            // freeze of the whole app. A machine with neither gdbus nor dbus-send almost
+            // certainly has no notification daemon either.
+            desktopNotificationSupport = 'unavailable';
+            console.warn('[Notifications] Could not confirm a notification service; notifications disabled.');
+            return;
+        }
         const [command, args] = attempts[index];
         let child;
         try {
