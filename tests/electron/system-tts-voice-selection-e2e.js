@@ -82,6 +82,20 @@ async function stopApp(child) {
 }
 
 async function run() {
+	// This exercises operating-system speech voices through the Web Speech API, and asserts
+	// on Windows voice names. Electron on Linux reports no system voices at all: verified on
+	// Electron 43 that speechSynthesis.getVoices() stays empty even with speech-dispatcher
+	// installed and working (spd-say lists voices) and with --enable-speech-dispatcher set.
+	// macOS has its own voice set and would fail the name assertions. Skip rather than hang
+	// for 15 seconds and fail on "Timed out waiting for Windows system voices".
+	if (process.platform !== 'win32') {
+		console.log(
+			`system-tts-voice-selection-e2e: SKIPPED (needs Windows system voices; this is ${process.platform}). ` +
+			'On Linux use the bundled TTS engine instead - see the tts diagnostics test.'
+		);
+		return { skipped: true };
+	}
+
 	const port = await getFreePort();
 	const child = spawn(electronPath, [
 		'.',

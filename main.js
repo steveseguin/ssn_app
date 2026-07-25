@@ -445,13 +445,28 @@ function isStabilityGracefulExitReason(reason) {
     return true;
 }
 
+// Linux is included alongside Windows because these are the mitigations that matter for the
+// GPU crashes Linux actually hits: the app forces --ignore-gpu-blocklist and
+// --enable-gpu-rasterization by default, and on a blocklisted or flaky driver those are what
+// keeps crashing. Without this the escalation ladder changed nothing on Linux - the app would
+// count the crashes, tell the user "Stability mode enabled automatically", and apply exactly
+// the same flags as before. These only take effect after repeated crashes, so the downside is
+// limited to sessions that are already failing.
+//
+// macOS is left out: it has its own balanced-mode handling and a different GPU stack. The
+// sandbox rung below stays Windows-only on purpose - relaxing the GPU sandbox is a security
+// trade-off, not just a stability knob, so it is not something to start doing on Linux as a
+// side effect of crash recovery.
+const STABILITY_GPU_FALLBACK_PLATFORMS = new Set(['win32', 'linux']);
+
 function buildGpuProfileFromFallbackLevel(level) {
     const normalizedLevel = clampGpuFallbackLevel(level);
+    const laddered = STABILITY_GPU_FALLBACK_PLATFORMS.has(process.platform);
     return {
         level: normalizedLevel,
-        disableUnsafeWebGpu: process.platform === 'win32' && normalizedLevel >= 1,
-        disableIgnoreGpuBlocklist: process.platform === 'win32' && normalizedLevel >= 2,
-        disableGpuRasterization: process.platform === 'win32' && normalizedLevel >= STABILITY_GPU_RASTERIZATION_FALLBACK_LEVEL,
+        disableUnsafeWebGpu: laddered && normalizedLevel >= 1,
+        disableIgnoreGpuBlocklist: laddered && normalizedLevel >= 2,
+        disableGpuRasterization: laddered && normalizedLevel >= STABILITY_GPU_RASTERIZATION_FALLBACK_LEVEL,
         disableGpuSandbox: process.platform === 'win32' && normalizedLevel >= STABILITY_GPU_SANDBOX_FALLBACK_LEVEL
     };
 }
@@ -741,18 +756,92 @@ function showTransferBackupToast(level, title, message) {
     } catch (_) { }
 }
 
-function showTransferBackupNotification(title, body) {
+// Desktop notifications on Linux are delivered over D-Bus to whatever implements
+// org.freedesktop.Notifications. When a session bus exists but nothing implements that
+// service - a headless server, a bare window manager, some Wayland sessions - Electron's
+// Notification.show() blocks the main process until D-Bus gives up. Measured on Electron 43
+// with no notification daemon: the failed event arrived after 100 seconds and show() did not
+// return for 120, with Notification.isSupported() reporting true the whole time. A frozen
+// main process means no chat processing, no IPC and no control API for two minutes, and it is
+// reachable without any user action, from automatic session-transfer backups and from the
+// on-battery power event.
+//
+// So: check once whether anything is listening, stop trying after a failure, and never
+// bother in headless control mode where there is no desktop to notify.
+let desktopNotificationSupport = 'unknown'; // 'unknown' | 'available' | 'unavailable'
+
+function probeDesktopNotificationSupport() {
+    if (process.platform !== 'linux' || desktopNotificationSupport !== 'unknown') return;
+    if (!process.env.DBUS_SESSION_BUS_ADDRESS) {
+        desktopNotificationSupport = 'unavailable';
+        return;
+    }
+
+    const attempts = [
+        ['gdbus', ['call', '--session', '--dest', 'org.freedesktop.DBus',
+            '--object-path', '/org/freedesktop/DBus',
+            '--method', 'org.freedesktop.DBus.GetNameOwner', 'org.freedesktop.Notifications']],
+        ['dbus-send', ['--session', '--print-reply', '--reply-timeout=2000',
+            '--dest=org.freedesktop.DBus', '/org/freedesktop/DBus',
+            'org.freedesktop.DBus.GetNameOwner', 'string:org.freedesktop.Notifications']]
+    ];
+
+    const tryNext = (index) => {
+        if (index >= attempts.length) return; // no probe tool; leave it to the first attempt
+        const [command, args] = attempts[index];
+        let child;
+        try {
+            child = require('child_process').spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        } catch (_) {
+            tryNext(index + 1);
+            return;
+        }
+        let stderr = '';
+        try { child.stderr.on('data', (chunk) => { stderr += String(chunk); }); } catch (_) { }
+        const timer = setTimeout(() => { try { child.kill(); } catch (_) { } }, 4000);
+        child.on('error', () => { clearTimeout(timer); tryNext(index + 1); });
+        child.on('exit', (code) => {
+            clearTimeout(timer);
+            if (code === 0 && !/NameHasNoOwner/i.test(stderr)) {
+                desktopNotificationSupport = 'available';
+            } else if (/NameHasNoOwner|no such name/i.test(stderr) || code === 1) {
+                desktopNotificationSupport = 'unavailable';
+                console.warn('[Notifications] No desktop notification service on this session; notifications disabled.');
+            } else {
+                tryNext(index + 1);
+            }
+        });
+    };
+
+    tryNext(0);
+}
+
+function showDesktopNotification(options) {
     try {
+        if (headlessControlEnabled) return;
+        if (desktopNotificationSupport === 'unavailable') return;
         if (electron.Notification && typeof electron.Notification.isSupported === 'function' && !electron.Notification.isSupported()) {
             return;
         }
-        const notification = new electron.Notification({
-            title: String(title || 'Full Session Transfer'),
-            body: String(body || ''),
-            icon: TRANSFER_BACKUP_NOTIFICATION_ICON
+        const notification = new electron.Notification(options);
+        notification.on('failed', () => {
+            if (desktopNotificationSupport !== 'unavailable') {
+                desktopNotificationSupport = 'unavailable';
+                console.warn('[Notifications] Desktop notification failed; not trying again this session.');
+            }
         });
         notification.show();
     } catch (_) { }
+}
+
+probeDesktopNotificationSupport();
+
+function showTransferBackupNotification(title, body) {
+    showDesktopNotification({
+        title: String(title || 'Full Session Transfer'),
+        body: String(body || ''),
+        icon: TRANSFER_BACKUP_NOTIFICATION_ICON
+    });
 }
 
 function getTransferBackupConfig() {
@@ -4332,13 +4421,45 @@ function getClampedVisibleBoundsForDisplay(display, desiredBounds) {
     };
 }
 
-function getWindowStateDiagnosticsTolerance() {
+function getWindowStateDiagnosticsTolerance(win = null) {
+    const base = { x: 8, y: 8, width: 12, height: 12 };
+    if (process.platform !== 'linux') return base;
+
+    // Linux window managers reserve room for their own decorations, and screen.workArea does
+    // not account for it: asking for a window as tall as the work area comes back shifted
+    // down and shortened by the titlebar. Measured with xfwm4 at 1920x1080, a request for
+    // 1920x1080 at 0,0 is placed at 0,24 sized 1920x1056. That is legal placement by the
+    // window manager, not window state being lost, so allow for the frame it actually drew
+    // rather than failing the case. Horizontal tolerance stays tight; decorations there are
+    // a pixel or two.
+    let frameAllowance = 40;
+    try {
+        if (win && !win.isDestroyed()) {
+            const bounds = win.getBounds();
+            const content = win.getContentBounds();
+            const measured = Math.abs(bounds.height - content.height);
+            if (measured > 0) frameAllowance = measured + 8;
+        }
+    } catch (_) { }
+
     return {
-        x: 8,
-        y: 8,
-        width: 12,
-        height: 12
+        x: base.x,
+        y: Math.max(base.y, frameAllowance),
+        width: base.width,
+        height: Math.max(base.height, frameAllowance)
     };
+}
+
+// The property that actually matters for restored window state: the window has to land on
+// screen. A looser tolerance for decorations must not let a window drift off the work area.
+function isWindowWithinWorkArea(bounds, workArea, slack = 8) {
+    if (!bounds || !workArea) return true;
+    return (
+        bounds.x >= workArea.x - slack &&
+        bounds.y >= workArea.y - slack &&
+        (bounds.x + bounds.width) <= (workArea.x + workArea.width + slack) &&
+        (bounds.y + bounds.height) <= (workArea.y + workArea.height + slack)
+    );
 }
 
 function compareWindowBounds(expectedBounds, actualBounds) {
@@ -5123,7 +5244,10 @@ async function runWindowStateDiagnostics() {
 
                 const restoredBounds = firstWindow.getBounds();
                 const restoredDiff = compareWindowBounds(targetBounds, restoredBounds);
-                const restoredPassed = isWindowBoundsWithinTolerance(restoredDiff);
+                const restoredPassed = isWindowBoundsWithinTolerance(
+                    restoredDiff,
+                    getWindowStateDiagnosticsTolerance(firstWindow)
+                ) && isWindowWithinWorkArea(restoredBounds, display.workArea);
                 await closeWindowStateDiagnosticChildWindow(firstWindow);
                 await sleep(300);
 
@@ -5132,7 +5256,10 @@ async function runWindowStateDiagnostics() {
                 await waitForWindowStateDiagnosticReady(reopenedWindow);
                 const reopenedBounds = reopenedWindow.getBounds();
                 const reopenedDiff = compareWindowBounds(targetBounds, reopenedBounds);
-                const reopenedPassed = isWindowBoundsWithinTolerance(reopenedDiff);
+                const reopenedPassed = isWindowBoundsWithinTolerance(
+                    reopenedDiff,
+                    getWindowStateDiagnosticsTolerance(reopenedWindow)
+                ) && isWindowWithinWorkArea(reopenedBounds, display.workArea);
                 const passed = restoredPassed && reopenedPassed;
 
                 report.cases.push({
@@ -18246,12 +18373,11 @@ function createMenu() {
 }
 
 electron.powerMonitor.on("on-battery", () => {
-    var notification = new electron.Notification({
+    showDesktopNotification({
         title: "Social Stream Ninja performance is degraded",
         body: "You are now on battery power. Please consider connecting your charger for improved performance.",
         icon: path.join(__dirname, "assets", "icons", "png", "256x256.png"),
     });
-    notification.show();
 });
 
 ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {
