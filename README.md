@@ -79,6 +79,20 @@ npm run build:rpi
 
 For detailed usage instructions, visit the [Social Stream Ninja documentation](https://socialstream.ninja/manual).
 
+## Running on a Server
+
+The app can run on a machine with no monitor — a VPS or a home server — with every window
+hidden, and be controlled remotely over a token-authenticated API on localhost:
+
+```bash
+sudo apt-get install -y xvfb
+./scripts/start-headless.sh
+```
+
+See [docs/CLOUD_HOSTING.md](docs/CLOUD_HOSTING.md) for the full walkthrough: reaching the API
+over an SSH tunnel, adding and starting sources with `curl`, signing in to platforms that
+need an account, running it under systemd, and checking that chat capture is healthy.
+
 ## YouTube OAuth (SSAPP) Troubleshooting
 
 If YouTube sign-in loops or quota still appears to hit the default project in SSAPP, check the following:

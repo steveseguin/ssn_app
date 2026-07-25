@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<title>Hidden capture fixture</title>
+</head>
+<body style="background:#101418;color:#dfe6ee;font-family:sans-serif">
+	<h3>Hidden capture fixture</h3>
+	<p>Stands in for a live chat page: new rows are appended from requestAnimationFrame
+		work, the way YouTube live chat flushes incoming messages. If the window stops
+		getting compositor frames and nothing pumps requestAnimationFrame, row growth
+		stops even though timers keep running.</p>
+	<div id="feed"></div>
+	<script>
+		(function () {
+			var feed = document.getElementById("feed");
+			var received = 0;
+
+			// "Network" delivery keeps arriving on a timer; rendering the row is deferred to
+			// a frame callback, which is the part that stalls without frames.
+			setInterval(function () {
+				received++;
+				requestAnimationFrame(function () {
+					var row = document.createElement("div");
+					row.className = "ssn-chat-row";
+					row.textContent = "message " + received;
+					feed.appendChild(row);
+					while (feed.childElementCount > 400) {
+						feed.removeChild(feed.firstElementChild);
+					}
+				});
+			}, 50);
+
+			window.__fixtureReceived = function () { return received; };
+		})();
+	</script>
+</body>
+</html>
