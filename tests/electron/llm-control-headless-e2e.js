@@ -13,6 +13,16 @@ const { spawn, spawnSync } = require('child_process');
 
 const electronPath = require('electron');
 const repoRoot = path.resolve(__dirname, '..', '..');
+
+// Debian and Ubuntu ship python3 with no unversioned `python`, so probe rather than assume.
+function resolvePythonInterpreter() {
+	for (const candidate of [process.env.PYTHON, 'python3', 'python'].filter(Boolean)) {
+		try {
+			if (spawnSync(candidate, ['--version'], { encoding: 'utf8' }).status === 0) return candidate;
+		} catch (_) { }
+	}
+	return null;
+}
 const expectedSsappVersion = require(path.join(repoRoot, 'package.json')).version;
 const expectedApiVersion = '1.1.4';
 const sourceUrlSecret = 'CONTROL_API_SOURCE_SECRET';
@@ -300,15 +310,31 @@ async function run() {
 		appInstance = await startApp(firstPort);
 		assert.strictEqual(appInstance.status.app.headless, true);
 		assert.strictEqual(appInstance.status.app.mainWindowVisible, false);
-		const skillClient = spawnSync('python', [
-			path.join(socialStreamRoot, 'docs', 'skills', 'control-social-stream', 'scripts', 'ssapp_control.py'),
-			'status', '--base-url', `http://127.0.0.1:${firstPort}`,
-		], {
-			env: { ...process.env, SSAPP_CONTROL_TOKEN: token },
-			encoding: 'utf8',
-		});
-		assert.strictEqual(skillClient.status, 0, skillClient.stderr || skillClient.stdout);
-		assert.strictEqual(JSON.parse(skillClient.stdout).app.headless, true);
+		// The checked-in skill client is Python and lives in the sibling social_stream repo.
+		// Both are optional here: exercise it when they are available, and say why when they
+		// are not, rather than failing the whole control-API test with "null !== 0" because
+		// the machine has python3 but no unversioned `python`.
+		const skillScript = path.join(
+			socialStreamRoot, 'docs', 'skills', 'control-social-stream', 'scripts', 'ssapp_control.py'
+		);
+		const python = fs.existsSync(skillScript) ? resolvePythonInterpreter() : null;
+		if (python) {
+			const skillClient = spawnSync(python, [
+				skillScript,
+				'status', '--base-url', `http://127.0.0.1:${firstPort}`,
+			], {
+				env: { ...process.env, SSAPP_CONTROL_TOKEN: token },
+				encoding: 'utf8',
+			});
+			assert.strictEqual(skillClient.status, 0, skillClient.stderr || skillClient.stdout);
+			assert.strictEqual(JSON.parse(skillClient.stdout).app.headless, true);
+		} else {
+			console.log(
+				fs.existsSync(skillScript)
+					? '(skipping skill client check: no Python interpreter found; set PYTHON to override)'
+					: `(skipping skill client check: not present at ${skillScript})`
+			);
+		}
 
 		const capabilities = await requestJson(firstPort, '/api/v1/capabilities');
 		assert.strictEqual(capabilities.statusCode, 200, JSON.stringify(capabilities.data));

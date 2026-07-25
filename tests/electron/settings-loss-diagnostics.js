@@ -78,7 +78,10 @@ function runCodePathChecks() {
   const streamIdGatePattern = /if\s*\(\s*(?:\(\s*response\s*==\s*undefined\s*\)\s*\|\|\s*\(!response\.streamID\)|['"]settings['"]\s+in\s+response\s*&&\s*\(response\.streamID\s*\|\|\s*ssapp\))\s*\)\s*\{/;
   const popupTimeoutPattern = /setTimeout\(\(\)\s*=>\s*\{[\s\S]*?ipcRenderer\.sendSync\('fromPopup',\s*data\);[\s\S]*?\},\s*500\);/;
   const mainImmediateGetSettingsPattern = /if\s*\(value\.cmd\s*==\s*"getSettings"\)\s*\{\s*eventRet\.returnValue\s*=\s*cachedState;/;
-  const backgroundTryAgainPattern = /if\s*\(!loadedFirst\)\s*\{[\s\S]*?sendResponse\(\{"tryAgain":true\}\);/;
+  // Tolerant of object-literal formatting: the bundled Social Stream source is regenerated
+  // from upstream, and this check failed purely because upstream reformatted the call to
+  // sendResponse({ tryAgain: true }) while the guard itself was unchanged.
+  const backgroundTryAgainPattern = /if\s*\(\s*!loadedFirst\s*\)\s*\{[\s\S]*?sendResponse\(\s*\{\s*["']?tryAgain["']?\s*:\s*true\s*,?\s*\}\s*\)/;
   const partialThresholdPattern = /PARTIAL_THRESHOLD_RATIO:\s*0\.5/;
 
   const checks = [

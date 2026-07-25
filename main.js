@@ -14898,8 +14898,24 @@ contextMenu({
 });
 
 app.on("second-instance", (event, commandLine, workingDirectory, argv2) => {
-    log("can't create a second instance");
-    // createWindow(argv2, argv2.title);
+    log("second instance launched; restoring the existing window");
+    // Launching the app again is how people ask for the running copy, so bring it back
+    // rather than doing nothing. This is the only way out of a hidden main window on a
+    // Linux desktop with no system tray host (GNOME has none by default, and plenty of
+    // minimal window managers never had one): with close-to-tray on, the window would
+    // otherwise be unrecoverable without killing the process from a terminal.
+    //
+    // Headless control mode deliberately keeps every window hidden, so leave it be. Source
+    // windows are left alone too; their visibility is managed separately.
+    if (headlessControlEnabled) return;
+    try {
+        // Reuse the tray restore path, which shows unconditionally. Do not gate this on
+        // isVisible(): a main window hidden by minimizeToTray() still reports visible on
+        // Linux, so checking first skips the show() that is actually needed.
+        showMainWindowFromTray();
+    } catch (error) {
+        console.warn('[SecondInstance] Could not restore the main window:', error && error.message ? error.message : error);
+    }
 });
 
 app.on("window-all-closed", () => {
