@@ -93,6 +93,9 @@ See [docs/CLOUD_HOSTING.md](docs/CLOUD_HOSTING.md) for the full walkthrough: rea
 over an SSH tunnel, adding and starting sources with `curl`, signing in to platforms that
 need an account, running it under systemd, and checking that chat capture is healthy.
 
+[docs/LINUX_NOTES.md](docs/LINUX_NOTES.md) covers what differs on Linux: portable mode,
+notifications, system TTS voices, the tray, transparency, GPU fallback and expected footprint.
+
 ## YouTube OAuth (SSAPP) Troubleshooting
 
 If YouTube sign-in loops or quota still appears to hit the default project in SSAPP, check the following:
@@ -107,9 +110,12 @@ If YouTube sign-in loops or quota still appears to hit the default project in SS
 ## Configuration
 
 The app stores configuration in:
-- Windows: `%APPDATA%/socialstream/`
-- macOS: `~/Library/Application Support/socialstream/`
-- Linux: `~/.config/socialstream/`
+- Windows: `%APPDATA%/SocialStream/`
+- macOS: `~/Library/Application Support/SocialStream/`
+- Linux: `~/.config/SocialStream/`
+
+The directory comes from Electron's `app.name`, so the capitalisation matters on Linux, where
+the filesystem is case-sensitive. Set `SSAPP_USER_DATA_DIR` to put it somewhere else.
 
 ## Code Signing
 
