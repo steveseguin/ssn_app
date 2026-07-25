@@ -5,7 +5,7 @@ a home server, a spare box — and controlling it from somewhere else. It is use
 want chat capture to keep running when your PC is off, or you want to keep the capture load
 off your streaming machine.
 
-Everything below was tested on Ubuntu with app version 0.4.7 (Electron 38).
+Everything below was tested on Ubuntu with app version 0.4.7 (Electron 43).
 
 **What works:** the app runs with every window hidden, connects sources, captures chat, and
 takes commands over an HTTP API on localhost.
@@ -22,9 +22,19 @@ takes commands over an HTTP API on localhost.
 ## 1. What you need
 
 - Linux with systemd (Ubuntu 22.04+ or Debian 12+ are the easy choices)
-- 2 GB RAM for a couple of sources, 4 GB if you plan on several
-- 2 vCPU is comfortable; 1 works for one or two sources
+- 2 GB RAM for a couple of platforms, 4 GB if you plan on several
+- 1 vCPU is enough; 2 gives you headroom
 - `xvfb` (the virtual display) — a normal package, no GPU required
+
+Measured here with everything hidden and chat flowing, using this launcher: **about 600 MB
+and 12 processes with one live YouTube source**, and roughly **120 MB per additional
+platform** after that. Extra sources on a platform you already run are close to free — a few
+MB each, and no extra processes, because same-origin windows share a renderer. Idle CPU with
+a hidden source window is under 1% of one core.
+
+Note that `--no-hwa` does not remove the GPU process; it still runs (about 100 MB) doing
+software compositing. What it buys you on a GPU-less server is avoiding repeated driver
+probing and the GL errors that come with it, not memory.
 
 ```bash
 sudo apt-get update
@@ -98,8 +108,8 @@ Two details worth knowing:
   `app.setPath('userData', ...)` during startup, so `--user-data-dir` only ends up applying
   to part of the app's state and you get settings in one place and logins in another.
 - `--ozone-platform=headless` looks like it should remove the need for Xvfb. It does not
-  work — the app crashes during startup on Electron 38, with or without hardware
-  acceleration. Use Xvfb.
+  work — the app segfaults during startup, with or without hardware acceleration, on both
+  Electron 38 and 43. Use Xvfb.
 
 ## 4. Reach it from your own machine
 
@@ -243,6 +253,23 @@ Every check should pass. A healthy run reports chat rows arriving while the wind
 for example `chat rows captured: onScreen=9 hidden=17 withZeroFrames=7`. If chat rows stay at
 zero, check the video is actually live and has chat enabled — the diagnostic reports
 `rows.target_produces_chat` when the page never produced a single message.
+
+That check takes a couple of minutes. To confirm nothing degrades over a long session —
+which is the failure people actually notice, since chat can run fine for ten minutes and then
+stop — run the soak instead, with one `--url` per platform you care about:
+
+```bash
+DISPLAY=:99 npm run test:hidden-capture:soak -- --minutes=60 \
+  --url="https://www.youtube.com/live_chat?is_popout=1&v=VIDEO_ID" \
+  --url="https://www.twitch.tv/popout/CHANNEL/chat?popout=" \
+  --url="https://kick.com/popout/CHANNEL/chat"
+```
+
+It hides every window, then reports rAF rate, timer rate and chat rows arriving per minute,
+streaming to a `.jsonl` file you can watch while it runs. Windows that never produce a chat
+row are reported as `NO DATA` with a snapshot of what the page actually was, rather than
+counting as a pass — usually that means the channel is offline, chat is followers-only, or
+the platform wants a login.
 
 ## 9. Where your data lives
 

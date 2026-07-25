@@ -295,6 +295,7 @@ const WINDOW_STATE_DIAGNOSTICS_REPORT_PATH = (() => {
     return arg.slice('--window-state-report='.length);
 })();
 const HIDDEN_CAPTURE_DIAGNOSTICS_ENABLED = process.argv.includes('--hidden-capture-diagnostics');
+const HIDDEN_CAPTURE_SOAK_ENABLED = process.argv.includes('--hidden-capture-soak');
 const HIDDEN_CAPTURE_DIAGNOSTICS_REPORT_PATH = (() => {
     const arg = process.argv.find((value) => typeof value === 'string' && value.startsWith('--hidden-capture-report='));
     if (!arg) return null;
@@ -4430,8 +4431,15 @@ async function waitForWindowStateDiagnosticReady(win) {
 // Counts effective requestAnimationFrame delivery, timer delivery and chat row growth
 // inside a source window. Installed in the page's own world so it sees exactly what a
 // capture script would see.
-const HIDDEN_CAPTURE_ROW_SELECTOR =
-    '.ssn-chat-row, yt-live-chat-text-message-renderer, yt-live-chat-paid-message-renderer';
+// What counts as "a chat message arrived" per platform. The YouTube and Twitch selectors are
+// confirmed against live chat; the Kick ones are best-effort, because Kick will not stream
+// chat to an unauthenticated window and could not be exercised.
+const HIDDEN_CAPTURE_ROW_SELECTOR = [
+    '.ssn-chat-row',                                                        // local fixture
+    'yt-live-chat-text-message-renderer', 'yt-live-chat-paid-message-renderer', // YouTube
+    '.chat-line__message', '[data-a-target="chat-line-message"]',           // Twitch
+    '.chat-entry', '[data-chat-entry]', '[id^="chatroom-message"]'          // Kick (unverified)
+].join(', ');
 
 const HIDDEN_CAPTURE_PROBE_INSTALL = `(function () {
 	try {
@@ -4444,6 +4452,7 @@ const HIDDEN_CAPTURE_PROBE_INSTALL = `(function () {
 		// Count appended chat rows the way a capture script does, rather than counting
 		// what is currently in the DOM: chat pages prune old messages, so a live count
 		// saturates and stops reflecting whether new messages are still arriving.
+		var ROW_SELECTOR = ${JSON.stringify(HIDDEN_CAPTURE_ROW_SELECTOR)};
 		var observer = new MutationObserver(function (records) {
 			for (var i = 0; i < records.length; i++) {
 				var added = records[i].addedNodes;
@@ -4451,7 +4460,11 @@ const HIDDEN_CAPTURE_PROBE_INSTALL = `(function () {
 					var node = added[j];
 					if (!node || node.nodeType !== 1) { continue; }
 					try {
-						if (node.matches(${JSON.stringify(HIDDEN_CAPTURE_ROW_SELECTOR)})) { probe.rows++; }
+						// Count the node itself and anything matching inside it: YouTube appends
+						// message elements directly, while Twitch and Kick append a wrapper with
+						// the message nested in it.
+						if (node.matches(ROW_SELECTOR)) { probe.rows++; }
+						probe.rows += node.querySelectorAll(ROW_SELECTOR).length;
 					} catch (error) { }
 				}
 			}
@@ -4788,6 +4801,222 @@ async function runHiddenCaptureDiagnostics() {
     }
 
     return report;
+}
+
+// Long-running version of the same idea, for the question the short diagnostic cannot
+// answer: does capture in a hidden window keep working for hours, or does it quietly stop
+// after a while? Frame eviction, memory pressure and idle socket timeouts all take minutes
+// to show up, and each platform reacts differently.
+async function runHiddenCaptureSoak() {
+    const urls = process.argv
+        .filter((value) => typeof value === 'string' && value.startsWith('--hidden-capture-soak-url='))
+        .map((value) => value.slice('--hidden-capture-soak-url='.length).trim())
+        .filter(Boolean);
+    if (!urls.length) {
+        urls.push(getHiddenCaptureDiagnosticUrl());
+    }
+
+    const minutesArg = process.argv.find((value) => typeof value === 'string' && value.startsWith('--hidden-capture-soak-minutes='));
+    const minutes = Math.max(1, parseInt(minutesArg ? minutesArg.slice('--hidden-capture-soak-minutes='.length) : '30', 10) || 30);
+    const reportArg = process.argv.find((value) => typeof value === 'string' && value.startsWith('--hidden-capture-soak-report='));
+    const reportPath = reportArg ? reportArg.slice('--hidden-capture-soak-report='.length) : null;
+    // Windows created hidden never get compositor frames at all, so capture there runs
+    // entirely on the frame pump. That is the harsher case and the one worth soaking.
+    const startHidden = process.argv.includes('--hidden-capture-soak-start-hidden');
+
+    const appendLine = async (entry) => {
+        if (!reportPath) return;
+        try {
+            await fsp.appendFile(reportPath, JSON.stringify(entry) + '\n', 'utf8');
+        } catch (_) { }
+    };
+
+    console.log(`[HiddenCaptureSoak] ${urls.length} window(s), ${minutes} minute(s)`);
+    await appendLine({
+        type: 'start',
+        at: new Date().toISOString(),
+        electron: process.versions.electron,
+        chrome: process.versions.chrome,
+        platform: process.platform,
+        headlessControl: headlessControlEnabled,
+        wayland: isWaylandSession(),
+        minutes,
+        startHidden,
+        urls
+    });
+
+    await waitForCondition(() => mainWindow && !mainWindow.isDestroyed(), 15000, 100);
+    await sleep(500);
+    if (typeof sourceWindowCreateHandler !== 'function') {
+        throw new Error('Source window IPC handler is not registered yet');
+    }
+
+    // Build every window through the real source path, let it settle, then hide it the way
+    // the hide button does.
+    const windows = [];
+    for (const url of urls) {
+        const created = {};
+        sourceWindowCreateHandler(created, { url, visible: !startHidden });
+        const tabID = created.returnValue;
+        const view = tabID ? browserViews[tabID] : null;
+        if (!view) {
+            console.error(`[HiddenCaptureSoak] could not create a window for ${url}`);
+            await appendLine({ type: 'error', at: new Date().toISOString(), url, error: 'window-not-created' });
+            continue;
+        }
+        windows.push({ url, tabID, view, samples: [], loadError: null });
+    }
+    if (!windows.length) {
+        throw new Error('No source windows could be created');
+    }
+
+    for (const entry of windows) {
+        try {
+            await waitForCondition(() => {
+                try { return !entry.view.webContents.isLoading(); } catch (_) { return false; }
+            }, 60000, 250);
+        } catch (_) {
+            entry.loadError = 'timed-out-loading';
+        }
+    }
+    await sleep(8000); // let chat clients connect and backfill
+
+    for (const entry of windows) {
+        try {
+            entry.probeInstall = await entry.view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_INSTALL, true);
+        } catch (error) {
+            entry.probeInstall = `error: ${error && error.message}`;
+        }
+        // Snapshot what the page actually is. A window that never reports a chat row is
+        // usually a page that never loaded a chat - a login wall, a bot check, a dead
+        // channel - rather than capture breaking, and that difference matters.
+        try {
+            entry.snapshot = await entry.view.webContents.executeJavaScript(`(function () {
+	var counts = {};
+	${JSON.stringify(HIDDEN_CAPTURE_ROW_SELECTOR.split(', '))}.forEach(function (selector) {
+		try {
+			var n = document.querySelectorAll(selector).length;
+			if (n > 0) { counts[selector] = n; }
+		} catch (error) { }
+	});
+	return {
+		url: location.href,
+		title: document.title,
+		text: (document.body ? document.body.innerText : "").slice(0, 200).replace(/\\s+/g, " "),
+		matchedSelectors: counts
+	};
+})();`, true);
+        } catch (error) {
+            entry.snapshot = { error: (error && error.message) || String(error) };
+        }
+        await appendLine({ type: 'snapshot', at: new Date().toISOString(), url: entry.url, snapshot: entry.snapshot });
+        console.log(`[HiddenCaptureSoak] page ${entry.url.slice(0, 46)} -> ${JSON.stringify(entry.snapshot).slice(0, 260)}`);
+
+        if (!startHidden) {
+            applySourceWindowVisibility(entry.view, { state: true });
+        }
+    }
+    await sleep(2000);
+
+    const readSample = async (entry) => {
+        const read = () => entry.view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_READ, true);
+        const before = await read();
+        await sleep(5000);
+        const after = await read();
+        return {
+            rafPerSecond: Math.round((after.raf - before.raf) / 5),
+            timerPerSecond: Math.round((after.timer - before.timer) / 5),
+            rowsAdded: after.rows - before.rows,
+            rowsTotal: after.rows,
+            visibilityState: after.visibility,
+            nativeVisible: (() => { try { return entry.view.isVisible(); } catch (_) { return null; } })(),
+            pumped: after.pump ? after.pump.pumpedBatches : null,
+            native: after.pump ? after.pump.nativeBatches : null
+        };
+    };
+
+    const startedAt = Date.now();
+    for (let minute = 0; minute < minutes; minute += 1) {
+        for (const entry of windows) {
+            let sample;
+            try {
+                if (isBrowserViewDestroyed(entry.view)) throw new Error('window destroyed');
+                sample = await readSample(entry);
+            } catch (error) {
+                sample = { error: (error && error.message) || String(error) };
+            }
+            sample.minute = minute;
+            sample.elapsedMs = Date.now() - startedAt;
+            entry.samples.push(sample);
+            await appendLine({ type: 'sample', at: new Date().toISOString(), url: entry.url, ...sample });
+            console.log(
+                `[HiddenCaptureSoak] m${String(minute).padStart(3)} ${entry.url.slice(0, 52).padEnd(52)} ` +
+                (sample.error
+                    ? `ERROR ${sample.error}`
+                    : `rAF/s=${String(sample.rafPerSecond).padStart(3)} timer/s=${String(sample.timerPerSecond).padStart(3)} ` +
+                      `rows+=${String(sample.rowsAdded).padStart(4)} total=${String(sample.rowsTotal).padStart(5)} ` +
+                      `visible=${sample.nativeVisible} frames(native/pumped)=${sample.native}/${sample.pumped}`)
+            );
+        }
+        const spent = Date.now() - startedAt - minute * 60000;
+        await sleep(Math.max(1000, 60000 - spent));
+    }
+
+    // A window "paused" if capture was working and then stopped: rows arrived at some point
+    // while hidden, and then never again before the end of the run.
+    const results = windows.map((entry) => {
+        const ok = entry.samples.filter((s) => !s.error);
+        const rowsWhileHidden = ok.reduce((sum, s) => sum + (s.rowsAdded || 0), 0);
+        const lastMinuteWithRows = ok.reduce((last, s) => (s.rowsAdded > 0 ? s.minute : last), -1);
+        const minutesWithRows = ok.filter((s) => s.rowsAdded > 0).length;
+        const minRaf = ok.length ? Math.min(...ok.map((s) => s.rafPerSecond)) : null;
+        const minTimer = ok.length ? Math.min(...ok.map((s) => s.timerPerSecond)) : null;
+        const everProducedRows = rowsWhileHidden > 0;
+        const quietTailMinutes = everProducedRows ? (minutes - 1 - lastMinuteWithRows) : null;
+        return {
+            url: entry.url,
+            loadError: entry.loadError,
+            probeInstall: entry.probeInstall,
+            snapshot: entry.snapshot,
+            samples: entry.samples.length,
+            errors: entry.samples.length - ok.length,
+            rowsWhileHidden,
+            minutesWithRows,
+            lastMinuteWithRows,
+            quietTailMinutes,
+            minRafPerSecond: minRaf,
+            minTimerPerSecond: minTimer,
+            // Capture is considered stalled if frames stopped entirely, or if a chat that was
+            // producing rows went quiet for the last third of the run.
+            stalled: ok.length > 0 && (minRaf <= 0 || (everProducedRows && quietTailMinutes > Math.max(3, minutes / 3))),
+            // No rows at all proves nothing about whether hiding breaks capture, so it must
+            // not read as a pass. Usually it means the page is not showing a live chat.
+            inconclusive: !everProducedRows
+        };
+    });
+
+    const summary = {
+        type: 'summary',
+        at: new Date().toISOString(),
+        minutes,
+        windows: results,
+        success: results.every((r) => !r.stalled && !r.inconclusive && r.errors === 0
+            && r.minRafPerSecond > 0 && r.minTimerPerSecond > 10)
+    };
+    await appendLine(summary);
+
+    console.log('[HiddenCaptureSoak] summary:');
+    for (const r of results) {
+        console.log(
+            `[HiddenCaptureSoak]   ${r.url.slice(0, 60).padEnd(60)} rows=${String(r.rowsWhileHidden).padStart(5)} ` +
+            `minutesWithRows=${r.minutesWithRows}/${r.samples} minRaf=${r.minRafPerSecond} ` +
+            `minTimer=${r.minTimerPerSecond} ` +
+            `quietTail=${r.quietTailMinutes} errors=${r.errors} stalled=${r.stalled}` +
+            `${r.inconclusive ? ' INCONCLUSIVE(no chat rows seen)' : ''}`
+        );
+    }
+
+    return summary;
 }
 
 async function runWindowStateDiagnostics() {
@@ -7363,7 +7592,7 @@ function stealthHideView(view) {
         // which is compositors that stop feeding a window compositor frames and therefore
         // stop running its requestAnimationFrame work.
         //
-        // Measured on Electron 38 (X11 + Wayland): a hidden source window keeps
+        // Measured on Electron 38 and 43 (X11 + Wayland): a hidden source window keeps
         // visibilityState "visible", keeps timers at full rate, and keeps rendering.
         if (process.platform === 'linux') {
             try { installFramePump(view.webContents); } catch (_) { }
@@ -7389,7 +7618,14 @@ function stealthHideView(view) {
             return hidden;
         }
 
-        // Keep the window visible to Chromium, but park it outside the virtual desktop.
+        // Windows and macOS keep the window mapped and park it outside the virtual desktop,
+        // rather than using the real hide() that Linux now uses. Deliberate: parking works
+        // on these platforms (they allow arbitrary window coordinates, unlike Linux window
+        // managers, which clamp them back towards the desktop) and a parked window keeps
+        // getting compositor frames, so the page renders normally. There are also reports of
+        // hide() defeating backgroundThrottling on Windows specifically
+        // (electron/electron#31016), which would leave the frame pump carrying capture on
+        // its own. If this is ever revisited, measure it on a real Windows machine first.
         const parked = parkSourceWindowOffscreen(view);
         view.__ss_visible = !parked;
         if (!parked) {
@@ -15695,6 +15931,20 @@ app.whenReady().then(async function () {
     createWindow(Argv, false, true);
     queueStabilityStartupNotice();
     setupRemoteControlServer();
+
+    if (HIDDEN_CAPTURE_SOAK_ENABLED) {
+        setTimeout(() => {
+            runHiddenCaptureSoak()
+                .then((summary) => {
+                    console.log('[HiddenCaptureSoak] success:', summary.success);
+                    app.exit(summary.success ? 0 : 1);
+                })
+                .catch((error) => {
+                    console.error('[HiddenCaptureSoak] Failed:', error && error.message ? error.message : error);
+                    app.exit(1);
+                });
+        }, 1500);
+    }
 
     if (HIDDEN_CAPTURE_DIAGNOSTICS_ENABLED) {
         setTimeout(() => {

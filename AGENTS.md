@@ -79,6 +79,29 @@ npm run both                 # Both modes sequentially
 node run.js --mode=websocket --user=username --duration=30000
 ```
 
+### Hidden Window Capture Tests
+
+Capture running in a window that is not on screen is fragile and has broken silently before
+(see `hidden-window-keepalive.js`). Both of these build real source windows through the real
+IPC path, so they count as functional testing. On a machine with no desktop, start a virtual
+display first (`Xvfb :99 -screen 0 1920x1080x24 &` and `export DISPLAY=:99`).
+
+```bash
+npm run test:hidden-capture                       # ~3 min, local fixture
+npm run test:hidden-capture -- --url="https://www.youtube.com/live_chat?is_popout=1&v=ID"
+npm run test:hidden-capture -- --start-hidden     # window created hidden: no frames at all
+npm run test:hidden-capture -- --headless         # as a server install runs it
+
+# Does capture survive a long session? One --url per platform.
+npm run test:hidden-capture:soak -- --minutes=60 --start-hidden \
+  --url="https://www.youtube.com/live_chat?is_popout=1&v=ID" \
+  --url="https://www.twitch.tv/popout/CHANNEL/chat?popout="
+```
+
+Both use an isolated `SSAPP_USER_DATA_DIR`, so they will not touch the real profile. Windows
+that never see a chat message are reported as inconclusive rather than passing, so check that
+the channel is actually live before believing a green run.
+
 ## Code Style Guidelines
 
 ### Formatting (Prettier)

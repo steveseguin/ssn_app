@@ -16,6 +16,7 @@
     "test:settings-transfer": "node tests/electron/settings-transfer-e2e.js",
     "start:headless": "bash scripts/start-headless.sh",
     "test:hidden-capture": "node tests/electron/hidden-capture-diagnostics.js",
+    "test:hidden-capture:soak": "node tests/electron/hidden-capture-soak.js",
     "test:portable-paths": "node tests/electron/portable-data-paths-regression.js",
     "test:portable-migration": "node tests/electron/portable-migration-runner-regression.js",
     "test:portable:e2e": "node tests/electron/portable-build-e2e.js",
@@ -60,7 +61,7 @@
     "clean": "rimraf ./dist",
     "release": "electron-builder --publish always",
     "preinstall": "npx npm-force-resolutions",
-    "postinstall": "node -e \"console.log('[custom-electron] Skipping legacy custom Electron install; using standard Electron package.')\" && node scripts/patch-deps.js"
+    "postinstall": "node scripts/patch-deps.js && node scripts/install-electron-binary.js"
   },
   "repository": {
     "type": "git",
@@ -244,7 +245,7 @@
     "afterAllArtifactBuild": "./afterPack.js"
   },
   "devDependencies": {
-    "electron": "^43.1.1",
+    "electron": "^43.2.0",
     "electron-builder": "^26.5.0",
     "electron-notarize": "git+https://github.com/electron/notarize.git",
     "fs-extra": "^11.3.4",
