@@ -24,12 +24,15 @@ die() { echo "error: $*" >&2; exit 1; }
 
 command -v Xvfb >/dev/null || die "Xvfb is not installed. Debian/Ubuntu: sudo apt-get install -y xvfb"
 
-# Locate the app. A source checkout uses the local electron; a packaged install should set
-# SSAPP_BINARY to the AppImage or unpacked binary instead.
+# Locate the app. A source checkout runs the local Electron and has to be told where the app
+# is; a packaged build (AppImage, or the unpacked binary beside it) already contains the app,
+# so it must not be handed a path argument.
 APP_BINARY="${SSAPP_BINARY:-}"
+APP_PATH_ARG=()
 if [ -z "$APP_BINARY" ]; then
 	if [ -x "node_modules/electron/dist/electron" ]; then
 		APP_BINARY="node_modules/electron/dist/electron"
+		APP_PATH_ARG=(.)
 	else
 		die "no electron found. Run npm install, or set SSAPP_BINARY to your AppImage."
 	fi
@@ -111,7 +114,7 @@ if [ "${SSAPP_ENABLE_GPU:-0}" = "1" ]; then
 	GPU_ARGS=()
 fi
 
-exec "$APP_BINARY" . \
+exec "$APP_BINARY" "${APP_PATH_ARG[@]+"${APP_PATH_ARG[@]}"}" \
 	--ssapp-headless-control \
 	--ssapp-control-api \
 	--ssapp-control-port="$CONTROL_PORT" \

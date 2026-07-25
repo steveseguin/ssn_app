@@ -79,6 +79,7 @@
       "state.js",
       "libs.js",
       "circular-buffer.js",
+      "hidden-window-keepalive.js",
       "index.html",
       "prompt.html",
       "chathistory.html",
