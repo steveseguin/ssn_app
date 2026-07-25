@@ -165,6 +165,124 @@ function run() {
     gp.addToQueue(buildGiftEvent({ repeat_count: 3, gift_id: '111', repeatEnd: true }));
     assert.strictEqual(gp.queue.length, 1, 'expected exactly one flushed gift');
     assert.strictEqual(gp.queue[0].count, 3, 'expected final combo count to be 3');
+    gp.stop('test_cleanup');
+  }
+
+  // A combo remains streakable when giftType is absent but TikTok supplies its
+  // explicit combo marker and group ID.
+  {
+    const gp = createGiftProcessorHarness();
+    gp.addToQueue(buildGiftEvent({
+      giftType: 0,
+      giftDetails: { combo: true },
+      groupId: 'combo-1',
+      repeat_count: 1,
+      gift_id: '111'
+    }));
+    gp.addToQueue(buildGiftEvent({
+      giftType: 0,
+      giftDetails: { combo: true },
+      groupId: 'combo-1',
+      repeat_count: 3,
+      gift_id: '111'
+    }));
+    gp.addToQueue(buildGiftEvent({
+      giftType: 0,
+      giftDetails: { combo: true },
+      groupId: 'combo-1',
+      repeat_count: 3,
+      gift_id: '111',
+      repeatEnd: true
+    }));
+    assert.strictEqual(gp.queue.length, 1, 'explicit combo should merge without leaking a separate x1');
+    assert.strictEqual(gp.queue[0].count, 3, 'expected merged combo count to be 3');
+    gp.stop('test_cleanup');
+  }
+
+  // A genuine single gift must not be delayed just because it lacks combo flags.
+  {
+    const gp = createGiftProcessorHarness();
+    gp.addToQueue(buildGiftEvent({ giftType: 0, repeat_count: 1, gift_id: '222' }));
+    assert.strictEqual(gp.queue.length, 1, 'single gift should be emitted immediately');
+    assert.strictEqual(gp.queue[0].count, 1, 'single gift should keep count of 1');
+    assert.strictEqual(gp.streaks.size, 0, 'single gift should not create a pending streak');
+    gp.stop('test_cleanup');
+  }
+
+  // An active combo must refresh its safety timer. Otherwise a long streak is
+  // emitted every 30 seconds and TTS reads the same donation several times.
+  {
+    const gp = createGiftProcessorHarness();
+    gp.addToQueue(buildGiftEvent({ gift_id: 'timer-gift', repeat_count: 1, groupId: 'timer-group' }));
+    const key = gp.streaks.keys().next().value;
+    const firstTimer = gp.streaks.get(key).timer;
+    gp.addToQueue(buildGiftEvent({ gift_id: 'timer-gift', repeat_count: 2, groupId: 'timer-group' }));
+    const refreshedTimer = gp.streaks.get(key).timer;
+    assert.notStrictEqual(refreshedTimer, firstTimer, 'active streak should refresh its inactivity timer');
+    assert.strictEqual(gp.queue.length, 0, 'active streak should remain pending');
+    gp.stop('test_cleanup');
+  }
+
+  // A duplicate repeatEnd for an already-flushed streak must not re-announce.
+  {
+    const gp = createGiftProcessorHarness();
+    gp.addToQueue(buildGiftEvent({ gift_id: '333', repeat_count: 2, groupId: 'g1' }));
+    gp.addToQueue(buildGiftEvent({ gift_id: '333', repeat_count: 2, repeatEnd: true, groupId: 'g1' }));
+    assert.strictEqual(gp.queue.length, 1, 'expected one flushed gift for the streak');
+    gp.addToQueue(buildGiftEvent({ gift_id: '333', repeat_count: 2, repeatEnd: true, groupId: 'g1' }));
+    assert.strictEqual(gp.queue.length, 1, 'duplicate repeatEnd for flushed streak should be dropped');
+    gp.stop('test_cleanup');
+  }
+
+  // A late repeatEnd arriving after the safety-timer flush must not re-announce,
+  // but a new streak (different groupId) must still emit in full.
+  {
+    const gp = createGiftProcessorHarness();
+    gp.addToQueue(buildGiftEvent({ gift_id: '444', repeat_count: 5, groupId: 'g2' }));
+    const key = gp.streaks.keys().next().value;
+    gp.flushStreak(key);
+    assert.strictEqual(gp.queue.length, 1, 'safety flush should emit once');
+    assert.strictEqual(gp.queue[0].count, 5, 'safety flush should keep the combo count');
+    gp.addToQueue(buildGiftEvent({ gift_id: '444', repeat_count: 5, repeatEnd: true, groupId: 'g2' }));
+    assert.strictEqual(gp.queue.length, 1, 'late repeatEnd after safety flush should not re-announce');
+    gp.addToQueue(buildGiftEvent({ gift_id: '444', repeat_count: 3, repeatEnd: true, groupId: 'g3' }));
+    assert.strictEqual(gp.queue.length, 2, 'new streak with different groupId should still emit');
+    assert.strictEqual(gp.queue[1].count, 3, 'new streak should emit its full count');
+    gp.stop('test_cleanup');
+  }
+
+  // A new streak from the same user with the same gift must not be suppressed
+  // when TikTok assigns a different groupId.
+  {
+    const gp = createGiftProcessorHarness();
+    gp.addToQueue(buildGiftEvent({ gift_id: '555', repeat_count: 2, repeatEnd: true, groupId: 'g4' }));
+    gp.addToQueue(buildGiftEvent({ gift_id: '555', repeat_count: 2, repeatEnd: true, groupId: 'g5' }));
+    assert.strictEqual(gp.queue.length, 2, 'different group IDs should produce separate gifts');
+    assert.strictEqual(gp.queue[0].count, 2);
+    assert.strictEqual(gp.queue[1].count, 2);
+    gp.stop('test_cleanup');
+  }
+
+  // Sparse legacy payloads without group IDs cannot safely share flush memory;
+  // two same-user gifts are distinct and must both pass.
+  {
+    const gp = createGiftProcessorHarness();
+    gp.addToQueue(buildGiftEvent({ gift_id: '666', repeat_count: 1, repeatEnd: true, groupId: undefined }));
+    gp.addToQueue(buildGiftEvent({ gift_id: '666', repeat_count: 1, repeatEnd: true, groupId: undefined }));
+    assert.strictEqual(gp.queue.length, 2, 'group-less gifts should not be collapsed');
+    gp.stop('test_cleanup');
+  }
+
+  // Some adapters serialize numeric repeatEnd values as strings. "0" must
+  // remain in-progress and "1" must flush the final total.
+  {
+    const gp = createGiftProcessorHarness();
+    gp.addToQueue(buildGiftEvent({ gift_id: '777', repeat_count: 1, repeatEnd: '0', groupId: 'g6' }));
+    assert.strictEqual(gp.queue.length, 0, 'string repeatEnd=0 should not flush');
+    gp.addToQueue(buildGiftEvent({ gift_id: '777', repeat_count: 4, repeatEnd: '1', groupId: 'g6' }));
+    assert.strictEqual(gp.queue.length, 1, 'string repeatEnd=1 should flush once');
+    assert.strictEqual(gp.queue[0].count, 4);
+    gp.stop('test_cleanup');
   }
 
   // Ensure missing giftId streaks do not merge across gift names for same user.

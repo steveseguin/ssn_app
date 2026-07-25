@@ -2786,7 +2786,8 @@ const CONFIG = {
     },
     GIFT: {
         PROCESSING_INTERVAL: 50,
-        STREAK_SAFETY_TIMEOUT_MS: 30000  // 30s fallback for orphaned combos
+        STREAK_SAFETY_TIMEOUT_MS: 30000,  // 30s fallback for orphaned combos
+        FLUSH_MEMORY_MS: 60000  // remember flushed streaks briefly to drop late/duplicate repeatEnd events
     }
 };
 
@@ -3311,6 +3312,64 @@ function resolveGiftAggregatedCount(data = {}) {
     const comboCount = resolveGiftMetricCount(data, 'combo');
     const groupCount = resolveGiftMetricCount(data, 'group');
     return Math.max(1, repeatCount, comboCount, groupCount);
+}
+
+function resolveGiftGroupId(data = {}) {
+    const groupId = pickFirstNonEmptyString([
+        data.groupId,
+        data.group_id,
+        data?.gift?.groupId,
+        data?.gift?.group_id,
+        data?.giftDetails?.groupId,
+        data?.giftDetails?.group_id,
+        data?.extendedGiftInfo?.groupId,
+        data?.extendedGiftInfo?.group_id
+    ]);
+    return groupId && groupId !== '0' ? groupId : null;
+}
+
+function resolveGiftRepeatEnd(data = {}) {
+    const candidates = [
+        data.repeatEnd,
+        data.repeat_end,
+        data?.gift?.repeatEnd,
+        data?.gift?.repeat_end,
+        data?.giftDetails?.repeatEnd,
+        data?.giftDetails?.repeat_end,
+        data?.extendedGiftInfo?.repeatEnd,
+        data?.extendedGiftInfo?.repeat_end
+    ];
+
+    for (const candidate of candidates) {
+        if (candidate === undefined || candidate === null || candidate === '') continue;
+        if (typeof candidate === 'boolean') return candidate;
+        if (typeof candidate === 'number') return candidate !== 0;
+        const normalized = String(candidate).trim().toLowerCase();
+        if (normalized === '1' || normalized === 'true' || normalized === 'yes') return true;
+        if (normalized === '0' || normalized === 'false' || normalized === 'no') return false;
+    }
+
+    return false;
+}
+
+function isGiftComboFlagEnabled(data = {}) {
+    const candidates = [
+        data.combo,
+        data.isCombo,
+        data?.gift?.combo,
+        data?.gift?.isCombo,
+        data?.giftDetails?.combo,
+        data?.giftDetails?.isCombo,
+        data?.extendedGiftInfo?.combo,
+        data?.extendedGiftInfo?.isCombo
+    ];
+
+    return candidates.some((candidate) => {
+        if (candidate === true || candidate === 1) return true;
+        if (typeof candidate !== 'string') return false;
+        const normalized = candidate.trim().toLowerCase();
+        return normalized === '1' || normalized === 'true' || normalized === 'yes';
+    });
 }
 
 function resolveGiftId(data = {}) {
@@ -3853,7 +3912,42 @@ class GiftProcessor {
         this.queue = [];
         this.isProcessing = false;
         this.streaks = new Map();
+        this.flushedStreaks = new Map();
         this.processTimer = null;
+    }
+
+    resolveFlushMemoryKey(streakKey, data) {
+        const groupId = resolveGiftGroupId(data);
+        return groupId ? `${streakKey}|${groupId}` : null;
+    }
+
+    rememberFlushedStreak(memoryKey, total) {
+        if (!memoryKey) return;
+        const now = Date.now();
+        this.flushedStreaks.set(memoryKey, { total: Math.max(0, Number(total) || 0), at: now });
+        if (this.flushedStreaks.size > 500) {
+            for (const [key, entry] of this.flushedStreaks) {
+                if (!entry || now - entry.at > (CONFIG.GIFT.FLUSH_MEMORY_MS || 60000)) {
+                    this.flushedStreaks.delete(key);
+                }
+            }
+            while (this.flushedStreaks.size > 500) {
+                const oldestKey = this.flushedStreaks.keys().next().value;
+                if (!oldestKey) break;
+                this.flushedStreaks.delete(oldestKey);
+            }
+        }
+    }
+
+    getFlushedStreakTotal(memoryKey) {
+        if (!memoryKey) return 0;
+        const entry = this.flushedStreaks.get(memoryKey);
+        if (!entry) return 0;
+        if (Date.now() - entry.at > (CONFIG.GIFT.FLUSH_MEMORY_MS || 60000)) {
+            this.flushedStreaks.delete(memoryKey);
+            return 0;
+        }
+        return Math.max(0, Number(entry.total) || 0);
     }
 
     addToQueue(data) {
@@ -3893,23 +3987,37 @@ class GiftProcessor {
         }
 
         const aggregatedCount = resolveGiftAggregatedCount(data);
+        const repeatEnded = resolveGiftRepeatEnd(data);
+        const groupId = resolveGiftGroupId(data);
+        const comboFlag = isGiftComboFlagEnabled(data);
 
         const identity = extractTikTokIdentity(data);
         const userKey = resolveTikTokUserId(data, identity) || identity.uniqueId || 'unknown';
         const giftIdentity = resolveGiftStreakIdentity(data);
-        const streakKey = `${userKey}:${giftIdentity.keyFragment}`;
+        const streakBaseKey = `${userKey}:${giftIdentity.keyFragment}`;
+        const streakKey = groupId ? `${streakBaseKey}:group:${groupId}` : streakBaseKey;
 
-        const streakable = !data.repeatEnd && (aggregatedCount > 1 || giftType === 1 || repeatCount > 1 || comboCount > 1 || groupCount > 1);
+        const streakable = !repeatEnded && (
+            aggregatedCount > 1
+            || giftType === 1
+            || comboFlag
+            || !!groupId
+            || repeatCount > 1
+            || comboCount > 1
+            || groupCount > 1
+        );
         const existingStreak = this.streaks.get(streakKey);
+        const flushMemoryKey = this.resolveFlushMemoryKey(streakKey, data);
 
         // Flush and emit immediately when repeatEnd arrives, merging any pending streak
-        if (data.repeatEnd) {
-            const previousTotal = existingStreak ? existingStreak.lastTotal || 0 : 0;
-            const increment = aggregatedCount > previousTotal ? aggregatedCount - previousTotal : 0;
+        if (repeatEnded) {
             if (existingStreak) {
+                const previousTotal = existingStreak.lastTotal || 0;
+                const increment = aggregatedCount > previousTotal ? aggregatedCount - previousTotal : 0;
                 clearTimeout(existingStreak.timer);
                 this.streaks.delete(streakKey);
                 const totalCount = existingStreak.count + Math.max(0, increment);
+                this.rememberFlushedStreak(flushMemoryKey, totalCount);
                 this.queue.push({
                     data: data || existingStreak.lastData,
                     count: Math.max(1, totalCount)
@@ -3917,16 +4025,28 @@ class GiftProcessor {
                 this.startProcessing();
                 return;
             }
+            // No pending streak: either a standalone gift, or a late/duplicate
+            // repeatEnd for a streak we already flushed (e.g. after the safety
+            // timer fired, or the same final event got replayed). Only forward
+            // the unannounced remainder so donations are not read out twice.
+            const alreadyFlushed = this.getFlushedStreakTotal(flushMemoryKey);
+            const outstanding = Math.max(0, aggregatedCount - alreadyFlushed);
+            if (alreadyFlushed > 0 && outstanding <= 0) {
+                return;
+            }
+            const emitCount = alreadyFlushed > 0 ? outstanding : aggregatedCount;
+            this.rememberFlushedStreak(flushMemoryKey, alreadyFlushed + emitCount);
             this.queue.push({
                 data,
-                count: aggregatedCount
+                count: emitCount
             });
             this.startProcessing();
             return;
         }
 
-        // Merge ongoing streaks (even if payload lacks repeatEnd)
-        // Wait for repeatEnd to flush; only set a long safety timeout once
+        // Merge ongoing streaks (even if payload lacks repeatEnd).
+        // The safety timeout is based on inactivity, so a long, active combo is
+        // not announced in 30-second chunks before TikTok sends repeatEnd.
         if (existingStreak || streakable) {
             const next = existingStreak || { count: 0, lastData: null, lastTotal: 0, timer: null };
             const prevTotal = Number(next.lastTotal) || 0;
@@ -3935,13 +4055,12 @@ class GiftProcessor {
             next.count += safeIncrement;
             next.lastData = data;
             next.lastTotal = Math.max(prevTotal, aggregatedCount);
-            // Only set a safety timer once (don't reset on each event)
-            // The combo will flush when repeatEnd arrives; this is just a fallback
-            if (!next.timer) {
-                next.timer = setTimeout(() => {
-                    this.flushStreak(streakKey);
-                }, CONFIG.GIFT.STREAK_SAFETY_TIMEOUT_MS || 30000);
+            if (next.timer) {
+                clearTimeout(next.timer);
             }
+            next.timer = setTimeout(() => {
+                this.flushStreak(streakKey);
+            }, CONFIG.GIFT.STREAK_SAFETY_TIMEOUT_MS || 30000);
             this.streaks.set(streakKey, next);
             return;
         }
@@ -3965,6 +4084,7 @@ class GiftProcessor {
         clearTimeout(streak.timer);
         this.streaks.delete(streakKey);
         const safeCount = Math.max(1, streak.count || 1);
+        this.rememberFlushedStreak(this.resolveFlushMemoryKey(streakKey, streak.lastData), safeCount);
         this.queue.push({
             data: streak.lastData,
             count: safeCount
@@ -4159,6 +4279,7 @@ class GiftProcessor {
             }
         }
         this.streaks.clear();
+        this.flushedStreaks.clear();
         this.queue.length = 0;
         this.isProcessing = false;
         if (this.manager && typeof this.manager.logDebug === 'function') {
@@ -10485,6 +10606,9 @@ module.exports = {
 		escapeTikTokHtmlAttribute,
 		resolveGiftMetricCount,
 		resolveGiftAggregatedCount,
+		resolveGiftGroupId,
+		resolveGiftRepeatEnd,
+		isGiftComboFlagEnabled,
 		resolveGiftId,
         resolveGiftStreakIdentity,
         GiftProcessor,
