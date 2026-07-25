@@ -204,11 +204,18 @@
       }
     },
     "linux": {
-      "category": "public.build.automation",
+      "category": "Network;Chat",
       "icon": "assets/icons/png/256x256.png",
       "artifactName": "socialstreamninja_linux_v${version}_${arch}.${ext}",
       "target": "AppImage",
-      "executableName": "socialstreamninja"
+      "executableName": "socialstreamninja",
+      "desktop": {
+        "entry": {
+          "Name": "Social Stream Ninja",
+          "GenericName": "Live chat aggregator",
+          "Keywords": "chat;stream;twitch;youtube;kick;obs"
+        }
+      }
     },
     "nsis": {
       "oneClick": false,
