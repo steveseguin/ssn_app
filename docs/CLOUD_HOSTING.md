@@ -34,19 +34,20 @@ additional renderer processes as sources are added.
 
 ## Install SSApp
 
-Run from source:
+Download the Linux AppImage from the
+[Social Stream releases](https://github.com/steveseguin/social_stream/releases), put it in a
+stable location, and make it executable. No source checkout or Node installation is required.
 
 ```bash
-git clone https://github.com/steveseguin/ssn_app.git
-cd ssn_app
-npm install
+sudo mkdir -p /opt/socialstream
+sudo mv socialstreamninja_linux_*.AppImage /opt/socialstream/socialstreamninja.AppImage
+sudo chmod 755 /opt/socialstream/socialstreamninja.AppImage
 ```
 
-Or use the Linux AppImage from the
-[Social Stream releases](https://github.com/steveseguin/social_stream/releases). If a minimal
-server cannot mount the AppImage, install `libfuse2` or extract it:
+If a minimal server cannot mount the AppImage, install `libfuse2` or extract it:
 
 ```bash
+cd /opt/socialstream
 ./socialstreamninja.AppImage --appimage-extract
 ```
 
@@ -58,7 +59,7 @@ Stream's existing WebSocket server mode instead; both reach the same command dis
 
 The simplest setup is to open SSApp once on a desktop, choose the session ID/password and
 transport you want, then move that profile to the server. You can also attach VNC to the
-server's virtual display for this one-time setup. Keep the same `SSAPP_DATA_DIR` on later
+server's virtual display for this one-time setup. Keep the same `SSAPP_USER_DATA_DIR` on later
 starts so the session remains stable.
 
 Once the remote connection is established, an empty source list is supported: the remote
@@ -68,45 +69,38 @@ account setup are intentionally outside this first headless scope.
 
 ## Start headlessly
 
-The included launcher starts or reuses Xvfb, selects a persistent data directory, disables
-hardware acceleration by default, and launches SSApp with every window hidden:
+Start a virtual display, select a persistent data directory, and launch the downloaded app
+with every window hidden:
 
 ```bash
-npm run start:headless
+Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp -extension GLX &
+export DISPLAY=:99
+export SSAPP_USER_DATA_DIR="$HOME/.local/share/ssapp-headless"
+/opt/socialstream/socialstreamninja.AppImage --ssapp-headless-control --no-hwa
 ```
 
 Useful settings:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `SSAPP_DATA_DIR` | `~/.local/share/ssapp-headless` | Settings, session, sources, and browser data |
-| `SSAPP_DISPLAY_NUM` | `99` | Virtual X display number |
-| `SSAPP_SCREEN_SIZE` | `1920x1080x24` | Virtual screen size |
-| `SSAPP_BINARY` | local Electron | AppImage or extracted executable to launch |
-| `SSAPP_ENABLE_GPU` | off | Keep hardware acceleration on when a real GPU is available |
+| `SSAPP_USER_DATA_DIR` | Electron's normal profile | Settings, session, sources, and browser data |
+| `DISPLAY` | none | X display used by Electron source windows |
+| `SSAPP_CONTROL_API` | off | Set to `1` only for a local AI process on this server |
 
-For example:
-
-```bash
-SSAPP_DATA_DIR=/var/lib/ssapp \
-SSAPP_BINARY=/opt/socialstream/socialstreamninja \
-./scripts/start-headless.sh
-```
-
-The equivalent manual launch is:
-
-```bash
-Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
-export DISPLAY=:99
-export SSAPP_USER_DATA_DIR="$HOME/.local/share/ssapp-headless"
-./node_modules/electron/dist/electron . --ssapp-headless-control --no-hwa
-```
+If you are developing from a source checkout, `npm run start:headless` remains a convenience
+wrapper around the same setup. Downloaded-app users do not need that script.
 
 Use `SSAPP_USER_DATA_DIR`, not Chromium's `--user-data-dir`; SSApp sets its application data
 path during startup.
 
-`--ozone-platform=headless` is not a replacement for Xvfb. Electron capture windows still
-need a working display backend.
+`--ozone-platform=headless` is not a replacement for Xvfb for the main application. Electron
+capture windows still need a working display backend.
+
+If FUSE is unavailable, use the extracted executable instead:
+
+```bash
+/opt/socialstream/squashfs-root/socialstreamninja --ssapp-headless-control --no-hwa
+```
 
 ## Optional one-time VNC access
 
@@ -137,9 +131,9 @@ After=network-online.target
 [Service]
 Type=simple
 User=ssapp
-WorkingDirectory=/opt/ssn_app
-Environment=SSAPP_DATA_DIR=/var/lib/ssapp
-ExecStart=/opt/ssn_app/scripts/start-headless.sh
+WorkingDirectory=/opt/socialstream
+Environment=SSAPP_USER_DATA_DIR=/var/lib/ssapp
+ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1920x1080x24 -nolisten tcp -extension GLX" /opt/socialstream/socialstreamninja.AppImage --ssapp-headless-control --no-hwa
 Restart=on-failure
 RestartSec=10
 KillSignal=SIGTERM
@@ -157,10 +151,11 @@ journalctl -u ssapp -f
 
 SSApp handles `SIGTERM` and `SIGINT` as clean shutdowns. Avoid `SIGKILL` when possible.
 
-## Check hidden capture
+## Developer capture diagnostic
 
 The hidden-capture diagnostic creates real Electron source windows through the normal IPC
-path and verifies that work continues while those windows are off screen:
+path and verifies that work continues while those windows are off screen. It is a repository
+test for developers and is not required for a downloaded installation:
 
 ```bash
 DISPLAY=:99 npm run test:hidden-capture -- --headless \
@@ -185,29 +180,35 @@ If an LLM or automation process runs on the same server, you may explicitly enab
 loopback API as a separate local adapter:
 
 ```bash
-./scripts/start-headless.sh --ssapp-control-api
+xvfb-run -a -s "-screen 0 1920x1080x24 -nolisten tcp -extension GLX" \
+  /opt/socialstream/socialstreamninja.AppImage \
+  --ssapp-headless-control --ssapp-control-api --no-hwa
 ```
 
 It listens on `127.0.0.1` only. Do not forward or publish that port for remote users; use the
 normal Social Stream WebRTC/WebSocket path instead.
 
-An agent does not find SSApp by scanning the server. Register the included MCP adapter once
-in that agent's MCP configuration. For a source checkout installed at `/opt/ssn_app`, the
-equivalent generic configuration is:
+An agent does not find SSApp by scanning the server. Register the downloaded AppImage itself
+once in that agent's MCP configuration. SSApp 0.4.7 and newer provide `--ssapp-mcp`; no source
+checkout, separate adapter download, or Node installation is required:
 
 ```json
 {
   "mcpServers": {
     "social-stream": {
-      "command": "/usr/bin/node",
-      "args": ["/opt/ssn_app/resources/ssapp-mcp.js"]
+      "command": "/opt/socialstream/socialstreamninja.AppImage",
+      "args": ["--ssapp-mcp", "--ozone-platform=headless"],
+      "env": {
+        "SSAPP_CONTROL_URL": "http://127.0.0.1:17777"
+      }
     }
   }
 }
 ```
 
-The exact configuration filename depends on the AI client. Start SSApp before starting the
-client. During MCP setup the client asks the adapter for its tools; the adapter calls
+The exact configuration filename depends on the AI client. Start the main SSApp process before
+starting the client. During MCP setup the client launches a second lightweight instance of the
+downloaded executable in adapter mode, asks it for tools, and the adapter calls
 `GET /api/v1/capabilities` on loopback and exposes only commands supported by that running
 SSApp version. No port scanning, cloud registration, or separate remote API is involved.
 
@@ -219,10 +220,11 @@ tool discovery and runtime capabilities remain the source of truth.
 
 ## Troubleshooting
 
-**`Missing X server or $DISPLAY`.** Start Xvfb and export `DISPLAY`, or use the launcher.
+**`Missing X server or $DISPLAY`.** Start Xvfb and export `DISPLAY`, or use the `xvfb-run`
+command shown above.
 
-**Xvfb exits immediately.** Some installed GPU drivers break Xvfb's GLX startup. The launcher
-automatically retries with `-extension GLX`.
+**Xvfb exits immediately.** Some installed GPU drivers break Xvfb's GLX startup. Start it with
+`-extension GLX`, as shown above.
 
 **The app exits as root or in a container.** Add `--no-sandbox`. Running as a normal user is
 preferred.
@@ -235,4 +237,4 @@ sign-in.
 session ID/password and that either WebRTC is connected or WebSocket server mode is enabled.
 
 **Sources or settings unexpectedly carry across instances.** Give every instance a different
-`SSAPP_DATA_DIR` and display number.
+`SSAPP_USER_DATA_DIR` and display number.

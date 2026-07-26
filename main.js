@@ -190,6 +190,7 @@ const { setupVpzoneOAuthHandler } = require('./resources/electron-vpzone-handler
 const { setupMediaUploadHandler } = require('./resources/electron-media-upload-handler');
 const { setupElectronLocalMedia } = require('./resources/electron-local-media-server');
 const { createControlApiRouter } = require('./resources/electron-control-api');
+const { buildMcpLaunchConfig } = require('./resources/mcp-launch-config');
 const { KickWsClient } = require('./resources/kick-ws-client');
 
 const SOCIAL_STREAM_REMOTE_HOSTS = new Set([
@@ -18235,6 +18236,29 @@ function createMenu() {
                                     title: 'Local Connection Copied',
                                     message: 'The localhost connection was copied.',
                                     detail: 'It is available only to programs running on this computer.'
+                                });
+                            }
+                        },
+                        {
+                            label: 'Copy MCP Setup',
+                            enabled: controlApiEnabled,
+                            click: async () => {
+                                const setup = buildMcpLaunchConfig({
+                                    isPackaged: app.isPackaged,
+                                    platform: process.platform,
+                                    execPath: process.execPath,
+                                    appPath: app.getAppPath(),
+                                    appImagePath: process.env.APPIMAGE,
+                                    portableExecutablePath: process.env.PORTABLE_EXECUTABLE_FILE,
+                                    controlUrl: `http://127.0.0.1:${remoteControlPort}`
+                                });
+                                clipboard.writeText(JSON.stringify(setup, null, 2));
+                                await dialog.showMessageBox({
+                                    type: 'info',
+                                    buttons: ['OK'],
+                                    title: 'MCP Setup Copied',
+                                    message: 'The MCP server configuration was copied.',
+                                    detail: 'Paste it into your local AI tool\'s MCP settings. The downloaded app is the MCP command; Node and a source checkout are not required.'
                                 });
                             }
                         },

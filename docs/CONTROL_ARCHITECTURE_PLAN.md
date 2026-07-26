@@ -19,6 +19,12 @@ Completed:
   explicit loopback-only option, and MCP uses it without token setup.
 - Headless, local-control, cloud-hosting, checked-in skill, capability, and version docs now
   describe the same product boundary.
+- Downloaded Windows, macOS, and Linux builds expose the MCP adapter through the app
+  executable's `--ssapp-mcp` mode. The app copies its exact installed-path configuration, so
+  users do not need Node, Python, or a source checkout.
+- The public website provides download-to-MCP instructions, a machine-readable `llms.txt`,
+  the optional skill, API reference, and compatibility log. MCP initialization also gives a
+  connected agent the core workflow automatically.
 - Real Electron validation passed for the iframe command bridge, WebSocket command bridge,
   local API/MCP opt-in, and API-disabled headless launch.
 - Hidden capture passed end to end with live YouTube and Twitch chat. The provided Kick
@@ -103,8 +109,9 @@ automation. It must:
   documentation.
 - Be described as local AI/automation, not as a cloud-server remote-control interface.
 
-MCP remains a local stdio adapter to that localhost interface. Local tools may expose a
-broader approved command set than remote WebRTC/WebSocket clients.
+MCP remains a local stdio adapter to that localhost interface. The downloaded app itself
+launches that adapter with `--ssapp-mcp`, and the File menu copies the client configuration.
+Local tools may expose a broader approved command set than remote WebRTC/WebSocket clients.
 
 ## Headless mode
 
