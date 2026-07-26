@@ -2,12 +2,11 @@
 
 'use strict';
 
-const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const readline = require('readline');
 
-const MCP_SERVER_VERSION = '1.0.1';
+const MCP_SERVER_VERSION = '1.0.3';
 const MCP_PROTOCOL_VERSION = '2025-06-18';
 const DEFAULT_URL = 'http://127.0.0.1:17777';
 
@@ -83,23 +82,14 @@ function sourceTool(description, action, annotations) {
 	return tool(description, { sourceId: stringProperty('Stable source ID.') }, action, annotations);
 }
 
-function readToken() {
-	const tokenFile = String(process.env.SSAPP_CONTROL_TOKEN_FILE || '').trim();
-	if (tokenFile) return fs.readFileSync(tokenFile, 'utf8').trim();
-	return String(process.env.SSAPP_CONTROL_TOKEN || '').trim();
-}
-
 function apiRequest(pathname, body) {
 	const baseUrl = new URL(String(process.env.SSAPP_CONTROL_URL || DEFAULT_URL));
-	const token = readToken();
-	if (!token) return Promise.reject(new Error('Set SSAPP_CONTROL_TOKEN or SSAPP_CONTROL_TOKEN_FILE.'));
 	const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
 	const transport = baseUrl.protocol === 'https:' ? https : http;
 	return new Promise((resolve, reject) => {
 		const req = transport.request(new URL(pathname, baseUrl), {
 			method: payload ? 'POST' : 'GET',
 			headers: {
-				'X-SSAPP-Token': token,
 				...(payload ? { 'Content-Type': 'application/json', 'Content-Length': payload.length } : {}),
 			},
 			timeout: 35000,
@@ -189,7 +179,14 @@ async function handle(message) {
 				protocolVersion: MCP_PROTOCOL_VERSION,
 				capabilities: { tools: { listChanged: false } },
 				serverInfo: { name: 'social-stream-ninja', version: MCP_SERVER_VERSION },
-				instructions: 'Call ssapp_get_capabilities first. Every result includes the connected SSApp and control API versions.',
+				instructions: [
+					'This controls Social Stream Ninja on the same computer through its loopback API.',
+					'Start SSApp and enable File > Local AI / Automation before using these tools.',
+					'Call ssapp_get_capabilities first, then ssapp_get_status, and use stable source IDs from the results.',
+					'Stop an active source before changing its URL, username, video ID, or connection mode.',
+					'Remove, reload, and shutdown operations require explicit user intent.',
+					'Every result includes the connected SSApp and control API versions.',
+				].join(' '),
 			},
 		});
 		return;
@@ -218,12 +215,27 @@ async function handle(message) {
 }
 
 const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+let pendingMessages = 0;
+let inputClosed = false;
+
+function exitWhenIdle() {
+	if (inputClosed && pendingMessages === 0) process.exit(0);
+}
+
 input.on('line', line => {
 	if (!line.trim()) return;
 	let message;
 	try { message = JSON.parse(line); } catch (_) { return; }
+	pendingMessages += 1;
 	handle(message).catch(error => {
 		if (!Object.prototype.hasOwnProperty.call(message, 'id')) return;
 		write({ jsonrpc: '2.0', id: message.id, error: { code: -32603, message: error.message || String(error) } });
+	}).finally(() => {
+		pendingMessages -= 1;
+		exitWhenIdle();
 	});
+});
+input.on('close', () => {
+	inputClosed = true;
+	exitWhenIdle();
 });

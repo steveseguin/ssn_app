@@ -25,8 +25,34 @@ function extractFunctionSource(source, functionName) {
 	let inString = false;
 	let quote = '';
 	let escaped = false;
+	let inLineComment = false;
+	let inBlockComment = false;
 	for (let i = startIndex; i < source.length; i += 1) {
 		const character = source[i];
+		// Comments have to be skipped rather than scanned: an apostrophe in prose
+		// ("the pump's timer") would otherwise look like the start of a string and swallow
+		// the rest of the file.
+		if (inLineComment) {
+			if (character === '\n') inLineComment = false;
+			continue;
+		}
+		if (inBlockComment) {
+			if (character === '*' && source[i + 1] === '/') {
+				inBlockComment = false;
+				i += 1;
+			}
+			continue;
+		}
+		if (!inString && character === '/' && source[i + 1] === '/') {
+			inLineComment = true;
+			i += 1;
+			continue;
+		}
+		if (!inString && character === '/' && source[i + 1] === '*') {
+			inBlockComment = true;
+			i += 1;
+			continue;
+		}
 		if (inString) {
 			if (escaped) {
 				escaped = false;
@@ -201,6 +227,8 @@ function createMockSourceWindow(options = {}) {
 function testLinuxWindowVisibility() {
 	let parkCalls = 0;
 	let parkResult = true;
+	let wayland = false;
+	let pumpInstalls = 0;
 	const context = vm.createContext({
 		process: { platform: 'linux' },
 		isBrowserViewDestroyed: () => false,
@@ -208,7 +236,9 @@ function testLinuxWindowVisibility() {
 			parkCalls += 1;
 			return parkResult;
 		},
-		sourceWindowIntersectsVirtualScreen: bounds => !!bounds && bounds.x > -5000 && bounds.x < 5000
+		sourceWindowIntersectsVirtualScreen: bounds => !!bounds && bounds.x > -5000 && bounds.x < 5000,
+		isWaylandSession: () => wayland,
+		installFramePump: () => { pumpInstalls += 1; }
 	});
 	new vm.Script([
 		extractFunctionSource(mainSource, 'stealthHideView'),
@@ -216,12 +246,16 @@ function testLinuxWindowVisibility() {
 		'this.visibility = { stealthHideView, stealthShowView };'
 	].join('\n')).runInContext(context);
 
+	// Linux hides for real. Minimizing left the window in the taskbar and pager, and on
+	// Wayland it cannot be reversed reliably because there is no minimized state there.
 	const normal = createMockSourceWindow();
 	assert.strictEqual(context.visibility.stealthHideView(normal.view), true);
-	assert.strictEqual(normal.state.minimized, true, 'Linux hide should minimize the source window');
+	assert.strictEqual(normal.state.visible, false, 'Linux hide should actually hide the source window');
+	assert.strictEqual(normal.state.minimized, false, 'Linux hide should not minimize when hide() works');
 	assert.strictEqual(normal.view.__ss_visible, false);
 	assert.strictEqual(normal.state.skipTaskbar, true);
 	assert.strictEqual(parkCalls, 0, 'Linux hide must not rely on off-screen parking');
+	assert.strictEqual(pumpInstalls, 1, 'hiding should make sure the frame pump is installed');
 	assert.strictEqual(context.visibility.stealthShowView(normal.view), true);
 	assert.strictEqual(normal.state.minimized, false);
 	assert.strictEqual(normal.state.visible, true);
@@ -238,15 +272,34 @@ function testLinuxWindowVisibility() {
 	assert.deepStrictEqual(parked.state.bounds, { x: 200, y: 150, width: 800, height: 500 });
 	assert.strictEqual(parked.view.__ss_visible, true, 'reveal should report visible only after restoring on-screen bounds');
 
-	const minimizeRejected = createMockSourceWindow({ minimizeWorks: false });
-	assert.strictEqual(context.visibility.stealthHideView(minimizeRejected.view), true);
-	assert.strictEqual(minimizeRejected.state.visible, false, 'Linux hide should fall back to native hide when minimize fails');
-	assert.strictEqual(minimizeRejected.view.__ss_visible, false);
+	const hideRejected = createMockSourceWindow({ hideWorks: false });
+	assert.strictEqual(context.visibility.stealthHideView(hideRejected.view), true);
+	assert.strictEqual(hideRejected.state.minimized, true, 'minimize is the fallback when hide() is refused');
+	assert.strictEqual(hideRejected.view.__ss_visible, false);
 
-	const hideRejected = createMockSourceWindow({ minimizeWorks: false, hideWorks: false });
-	assert.strictEqual(context.visibility.stealthHideView(hideRejected.view), false);
-	assert.strictEqual(hideRejected.view.__ss_visible, true, 'failed hide must not claim the window is hidden');
-	assert.strictEqual(hideRejected.state.skipTaskbar, false);
+	const bothRejected = createMockSourceWindow({ minimizeWorks: false, hideWorks: false });
+	assert.strictEqual(context.visibility.stealthHideView(bothRejected.view), false);
+	assert.strictEqual(bothRejected.view.__ss_visible, true, 'failed hide must not claim the window is hidden');
+	assert.strictEqual(bothRejected.state.skipTaskbar, false);
+
+	// Wayland forbids programmatic positioning and reports every window at 0,0, so reveal
+	// there must neither replay stored bounds nor judge success by an on-screen check.
+	wayland = true;
+	const waylandView = createMockSourceWindow({
+		bounds: { x: 0, y: 0, width: 900, height: 600 },
+		previousBounds: { x: 200, y: 150, width: 800, height: 500 },
+		logicalVisible: false,
+		visible: false
+	});
+	assert.strictEqual(context.visibility.stealthShowView(waylandView.view), true);
+	assert.strictEqual(waylandView.state.visible, true);
+	assert.strictEqual(waylandView.view.__ss_visible, true, 'Wayland reveal must not depend on window coordinates');
+	assert.deepStrictEqual(
+		waylandView.state.bounds,
+		{ x: 0, y: 0, width: 900, height: 600 },
+		'Wayland reveal should leave placement to the compositor'
+	);
+	wayland = false;
 
 	context.process.platform = 'win32';
 	const windowsView = createMockSourceWindow();
@@ -254,6 +307,132 @@ function testLinuxWindowVisibility() {
 	assert.strictEqual(context.visibility.stealthHideView(windowsView.view), true);
 	assert.strictEqual(windowsView.view.__ss_visible, false);
 	assert.strictEqual(parkCalls, 1, 'non-Linux hide should continue using verified off-screen parking');
+}
+
+// The frame pump replaces requestAnimationFrame on third-party chat pages, so its
+// semantics have to match the real thing. None of this is observable from the end-to-end
+// diagnostics, which can only see that callbacks keep arriving.
+function testFramePumpSemantics() {
+	const { FRAME_PUMP_SCRIPT } = require('../../hidden-window-keepalive');
+
+	let clock = 1000;
+	const intervals = [];
+	const asyncThrows = [];
+	let nativeQueue = [];
+	let nativeHandleSeq = 1000;
+	const nativeCancelled = [];
+
+	const win = {
+		requestAnimationFrame(callback) {
+			nativeHandleSeq += 1;
+			nativeQueue.push({ handle: nativeHandleSeq, callback });
+			return nativeHandleSeq;
+		},
+		cancelAnimationFrame(handle) {
+			nativeCancelled.push(handle);
+		}
+	};
+
+	const context = vm.createContext({
+		window: win,
+		performance: { now: () => clock },
+		setInterval: (fn, ms) => { intervals.push({ fn, ms }); return intervals.length; },
+		clearInterval: () => { },
+		setTimeout: (fn) => { asyncThrows.push(fn); return asyncThrows.length; },
+		Map,
+		Object,
+		TypeError,
+		Date
+	});
+
+	assert.strictEqual(vm.runInContext(FRAME_PUMP_SCRIPT, context), 'installed');
+	assert.strictEqual(vm.runInContext(FRAME_PUMP_SCRIPT, context), 'already-installed', 'install must be idempotent');
+	assert.strictEqual(intervals.length, 1, 'the pump should own exactly one interval');
+	assert.notStrictEqual(win.requestAnimationFrame, undefined);
+
+	const fireNativeFrame = () => {
+		const pending = nativeQueue;
+		nativeQueue = [];
+		for (const entry of pending) entry.callback(clock);
+	};
+	const runPumpTick = () => intervals[0].fn();
+
+	// A real frame delivers queued callbacks exactly once.
+	let ranA = 0;
+	win.requestAnimationFrame(() => { ranA += 1; });
+	assert.strictEqual(nativeQueue.length, 1, 'a real frame should have been requested');
+	fireNativeFrame();
+	assert.strictEqual(ranA, 1);
+
+	// With frames withheld, the timer delivers instead - but only once frames look stalled.
+	let ranB = 0;
+	win.requestAnimationFrame(() => { ranB += 1; });
+	runPumpTick();
+	assert.strictEqual(ranB, 0, 'the pump must not pre-empt frames that are still arriving');
+	clock += 500;
+	runPumpTick();
+	assert.strictEqual(ranB, 1, 'the pump should deliver once frames are stalled');
+
+	// The frame that eventually shows up must not re-run work the pump already did.
+	fireNativeFrame();
+	assert.strictEqual(ranB, 1, 'a late frame must not double-run pumped callbacks');
+
+	// Re-registering from inside a callback lands in the next batch, not this one.
+	let loops = 0;
+	const loop = () => { loops += 1; win.requestAnimationFrame(loop); };
+	win.requestAnimationFrame(loop);
+	clock += 500;
+	runPumpTick();
+	assert.strictEqual(loops, 1, 're-registration must not run again in the same batch');
+	clock += 500;
+	runPumpTick();
+	assert.strictEqual(loops, 2);
+
+	// Cancelling before the batch runs.
+	let cancelledRan = 0;
+	const cancelMe = win.requestAnimationFrame(() => { cancelledRan += 1; });
+	win.cancelAnimationFrame(cancelMe);
+	clock += 500;
+	runPumpTick();
+	assert.strictEqual(cancelledRan, 0, 'a cancelled callback must not run');
+
+	// Cancelling a sibling from inside the same batch, which native rAF honours.
+	let siblingRan = 0;
+	let siblingHandle = 0;
+	win.requestAnimationFrame(() => { win.cancelAnimationFrame(siblingHandle); });
+	siblingHandle = win.requestAnimationFrame(() => { siblingRan += 1; });
+	clock += 500;
+	runPumpTick();
+	assert.strictEqual(siblingRan, 0, 'cancelling later work mid-batch must be honoured');
+
+	// Handles the real API issued before we took over still reach the real API.
+	win.cancelAnimationFrame(999);
+	assert.deepStrictEqual(nativeCancelled, [999], 'unknown handles should fall through to the native API');
+
+	// A throwing callback is reported, and does not stop the rest of the batch.
+	let afterThrow = 0;
+	win.requestAnimationFrame(() => { throw new Error('boom'); });
+	win.requestAnimationFrame(() => { afterThrow += 1; });
+	clock += 500;
+	runPumpTick();
+	assert.strictEqual(afterThrow, 1, 'one failing callback must not cancel the batch');
+	assert.strictEqual(asyncThrows.length, 1, 'the error should still be reported asynchronously');
+	assert.throws(() => asyncThrows[0](), /boom/);
+
+	// A non-function argument fails the way the real API does.
+	assert.throws(() => win.requestAnimationFrame('not a function'), TypeError);
+
+	const stats = vm.runInContext('window.__ssnFramePump.stats()', context);
+	assert(stats.nativeBatches >= 2, `expected native batches, got ${JSON.stringify(stats)}`);
+	assert(stats.pumpedBatches >= 5, `expected pumped batches, got ${JSON.stringify(stats)}`);
+
+	// Disposal puts the real functions back.
+	vm.runInContext('window.__ssnFramePump.dispose()', context);
+	assert.strictEqual(vm.runInContext('!!window.__ssnFramePump', context), false);
+	let afterDispose = 0;
+	win.requestAnimationFrame(() => { afterDispose += 1; });
+	fireNativeFrame();
+	assert.strictEqual(afterDispose, 1, 'dispose should restore the native implementation');
 }
 
 function testMacosCheckoutFallback() {
@@ -269,6 +448,7 @@ async function run() {
 	testCustomJsTrustBoundary();
 	await testHiddenRendererYield();
 	testLinuxWindowVisibility();
+	testFramePumpSemantics();
 	testMacosCheckoutFallback();
 	console.log('review-fixes-regression: all checks passed');
 }

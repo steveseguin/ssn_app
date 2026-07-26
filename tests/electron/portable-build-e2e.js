@@ -184,7 +184,13 @@ function findSocialStreamEntries(directory) {
 }
 
 async function run() {
-	assert.strictEqual(process.platform, 'win32', 'The packaged portable E2E test requires Windows.');
+	// Portable mode only exists on Windows: resolveEarlyDataPaths() returns null for any other
+	// platform, so there is nothing here to exercise. Skip rather than fail, so that running
+	// the whole suite on Linux or macOS gives a result you can trust.
+	if (process.platform !== 'win32') {
+		console.log(`portable-build-e2e: SKIPPED (portable builds are Windows-only; this is ${process.platform})`);
+		return { skipped: true };
+	}
 	assert.strictEqual(fs.existsSync(builtPortablePath), true, `Build the portable executable first: ${builtPortablePath}`);
 	assert.strictEqual(fs.existsSync(builtInstalledPath), true, `Build the unpacked Windows app first: ${builtInstalledPath}`);
 	for (const directory of [originalBundleDir, fakeRoamingDir, fakeLocalDir, extractionTempDir]) {

@@ -3,7 +3,7 @@
   "version": "0.4.7",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
-  "main": "main.js",
+  "main": "bootstrap.js",
   "scripts": {
     "start": "electron .",
     "start2": "electron . --running-from-source",
@@ -14,6 +14,9 @@
     "test:settings-loss": "node tests/electron/settings-loss-diagnostics.js",
     "test:settings-rootcause": "node tests/electron/settings-rootcause-diagnostics.js",
     "test:settings-transfer": "node tests/electron/settings-transfer-e2e.js",
+    "start:headless": "bash scripts/start-headless.sh",
+    "test:hidden-capture": "node tests/electron/hidden-capture-diagnostics.js",
+    "test:hidden-capture:soak": "node tests/electron/hidden-capture-soak.js",
     "test:portable-paths": "node tests/electron/portable-data-paths-regression.js",
     "test:portable-migration": "node tests/electron/portable-migration-runner-regression.js",
     "test:portable:e2e": "node tests/electron/portable-build-e2e.js",
@@ -30,6 +33,8 @@
     "test:llm-control:e2e": "node tests/electron/llm-control-headless-e2e.js",
     "test:review-fixes": "node tests/electron/review-fixes-regression.js",
     "test:mcp-control:e2e": "node tests/electron/ssapp-mcp-e2e.js",
+    "test:mcp-launch:e2e": "node tests/electron/ssapp-mcp-launch-e2e.js",
+    "test:mcp-setup": "node tests/electron/mcp-launch-config-regression.js",
     "mcp": "node resources/ssapp-mcp.js",
     "test:socialstream-path-security": "node tests/electron/socialstream-path-security-regression.js",
     "test:ipc-scaffold": "node tests/electron/ipc-scaffold-regression.js",
@@ -57,8 +62,7 @@
     "build:rpi": "USE_SYSTEM_FPM=true electron-builder --armv7l --linux deb",
     "clean": "rimraf ./dist",
     "release": "electron-builder --publish always",
-    "preinstall": "npx npm-force-resolutions",
-    "postinstall": "node -e \"console.log('[custom-electron] Skipping legacy custom Electron install; using standard Electron package.')\" && node scripts/patch-deps.js"
+    "postinstall": "node scripts/patch-deps.js && node scripts/install-electron-binary.js"
   },
   "repository": {
     "type": "git",
@@ -70,12 +74,14 @@
     "npmRebuild": false,
     "files": [
       "package.json",
+      "bootstrap.js",
       "main.js",
       "renderer.js",
       "manifest.js",
       "state.js",
       "libs.js",
       "circular-buffer.js",
+      "hidden-window-keepalive.js",
       "index.html",
       "prompt.html",
       "chathistory.html",
@@ -200,11 +206,18 @@
       }
     },
     "linux": {
-      "category": "public.build.automation",
+      "category": "Network;Chat",
       "icon": "assets/icons/png/256x256.png",
       "artifactName": "socialstreamninja_linux_v${version}_${arch}.${ext}",
       "target": "AppImage",
-      "executableName": "socialstreamninja"
+      "executableName": "socialstreamninja",
+      "desktop": {
+        "entry": {
+          "Name": "Social Stream Ninja",
+          "GenericName": "Live chat aggregator",
+          "Keywords": "chat;stream;twitch;youtube;kick;obs"
+        }
+      }
     },
     "nsis": {
       "oneClick": false,
@@ -242,12 +255,11 @@
     "afterAllArtifactBuild": "./afterPack.js"
   },
   "devDependencies": {
-    "electron": "^43.1.1",
+    "electron": "^43.2.0",
     "electron-builder": "^26.5.0",
     "electron-notarize": "git+https://github.com/electron/notarize.git",
     "fs-extra": "^11.3.4",
     "jsonfile": "^6.1.0",
-    "npm-force-resolutions": "^0.0.10",
     "playwright-core": "^1.61.1",
     "rimraf": "^6.0.1",
     "run-script-os-fix": "^1.0.4",

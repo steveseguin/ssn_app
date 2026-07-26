@@ -79,6 +79,24 @@ npm run build:rpi
 
 For detailed usage instructions, visit the [Social Stream Ninja documentation](https://socialstream.ninja/manual).
 
+## Running on a Server
+
+The app can run on a machine with no monitor — a VPS or a home server — with every window
+hidden. Remote control continues to use Social Stream's existing WebRTC or WebSocket
+connection; headless mode does not open a new HTTP control service:
+
+```bash
+sudo apt-get install -y xvfb
+./scripts/start-headless.sh
+```
+
+See [docs/CLOUD_HOSTING.md](docs/CLOUD_HOSTING.md) for the full walkthrough: preparing a
+Social Stream session, running under systemd, and checking that hidden chat capture stays
+healthy.
+
+[docs/LINUX_NOTES.md](docs/LINUX_NOTES.md) covers what differs on Linux: portable mode,
+notifications, system TTS voices, the tray, transparency, GPU fallback and expected footprint.
+
 ## YouTube OAuth (SSAPP) Troubleshooting
 
 If YouTube sign-in loops or quota still appears to hit the default project in SSAPP, check the following:
@@ -93,9 +111,12 @@ If YouTube sign-in loops or quota still appears to hit the default project in SS
 ## Configuration
 
 The app stores configuration in:
-- Windows: `%APPDATA%/socialstream/`
-- macOS: `~/Library/Application Support/socialstream/`
-- Linux: `~/.config/socialstream/`
+- Windows: `%APPDATA%/SocialStream/`
+- macOS: `~/Library/Application Support/SocialStream/`
+- Linux: `~/.config/SocialStream/`
+
+The directory comes from Electron's `app.name`, so the capitalisation matters on Linux, where
+the filesystem is case-sensitive. Set `SSAPP_USER_DATA_DIR` to put it somewhere else.
 
 ## Code Signing
 

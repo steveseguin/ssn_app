@@ -171,6 +171,13 @@ try {
 }
 const { setupWebSocketMonitor } = require('./websocket-monitor');
 const {
+    attachFramePump,
+    installFramePump,
+    isFramePumpDisabled,
+    isWaylandSession,
+    readFramePumpStats
+} = require('./hidden-window-keepalive');
+const {
     setupSpotifyOAuthWithLocalServer,
     setupSpotifyOAuthWithIntercept
 } = require('./resources/electron-spotify-handler');
@@ -183,6 +190,7 @@ const { setupVpzoneOAuthHandler } = require('./resources/electron-vpzone-handler
 const { setupMediaUploadHandler } = require('./resources/electron-media-upload-handler');
 const { setupElectronLocalMedia } = require('./resources/electron-local-media-server');
 const { createControlApiRouter } = require('./resources/electron-control-api');
+const { buildMcpLaunchConfig } = require('./resources/mcp-launch-config');
 const { KickWsClient } = require('./resources/kick-ws-client');
 
 const SOCIAL_STREAM_REMOTE_HOSTS = new Set([
@@ -287,6 +295,16 @@ const WINDOW_STATE_DIAGNOSTICS_REPORT_PATH = (() => {
     if (!arg) return null;
     return arg.slice('--window-state-report='.length);
 })();
+const HIDDEN_CAPTURE_DIAGNOSTICS_ENABLED = process.argv.includes('--hidden-capture-diagnostics');
+const HIDDEN_CAPTURE_SOAK_ENABLED = process.argv.includes('--hidden-capture-soak');
+const HIDDEN_CAPTURE_DIAGNOSTICS_REPORT_PATH = (() => {
+    const arg = process.argv.find((value) => typeof value === 'string' && value.startsWith('--hidden-capture-report='));
+    if (!arg) return null;
+    return arg.slice('--hidden-capture-report='.length);
+})();
+// Set when createWindow registers the source-window IPC handler, so diagnostics can build
+// a source window through the same path the renderer uses.
+let sourceWindowCreateHandler = null;
 const TTS_DIAGNOSTICS_ENABLED = process.argv.includes('--tts-diagnostics');
 const TTS_DIAGNOSTICS_REPORT_PATH = (() => {
     const arg = process.argv.find((value) => typeof value === 'string' && value.startsWith('--tts-report='));
@@ -428,13 +446,28 @@ function isStabilityGracefulExitReason(reason) {
     return true;
 }
 
+// Linux is included alongside Windows because these are the mitigations that matter for the
+// GPU crashes Linux actually hits: the app forces --ignore-gpu-blocklist and
+// --enable-gpu-rasterization by default, and on a blocklisted or flaky driver those are what
+// keeps crashing. Without this the escalation ladder changed nothing on Linux - the app would
+// count the crashes, tell the user "Stability mode enabled automatically", and apply exactly
+// the same flags as before. These only take effect after repeated crashes, so the downside is
+// limited to sessions that are already failing.
+//
+// macOS is left out: it has its own balanced-mode handling and a different GPU stack. The
+// sandbox rung below stays Windows-only on purpose - relaxing the GPU sandbox is a security
+// trade-off, not just a stability knob, so it is not something to start doing on Linux as a
+// side effect of crash recovery.
+const STABILITY_GPU_FALLBACK_PLATFORMS = new Set(['win32', 'linux']);
+
 function buildGpuProfileFromFallbackLevel(level) {
     const normalizedLevel = clampGpuFallbackLevel(level);
+    const laddered = STABILITY_GPU_FALLBACK_PLATFORMS.has(process.platform);
     return {
         level: normalizedLevel,
-        disableUnsafeWebGpu: process.platform === 'win32' && normalizedLevel >= 1,
-        disableIgnoreGpuBlocklist: process.platform === 'win32' && normalizedLevel >= 2,
-        disableGpuRasterization: process.platform === 'win32' && normalizedLevel >= STABILITY_GPU_RASTERIZATION_FALLBACK_LEVEL,
+        disableUnsafeWebGpu: laddered && normalizedLevel >= 1,
+        disableIgnoreGpuBlocklist: laddered && normalizedLevel >= 2,
+        disableGpuRasterization: laddered && normalizedLevel >= STABILITY_GPU_RASTERIZATION_FALLBACK_LEVEL,
         disableGpuSandbox: process.platform === 'win32' && normalizedLevel >= STABILITY_GPU_SANDBOX_FALLBACK_LEVEL
     };
 }
@@ -724,18 +757,101 @@ function showTransferBackupToast(level, title, message) {
     } catch (_) { }
 }
 
-function showTransferBackupNotification(title, body) {
+// Desktop notifications on Linux are delivered over D-Bus to whatever implements
+// org.freedesktop.Notifications. When a session bus exists but nothing implements that
+// service - a headless server, a bare window manager, some Wayland sessions - Electron's
+// Notification.show() blocks the main process until D-Bus gives up. Measured on Electron 43
+// with no notification daemon: the failed event arrived after 100 seconds and show() did not
+// return for 120, with Notification.isSupported() reporting true the whole time. A frozen
+// main process means no chat processing, no IPC and no control API for two minutes, and it is
+// reachable without any user action, from automatic session-transfer backups and from the
+// on-battery power event.
+//
+// So: check once whether anything is listening, stop trying after a failure, and never
+// bother in headless control mode where there is no desktop to notify.
+let desktopNotificationSupport = 'unknown'; // 'unknown' | 'available' | 'unavailable'
+
+function probeDesktopNotificationSupport() {
+    if (process.platform !== 'linux' || desktopNotificationSupport !== 'unknown') return;
+    if (!process.env.DBUS_SESSION_BUS_ADDRESS) {
+        desktopNotificationSupport = 'unavailable';
+        return;
+    }
+
+    const attempts = [
+        ['gdbus', ['call', '--session', '--dest', 'org.freedesktop.DBus',
+            '--object-path', '/org/freedesktop/DBus',
+            '--method', 'org.freedesktop.DBus.GetNameOwner', 'org.freedesktop.Notifications']],
+        ['dbus-send', ['--session', '--print-reply', '--reply-timeout=2000',
+            '--dest=org.freedesktop.DBus', '/org/freedesktop/DBus',
+            'org.freedesktop.DBus.GetNameOwner', 'string:org.freedesktop.Notifications']]
+    ];
+
+    const tryNext = (index) => {
+        if (index >= attempts.length) {
+            // Nothing could confirm a notification service. Treat that as unavailable rather
+            // than finding out the expensive way: the cost of being wrong here is no desktop
+            // notifications, while the cost of guessing wrong the other way is a two minute
+            // freeze of the whole app. A machine with neither gdbus nor dbus-send almost
+            // certainly has no notification daemon either.
+            desktopNotificationSupport = 'unavailable';
+            console.warn('[Notifications] Could not confirm a notification service; notifications disabled.');
+            return;
+        }
+        const [command, args] = attempts[index];
+        let child;
+        try {
+            child = require('child_process').spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        } catch (_) {
+            tryNext(index + 1);
+            return;
+        }
+        let stderr = '';
+        try { child.stderr.on('data', (chunk) => { stderr += String(chunk); }); } catch (_) { }
+        const timer = setTimeout(() => { try { child.kill(); } catch (_) { } }, 4000);
+        child.on('error', () => { clearTimeout(timer); tryNext(index + 1); });
+        child.on('exit', (code) => {
+            clearTimeout(timer);
+            if (code === 0 && !/NameHasNoOwner/i.test(stderr)) {
+                desktopNotificationSupport = 'available';
+            } else if (/NameHasNoOwner|no such name/i.test(stderr) || code === 1) {
+                desktopNotificationSupport = 'unavailable';
+                console.warn('[Notifications] No desktop notification service on this session; notifications disabled.');
+            } else {
+                tryNext(index + 1);
+            }
+        });
+    };
+
+    tryNext(0);
+}
+
+function showDesktopNotification(options) {
     try {
+        if (headlessControlEnabled) return;
+        if (desktopNotificationSupport === 'unavailable') return;
         if (electron.Notification && typeof electron.Notification.isSupported === 'function' && !electron.Notification.isSupported()) {
             return;
         }
-        const notification = new electron.Notification({
-            title: String(title || 'Full Session Transfer'),
-            body: String(body || ''),
-            icon: TRANSFER_BACKUP_NOTIFICATION_ICON
+        const notification = new electron.Notification(options);
+        notification.on('failed', () => {
+            if (desktopNotificationSupport !== 'unavailable') {
+                desktopNotificationSupport = 'unavailable';
+                console.warn('[Notifications] Desktop notification failed; not trying again this session.');
+            }
         });
         notification.show();
     } catch (_) { }
+}
+
+probeDesktopNotificationSupport();
+
+function showTransferBackupNotification(title, body) {
+    showDesktopNotification({
+        title: String(title || 'Full Session Transfer'),
+        body: String(body || ''),
+        icon: TRANSFER_BACKUP_NOTIFICATION_ICON
+    });
 }
 
 function getTransferBackupConfig() {
@@ -1879,12 +1995,10 @@ const legacyRemoteControlEnabled = (
 );
 const headlessControlEnabled = process.argv.includes('--ssapp-headless-control')
     || (process.env.SSAPP_HEADLESS_CONTROL || '').trim() === '1';
-const controlApiEnabled = legacyRemoteControlEnabled
-    || headlessControlEnabled
-    || process.argv.includes('--ssapp-control-api')
+const controlApiEnabled = process.argv.includes('--ssapp-control-api')
     || (process.env.SSAPP_CONTROL_API || '').trim() === '1'
     || store.get('controlApi.enabled', false) === true;
-const remoteControlEnabled = controlApiEnabled;
+const remoteControlEnabled = legacyRemoteControlEnabled || controlApiEnabled;
 const remoteControlPort = (() => {
     const inline = process.argv.find(value => typeof value === 'string' && value.startsWith('--ssapp-control-port='));
     const index = process.argv.indexOf('--ssapp-control-port');
@@ -1894,39 +2008,18 @@ const remoteControlPort = (() => {
     const parsed = parseInt(raw, 10);
     return Number.isInteger(parsed) && parsed >= 1024 && parsed <= 65535 ? parsed : 17777;
 })();
-const remoteControlToken = (() => {
-    const inline = process.argv.find(value => typeof value === 'string' && value.startsWith('--ssapp-control-token='));
-    const index = process.argv.indexOf('--ssapp-control-token');
-    const tokenFileInline = process.argv.find(value => typeof value === 'string' && value.startsWith('--ssapp-control-token-file='));
-    const tokenFileIndex = process.argv.indexOf('--ssapp-control-token-file');
-    const tokenFile = (tokenFileInline ? tokenFileInline.slice('--ssapp-control-token-file='.length) : (tokenFileIndex >= 0 ? process.argv[tokenFileIndex + 1] : ''))
-        || (process.env.SSAPP_CONTROL_TOKEN_FILE || '').trim();
-    let fileToken = '';
-    if (tokenFile) {
-        try {
-            fileToken = fs.readFileSync(path.resolve(tokenFile), 'utf8').trim();
-        } catch (error) {
-            console.warn('[Control API] Unable to read token file:', error && error.message ? error.message : error);
-        }
-    }
-    const env = fileToken
-        || (process.env.SSAPP_CONTROL_TOKEN || '').trim()
-        || (inline ? inline.slice('--ssapp-control-token='.length) : (index >= 0 ? process.argv[index + 1] : ''))
-        || (process.env.SSAPP_REMOTE_CONTROL_TOKEN || '').trim();
-    if (env) return env;
-    const stored = String(store.get('controlApi.token', '') || '').trim();
-    if (stored.length >= 32) return stored;
-    const generated = crypto.randomBytes(32).toString('hex');
-    store.set('controlApi.token', generated);
-    return generated;
+const legacyRemoteControlToken = (() => {
+    if (!legacyRemoteControlEnabled) return '';
+    return (process.env.SSAPP_REMOTE_CONTROL_TOKEN || '').trim()
+        || crypto.randomBytes(32).toString('hex');
 })();
 const remoteControlFileSelections = [];
 let llmControlCommandHandler = null;
 let controlApiRouter = null;
 
-function matchesRemoteControlToken(value) {
+function matchesLegacyRemoteControlToken(value) {
     const supplied = Buffer.from(String(value || ''), 'utf8');
-    const expected = Buffer.from(remoteControlToken, 'utf8');
+    const expected = Buffer.from(legacyRemoteControlToken, 'utf8');
     return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
 }
 
@@ -2196,7 +2289,7 @@ function setupRemoteControlServer() {
                     session: currentSessionName,
                     headless: headlessControlEnabled,
                     mainWindowReady: !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents),
-                    mainWindowVisible: !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+                    mainWindowVisible: !!(mainWindow && !mainWindow.isDestroyed() && mainWindowVisible),
                     localMedia: localMediaService ? localMediaService.getStatus() : null
                 },
                 sources: sources && sources.ok ? sources.payload.sources : [],
@@ -2214,24 +2307,26 @@ function setupRemoteControlServer() {
 
     const server = http.createServer(async (req, res) => {
         const parsed = url.parse(req.url, true);
-        const token = (parsed.query && parsed.query.token) || req.headers['x-ssapp-token'];
-        // Always enforce token auth — token is auto-generated if not configured
-        if (!matchesRemoteControlToken(token)) {
-            res.writeHead(403, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
-            return;
-        }
-
-        try {
-            if (await controlApiRouter.handle(req, res, parsed)) return;
-        } catch (error) {
-            console.error('[Control API] Request failed:', error && error.stack ? error.stack : error);
-            if (!res.headersSent) {
-                res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-                res.end(JSON.stringify({ ok: false, error: 'internal_error' }));
-            } else {
-                res.destroy();
+        const isControlApiRequest = parsed.pathname.startsWith('/api/v1/');
+        const handleControlApiRequest = async () => {
+            try {
+                return await controlApiRouter.handle(req, res, parsed);
+            } catch (error) {
+                console.error('[Control API] Request failed:', error && error.stack ? error.stack : error);
+                if (!res.headersSent) {
+                    res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+                    res.end(JSON.stringify({ ok: false, error: 'internal_error' }));
+                } else {
+                    res.destroy();
+                }
+                return true;
             }
+        };
+
+        // The product API is intentionally local and unauthenticated. The separate legacy
+        // renderer-execution test harness keeps its existing token gate below.
+        if (controlApiEnabled && isControlApiRequest) {
+            await handleControlApiRequest();
             return;
         }
 
@@ -2240,18 +2335,30 @@ function setupRemoteControlServer() {
             res.end(JSON.stringify(payload));
         };
 
-        if (parsed.pathname === '/ping') {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-                ok: true,
-                version: app.getVersion(),
-                windows: BrowserWindow.getAllWindows().length
-            }));
+        if (!legacyRemoteControlEnabled) {
+            sendJson(404, { ok: false, error: 'not_found' });
             return;
         }
 
-        if (!legacyRemoteControlEnabled) {
-            sendJson(404, { ok: false, error: 'not_found' });
+        const token = (parsed.query && parsed.query.token) || req.headers['x-ssapp-token'];
+        if (!matchesLegacyRemoteControlToken(token)) {
+            sendJson(403, { ok: false, error: 'unauthorized' });
+            return;
+        }
+
+        if (parsed.pathname === '/ping') {
+            sendJson(200, {
+                ok: true,
+                version: app.getVersion(),
+                windows: BrowserWindow.getAllWindows().length
+            });
+            return;
+        }
+
+        // A few Electron integration tests use the declarative API through the legacy
+        // harness. Keep that compatibility without making --remote-control a product mode.
+        if (isControlApiRequest) {
+            await handleControlApiRequest();
             return;
         }
 
@@ -3006,9 +3113,65 @@ process.env.SSAPP_LOCALE_EFFECTIVE = SYSTEM_LOCALE;
 process.env.SSAPP_ACCEPT_LANGUAGE = acceptLangValue;
 process.env.SSAPP_LOCALE_SOURCE = localeOverrideSource || 'system';
 
+// enable-features / disable-features are single comma-separated switches, and
+// appendSwitch overwrites any previous value for the same switch instead of merging.
+// Calling appendSwitch('disable-features', ...) twice therefore silently threw away the
+// first list, so every feature set here has to go through these helpers.
+const chromiumFeatureSwitches = {
+    'enable-features': new Set(),
+    'disable-features': new Set()
+};
+
+function applyChromiumFeatureSwitch(switchName) {
+    const features = chromiumFeatureSwitches[switchName];
+    if (!features || !features.size) return;
+    app.commandLine.appendSwitch(switchName, [...features].join(','));
+}
+
+function addChromiumFeatures(switchName, features) {
+    const target = chromiumFeatureSwitches[switchName];
+    if (!target) return;
+    const opposite = switchName === 'enable-features'
+        ? chromiumFeatureSwitches['disable-features']
+        : chromiumFeatureSwitches['enable-features'];
+    let oppositeChanged = false;
+
+    const list = Array.isArray(features) ? features : String(features || '').split(',');
+    for (const feature of list) {
+        const name = String(feature || '').trim();
+        if (!name) continue;
+        // A feature listed on both switches is ambiguous to Chromium. Disabling wins,
+        // which is what the previous overwrite-the-switch behaviour ended up doing.
+        if (switchName === 'enable-features' && opposite.has(name)) continue;
+        if (switchName === 'disable-features' && opposite.delete(name)) oppositeChanged = true;
+        target.add(name);
+    }
+
+    // Re-apply the merged lists immediately so ordering of callers does not matter.
+    applyChromiumFeatureSwitch(switchName);
+    if (oppositeChanged) {
+        app.commandLine.appendSwitch(
+            switchName === 'disable-features' ? 'enable-features' : 'disable-features',
+            [...opposite].join(',')
+        );
+    }
+}
+
+function enableChromiumFeatures(features) {
+    addChromiumFeatures('enable-features', features);
+}
+
+function disableChromiumFeatures(features) {
+    addChromiumFeatures('disable-features', features);
+}
+
 // Chrome-specific feature flags from working code
-app.commandLine.appendSwitch('--enable-features', 'NetworkService,NetworkServiceInProcess,VaapiVideoDecoder');
-app.commandLine.appendSwitch('--disable-features', 'TranslateUI,BlinkGenPropertyTrees,ImprovedCookieControls,LazyFrameLoading');
+enableChromiumFeatures('NetworkService,NetworkServiceInProcess,VaapiVideoDecoder');
+disableChromiumFeatures('TranslateUI,BlinkGenPropertyTrees,ImprovedCookieControls,LazyFrameLoading');
+// Chromium 115+ keeps draws throttled once a surface has been evicted, which is one of
+// the ways a background capture window stops getting frames (and therefore stops running
+// requestAnimationFrame work such as YouTube live chat appending messages).
+disableChromiumFeatures('EvictionThrottlesDraw');
 app.commandLine.appendSwitch('--use-angle', 'default'); // Chrome's graphics backend
 
 // Performance and stability flags
@@ -4259,13 +4422,45 @@ function getClampedVisibleBoundsForDisplay(display, desiredBounds) {
     };
 }
 
-function getWindowStateDiagnosticsTolerance() {
+function getWindowStateDiagnosticsTolerance(win = null) {
+    const base = { x: 8, y: 8, width: 12, height: 12 };
+    if (process.platform !== 'linux') return base;
+
+    // Linux window managers reserve room for their own decorations, and screen.workArea does
+    // not account for it: asking for a window as tall as the work area comes back shifted
+    // down and shortened by the titlebar. Measured with xfwm4 at 1920x1080, a request for
+    // 1920x1080 at 0,0 is placed at 0,24 sized 1920x1056. That is legal placement by the
+    // window manager, not window state being lost, so allow for the frame it actually drew
+    // rather than failing the case. Horizontal tolerance stays tight; decorations there are
+    // a pixel or two.
+    let frameAllowance = 40;
+    try {
+        if (win && !win.isDestroyed()) {
+            const bounds = win.getBounds();
+            const content = win.getContentBounds();
+            const measured = Math.abs(bounds.height - content.height);
+            if (measured > 0) frameAllowance = measured + 8;
+        }
+    } catch (_) { }
+
     return {
-        x: 8,
-        y: 8,
-        width: 12,
-        height: 12
+        x: base.x,
+        y: Math.max(base.y, frameAllowance),
+        width: base.width,
+        height: Math.max(base.height, frameAllowance)
     };
+}
+
+// The property that actually matters for restored window state: the window has to land on
+// screen. A looser tolerance for decorations must not let a window drift off the work area.
+function isWindowWithinWorkArea(bounds, workArea, slack = 8) {
+    if (!bounds || !workArea) return true;
+    return (
+        bounds.x >= workArea.x - slack &&
+        bounds.y >= workArea.y - slack &&
+        (bounds.x + bounds.width) <= (workArea.x + workArea.width + slack) &&
+        (bounds.y + bounds.height) <= (workArea.y + workArea.height + slack)
+    );
 }
 
 function compareWindowBounds(expectedBounds, actualBounds) {
@@ -4353,6 +4548,927 @@ async function waitForWindowStateDiagnosticReady(win) {
     });
 
     await sleep(1000);
+}
+
+// Counts effective requestAnimationFrame delivery, timer delivery and chat row growth
+// inside a source window. Installed in the page's own world so it sees exactly what a
+// capture script would see.
+// What counts as "a chat message arrived" per platform. The YouTube and Twitch selectors are
+// confirmed against live chat; the Kick ones are best-effort, because Kick will not stream
+// chat to an unauthenticated window and could not be exercised.
+const HIDDEN_CAPTURE_ROW_SELECTOR = [
+    '.ssn-chat-row',                                                        // local fixture
+    'yt-live-chat-text-message-renderer', 'yt-live-chat-paid-message-renderer', // YouTube
+    '.chat-line__message', '[data-a-target="chat-line-message"]',           // Twitch
+    '.chat-entry', '[data-chat-entry]', '[id^="chatroom-message"]',         // Kick (unverified)
+    '[data-e2e="chat-message"]'                                             // TikTok
+].join(', ');
+
+// Runs only during hidden-capture diagnostics and soak tests. It records messages at two real
+// background.js boundaries: when processing starts and when a message reaches the
+// destination fan-out. This proves the source injector delivered chat through SSApp,
+// rather than merely proving that a third-party page continued changing its DOM.
+const HIDDEN_CAPTURE_BACKGROUND_PROBE_INSTALL = `(function () {
+	try {
+		if (window.__ssnHiddenCaptureBackgroundProbe) {
+			return { status: "already-installed" };
+		}
+		if (typeof processIncomingMessage !== "function" || typeof sendToDestinations !== "function") {
+			return {
+				status: "waiting",
+				processIncomingMessage: typeof processIncomingMessage,
+				sendToDestinations: typeof sendToDestinations
+			};
+		}
+
+		var probe = {
+			processed: 0,
+			destinations: 0,
+			processedByType: {},
+			destinationsByType: {},
+			lastProcessed: null,
+			lastDestination: null
+		};
+		var countType = function (counts, value) {
+			var type = String((value && value.type) || "unknown");
+			counts[type] = (counts[type] || 0) + 1;
+		};
+		var snapshot = function (value) {
+			try { return JSON.parse(JSON.stringify(value)); } catch (error) {
+				return {
+					type: value && value.type,
+					chatname: value && value.chatname,
+					chatmessage: value && value.chatmessage
+				};
+			}
+		};
+		var originalProcessIncomingMessage = processIncomingMessage;
+		var originalSendToDestinations = sendToDestinations;
+
+		processIncomingMessage = async function () {
+			probe.processed++;
+			countType(probe.processedByType, arguments[0]);
+			probe.lastProcessed = snapshot(arguments[0]);
+			return await originalProcessIncomingMessage.apply(this, arguments);
+		};
+		sendToDestinations = async function () {
+			probe.destinations++;
+			countType(probe.destinationsByType, arguments[0]);
+			probe.lastDestination = snapshot(arguments[0]);
+			return await originalSendToDestinations.apply(this, arguments);
+		};
+		try { window.sendToDestinations = sendToDestinations; } catch (error) { }
+
+		window.__ssnHiddenCaptureBackgroundProbe = probe;
+		return { status: "installed" };
+	} catch (error) {
+		return { status: "error", message: (error && error.message) ? error.message : String(error) };
+	}
+})();`;
+
+const HIDDEN_CAPTURE_BACKGROUND_PROBE_READ = `(function () {
+	var probe = window.__ssnHiddenCaptureBackgroundProbe;
+	if (!probe) { return null; }
+	return {
+		processed: probe.processed || 0,
+		destinations: probe.destinations || 0,
+		processedByType: Object.assign({}, probe.processedByType || {}),
+		destinationsByType: Object.assign({}, probe.destinationsByType || {}),
+		lastProcessed: probe.lastProcessed || null,
+		lastDestination: probe.lastDestination || null
+	};
+})();`;
+
+const HIDDEN_CAPTURE_PROBE_INSTALL = `(function () {
+	try {
+		if (window.__ssnCaptureProbe) { return "already"; }
+		var probe = { raf: 0, timer: 0, rows: 0 };
+		window.__ssnCaptureProbe = probe;
+		(function loop() { probe.raf++; requestAnimationFrame(loop); })();
+		setInterval(function () { probe.timer++; }, 16);
+
+		// Count appended chat rows the way a capture script does, rather than counting
+		// what is currently in the DOM: chat pages prune old messages, so a live count
+		// saturates and stops reflecting whether new messages are still arriving.
+		var ROW_SELECTOR = ${JSON.stringify(HIDDEN_CAPTURE_ROW_SELECTOR)};
+		var observer = new MutationObserver(function (records) {
+			for (var i = 0; i < records.length; i++) {
+				var added = records[i].addedNodes;
+				for (var j = 0; j < added.length; j++) {
+					var node = added[j];
+					if (!node || node.nodeType !== 1) { continue; }
+					try {
+						// Count the node itself and anything matching inside it: YouTube appends
+						// message elements directly, while Twitch and Kick append a wrapper with
+						// the message nested in it.
+						if (node.matches(ROW_SELECTOR)) { probe.rows++; }
+						probe.rows += node.querySelectorAll(ROW_SELECTOR).length;
+					} catch (error) { }
+				}
+			}
+		});
+		observer.observe(document.documentElement, { childList: true, subtree: true });
+		return "installed";
+	} catch (error) {
+		return "error: " + ((error && error.message) ? error.message : String(error));
+	}
+})();`;
+
+const HIDDEN_CAPTURE_PROBE_READ = `(function () {
+	var probe = window.__ssnCaptureProbe || { raf: 0, timer: 0, rows: 0 };
+	return {
+		raf: probe.raf,
+		timer: probe.timer,
+		rows: probe.rows,
+		visibility: document.visibilityState,
+		pump: window.__ssnFramePump ? window.__ssnFramePump.stats() : null
+	};
+})();`;
+
+function getHiddenCaptureDiagnosticUrl() {
+    const arg = process.argv.find((value) => typeof value === 'string' && value.startsWith('--hidden-capture-url='));
+    if (arg) {
+        const value = arg.slice('--hidden-capture-url='.length).trim();
+        if (value) return value;
+    }
+    return pathToFileURL(path.join(__dirname, 'tests', 'electron', 'fixtures', 'hidden-capture.html')).href;
+}
+
+function getHiddenCaptureDiagnosticSourceFiles(targetUrl) {
+    const explicit = process.argv
+        .filter((value) => typeof value === 'string' && value.startsWith('--hidden-capture-source='))
+        .map((value) => value.slice('--hidden-capture-source='.length).trim())
+        .filter(Boolean);
+    if (explicit.length) return [...new Set(explicit)];
+
+    try {
+        const parsed = new URL(targetUrl);
+        const hostname = String(parsed.hostname || '').toLowerCase();
+        if (
+            parsed.protocol === 'file:' &&
+            path.basename(fileURLToPath(parsed)) === 'hidden-capture.html'
+        ) {
+            const fixturePlatform = String(parsed.searchParams.get('platform') || 'youtube').toLowerCase();
+			if (['youtube', 'twitch', 'kick', 'tiktok'].includes(fixturePlatform)) {
+                return [`sources/${fixturePlatform}.js`];
+            }
+            return [];
+        }
+        if (hostname === 'youtube.com' || hostname.endsWith('.youtube.com')) return ['sources/youtube.js'];
+        if (hostname === 'twitch.tv' || hostname.endsWith('.twitch.tv')) return ['sources/twitch.js'];
+        if (hostname === 'kick.com' || hostname.endsWith('.kick.com')) return ['sources/kick.js'];
+        if (hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com')) return ['sources/tiktok.js'];
+    } catch (_) { }
+    return [];
+}
+
+function getHiddenCaptureDiagnosticSourceRoot() {
+    const arg = process.argv.find((value) => typeof value === 'string' && value.startsWith('--hidden-capture-filesource='));
+    return arg ? arg.slice('--hidden-capture-filesource='.length).trim() : '';
+}
+
+function getHiddenCaptureBackgroundFrame() {
+    try {
+        if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents) return null;
+        const rootFrame = mainWindow.webContents.mainFrame;
+        const frames = rootFrame && Array.isArray(rootFrame.framesInSubtree)
+            ? rootFrame.framesInSubtree
+            : (rootFrame && Array.isArray(rootFrame.frames) ? rootFrame.frames : []);
+        return frames.find((frame) => frame && matchesSocialStreamPagePath(frame.url || '', 'background')) || null;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function installHiddenCaptureBackgroundProbe() {
+    return await waitForCondition(async () => {
+        const frame = getHiddenCaptureBackgroundFrame();
+        if (!frame) return null;
+        try {
+            const result = await frame.executeJavaScript(HIDDEN_CAPTURE_BACKGROUND_PROBE_INSTALL, true);
+            if (result && (result.status === 'installed' || result.status === 'already-installed')) {
+                return { frame, result };
+            }
+        } catch (_) { }
+        return null;
+    }, 20000, 250);
+}
+
+async function readHiddenCaptureBackgroundProbe(frame) {
+    try {
+        if (!frame || (typeof frame.isDestroyed === 'function' && frame.isDestroyed())) return null;
+        return await frame.executeJavaScript(HIDDEN_CAPTURE_BACKGROUND_PROBE_READ, true);
+    } catch (_) {
+        return null;
+    }
+}
+
+function getHiddenCaptureOverlapRatio(sourceBounds, coverBounds) {
+    if (!sourceBounds || !coverBounds || sourceBounds.width <= 0 || sourceBounds.height <= 0) return 0;
+    const left = Math.max(sourceBounds.x, coverBounds.x);
+    const top = Math.max(sourceBounds.y, coverBounds.y);
+    const right = Math.min(sourceBounds.x + sourceBounds.width, coverBounds.x + coverBounds.width);
+    const bottom = Math.min(sourceBounds.y + sourceBounds.height, coverBounds.y + coverBounds.height);
+    const overlap = Math.max(0, right - left) * Math.max(0, bottom - top);
+    return overlap / (sourceBounds.width * sourceBounds.height);
+}
+
+async function createHiddenCaptureOccluder(view) {
+    const requestedBounds = view.getBounds();
+    const cover = new BrowserWindow({
+        x: requestedBounds.x,
+        y: requestedBounds.y,
+        width: requestedBounds.width,
+        height: requestedBounds.height,
+        show: false,
+        frame: false,
+        skipTaskbar: true,
+        alwaysOnTop: true,
+        backgroundColor: '#050505',
+        webPreferences: {
+            backgroundThrottling: false
+        }
+    });
+    await cover.loadURL('data:text/html;charset=utf-8,<title>Hidden capture occluder</title><body style="margin:0;background:%23050505"></body>');
+    try { cover.setBounds(requestedBounds); } catch (_) { }
+    cover.show();
+    try { cover.setAlwaysOnTop(true); } catch (_) { }
+    try { cover.focus(); } catch (_) { }
+    await sleep(800);
+
+    const sourceBounds = view.getBounds();
+    const coverBounds = cover.getBounds();
+    return {
+        cover,
+        sourceBounds,
+        coverBounds,
+        overlapRatio: getHiddenCaptureOverlapRatio(sourceBounds, coverBounds)
+    };
+}
+
+// Verifies the two things this issue is about: hiding a source window really hides it on
+// Linux, and capture keeps running while it is hidden.
+async function runHiddenCaptureDiagnostics() {
+    const targetUrl = getHiddenCaptureDiagnosticUrl();
+    const sourceFiles = getHiddenCaptureDiagnosticSourceFiles(targetUrl);
+    const sourceRoot = getHiddenCaptureDiagnosticSourceRoot();
+    const report = {
+        startedAt: new Date().toISOString(),
+        platform: process.platform,
+        electron: process.versions.electron,
+        chrome: process.versions.chrome,
+        sessionType: process.env.XDG_SESSION_TYPE || null,
+        waylandDisplay: process.env.WAYLAND_DISPLAY || null,
+        isWaylandSession: isWaylandSession(),
+        ozonePlatform: app.commandLine.getSwitchValue('ozone-platform') || null,
+        headlessControl: headlessControlEnabled,
+        framePumpDisabled: isFramePumpDisabled(),
+        featureSwitches: {
+            enable: app.commandLine.getSwitchValue('enable-features'),
+            disable: app.commandLine.getSwitchValue('disable-features')
+        },
+        url: targetUrl,
+        sourceFiles,
+        sourceRoot: sourceRoot || null,
+        phases: [],
+        checks: [],
+        summary: { passed: 0, failed: 0 }
+    };
+
+    const headless = headlessControlEnabled;
+
+    const check = (id, passed, detail) => {
+        report.checks.push({ id, passed: !!passed, detail: detail || null });
+        if (passed) {
+            report.summary.passed += 1;
+        } else {
+            report.summary.failed += 1;
+        }
+    };
+
+    await waitForCondition(() => mainWindow && !mainWindow.isDestroyed(), 15000, 100);
+    await sleep(500);
+
+    const backgroundProbe = await installHiddenCaptureBackgroundProbe();
+    report.backgroundProbeInstall = backgroundProbe.result;
+    check(
+        'pipeline.background_probe_installed',
+        !!backgroundProbe.frame,
+        `status=${backgroundProbe.result && backgroundProbe.result.status}`
+    );
+
+    // Create the source window through the real IPC handler so the diagnostic exercises
+    // the same preload, session, hide/show and injection code paths users get.
+    if (typeof sourceWindowCreateHandler !== 'function') {
+        throw new Error('Source window IPC handler is not registered yet');
+    }
+    // --hidden-capture-start-hidden covers the case a user hits by adding a source with its
+    // window switched off: the window is hidden before it has ever been shown, which is a
+    // different Chromium state from hiding a window that was on screen a moment ago.
+    const startHidden = process.argv.includes('--hidden-capture-start-hidden');
+    report.startedHidden = startHidden;
+
+    const created = {};
+    const sourceWindowArgs = {
+        url: targetUrl,
+        visible: !startHidden,
+        sourceFiles
+    };
+    if (sourceRoot) sourceWindowArgs.filesource = sourceRoot;
+    sourceWindowCreateHandler(created, sourceWindowArgs);
+    const tabID = created.returnValue;
+    if (!tabID) {
+        throw new Error('Source window creation returned no tab id');
+    }
+    const view = browserViews[tabID];
+    if (!view) {
+        throw new Error(`Source window ${tabID} missing from registry`);
+    }
+    report.tabID = tabID;
+
+    try {
+        await waitForCondition(() => {
+            try { return !view.webContents.isLoading(); } catch (_) { return false; }
+        }, 45000, 250);
+		await sleep(6000); // let a real chat page connect and start streaming
+
+		report.pageState = await view.webContents.executeJavaScript(`(() => ({
+			href: location.href,
+			pathname: location.pathname,
+			readyState: document.readyState,
+			fixturePlatform: window.__fixturePlatform || null,
+			fixtureLocationError: window.__fixtureLocationError || null,
+			chatMessageRows: document.querySelectorAll('[data-e2e="chat-message"]').length,
+			hasChatRoom: !!document.querySelector('[data-e2e="chat-room"]')
+		}))()`, true);
+
+		report.probeInstall = await view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_INSTALL, true);
+        await sleep(500);
+
+        // Live chat arrives at whatever rate the stream happens to be busy at, so sample
+        // real pages for longer than the fixture, which appends at a fixed 20 rows/second.
+        const sampleMs = targetUrl.startsWith('file:') ? 6000 : 10000;
+
+        let zeroFramePhase = null;
+        let occludedPhase = null;
+
+        const sample = async (label, ms = sampleMs) => {
+            const before = await view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_READ, true);
+            const backgroundBefore = await readHiddenCaptureBackgroundProbe(backgroundProbe.frame);
+            await sleep(ms);
+            const after = await view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_READ, true);
+            const backgroundAfter = await readHiddenCaptureBackgroundProbe(backgroundProbe.frame);
+            const phase = {
+                label,
+                windowMs: ms,
+                rafPerSecond: Math.round(((after.raf - before.raf) / ms) * 1000),
+                timerPerSecond: Math.round(((after.timer - before.timer) / ms) * 1000),
+                rowsAdded: after.rows - before.rows,
+                visibilityState: after.visibility,
+                nativeVisible: (() => { try { return view.isVisible(); } catch (_) { return null; } })(),
+                minimized: (() => { try { return view.isMinimized(); } catch (_) { return null; } })(),
+                logicalVisible: view.__ss_visible !== false,
+                messagesProcessed: (backgroundBefore && backgroundAfter)
+                    ? backgroundAfter.processed - backgroundBefore.processed
+                    : null,
+                messagesSentToDestinations: (backgroundBefore && backgroundAfter)
+                    ? backgroundAfter.destinations - backgroundBefore.destinations
+                    : null,
+                pump: after.pump,
+                pumpedBatchesAdded: (after.pump && before.pump)
+                    ? after.pump.pumpedBatches - before.pump.pumpedBatches
+                    : null,
+                nativeBatchesAdded: (after.pump && before.pump)
+                    ? after.pump.nativeBatches - before.pump.nativeBatches
+                    : null
+            };
+            report.phases.push(phase);
+            return phase;
+        };
+
+        // Under --ssapp-headless-control every window is forced hidden and stays that way,
+        // so this first phase is already a hidden window there. That is the interesting case
+        // for a cloud or server install: it is exactly the state capture has to survive.
+        const startupLabel = (headless || startHidden) ? 'startup (created hidden)' : 'visible';
+        const visible = await sample(startupLabel);
+        check('startup.frames_running', visible.rafPerSecond > 5, `rAF/s=${visible.rafPerSecond}`);
+        check('pump.installed', !!visible.pump, `pump=${JSON.stringify(visible.pump)}`);
+        if (headless || startHidden) {
+            check(
+                'startup.window_not_shown',
+                visible.nativeVisible === false,
+                `isVisible()=${visible.nativeVisible}`
+            );
+        }
+
+        // A visible but fully covered Wayland surface is #875's exact failure mode. Put an
+        // opaque always-on-top window over the source and verify both compositor-driven work
+        // and the real Social Stream message pipeline continue. Hidden/headless runs skip
+        // this because those windows are never mapped in the first place.
+        if (process.platform === 'linux' && !headless && !startHidden) {
+            let occluder = null;
+            try {
+                occluder = await createHiddenCaptureOccluder(view);
+                report.occlusion = {
+                    sourceBounds: occluder.sourceBounds,
+                    coverBounds: occluder.coverBounds,
+                    overlapRatio: occluder.overlapRatio
+                };
+                check(
+                    'occluded.window_fully_covered',
+                    occluder.overlapRatio >= 0.98,
+                    `overlap=${Math.round(occluder.overlapRatio * 100)}%`
+                );
+                occludedPhase = await sample('fully occluded');
+                check('occluded.frames_running', occludedPhase.rafPerSecond > 5, `rAF/s=${occludedPhase.rafPerSecond}`);
+            } finally {
+                try {
+                    if (occluder && occluder.cover && !occluder.cover.isDestroyed()) {
+                        occluder.cover.destroy();
+                    }
+                } catch (_) { }
+            }
+            await sleep(500);
+        }
+
+        // Hide through the same code path the UI's hide button uses.
+        applySourceWindowVisibility(view, { state: true });
+        await sleep(1200);
+
+        let nativeVisibleWhileHidden = null;
+        try { nativeVisibleWhileHidden = view.isVisible(); } catch (_) { }
+        check(
+            'hide.window_actually_hidden',
+            nativeVisibleWhileHidden === false,
+            `isVisible()=${nativeVisibleWhileHidden}`
+        );
+        check('hide.logical_state', view.__ss_visible === false, `__ss_visible=${view.__ss_visible}`);
+
+        const hidden = await sample('hidden');
+        check('hidden.frames_running', hidden.rafPerSecond > 5, `rAF/s=${hidden.rafPerSecond}`);
+        check('hidden.timers_running', hidden.timerPerSecond > 20, `timer/s=${hidden.timerPerSecond}`);
+        if (headless || startHidden) {
+            // A window hidden before it was ever shown keeps reporting "hidden" to the page,
+            // on every platform, so this is recorded rather than asserted. What matters is
+            // that timers and capture keep running, which is checked above.
+            report.hiddenFromBirthVisibilityState = hidden.visibilityState;
+        } else {
+            check(
+                'hidden.visibility_state_visible',
+                hidden.visibilityState === 'visible',
+                `visibilityState=${hidden.visibilityState}`
+            );
+        }
+
+        // Eviction and draw throttling only kick in after a surface has been invisible for
+        // a while, so sample again later rather than declaring victory immediately.
+        await sleep(20000);
+        const settled = await sample('hidden after 20s');
+        check('hidden_settled.frames_running', settled.rafPerSecond > 5, `rAF/s=${settled.rafPerSecond}`);
+
+        // Within-run A/B of the two mitigations on this machine. Put the window back under
+        // Chromium's normal throttling, measure, then re-arm. Capture has to survive the
+        // throttled window too, because that is the state the pump exists for: it is what an
+        // on-screen window looks like when the compositor has quietly stopped redrawing it.
+        let throttled = null;
+        try {
+            view.webContents.setBackgroundThrottling(true);
+            await sleep(1500);
+            throttled = await sample('hidden, throttling restored');
+            check('throttled.capture_survives', throttled.rafPerSecond > 5, `rAF/s=${throttled.rafPerSecond}`);
+        } catch (error) {
+            report.throttleAbNote = `could not toggle throttling: ${error && error.message}`;
+        } finally {
+            // Put back the constructor setting either way.
+            try { view.webContents.setBackgroundThrottling(false); } catch (_) { }
+            await sleep(1500);
+        }
+
+        const rearmed = await sample("hidden, throttling restored to default");
+        check('rearmed.frames_running', rearmed.rafPerSecond > 5, `rAF/s=${rearmed.rafPerSecond}`);
+        report.backgroundThrottlingEffect = throttled ? {
+            nativeFramesReArmed: settled.nativeBatchesAdded,
+            nativeFramesThrottled: throttled.nativeBatchesAdded,
+            pumpedFramesReArmed: settled.pumpedBatchesAdded,
+            pumpedFramesThrottled: throttled.pumpedBatchesAdded,
+            helped: (typeof settled.nativeBatchesAdded === 'number' && typeof throttled.nativeBatchesAdded === 'number')
+                ? settled.nativeBatchesAdded > throttled.nativeBatchesAdded * 2
+                : null
+        } : null;
+
+        applySourceWindowVisibility(view, { state: false, userInitiated: true });
+        await sleep(1500);
+
+        let nativeVisibleAfterReveal = null;
+        try { nativeVisibleAfterReveal = view.isVisible(); } catch (_) { }
+        if (headless) {
+            // Headless control refuses to show windows at all, which is the point of it.
+            check(
+                'headless.reveal_stays_hidden',
+                nativeVisibleAfterReveal === false,
+                `isVisible()=${nativeVisibleAfterReveal}`
+            );
+        } else {
+            check('reveal.window_visible', nativeVisibleAfterReveal === true, `isVisible()=${nativeVisibleAfterReveal}`);
+            check('reveal.logical_state', view.__ss_visible === true, `__ss_visible=${view.__ss_visible}`);
+        }
+
+        const revealed = await sample(headless ? 'after reveal request (still hidden)' : 'revealed');
+        check('revealed.frames_running', revealed.rafPerSecond > 5, `rAF/s=${revealed.rafPerSecond}`);
+
+        report.framePumpStats = await readFramePumpStats(view.webContents);
+
+        // Last phase, because it permanently breaks this page's real frame callbacks:
+        // stub requestAnimationFrame so it never calls back, reinstall the pump on top of
+        // that, and confirm callbacks still run. This is the condition a window hits when a
+        // compositor stops sending frame callbacks altogether, which is what kills capture
+        // for backgrounded windows on some Wayland setups.
+        if (!isFramePumpDisabled()) {
+            report.zeroFrameSetup = await view.webContents.executeJavaScript(`(function () {
+	try {
+		if (window.__ssnFramePump) { window.__ssnFramePump.dispose(); }
+		window.requestAnimationFrame = function () { return 0; };
+		window.cancelAnimationFrame = function () { };
+		return "stubbed";
+	} catch (error) {
+		return "error: " + ((error && error.message) ? error.message : String(error));
+	}
+})();`, true);
+
+            installFramePump(view.webContents);
+            await sleep(600);
+            // The probe's own frame loop died with the old pump; restart it so it is driven
+            // by the freshly installed pump and nothing else.
+            await view.webContents.executeJavaScript(`(function () {
+	var probe = window.__ssnCaptureProbe;
+	if (!probe) { return "no-probe"; }
+	(function loop() { probe.raf++; requestAnimationFrame(loop); })();
+	return "restarted";
+})();`, true);
+
+            const zeroFrame = await sample('zero native frames');
+            zeroFramePhase = zeroFrame;
+            check(
+                'zero_frames.callbacks_still_run',
+                zeroFrame.rafPerSecond > 5,
+                `rAF/s=${zeroFrame.rafPerSecond}`
+            );
+            check(
+                'zero_frames.pump_is_the_driver',
+                zeroFrame.pumpedBatchesAdded > 0 && zeroFrame.nativeBatchesAdded === 0,
+                `pumped=${zeroFrame.pumpedBatchesAdded} native=${zeroFrame.nativeBatchesAdded}`
+            );
+        }
+
+        // Chat row growth is asserted in aggregate rather than per phase. A live stream
+        // delivers messages at whatever rate it happens to be busy at, so a single quiet
+        // sample window means nothing, whereas "rows arrived on screen but never once while
+        // hidden" is exactly the reported bug.
+		const onScreenRows = visible.rowsAdded + revealed.rowsAdded;
+		const hiddenRows = hidden.rowsAdded + settled.rowsAdded + rearmed.rowsAdded
+			+ (throttled ? throttled.rowsAdded : 0);
+		const occludedRows = occludedPhase ? occludedPhase.rowsAdded : null;
+		const zeroFrameRows = zeroFramePhase ? zeroFramePhase.rowsAdded : null;
+		report.rowGrowth = { onScreenRows, hiddenRows, occludedRows, zeroFrameRows };
+		const pipelineOnlySource = sourceFiles.some((sourceFile) =>
+			String(sourceFile || '').replace(/\\/g, '/').includes('sources/websocket/')
+		);
+		report.pipelineOnlySource = pipelineOnlySource;
+
+		if (pipelineOnlySource) {
+			// WebSocket source pages do not need to render chat rows. Their real success
+			// criterion is the background destination pipeline checked immediately below.
+			check('rows.not_required_for_transport_source', true, 'WebSocket source uses pipeline delivery.');
+		} else if (onScreenRows + hiddenRows === 0) {
+            // Nothing to measure: the page never produced a chat row in any state, so this
+            // says the target was unusable, not that capture is broken.
+            check(
+                'rows.target_produces_chat',
+                false,
+                `no chat rows in any phase - is ${targetUrl} actually live with chat enabled?`
+            );
+        } else {
+            check(
+                'rows.growing_while_hidden',
+                hiddenRows > 0,
+                `hidden=${hiddenRows} rows vs on-screen=${onScreenRows} rows`
+            );
+            if (zeroFrameRows !== null) {
+                check(
+                    'rows.growing_with_zero_frames',
+                    zeroFrameRows > 0,
+                    `rows added=${zeroFrameRows} with no compositor frames`
+                );
+            }
+        }
+
+        const allPhases = report.phases || [];
+        const destinationMessages = allPhases.reduce(
+            (total, phase) => total + (Number.isFinite(phase.messagesSentToDestinations) ? phase.messagesSentToDestinations : 0),
+            0
+        );
+        const hiddenDestinationMessages = [hidden, settled, rearmed, throttled]
+            .filter(Boolean)
+            .reduce(
+                (total, phase) => total + (Number.isFinite(phase.messagesSentToDestinations) ? phase.messagesSentToDestinations : 0),
+                0
+            );
+        report.pipeline = {
+            destinationMessages,
+            hiddenDestinationMessages,
+            occludedDestinationMessages: occludedPhase ? occludedPhase.messagesSentToDestinations : null,
+            zeroFrameDestinationMessages: zeroFramePhase ? zeroFramePhase.messagesSentToDestinations : null,
+            finalProbe: await readHiddenCaptureBackgroundProbe(backgroundProbe.frame)
+        };
+
+        if (sourceFiles.length) {
+            check(
+                'pipeline.messages_reach_destinations',
+                destinationMessages > 0,
+                `messages=${destinationMessages}`
+            );
+            check(
+                'pipeline.hidden_messages_reach_destinations',
+                hiddenDestinationMessages > 0,
+                `messages=${hiddenDestinationMessages}`
+            );
+            if (occludedPhase) {
+                check(
+                    'pipeline.occluded_messages_reach_destinations',
+                    occludedPhase.messagesSentToDestinations > 0,
+                    `messages=${occludedPhase.messagesSentToDestinations}`
+                );
+            }
+            if (zeroFramePhase) {
+                check(
+                    'pipeline.zero_frame_messages_reach_destinations',
+                    zeroFramePhase.messagesSentToDestinations > 0,
+                    `messages=${zeroFramePhase.messagesSentToDestinations}`
+                );
+            }
+        }
+    } finally {
+        try {
+            app.isQuitting = true;
+            if (!isBrowserViewDestroyed(view)) view.destroy();
+        } catch (_) { }
+    }
+
+    report.finishedAt = new Date().toISOString();
+    report.success = report.summary.failed === 0;
+
+    if (HIDDEN_CAPTURE_DIAGNOSTICS_REPORT_PATH) {
+        try {
+            await fsp.writeFile(
+                HIDDEN_CAPTURE_DIAGNOSTICS_REPORT_PATH,
+                JSON.stringify(report, null, 2),
+                'utf8'
+            );
+        } catch (error) {
+            console.error('[HiddenCaptureDiagnostics] Failed to write report:', error && error.message);
+        }
+    }
+
+    return report;
+}
+
+// Long-running version of the same idea, for the question the short diagnostic cannot
+// answer: does capture in a hidden window keep working for hours, or does it quietly stop
+// after a while? Frame eviction, memory pressure and idle socket timeouts all take minutes
+// to show up, and each platform reacts differently.
+async function runHiddenCaptureSoak() {
+    const urls = process.argv
+        .filter((value) => typeof value === 'string' && value.startsWith('--hidden-capture-soak-url='))
+        .map((value) => value.slice('--hidden-capture-soak-url='.length).trim())
+        .filter(Boolean);
+    if (!urls.length) {
+        urls.push(getHiddenCaptureDiagnosticUrl());
+    }
+
+    const minutesArg = process.argv.find((value) => typeof value === 'string' && value.startsWith('--hidden-capture-soak-minutes='));
+    const minutes = Math.max(1, parseInt(minutesArg ? minutesArg.slice('--hidden-capture-soak-minutes='.length) : '30', 10) || 30);
+    const reportArg = process.argv.find((value) => typeof value === 'string' && value.startsWith('--hidden-capture-soak-report='));
+    const reportPath = reportArg ? reportArg.slice('--hidden-capture-soak-report='.length) : null;
+    // Windows created hidden never get compositor frames at all, so capture there runs
+    // entirely on the frame pump. That is the harsher case and the one worth soaking.
+    const startHidden = process.argv.includes('--hidden-capture-soak-start-hidden');
+    const sourceRoot = getHiddenCaptureDiagnosticSourceRoot();
+
+    const appendLine = async (entry) => {
+        if (!reportPath) return;
+        try {
+            await fsp.appendFile(reportPath, JSON.stringify(entry) + '\n', 'utf8');
+        } catch (_) { }
+    };
+
+    console.log(`[HiddenCaptureSoak] ${urls.length} window(s), ${minutes} minute(s)`);
+    await appendLine({
+        type: 'start',
+        at: new Date().toISOString(),
+        electron: process.versions.electron,
+        chrome: process.versions.chrome,
+        platform: process.platform,
+        headlessControl: headlessControlEnabled,
+        wayland: isWaylandSession(),
+        minutes,
+        startHidden,
+        urls
+    });
+
+    await waitForCondition(() => mainWindow && !mainWindow.isDestroyed(), 15000, 100);
+    await sleep(500);
+    const backgroundProbe = await installHiddenCaptureBackgroundProbe();
+    if (typeof sourceWindowCreateHandler !== 'function') {
+        throw new Error('Source window IPC handler is not registered yet');
+    }
+
+    // Build every window through the real source path, let it settle, then hide it the way
+    // the hide button does.
+    const windows = [];
+    for (const url of urls) {
+        const sourceFiles = getHiddenCaptureDiagnosticSourceFiles(url);
+        const sourceWindowArgs = { url, visible: !startHidden, sourceFiles };
+        if (sourceRoot) sourceWindowArgs.filesource = sourceRoot;
+        const created = {};
+        sourceWindowCreateHandler(created, sourceWindowArgs);
+        const tabID = created.returnValue;
+        const view = tabID ? browserViews[tabID] : null;
+        if (!view) {
+            console.error(`[HiddenCaptureSoak] could not create a window for ${url}`);
+            await appendLine({ type: 'error', at: new Date().toISOString(), url, error: 'window-not-created' });
+            continue;
+        }
+        const expectedType = sourceFiles.length ? path.basename(sourceFiles[0], '.js') : null;
+        windows.push({ url, tabID, view, sourceFiles, expectedType, samples: [], loadError: null });
+    }
+    if (!windows.length) {
+        throw new Error('No source windows could be created');
+    }
+
+    for (const entry of windows) {
+        try {
+            await waitForCondition(() => {
+                try { return !entry.view.webContents.isLoading(); } catch (_) { return false; }
+            }, 60000, 250);
+        } catch (_) {
+            entry.loadError = 'timed-out-loading';
+        }
+    }
+    await sleep(8000); // let chat clients connect and backfill
+
+    for (const entry of windows) {
+        try {
+            entry.probeInstall = await entry.view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_INSTALL, true);
+        } catch (error) {
+            entry.probeInstall = `error: ${error && error.message}`;
+        }
+        // Snapshot what the page actually is. A window that never reports a chat row is
+        // usually a page that never loaded a chat - a login wall, a bot check, a dead
+        // channel - rather than capture breaking, and that difference matters.
+        try {
+            entry.snapshot = await entry.view.webContents.executeJavaScript(`(function () {
+	var counts = {};
+	${JSON.stringify(HIDDEN_CAPTURE_ROW_SELECTOR.split(', '))}.forEach(function (selector) {
+		try {
+			var n = document.querySelectorAll(selector).length;
+			if (n > 0) { counts[selector] = n; }
+		} catch (error) { }
+	});
+	return {
+		url: location.href,
+		title: document.title,
+		text: (document.body ? document.body.innerText : "").slice(0, 200).replace(/\\s+/g, " "),
+		matchedSelectors: counts
+	};
+})();`, true);
+        } catch (error) {
+            entry.snapshot = { error: (error && error.message) || String(error) };
+        }
+        await appendLine({ type: 'snapshot', at: new Date().toISOString(), url: entry.url, snapshot: entry.snapshot });
+        console.log(`[HiddenCaptureSoak] page ${entry.url.slice(0, 46)} -> ${JSON.stringify(entry.snapshot).slice(0, 260)}`);
+
+        if (!startHidden) {
+            applySourceWindowVisibility(entry.view, { state: true });
+        }
+    }
+    await sleep(2000);
+
+    const readSample = async (entry) => {
+        const read = () => entry.view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_READ, true);
+        const before = await read();
+        const backgroundBefore = await readHiddenCaptureBackgroundProbe(backgroundProbe.frame);
+        await sleep(5000);
+        const after = await read();
+        const backgroundAfter = await readHiddenCaptureBackgroundProbe(backgroundProbe.frame);
+        const beforeTypeCount = entry.expectedType && backgroundBefore
+            ? Number(backgroundBefore.destinationsByType && backgroundBefore.destinationsByType[entry.expectedType]) || 0
+            : null;
+        const afterTypeCount = entry.expectedType && backgroundAfter
+            ? Number(backgroundAfter.destinationsByType && backgroundAfter.destinationsByType[entry.expectedType]) || 0
+            : null;
+        return {
+            rafPerSecond: Math.round((after.raf - before.raf) / 5),
+            timerPerSecond: Math.round((after.timer - before.timer) / 5),
+            rowsAdded: after.rows - before.rows,
+            rowsTotal: after.rows,
+            visibilityState: after.visibility,
+            nativeVisible: (() => { try { return entry.view.isVisible(); } catch (_) { return null; } })(),
+            messagesSentToDestinations: beforeTypeCount === null || afterTypeCount === null
+                ? null
+                : afterTypeCount - beforeTypeCount,
+            pumped: after.pump ? after.pump.pumpedBatches : null,
+            native: after.pump ? after.pump.nativeBatches : null
+        };
+    };
+
+    const startedAt = Date.now();
+    for (let minute = 0; minute < minutes; minute += 1) {
+        for (const entry of windows) {
+            let sample;
+            try {
+                if (isBrowserViewDestroyed(entry.view)) throw new Error('window destroyed');
+                sample = await readSample(entry);
+            } catch (error) {
+                sample = { error: (error && error.message) || String(error) };
+            }
+            sample.minute = minute;
+            sample.elapsedMs = Date.now() - startedAt;
+            entry.samples.push(sample);
+            await appendLine({ type: 'sample', at: new Date().toISOString(), url: entry.url, ...sample });
+            console.log(
+                `[HiddenCaptureSoak] m${String(minute).padStart(3)} ${entry.url.slice(0, 52).padEnd(52)} ` +
+                (sample.error
+                    ? `ERROR ${sample.error}`
+                    : `rAF/s=${String(sample.rafPerSecond).padStart(3)} timer/s=${String(sample.timerPerSecond).padStart(3)} ` +
+                      `rows+=${String(sample.rowsAdded).padStart(4)} total=${String(sample.rowsTotal).padStart(5)} ` +
+                      `destinations+=${String(sample.messagesSentToDestinations ?? 0).padStart(4)} ` +
+                      `visible=${sample.nativeVisible} frames(native/pumped)=${sample.native}/${sample.pumped}`)
+            );
+        }
+        const spent = Date.now() - startedAt - minute * 60000;
+        await sleep(Math.max(1000, 60000 - spent));
+    }
+
+    // A window "paused" if capture was working and then stopped: rows arrived at some point
+    // while hidden, and then never again before the end of the run.
+    const results = windows.map((entry) => {
+        const ok = entry.samples.filter((s) => !s.error);
+        const rowsWhileHidden = ok.reduce((sum, s) => sum + (s.rowsAdded || 0), 0);
+        const lastMinuteWithRows = ok.reduce((last, s) => (s.rowsAdded > 0 ? s.minute : last), -1);
+        const minutesWithRows = ok.filter((s) => s.rowsAdded > 0).length;
+        const minRaf = ok.length ? Math.min(...ok.map((s) => s.rafPerSecond)) : null;
+        const minTimer = ok.length ? Math.min(...ok.map((s) => s.timerPerSecond)) : null;
+        const destinationMessagesWhileHidden = ok.reduce(
+            (sum, sample) => sum + (Number.isFinite(sample.messagesSentToDestinations) ? sample.messagesSentToDestinations : 0),
+            0
+        );
+        const everProducedRows = rowsWhileHidden > 0;
+        const quietTailMinutes = everProducedRows ? (minutes - 1 - lastMinuteWithRows) : null;
+        return {
+            url: entry.url,
+            loadError: entry.loadError,
+            probeInstall: entry.probeInstall,
+            snapshot: entry.snapshot,
+            samples: entry.samples.length,
+            errors: entry.samples.length - ok.length,
+            rowsWhileHidden,
+            minutesWithRows,
+            lastMinuteWithRows,
+            quietTailMinutes,
+            minRafPerSecond: minRaf,
+            minTimerPerSecond: minTimer,
+            destinationMessagesWhileHidden,
+            // Capture is considered stalled if frames stopped entirely, or if a chat that was
+            // producing rows went quiet for the last third of the run.
+            stalled: ok.length > 0 && (minRaf <= 0 || (everProducedRows && quietTailMinutes > Math.max(3, minutes / 3))),
+            // No rows at all proves nothing about whether hiding breaks capture, so it must
+            // not read as a pass. Usually it means the page is not showing a live chat.
+            inconclusive: !everProducedRows || (entry.sourceFiles.length > 0 && destinationMessagesWhileHidden <= 0)
+        };
+    });
+
+    const summary = {
+        type: 'summary',
+        at: new Date().toISOString(),
+        minutes,
+        windows: results,
+        success: results.every((r) => !r.stalled && !r.inconclusive && r.errors === 0
+            && r.minRafPerSecond > 0 && r.minTimerPerSecond > 10)
+    };
+    await appendLine(summary);
+
+    console.log('[HiddenCaptureSoak] summary:');
+    for (const r of results) {
+        console.log(
+            `[HiddenCaptureSoak]   ${r.url.slice(0, 60).padEnd(60)} rows=${String(r.rowsWhileHidden).padStart(5)} ` +
+            `minutesWithRows=${r.minutesWithRows}/${r.samples} minRaf=${r.minRafPerSecond} ` +
+            `minTimer=${r.minTimerPerSecond} ` +
+            `quietTail=${r.quietTailMinutes} errors=${r.errors} stalled=${r.stalled}` +
+            `${r.inconclusive ? ' INCONCLUSIVE(no chat rows seen)' : ''}`
+        );
+    }
+
+    return summary;
 }
 
 async function runWindowStateDiagnostics() {
@@ -4459,7 +5575,10 @@ async function runWindowStateDiagnostics() {
 
                 const restoredBounds = firstWindow.getBounds();
                 const restoredDiff = compareWindowBounds(targetBounds, restoredBounds);
-                const restoredPassed = isWindowBoundsWithinTolerance(restoredDiff);
+                const restoredPassed = isWindowBoundsWithinTolerance(
+                    restoredDiff,
+                    getWindowStateDiagnosticsTolerance(firstWindow)
+                ) && isWindowWithinWorkArea(restoredBounds, display.workArea);
                 await closeWindowStateDiagnosticChildWindow(firstWindow);
                 await sleep(300);
 
@@ -4468,7 +5587,10 @@ async function runWindowStateDiagnostics() {
                 await waitForWindowStateDiagnosticReady(reopenedWindow);
                 const reopenedBounds = reopenedWindow.getBounds();
                 const reopenedDiff = compareWindowBounds(targetBounds, reopenedBounds);
-                const reopenedPassed = isWindowBoundsWithinTolerance(reopenedDiff);
+                const reopenedPassed = isWindowBoundsWithinTolerance(
+                    reopenedDiff,
+                    getWindowStateDiagnosticsTolerance(reopenedWindow)
+                ) && isWindowWithinWorkArea(reopenedBounds, display.workArea);
                 const passed = restoredPassed && reopenedPassed;
 
                 report.cases.push({
@@ -5219,10 +6341,10 @@ if (!Argv.hwa) {
 
 // Media foundation switches
 if (!Argv.mf) {
-    app.commandLine.appendSwitch("enable-features", "MediaFoundationVideoCapture");
+    enableChromiumFeatures("MediaFoundationVideoCapture");
 }
 if (!Argv.dmf) {
-    app.commandLine.appendSwitch("disable-features", "MediaFoundationVideoCapture");
+    disableChromiumFeatures("MediaFoundationVideoCapture");
 }
 
 // WebRTC and media performance flags
@@ -5245,7 +6367,7 @@ if (!IS_MAC_BALANCED_MODE && !stabilityGpuProfile.disableUnsafeWebGpu) {
 } else if (stabilityGpuProfile.disableUnsafeWebGpu) {
     console.warn('[Stability] WebGPU flag disabled due to fallback level', stabilityGpuProfile.level);
 }
-app.commandLine.appendSwitch('enable-features', 'WebAssemblySimd');
+enableChromiumFeatures('WebAssemblySimd');
 
 // Memory allocation for JavaScript
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
@@ -5282,6 +6404,7 @@ let storageSavePending = false;
 let storageSavePendingAllowSettingsDowngrade = false;
 
 var mainWindow = null;
+let mainWindowVisible = false;
 let ttt = {
     width: 1280,
     height: 800
@@ -6915,25 +8038,35 @@ function stealthHideView(view) {
         // Avoid taskbar clutter while hidden
         try { view.setSkipTaskbar(true); } catch (_) { }
 
-        // Linux compositors may reject off-screen positions. Minimize instead so
-        // reveal can reliably restore the source window on both X11 and Wayland.
+        // Linux gets a real hide() rather than the off-screen parking used elsewhere.
+        // Window managers clamp far-off-screen coordinates back towards the desktop
+        // (leaving a visible sliver), and Wayland forbids programmatic positioning
+        // outright, so parking cannot work here. Minimizing was the previous fallback but
+        // it leaves the window in the taskbar and pager where users expect it gone, and
+        // reveal is unreliable because Wayland does not support a minimized state.
+        //
+        // hide() is safe for capture because the source window disables
+        // backgroundThrottling: document.visibilityState stays "visible" and DOM timers
+        // keep running. The frame pump injected into the page covers the remaining risk,
+        // which is compositors that stop feeding a window compositor frames and therefore
+        // stop running its requestAnimationFrame work.
+        //
+        // Measured on Electron 38 and 43 (X11 + Wayland): a hidden source window keeps
+        // visibilityState "visible", keeps timers at full rate, and keeps rendering.
         if (process.platform === 'linux') {
+            try { installFramePump(view.webContents); } catch (_) { }
+
             let hidden = false;
             try {
-                const nativeVisible = typeof view.isVisible !== 'function' || view.isVisible();
-                if (!nativeVisible && typeof view.showInactive === 'function') {
-                    view.showInactive();
-                }
-                if (typeof view.minimize === 'function') {
-                    view.minimize();
-                }
-                hidden = typeof view.isMinimized === 'function' && view.isMinimized();
+                if (typeof view.hide === 'function') view.hide();
+                hidden = typeof view.isVisible === 'function' ? !view.isVisible() : true;
             } catch (_) { }
 
             if (!hidden) {
+                // Last resort for compositors that refuse to unmap the window.
                 try {
-                    if (typeof view.hide === 'function') view.hide();
-                    hidden = typeof view.isVisible === 'function' ? !view.isVisible() : false;
+                    if (typeof view.minimize === 'function') view.minimize();
+                    hidden = typeof view.isMinimized === 'function' && view.isMinimized();
                 } catch (_) { }
             }
 
@@ -6944,7 +8077,14 @@ function stealthHideView(view) {
             return hidden;
         }
 
-        // Keep the window visible to Chromium, but park it outside the virtual desktop.
+        // Windows and macOS keep the window mapped and park it outside the virtual desktop,
+        // rather than using the real hide() that Linux now uses. Deliberate: parking works
+        // on these platforms (they allow arbitrary window coordinates, unlike Linux window
+        // managers, which clamp them back towards the desktop) and a parked window keeps
+        // getting compositor frames, so the page renders normally. There are also reports of
+        // hide() defeating backgroundThrottling on Windows specifically
+        // (electron/electron#31016), which would leave the frame pump carrying capture on
+        // its own. If this is ever revisited, measure it on a real Windows machine first.
         const parked = parkSourceWindowOffscreen(view);
         view.__ss_visible = !parked;
         if (!parked) {
@@ -6965,7 +8105,11 @@ function stealthShowView(view, options = {}) {
             ? view.__prevBounds
             : null;
         if (process.platform === 'linux') {
-            if (previousBounds) {
+            const wayland = isWaylandSession();
+
+            // Wayland prohibits programmatic positioning, so replaying stored bounds there
+            // does nothing useful and can confuse the compositor's own placement.
+            if (previousBounds && !wayland) {
                 try { view.setBounds(previousBounds); } catch (_) { }
             }
             try { view.setSkipTaskbar(false); } catch (_) { }
@@ -6975,13 +8119,14 @@ function stealthShowView(view, options = {}) {
                 }
             } catch (_) { }
             try {
-                if (bringToFront) {
+                // showInactive() is not supported on Wayland; there it must be show().
+                if (bringToFront || wayland || typeof view.showInactive !== 'function') {
                     view.show();
                 } else {
                     view.showInactive();
                 }
             } catch (_) { }
-            if (previousBounds) {
+            if (previousBounds && !wayland) {
                 try { view.setBounds(previousBounds); } catch (_) { }
             }
 
@@ -6989,8 +8134,13 @@ function stealthShowView(view, options = {}) {
             try {
                 const nativeVisible = typeof view.isVisible !== 'function' || view.isVisible();
                 const minimized = typeof view.isMinimized === 'function' && view.isMinimized();
-                const currentBounds = typeof view.getBounds === 'function' ? view.getBounds() : previousBounds;
-                shown = nativeVisible && !minimized && sourceWindowIntersectsVirtualScreen(currentBounds);
+                shown = nativeVisible && !minimized;
+                // getBounds() reports every Wayland window at 0,0, so an on-screen check
+                // there would be meaningless rather than merely unhelpful.
+                if (shown && !wayland) {
+                    const currentBounds = typeof view.getBounds === 'function' ? view.getBounds() : previousBounds;
+                    shown = sourceWindowIntersectsVirtualScreen(currentBounds);
+                }
             } catch (_) {
                 shown = false;
             }
@@ -7019,13 +8169,16 @@ function stealthShowView(view, options = {}) {
     }
 }
 
-ipcMain.handle('showWindow', (event, args) => {
-    const view = browserViews[args.vid];
-    if (!view) return false;
+// Shared by the showWindow IPC handler and the hidden-capture diagnostics so both drive
+// the same hide/reveal path.
+// args.state semantics (legacy): true => hide, false => show, null/undefined => toggle
+function applySourceWindowVisibility(view, args = {}) {
+    if (!view) return { newState: false };
     if (headlessControlEnabled) {
         stealthHideView(view);
         return { newState: false };
     }
+
     const hasExplicitUserInitiated = !!(args && Object.prototype.hasOwnProperty.call(args, 'userInitiated'));
     const userInitiatedReveal = hasExplicitUserInitiated ? !!args.userInitiated : false;
 
@@ -7034,20 +8187,26 @@ ipcMain.handle('showWindow', (event, args) => {
         view.__ss_visible = true;
     }
 
-    // args.state semantics (legacy): true => hide, false => show, null => toggle
+    let hide;
     if (args.state === null || typeof args.state === 'undefined') {
-        if (view.__ss_visible) {
-            stealthHideView(view);
-        } else {
-            stealthShowView(view, { bringToFront: userInitiatedReveal });
-        }
-    } else if (args.state) {
+        hide = !!view.__ss_visible;
+    } else {
+        hide = !!args.state;
+    }
+
+    if (hide) {
         stealthHideView(view);
     } else {
         stealthShowView(view, { bringToFront: userInitiatedReveal });
     }
 
     return { newState: !!view.__ss_visible };
+}
+
+ipcMain.handle('showWindow', (event, args) => {
+    const view = browserViews[args.vid];
+    if (!view) return false;
+    return applySourceWindowVisibility(view, args);
 });
 
 ipcMain.handle('checkWindowExists', (event, args) => {
@@ -7732,6 +8891,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
             nodeIntegration: !webSecurity // this could be a security hazard, but useful for enabling screen sharing and global hotkeys
         },
         title: currentTitle,
+    });
+
+    // BrowserWindow.isVisible() can stay true after hide() on Linux. Track the
+    // actual show/hide events so remote status reflects whether the window is up.
+    mainWindowVisible = false;
+    mainWindow.on("show", () => {
+        mainWindowVisible = true;
+    });
+    mainWindow.on("hide", () => {
+        mainWindowVisible = false;
     });
 
 
@@ -8798,6 +9967,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     mainWindow.on("closed", async function (e) {
         log("mainWindow closed");
+        mainWindowVisible = false;
 
         // Clear any intervals attached to mainWindow
         if (mainWindow && mainWindow.intervals) {
@@ -11118,8 +12288,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Build webPreferences dynamically so we can omit preload when asked
             const webPreferences = {
-                pageVisibility: true,
                 contextIsolation: contextIsolation,
+                // Keeps document.visibilityState at "visible" and DOM timers unthrottled
+                // while the window is hidden, which is what lets capture keep running.
                 backgroundThrottling: false,
                 webSecurity: webSecurity,
                 nodeIntegrationInSubFrames: false,
@@ -11158,12 +12329,21 @@ async function createWindow(args, reuse = false, mainApp = false) {
             view.setBounds(rememberedSourceWindowBounds);
             installRememberedSourceWindowBoundsTracking(view, sourceWindowMode);
             installWindowsSourceWindowMinimizeGuard(view);
+            // Keeps requestAnimationFrame work running if the compositor stops giving this
+            // window frames (hidden, minimized, occluded, or on another workspace).
+            attachFramePump(view, { webFrameMain, log });
 
             // Show without stealing focus if visibility is enabled
             if (visibibility) {
                 view.__ss_visible = true;
                 try { view.setSkipTaskbar(false); } catch (_) { }
-                view.showInactive();
+                // showInactive() does nothing on Wayland, which would leave a source window
+                // that is supposed to be visible stuck off screen.
+                if (isWaylandSession()) {
+                    view.show();
+                } else {
+                    view.showInactive();
+                }
             } else {
                 view.__ss_visible = false;
                 try { view.setSkipTaskbar(true); } catch (_) { }
@@ -12606,6 +13786,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     // Register the sync handler for backward compatibility
     ipcMain.on("createWindow", originalCreateWindowHandler);
+    // Also expose it at module scope so diagnostics can build a source window through the
+    // same path the renderer uses.
+    sourceWindowCreateHandler = originalCreateWindowHandler;
 
     ipcMain.on("getVersion", function (eventRet) {
         eventRet.returnValue = app.getVersion();
@@ -13345,9 +14528,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
         if (MINIMIZED) {
             mainWindow.minimize();
             //+ KravchenkoAndrey 08.01.2022
-        } else if (UNCLICKABLE) {
-            mainWindow.showInactive();
-            //- KravchenkoAndrey 08.01.2022
+		} else if (UNCLICKABLE) {
+			// Electron does not support showInactive() on Wayland. The window already ignores
+			// mouse input in this mode, so showing it normally is the usable fallback there.
+			if (isWaylandSession()) {
+				mainWindow.show();
+			} else {
+				mainWindow.showInactive();
+			}
+			//- KravchenkoAndrey 08.01.2022
         } else {
             mainWindow.show();
         }
@@ -14096,8 +15285,8 @@ contextMenu({
             if (browserWindow.webContents.getURL().includes("youtube.com")) {
                 browserWindow.webContents.executeJavaScript(
                     '(function () {\
-						if (!xxxxxx){\
-							var xxxxxx = setInterval(function(){\
+						if (!window.__ssnYtAdSkipper){\
+							window.__ssnYtAdSkipper = setInterval(function(){\
 							if (document.querySelector(".ytp-ad-skip-button")){\
 								document.querySelector(".ytp-ad-skip-button").click();\
 							}\
@@ -14185,8 +15374,24 @@ contextMenu({
 });
 
 app.on("second-instance", (event, commandLine, workingDirectory, argv2) => {
-    log("can't create a second instance");
-    // createWindow(argv2, argv2.title);
+    log("second instance launched; restoring the existing window");
+    // Launching the app again is how people ask for the running copy, so bring it back
+    // rather than doing nothing. This is the only way out of a hidden main window on a
+    // Linux desktop with no system tray host (GNOME has none by default, and plenty of
+    // minimal window managers never had one): with close-to-tray on, the window would
+    // otherwise be unrecoverable without killing the process from a terminal.
+    //
+    // Headless control mode deliberately keeps every window hidden, so leave it be. Source
+    // windows are left alone too; their visibility is managed separately.
+    if (headlessControlEnabled) return;
+    try {
+        // Reuse the tray restore path, which shows unconditionally. Do not gate this on
+        // isVisible(): a main window hidden by minimizeToTray() still reports visible on
+        // Linux, so checking first skips the show() that is actually needed.
+        showMainWindowFromTray();
+    } catch (error) {
+        console.warn('[SecondInstance] Could not restore the main window:', error && error.message ? error.message : error);
+    }
 });
 
 app.on("window-all-closed", () => {
@@ -15195,7 +16400,7 @@ app.whenReady().then(async function () {
             if (Argv.filesource) return Argv.filesource;
             return resolveBundledSocialStreamRoot('main');
         },
-        showOpenDialog: remoteControlEnabled ? async (dialogOptions) => {
+        showOpenDialog: (legacyRemoteControlEnabled || headlessControlEnabled) ? async (dialogOptions) => {
             const filePath = remoteControlFileSelections.shift();
             if (filePath) {
                 console.log('[Remote Control] Supplying queued local media selection:', path.basename(filePath));
@@ -15218,6 +16423,49 @@ app.whenReady().then(async function () {
     createWindow(Argv, false, true);
     queueStabilityStartupNotice();
     setupRemoteControlServer();
+
+    if (HIDDEN_CAPTURE_SOAK_ENABLED) {
+        setTimeout(() => {
+            runHiddenCaptureSoak()
+                .then((summary) => {
+                    console.log('[HiddenCaptureSoak] success:', summary.success);
+                    app.exit(summary.success ? 0 : 1);
+                })
+                .catch((error) => {
+                    console.error('[HiddenCaptureSoak] Failed:', error && error.message ? error.message : error);
+                    app.exit(1);
+                });
+        }, 1500);
+    }
+
+    if (HIDDEN_CAPTURE_DIAGNOSTICS_ENABLED) {
+        setTimeout(() => {
+            runHiddenCaptureDiagnostics()
+                .then((report) => {
+                    console.log('[HiddenCaptureDiagnostics] Summary:', JSON.stringify(report.summary));
+                    app.exit(report.success ? 0 : 1);
+                })
+                .catch(async (error) => {
+                    const failureReport = {
+                        startedAt: new Date().toISOString(),
+                        finishedAt: new Date().toISOString(),
+                        success: false,
+                        error: error && error.message ? error.message : String(error)
+                    };
+                    if (HIDDEN_CAPTURE_DIAGNOSTICS_REPORT_PATH) {
+                        try {
+                            await fsp.writeFile(
+                                HIDDEN_CAPTURE_DIAGNOSTICS_REPORT_PATH,
+                                JSON.stringify(failureReport, null, 2),
+                                'utf8'
+                            );
+                        } catch (_) { }
+                    }
+                    console.error('[HiddenCaptureDiagnostics] Failed:', failureReport.error);
+                    app.exit(1);
+                });
+        }, 1500);
+    }
 
     if (WINDOW_STATE_DIAGNOSTICS_ENABLED) {
         setTimeout(() => {
@@ -15978,6 +17226,7 @@ async function quitApp() {
 
 function minimizeToTray() {
     if (mainWindow) {
+        mainWindowVisible = false;
         mainWindow.hide();
     }
 }
@@ -16004,6 +17253,7 @@ function showMainWindowFromTray() {
 
     try {
         mainWindow.show();
+        mainWindowVisible = true;
     } catch (_) { }
 
     try {
@@ -16948,10 +18198,10 @@ function createMenu() {
                     }
                 },
                 {
-                    label: 'AI / LLM Control',
+                    label: 'Local AI / Automation',
                     submenu: [
                         {
-                            label: 'Enable Control API',
+                            label: 'Enable Local Control API',
                             type: 'checkbox',
                             checked: store.get('controlApi.enabled', false) === true,
                             click: async menuItem => {
@@ -16961,8 +18211,8 @@ function createMenu() {
                                     buttons: ['Restart Now', 'Later'],
                                     defaultId: 0,
                                     cancelId: 1,
-                                    title: 'AI / LLM Control',
-                                    message: menuItem.checked ? 'Control API enabled.' : 'Control API disabled.',
+                                    title: 'Local AI / Automation',
+                                    message: menuItem.checked ? 'Local control API enabled.' : 'Local control API disabled.',
                                     detail: 'Restart Social Stream Ninja to apply this change.'
                                 });
                                 if (result.response === 0) {
@@ -16973,40 +18223,43 @@ function createMenu() {
                             }
                         },
                         {
-                            label: 'Copy Control Connection',
+                            label: 'Copy Local Connection',
                             enabled: controlApiEnabled,
                             click: async () => {
                                 clipboard.writeText(JSON.stringify({
                                     url: `http://127.0.0.1:${remoteControlPort}`,
-                                    token: remoteControlToken,
                                     ssappVersion: app.getVersion()
                                 }, null, 2));
                                 await dialog.showMessageBox({
                                     type: 'info',
                                     buttons: ['OK'],
-                                    title: 'Control Connection Copied',
-                                    message: 'The private localhost connection was copied.',
-                                    detail: 'Treat the token like a password. Do not paste it into public chats or logs.'
+                                    title: 'Local Connection Copied',
+                                    message: 'The localhost connection was copied.',
+                                    detail: 'It is available only to programs running on this computer.'
                                 });
                             }
                         },
                         {
-                            label: 'Rotate Control Token',
+                            label: 'Copy MCP Setup',
+                            enabled: controlApiEnabled,
                             click: async () => {
-                                const confirmation = await dialog.showMessageBox({
-                                    type: 'warning',
-                                    buttons: ['Rotate and Restart', 'Cancel'],
-                                    defaultId: 1,
-                                    cancelId: 1,
-                                    title: 'Rotate Control Token',
-                                    message: 'Existing AI and automation clients will be disconnected.',
-                                    detail: 'You will need to copy the new connection after restart.'
+                                const setup = buildMcpLaunchConfig({
+                                    isPackaged: app.isPackaged,
+                                    platform: process.platform,
+                                    execPath: process.execPath,
+                                    appPath: app.getAppPath(),
+                                    appImagePath: process.env.APPIMAGE,
+                                    portableExecutablePath: process.env.PORTABLE_EXECUTABLE_FILE,
+                                    controlUrl: `http://127.0.0.1:${remoteControlPort}`
                                 });
-                                if (confirmation.response !== 0) return;
-                                store.set('controlApi.token', crypto.randomBytes(32).toString('hex'));
-                                markStabilitySessionGraceful('control-api-token-rotation');
-                                app.relaunch();
-                                app.exit();
+                                clipboard.writeText(JSON.stringify(setup, null, 2));
+                                await dialog.showMessageBox({
+                                    type: 'info',
+                                    buttons: ['OK'],
+                                    title: 'MCP Setup Copied',
+                                    message: 'The MCP server configuration was copied.',
+                                    detail: 'Paste it into your local AI tool\'s MCP settings. The downloaded app is the MCP command; Node and a source checkout are not required.'
+                                });
                             }
                         },
                         { type: 'separator' },
@@ -17474,12 +18727,11 @@ function createMenu() {
 }
 
 electron.powerMonitor.on("on-battery", () => {
-    var notification = new electron.Notification({
+    showDesktopNotification({
         title: "Social Stream Ninja performance is degraded",
         body: "You are now on battery power. Please consider connecting your charger for improved performance.",
         icon: path.join(__dirname, "assets", "icons", "png", "256x256.png"),
     });
-    notification.show();
 });
 
 ipcMain.on('set-force-tiktok-classic', (_event, enabled) => {

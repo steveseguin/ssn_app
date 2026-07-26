@@ -9,18 +9,16 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 const { pathToFileURL } = require('url');
-const { spawn, spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 
 const electronPath = require('electron');
 const repoRoot = path.resolve(__dirname, '..', '..');
 const expectedSsappVersion = require(path.join(repoRoot, 'package.json')).version;
-const expectedApiVersion = '1.1.4';
+const expectedApiVersion = '1.1.5';
 const sourceUrlSecret = 'CONTROL_API_SOURCE_SECRET';
 const socialStreamRoot = path.resolve(repoRoot, '..', 'social_stream');
 const socialStreamUrl = pathToFileURL(socialStreamRoot + path.sep).href;
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-headless-control-'));
-const token = `ssapp-headless-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-const tokenFile = path.join(profileDir, 'control-token.txt');
 
 function getFreePort() {
 	return new Promise((resolve, reject) => {
@@ -52,13 +50,13 @@ async function createSourceFixtureServer() {
 	};
 }
 
-function requestJson(port, pathname, body, authToken = token) {
+function requestJson(port, pathname, body) {
 	return new Promise((resolve, reject) => {
 		const payload = body === undefined ? null : JSON.stringify(body);
 		const req = http.request({
 			host: '127.0.0.1',
 			port,
-			path: `${pathname}${pathname.includes('?') ? '&' : '?'}token=${encodeURIComponent(authToken)}`,
+			path: pathname,
 			method: payload === null ? 'GET' : 'POST',
 			headers: payload === null ? {} : {
 				'Content-Type': 'application/json',
@@ -85,7 +83,6 @@ function waitForEvent(port, eventType, trigger, timeoutMs = 15000) {
 		let triggered = false;
 		const req = http.request({
 			host: '127.0.0.1', port, path: '/api/v1/events', method: 'GET',
-			headers: { 'X-SSAPP-Token': token },
 		});
 		let buffer = '';
 		const timer = setTimeout(() => {
@@ -139,18 +136,17 @@ async function waitForReady(port, child, timeoutMs = 60000) {
 async function startApp(port) {
 	const child = spawn(electronPath, [
 		'.', '--running-from-source', '--multiinstance', '--filesource', socialStreamUrl,
-		'--ssapp-headless-control', `--ssapp-control-port=${port}`, `--ssapp-control-token-file=${tokenFile}`,
+		'--ssapp-headless-control', '--ssapp-control-api', `--ssapp-control-port=${port}`, '--no-hwa',
 	], {
 		cwd: repoRoot,
 		env: {
 			...process.env,
 			SSAPP_USER_DATA_DIR: profileDir,
-			SSAPP_CONTROL_API: '1',
-			SSAPP_HEADLESS_CONTROL: '1',
+			SSAPP_CONTROL_API: '0',
+			SSAPP_HEADLESS_CONTROL: '0',
 			SSAPP_CONTROL_PORT: String(port),
-			SSAPP_CONTROL_TOKEN_FILE: tokenFile,
 			SSAPP_DIAGNOSTICS_SAFE_GPU: '1',
-			SSAPP_DEBUG_LOGS: '0',
+			SSAPP_DEBUG_LOGS: process.env.SSAPP_E2E_DEBUG || '0',
 		},
 		stdio: ['ignore', 'pipe', 'pipe'],
 		windowsHide: true,
@@ -164,6 +160,42 @@ async function startApp(port) {
 	} catch (error) {
 		child.kill();
 		throw new Error(`${error.message}\n${output.slice(-5000)}`);
+	}
+}
+
+async function assertHeadlessDoesNotEnableControlApi(port) {
+	const headlessOnlyProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-headless-no-api-'));
+	const child = spawn(electronPath, [
+		'.', '--running-from-source', '--multiinstance', '--filesource', socialStreamUrl,
+		'--ssapp-headless-control', `--ssapp-control-port=${port}`, '--no-hwa',
+	], {
+		cwd: repoRoot,
+		env: {
+			...process.env,
+			SSAPP_USER_DATA_DIR: headlessOnlyProfile,
+			SSAPP_CONTROL_API: '0',
+			SSAPP_HEADLESS_CONTROL: '0',
+			SSAPP_CONTROL_PORT: String(port),
+			SSAPP_DIAGNOSTICS_SAFE_GPU: '1',
+			SSAPP_DEBUG_LOGS: process.env.SSAPP_E2E_DEBUG || '0',
+		},
+		stdio: ['ignore', 'pipe', 'pipe'],
+		windowsHide: true,
+	});
+	let output = '';
+	child.stdout.on('data', chunk => { output += chunk.toString(); });
+	child.stderr.on('data', chunk => { output += chunk.toString(); });
+	try {
+		await new Promise(resolve => setTimeout(resolve, 3000));
+		assert.strictEqual(child.exitCode, null, `Headless SSApp exited unexpectedly.\n${output.slice(-5000)}`);
+		await assert.rejects(
+			requestJson(port, '/api/v1/status'),
+			error => error && (error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET'),
+			'Headless mode unexpectedly enabled the local control API.'
+		);
+	} finally {
+		await stopApp(child);
+		fs.rmSync(headlessOnlyProfile, { recursive: true, force: true });
 	}
 }
 
@@ -229,8 +261,6 @@ async function runMcpChecks(port) {
 		env: {
 			...process.env,
 			SSAPP_CONTROL_URL: `http://127.0.0.1:${port}`,
-			SSAPP_CONTROL_TOKEN_FILE: tokenFile,
-			SSAPP_CONTROL_TOKEN: '',
 		},
 		stdio: ['pipe', 'pipe', 'pipe'],
 		windowsHide: true,
@@ -286,7 +316,6 @@ async function runMcpChecks(port) {
 
 async function run() {
 	const mediaPort = await getFreePort();
-	fs.writeFileSync(tokenFile, token);
 	fs.writeFileSync(path.join(profileDir, 'config.json'), JSON.stringify({
 		localMediaLibrary: { token: 'c'.repeat(64), port: mediaPort, assets: {} },
 	}, null, 2));
@@ -300,15 +329,6 @@ async function run() {
 		appInstance = await startApp(firstPort);
 		assert.strictEqual(appInstance.status.app.headless, true);
 		assert.strictEqual(appInstance.status.app.mainWindowVisible, false);
-		const skillClient = spawnSync('python', [
-			path.join(socialStreamRoot, 'docs', 'skills', 'control-social-stream', 'scripts', 'ssapp_control.py'),
-			'status', '--base-url', `http://127.0.0.1:${firstPort}`,
-		], {
-			env: { ...process.env, SSAPP_CONTROL_TOKEN: token },
-			encoding: 'utf8',
-		});
-		assert.strictEqual(skillClient.status, 0, skillClient.stderr || skillClient.stdout);
-		assert.strictEqual(JSON.parse(skillClient.stdout).app.headless, true);
 
 		const capabilities = await requestJson(firstPort, '/api/v1/capabilities');
 		assert.strictEqual(capabilities.statusCode, 200, JSON.stringify(capabilities.data));
@@ -317,11 +337,13 @@ async function run() {
 		assert.strictEqual(capabilities.data.ssappVersion, expectedSsappVersion);
 		assert.strictEqual(capabilities.data.apiVersion, expectedApiVersion);
 		assert.ok(capabilities.data.payload.commands.restartSource.confirmationRequired);
-		const unauthenticated = await requestJson(firstPort, '/api/v1/status', undefined, 'wrong-token');
-		assert.strictEqual(unauthenticated.statusCode, 403);
+		const tokenless = await requestJson(firstPort, '/api/v1/status?token=unused');
+		assert.strictEqual(tokenless.statusCode, 200);
 
 		const legacyEndpoint = await requestJson(firstPort, '/windows');
 		assert.strictEqual(legacyEndpoint.statusCode, 404, 'Headless control exposed legacy renderer execution endpoints.');
+		const legacyPing = await requestJson(firstPort, '/ping');
+		assert.strictEqual(legacyPing.statusCode, 404, 'Local control exposed the legacy test harness ping endpoint.');
 
 		const added = await command(firstPort, 'addSource', {
 			target: 'twitch',
@@ -439,8 +461,13 @@ async function run() {
 		assert.strictEqual(persistedSettings.settings.youtubeAutoCleanup, true);
 		const removed = await command(secondPort, 'removeSource', { sourceId, confirm: true });
 		assert.strictEqual(removed.removed, true);
+		await shutdownApp(secondPort, appInstance.child);
+		appInstance = null;
 
-		console.log('Headless LLM control API end-to-end checks passed, including active-source guards, stop progress, CLI launch, and persistence.');
+		const disabledPort = await getFreePort();
+		await assertHeadlessDoesNotEnableControlApi(disabledPort);
+
+		console.log('Headless launch and local LLM control API end-to-end checks passed, including API opt-in, active-source guards, stop progress, and persistence.');
 	} catch (error) {
 		throw new Error(`${error.message}\n${appInstance ? appInstance.getOutput().slice(-5000) : ''}`);
 	} finally {

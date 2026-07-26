@@ -9,6 +9,7 @@ Electron desktop application for aggregating social media live stream chat. Comm
 - When replying to Steve, prefer plain, everyday language over jargon.
 - Keep explanations direct and practical; explain technical terms briefly when they matter.
 - When Steve asks for a TLDR, keep it genuinely short: a few lines max, no long explanation.
+- Always end a substantial reply with concrete next steps when there is a sensible one to offer: what is blocked on Steve, what is blocked on someone else, the one thing worth doing first, and an offer to start it. Include anything deferred along the way instead of quietly dropping it. Skip this only when the task is genuinely finished or the reply is a one-line factual answer.
 - When Steve asks to remember an instruction, save it into the relevant instruction file or memory mechanism when possible; do not merely say it will be kept in mind.
 - If Steve says "remember", treat it as a request to persist the instruction. Check for writable instruction targets, especially the repo `AGENTS.md` for project-specific behavior and `C:\Users\steve\.codex\AGENTS.md` for global behavior. Update the most appropriate file, or both when the instruction applies globally and to the current repo. Do not say memory tools are unavailable unless no writable instruction or memory target exists after checking.
 
@@ -78,6 +79,29 @@ npm run legacy               # Legacy/polling mode only
 npm run both                 # Both modes sequentially
 node run.js --mode=websocket --user=username --duration=30000
 ```
+
+### Hidden Window Capture Tests
+
+Capture running in a window that is not on screen is fragile and has broken silently before
+(see `hidden-window-keepalive.js`). Both of these build real source windows through the real
+IPC path, so they count as functional testing. On a machine with no desktop, start a virtual
+display first (`Xvfb :99 -screen 0 1920x1080x24 &` and `export DISPLAY=:99`).
+
+```bash
+npm run test:hidden-capture                       # ~3 min, local fixture
+npm run test:hidden-capture -- --url="https://www.youtube.com/live_chat?is_popout=1&v=ID"
+npm run test:hidden-capture -- --start-hidden     # window created hidden: no frames at all
+npm run test:hidden-capture -- --headless         # as a server install runs it
+
+# Does capture survive a long session? One --url per platform.
+npm run test:hidden-capture:soak -- --minutes=60 --start-hidden \
+  --url="https://www.youtube.com/live_chat?is_popout=1&v=ID" \
+  --url="https://www.twitch.tv/popout/CHANNEL/chat?popout="
+```
+
+Both use an isolated `SSAPP_USER_DATA_DIR`, so they will not touch the real profile. Windows
+that never see a chat message are reported as inconclusive rather than passing, so check that
+the channel is actually live before believing a green run.
 
 ## Code Style Guidelines
 
