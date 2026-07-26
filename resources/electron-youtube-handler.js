@@ -3,7 +3,6 @@
 const crypto = require("crypto");
 const http = require("http");
 const path = require("path");
-const url = require("url");
 const { BrowserWindow, dialog, ipcMain, safeStorage, session, shell } = require("electron");
 const Store = require("electron-store");
 
@@ -175,8 +174,8 @@ function runLoopbackOAuthSession(payload = {}, dependencies = {}) {
         activeSession = session;
 
         server = http.createServer((req, res) => {
-            const parsed = url.parse(req.url, true);
-            const query = parsed.query || {};
+            const parsed = new URL(req.url || "/", `http://${LOOPBACK_HOST}`);
+            const query = Object.fromEntries(parsed.searchParams);
 
             // Handle the callback path
             if (parsed.pathname === CALLBACK_PATH || parsed.pathname === '/callback' || parsed.pathname === '/') {

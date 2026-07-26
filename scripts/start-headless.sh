@@ -19,7 +19,8 @@ DATA_DIR="${SSAPP_DATA_DIR:-$HOME/.local/share/ssapp-headless}"
 
 die() { echo "error: $*" >&2; exit 1; }
 
-command -v Xvfb >/dev/null || die "Xvfb is not installed. Debian/Ubuntu: sudo apt-get install -y xvfb"
+command -v Xvfb >/dev/null || die "Xvfb is not installed. Debian/Ubuntu: sudo apt-get install -y xvfb x11-utils"
+command -v xdpyinfo >/dev/null || die "xdpyinfo is not installed. Debian/Ubuntu: sudo apt-get install -y x11-utils"
 
 # Locate the app. A source checkout runs the local Electron and has to be told where the app
 # is; a packaged build (AppImage, or the unpacked binary beside it) already contains the app,
@@ -68,12 +69,20 @@ else
 	fi
 fi
 
+APP_PID=""
 cleanup() {
+	if [ -n "$APP_PID" ] && kill -0 "$APP_PID" 2>/dev/null; then
+		kill "$APP_PID" 2>/dev/null || true
+		wait "$APP_PID" 2>/dev/null || true
+	fi
 	if [ -n "$XVFB_PID" ]; then
 		kill "$XVFB_PID" 2>/dev/null || true
+		wait "$XVFB_PID" 2>/dev/null || true
 	fi
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 cat <<INFO
 [start-headless] data directory : $DATA_DIR
@@ -93,7 +102,16 @@ if [ "${SSAPP_ENABLE_GPU:-0}" = "1" ]; then
 	GPU_ARGS=()
 fi
 
-exec "$APP_BINARY" "${APP_PATH_ARG[@]+"${APP_PATH_ARG[@]}"}" \
+"$APP_BINARY" "${APP_PATH_ARG[@]+"${APP_PATH_ARG[@]}"}" \
 	--ssapp-headless-control \
 	"${GPU_ARGS[@]}" \
-	"$@"
+	"$@" &
+APP_PID=$!
+
+if wait "$APP_PID"; then
+	APP_EXIT_CODE=0
+else
+	APP_EXIT_CODE=$?
+fi
+APP_PID=""
+exit "$APP_EXIT_CODE"

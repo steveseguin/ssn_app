@@ -36,7 +36,7 @@ makepkg -si
 
 ### Prerequisites
 
-- Node.js 18 or higher
+- Node.js 20.9 or higher
 - npm 8 or higher
 - Python (for native module compilation)
 
@@ -86,7 +86,7 @@ hidden. Remote control continues to use Social Stream's existing WebRTC or WebSo
 connection; headless mode does not open a new HTTP control service:
 
 ```bash
-sudo apt-get install -y xvfb
+sudo apt-get install -y xvfb x11-utils
 ./scripts/start-headless.sh
 ```
 

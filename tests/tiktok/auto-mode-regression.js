@@ -825,9 +825,16 @@ async function testTikTokActivationHandleDoesNotOverwritePendingStatus() {
 		'expected TikTok activation to distinguish virtual handles from connected status'
 	);
 	assert.ok(
+		src.includes("const tiktokReportedError = resolvedTarget === 'tiktok'")
+			&& src.includes("&& tiktokStatusAfterCreate === 'error';")
+			&& src.includes('} else if (tiktokReportedError) {')
+			&& src.includes("statusValue = 'error';"),
+		'expected a terminal TikTok error to remain an error after a virtual handle is returned'
+	);
+	assert.ok(
 		src.includes('error: nonTikTokWssReportedError')
-			&& src.includes(': (tiktokWaitingForConnect ? tiktokErrorAfterCreate : null)'),
-		'expected pending TikTok activation to preserve offline/retry errors'
+			&& src.includes(': (tiktokReportedError || tiktokWaitingForConnect ? tiktokErrorAfterCreate : null)'),
+		'expected pending and terminal TikTok activation errors to be preserved'
 	);
 	assert.ok(
 		src.includes("} else if (tiktokStatusAfterCreate === 'error' && tiktokErrorAfterCreate)"),
@@ -836,6 +843,16 @@ async function testTikTokActivationHandleDoesNotOverwritePendingStatus() {
 	assert.ok(
 		src.includes("} else if (!entry._tiktokRetryEndAt && !entry._tiktokRetryOffline)"),
 		'expected retry countdown UI not to be overwritten by a generic connecting label'
+	);
+	assert.ok(
+		src.includes('if (tiktokReportedError) {')
+			&& src.includes("error: new Error(tiktokErrorAfterCreate || 'TikTok connection failed')"),
+		'expected a terminal TikTok status to fail the current fallback attempt'
+	);
+	assert.ok(
+		src.includes('const activationAttemptInProgress = !!entryElement?._tiktokFallback?.inProgress;')
+			&& src.includes('if (!activationAttemptInProgress) {'),
+		'expected synchronous activation fallback to avoid scheduling a duplicate UI retry'
 	);
 }
 

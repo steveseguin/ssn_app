@@ -44,6 +44,7 @@ Electron desktop application for aggregating social media live stream chat. Comm
 
 - Read `RELEASE.md` before any release, deploy, tag, or artifact-upload work.
 - Critical rule: never create git tags or GitHub releases in `ssapp` / `ssn_app`; app release tags and artifacts belong in `steveseguin/social_stream`.
+- Local Windows builds are expected to use a self-signed/untrusted development certificate. Do not report that local trust-chain status as an issue by itself; only flag an actual signing failure or an unexpected signing result on an official release artifact.
 - GitHub release notes should follow the existing Social Stream style, including the heading `### What's new in this version:`.
 - The `What's new` bullets must summarize every important user-facing change included in the release package, not only the final version bump. For example, if `v0.3.128` is being released after `v0.3.113`, include the important user-facing changes from `v0.3.114` through `v0.3.128`.
 - Before writing or updating release notes, check recent `steveseguin/social_stream` releases so the notes match the existing release-note style and include the right range of changes.
@@ -58,6 +59,7 @@ No formal test framework (Jest/Mocha). Manual integration tests only.
 - Whenever the SSApp control API, MCP adapter, command endpoints, capabilities, schemas, or version compatibility changes, update the checked-in skill under `C:\Users\steve\Code\social_stream\docs\skills\control-social-stream` in the same work.
 - Record each such change in the skill's version log, including the minimum SSApp version required for newly added or changed capabilities.
 - Keep the running SSApp version exposed through the control API and MCP responses so agents can select only skill capabilities supported by that app version.
+- The explicitly enabled control API is intentionally tokenless and restricted to `127.0.0.1`. Do not report the lack of token authentication or origin checks as a code issue; the loopback binding is the intended trust boundary. Only flag this area if the API becomes reachable beyond loopback or a concrete failure of that boundary is reproduced.
 
 ### VERY IMPORTANT: What Counts As Testing
 
@@ -67,6 +69,7 @@ No formal test framework (Jest/Mocha). Manual integration tests only.
 - For Electron/app changes, actual testing means starting the app in an appropriate isolated profile/environment and verifying the behavior inside the running app over time, including side effects such as reloads, persistence, network/server calls, background jobs, and repeated events.
 - Do not report a change as tested unless functional in-app/e2e testing was performed, or clearly state that only sanity checks were run and actual testing remains incomplete.
 - For website-loading and capture issues, reproduce them in SSApp's real Electron source window using the same session, user agent, preload, request hooks, and injected source configuration. Do not use the OpenAI in-app Browser or an unrelated browser as evidence of SSApp behavior.
+- `tests/electron/window-state-diagnostics.js` may use the normal Social Stream profile. Do not report that profile choice as an issue by itself; only flag a concrete unintended settings change, data loss, or corruption reproduced by the diagnostic.
 
 ### TikTok Connection Tests
 
@@ -281,7 +284,7 @@ ssapp/
 
 ## Development Notes
 
-- Node.js >= 18.0.0 required
+- Node.js >= 20.9.0 required
 - No TypeScript - pure JavaScript
 - All contributions require CLA signing
 - Test on your platform before submitting PRs

@@ -4711,12 +4711,21 @@ class ConnectionManager {
 
         const originalSetupWebsocket = connection.setupWebsocket;
         const manager = this;
-        connection.setupWebsocket = async function setupWebsocketWithSsappIdentity(wsUrl, wsParams) {
+        connection.setupWebsocket = async function setupWebsocketWithSsappIdentity(wsUrl, wsParams, roomId) {
             const nextWsParams = {
                 ...(wsParams && typeof wsParams === 'object' ? wsParams : {}),
                 identity: normalizedIdentity
             };
-            const wsClient = await originalSetupWebsocket.call(this, wsUrl, nextWsParams);
+            // tiktok-live-connector 2.4 passes roomId as a third argument and uses it
+            // immediately for the im_enter_room frame. The local signer can discover the
+            // room after the connector's initial local variable was set, so recover it from
+            // the updated websocket params/connection state when that argument is empty.
+            const resolvedRoomId = roomId
+                || nextWsParams.room_id
+                || this.roomId
+                || this.webClient?.roomId
+                || null;
+            const wsClient = await originalSetupWebsocket.call(this, wsUrl, nextWsParams, resolvedRoomId);
             manager.applyWebcastRoomEnterIdentityOverride(wsClient, normalizedIdentity);
             return wsClient;
         };
@@ -6406,6 +6415,67 @@ class ConnectionManager {
         }
     }
 
+    isNonRetryableSignServerConfigurationError(primaryError, rawMessage = '') {
+        const errorName = typeof primaryError?.name === 'string'
+            ? primaryError.name.toLowerCase()
+            : '';
+        if (errorName === 'premiumfeatureerror') {
+            return true;
+        }
+
+        const combined = `${rawMessage || ''} ${primaryError?.message || ''}`.toLowerCase();
+        return combined.includes('requires a business plan')
+            || combined.includes('requires an enterprise plan')
+            || combined.includes('payment required')
+            || combined.includes('premium feature')
+            || combined.includes('purchase one at')
+            || combined.includes('upgrade your plan');
+    }
+
+    getSignServerConfigurationMessage() {
+        const usingPolling = this.pollingFallbackActivated
+            || this.preferredStrategy === 'legacy'
+            || this.connectionStrategy === 'legacy'
+            || usingLegacyTikTokConnector;
+        if (usingPolling) {
+            return 'TikTok Polling requires an Euler plan that supports signing. Add a compatible Euler API key, or use Auto, Local Signer, or Standard mode.';
+        }
+        return 'The Euler signing endpoint requires a compatible plan. Add a compatible Euler API key, or use Local Signer or Standard mode.';
+    }
+
+    handleSignServerConfigurationFailure(primaryError) {
+        const message = this.getSignServerConfigurationMessage();
+        this.logDebug('sign.error.configuration', {
+            message,
+            errorName: primaryError?.name || null,
+            detail: this.truncateForLog(primaryError?.message || '', 600) || null
+        });
+        this.logConsoleFailure(message, primaryError instanceof Error ? primaryError : null);
+
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        connectionStates.set(this.wssID, {
+            isConnected: false,
+            lastAttempt: Date.now(),
+            isReconnecting: false,
+            attemptInProgress: false
+        });
+        this.offlineRetry = false;
+        this.offlineRetryCount = 0;
+        this.offlineReason = null;
+
+        emitStatus({
+            wssID: this.wssID,
+            status: 'failed',
+            error: message,
+            signServer: true,
+            configurationRequired: true,
+            connectionMethod: this.getConnectionMethodForDisplay()
+        });
+    }
+
     handleSignServerFailure(primaryError, rawMessage = '', userFacingMessage = '') {
         const detail = this.truncateForLog(rawMessage || primaryError?.message || '', 600);
         const displayMessage = (typeof userFacingMessage === 'string' && userFacingMessage.trim())
@@ -7985,6 +8055,11 @@ class ConnectionManager {
                         return this.restartConnectionAttempt(primaryError);
                     }
 
+                    if (this.isNonRetryableSignServerConfigurationError(primaryError, errorMessage)) {
+                        this.handleSignServerConfigurationFailure(primaryError instanceof Error ? primaryError : err);
+                        return false;
+                    }
+
                     this.handleSignServerFailure(primaryError instanceof Error ? primaryError : err, errorMessage, userFacingMessage);
                     return false;
                 } else {
@@ -8731,9 +8806,12 @@ class ConnectionManager {
                         if (handled) {
                             return this.restartConnectionAttempt(syntheticError);
                         }
+                        this.continueAfterDisconnect(code, codeLabel, isEulerWs);
                         return null;
                     })
-                    .catch(() => null);
+                    .catch(() => {
+                        this.continueAfterDisconnect(code, codeLabel, isEulerWs);
+                    });
                 return;
             }
             const shouldTryAutoFallback = this.autoEulerProxyFallbackActive && (code === 4401 || code === 4429);
@@ -8746,80 +8824,91 @@ class ConnectionManager {
                         if (handled) {
                             return this.restartConnectionAttempt();
                         }
+                        this.continueAfterDisconnect(code, codeLabel, isEulerWs);
                         return null;
                     })
-                    .catch(() => null);
+                    .catch(() => {
+                        this.continueAfterDisconnect(code, codeLabel, isEulerWs);
+                    });
                 return;
             }
 
-            // For certain codes, don't auto-reconnect (no point)
-            const noReconnectCodes = [4401, 4403];
-            const shouldSkipReconnect = isEulerWs && code && noReconnectCodes.includes(code);
-            const shouldRetryAsOffline = isEulerWs && (code === 4404 || code === 4005);
-            
+            this.continueAfterDisconnect(code, codeLabel, isEulerWs);
+        }
+    }
+
+    continueAfterDisconnect(code, codeLabel, isEulerWs) {
+        if (this.isStopped) {
+            return;
+        }
+
+        // For certain codes, don't auto-reconnect (no point)
+        const noReconnectCodes = [4401, 4403];
+        const shouldSkipReconnect = isEulerWs && code && noReconnectCodes.includes(code);
+        const shouldRetryAsOffline = isEulerWs && (code === 4404 || code === 4005);
+
+        emitStatus({
+            wssID: this.wssID,
+            status: 'disconnected',
+            disconnectCode: code || null,
+            disconnectReason: codeLabel || null
+        });
+
+        if (shouldRetryAsOffline) {
+            const offlineMessage = code === 4404
+                ? 'The requested user is not live right now.'
+                : 'Live stream has ended';
+            console.info(`[EulerWS] ${offlineMessage} Scheduling offline retry.`);
+            this.enterOfflineRetryMode(offlineMessage);
+        } else if (shouldSkipReconnect) {
+            console.warn(`[EulerWS] Skipping auto-reconnect due to terminal close code ${code} (${codeLabel})`);
+            // Emit error so UI shows the issue
             emitStatus({
                 wssID: this.wssID,
-                status: 'disconnected',
-                disconnectCode: code || null,
-                disconnectReason: codeLabel || null
+                status: 'error',
+                error: `Euler WS: ${codeLabel}${code === 4404 ? ' - streamer is offline' : ''}`
             });
+        } else {
+            // Detect rapid connect/disconnect cycles (TikTok accepting then killing connection)
+            const rapidThreshold = CONFIG.CONNECTION.RAPID_DISCONNECT_THRESHOLD_MS || 60000;
+            const rapidLimit = CONFIG.CONNECTION.RAPID_DISCONNECT_STRIKE_LIMIT || 3;
+            const connectionDuration = this.lastConnectTimestamp ? (Date.now() - this.lastConnectTimestamp) : Infinity;
 
-            if (shouldRetryAsOffline) {
-                const offlineMessage = code === 4404
-                    ? 'The requested user is not live right now.'
-                    : 'Live stream has ended';
-                console.info(`[EulerWS] ${offlineMessage} Scheduling offline retry.`);
-                this.enterOfflineRetryMode(offlineMessage);
-            } else if (shouldSkipReconnect) {
-                console.warn(`[EulerWS] Skipping auto-reconnect due to terminal close code ${code} (${codeLabel})`);
-                // Emit error so UI shows the issue
-                emitStatus({
-                    wssID: this.wssID,
-                    status: 'error',
-                    error: `Euler WS: ${codeLabel}${code === 4404 ? ' - streamer is offline' : ''}`
-                });
+            if (connectionDuration < rapidThreshold) {
+                this.rapidDisconnectCount = (this.rapidDisconnectCount || 0) + 1;
             } else {
-                // Detect rapid connect/disconnect cycles (TikTok accepting then killing connection)
-                const rapidThreshold = CONFIG.CONNECTION.RAPID_DISCONNECT_THRESHOLD_MS || 60000;
-                const rapidLimit = CONFIG.CONNECTION.RAPID_DISCONNECT_STRIKE_LIMIT || 3;
-                const connectionDuration = this.lastConnectTimestamp ? (Date.now() - this.lastConnectTimestamp) : Infinity;
-
-                if (connectionDuration < rapidThreshold) {
-                    this.rapidDisconnectCount = (this.rapidDisconnectCount || 0) + 1;
-                } else {
-                    this.rapidDisconnectCount = 0;
-                }
-
-                if (this.rapidDisconnectCount >= rapidLimit) {
-                    console.warn(`[TikTok] Connection dropped ${this.rapidDisconnectCount} times within ${Math.round(rapidThreshold / 1000)}s each. Trying alternative mode.`);
-                    this.rapidDisconnectCount = 0;
-                    const syntheticError = { message: 'Connection repeatedly dropped. Trying alternative mode.' };
-                    this.tryAutoFallbacksBeforePrompt(syntheticError, 'disconnect_rapid_cycle')
-                        .then((handled) => {
-                            if (handled) {
-                                return this.restartConnectionAttempt();
-                            }
-                            if (!this.pollingFallbackActivated) {
-                                return this.tryFallbackToPolling(syntheticError, 'disconnect_rapid_cycle_polling')
-                                    .then((pollingHandled) => {
-                                        if (pollingHandled) {
-                                            return this.restartConnectionAttempt();
-                                        }
-                                        this.attemptReconnect();
-                                        return null;
-                                    });
-                            }
-                            this.attemptReconnect();
-                            return null;
-                        })
-                        .catch(() => {
-                            this.attemptReconnect();
-                        });
-                    return;
-                }
-
-                this.attemptReconnect();
+                this.rapidDisconnectCount = 0;
             }
+
+            if (this.rapidDisconnectCount >= rapidLimit) {
+                console.warn(`[TikTok] Connection dropped ${this.rapidDisconnectCount} times within ${Math.round(rapidThreshold / 1000)}s each. Trying alternative mode.`);
+                this.rapidDisconnectCount = 0;
+                const syntheticError = { message: 'Connection repeatedly dropped. Trying alternative mode.' };
+                this.tryAutoFallbacksBeforePrompt(syntheticError, 'disconnect_rapid_cycle')
+                    .then((handled) => {
+                        if (handled) {
+                            return this.restartConnectionAttempt();
+                        }
+                        if (!this.pollingFallbackActivated) {
+                            return this.tryFallbackToPolling(syntheticError, 'disconnect_rapid_cycle_polling')
+                                .then((pollingHandled) => {
+                                    if (pollingHandled) {
+                                        return this.restartConnectionAttempt();
+                                    }
+                                    this.attemptReconnect();
+                                    return null;
+                                });
+                        }
+                        this.attemptReconnect();
+                        return null;
+                    })
+                    .catch(() => {
+                        this.attemptReconnect();
+                    });
+                return;
+            }
+
+            this.attemptReconnect();
         }
     }
 
@@ -8962,6 +9051,10 @@ class ConnectionManager {
                 if (pollingHandled) {
                     return this.restartConnectionAttempt(primaryError);
                 }
+            }
+            if (this.isNonRetryableSignServerConfigurationError(primaryError, combinedMessage)) {
+                this.handleSignServerConfigurationFailure(primaryError);
+                return;
             }
         }
 

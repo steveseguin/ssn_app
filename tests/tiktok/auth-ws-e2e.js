@@ -2,6 +2,7 @@
 
 const assert = require('assert');
 const path = require('path');
+const tiktokConnector = require('tiktok-live-connector');
 
 delete process.env.WHITELIST_AUTHENTICATED_SESSION_ID_HOST;
 delete process.env.SSAPP_TIKTOK_AUTH_WS_ALLOWED_HOSTS;
@@ -323,13 +324,45 @@ console.log('\n==========================================================');
 console.log('E2E: websocket identity default');
 console.log('==========================================================\n');
 
-test('ws-client.js keeps default audience identity; anchor is applied per local host connection', () => {
-	const fs = require('fs');
-	const wsClientPath = require.resolve('tiktok-live-connector/dist/lib/ws/lib/ws-client.js');
-	const content = fs.readFileSync(wsClientPath, 'utf8');
-	const audienceMatch = content.match(/identity:\s*'audience'/g);
-	assert.ok(audienceMatch && audienceMatch.length > 0, 'ws-client.js should contain identity: audience');
-	assert.ok(!/identity:\s*'anchor'/.test(content), 'ws-client.js should not be globally patched to anchor');
+test('TikTok 2.4+ public API is available and identity overrides stay connection-scoped', () => {
+	const versionParts = String(tiktokConnector.VERSION || '').split('.').map(Number);
+	assert.strictEqual(versionParts[0], 2, `expected TikTok connector 2.x, received ${tiktokConnector.VERSION}`);
+	assert.ok(versionParts[1] >= 4, `expected TikTok connector 2.4+, received ${tiktokConnector.VERSION}`);
+	assert.strictEqual(typeof tiktokConnector.createBaseWebcastPushFrame, 'function');
+	assert.strictEqual(typeof tiktokConnector.deserializeMessage, 'function');
+	assert.ok(tiktokConnector.WebcastImEnterRoomMessage);
+
+	const publicFrameFactory = tiktokConnector.createBaseWebcastPushFrame;
+	const host = createManager(null, null, 'local');
+	setLocalSigner(host);
+	host.accountRole = 'host';
+	assert.strictEqual(host.buildConnectionOptions(false).wsClientParams.identity, 'anchor');
+
+	const audience = createManager(null, null, 'local');
+	setLocalSigner(audience);
+	assert.strictEqual(audience.buildConnectionOptions(false).wsClientParams.identity, 'audience');
+	assert.strictEqual(
+		require('tiktok-live-connector').createBaseWebcastPushFrame,
+		publicFrameFactory,
+		'connection-specific identity setup must not patch the connector module globally'
+	);
+});
+
+test('TikTok 2.4+ local signer wrapper preserves the setupWebsocket room ID', () => {
+	const manager = createManager(null, null, 'local');
+	setLocalSigner(manager);
+	let receivedArgs = null;
+	const fakeConnection = {
+		roomId: 'fallback-room',
+		setupWebsocket(...args) {
+			receivedArgs = args;
+			return Promise.resolve({});
+		}
+	};
+	assert.strictEqual(manager.applyLocalSignerWebcastIdentityOverride(fakeConnection, 'audience'), true);
+	fakeConnection.setupWebsocket('wss://example.invalid', { room_id: 'room-from-params' }, undefined);
+	assert.ok(receivedArgs, 'wrapped setupWebsocket should call the connector method');
+	assert.strictEqual(receivedArgs[2], 'room-from-params');
 });
 
 console.log('\n==========================================================');

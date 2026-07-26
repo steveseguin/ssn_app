@@ -5,6 +5,10 @@ const {
   createTikTokEnvironment,
   installTikTokSignServerFallback
 } = require('../../tiktok/connection-manager');
+const {
+  createStrategyResult,
+  exitCodeForResults
+} = require('./runner-result');
 
 const args = process.argv.slice(2);
 const options = {
@@ -37,6 +41,8 @@ installTikTokSignServerFallback(tiktokConnector);
 const websocketConnections = {};
 const browserViews = {};
 const connectionStates = new Map();
+const latestStatuses = new Map();
+const connectedConnectionIds = new Set();
 
 const env = createTikTokEnvironment({
   connector: tiktokConnector,
@@ -46,7 +52,12 @@ const env = createTikTokEnvironment({
   browserViews,
   websocketConnections,
   log: (...args) => console.log('[lib]', ...args),
-  onStatus: (status) => console.log('[status]', status),
+  onStatus: (status) => {
+    console.log('[status]', status);
+    if (!status || status.wssID == null) return;
+    latestStatuses.set(status.wssID, status);
+    if (status.status === 'connected') connectedConnectionIds.add(status.wssID);
+  },
   onEvent: (event) => {
     if (!event || event.type !== 'tiktok') {
       return;
@@ -113,9 +124,11 @@ async function runStrategy(strategy) {
   });
 
   console.log(`\n[runner] Starting ${strategy} connection for @${username}`);
+  let initializeError = null;
   try {
     await manager.initialize();
   } catch (error) {
+    initializeError = error;
     console.error(`[runner] initialize failed (${strategy}):`, error.message || error);
   }
 
@@ -126,6 +139,13 @@ async function runStrategy(strategy) {
   } catch (error) {
     console.warn(`[runner] cleanup error (${strategy}):`, error.message || error);
   }
+
+  return createStrategyResult(
+    strategy,
+    connectedConnectionIds.has(wssID),
+    latestStatuses.get(wssID),
+    initializeError
+  );
 }
 
 async function main() {
@@ -137,15 +157,27 @@ async function main() {
     modes.push('legacy');
   }
 
-  for (const mode of modes) {
-    await runStrategy(mode);
+  if (!modes.length) {
+    throw new Error(`Unsupported TikTok test mode: ${options.mode}`);
   }
 
-  console.log('\n[runner] Test run complete.');
-  process.exit(0);
+  const results = [];
+  for (const mode of modes) {
+    results.push(await runStrategy(mode));
+  }
+
+  const failed = results.filter(result => !result.connected);
+  if (failed.length) {
+    console.error('\n[runner] Test run failed:', failed);
+  } else {
+    console.log('\n[runner] Test run complete.');
+  }
+  return exitCodeForResults(results);
 }
 
-main().catch(error => {
+main().then(code => {
+  process.exit(code);
+}).catch(error => {
   console.error('[runner] Fatal error:', error);
   process.exit(1);
 });

@@ -22,6 +22,12 @@ function createRateLimitError(options) {
     return error;
 }
 
+function createBusinessPlanError() {
+    var error = new Error('[Empty Payload] Failed to sign a request: This endpoint requires a Business plan. Purchase one at https://www.eulerstream.com/pricing.');
+    error.name = 'SignatureMissingTokensError';
+    return error;
+}
+
 function createScenarioPlan(outcomesByMode) {
     var queues = Object.create(null);
     var modes = outcomesByMode || {};
@@ -229,6 +235,26 @@ async function run() {
         assert.strictEqual(harness.manager.signServerFailureCount, 2);
     });
 
+    await test('Polling plan requirement is surfaced once without rapid retries', async function() {
+        var harness = createHarness({
+            polling: [{ error: createBusinessPlanError() }]
+        }, { allowProxy: false, localSignerEnabled: false });
+        harness.manager.preferredStrategy = 'legacy';
+        harness.manager.connectionStrategy = 'legacy';
+
+        await harness.manager.initialize();
+        await new Promise(function(resolve) { setTimeout(resolve, 20); });
+
+        assert.deepStrictEqual(getConnectModes(harness.plan), ['polling']);
+        assert.strictEqual(harness.plan.reconnects.length, 0,
+            'a plan requirement cannot be fixed by immediate reconnects');
+        var failed = harness.plan.statuses.find(function(status) { return status.status === 'failed'; });
+        assert.ok(failed, 'expected a failed status for the renderer');
+        assert.ok(/Polling requires an Euler plan/.test(failed.error),
+            'expected actionable Polling/Euler guidance');
+        assert.strictEqual(failed.configurationRequired, true);
+    });
+
     // ===== FIX B: rapid disconnect detection =====
 
     await test('rapid disconnect counter increments for short-lived connections', async function() {
@@ -311,6 +337,22 @@ async function run() {
         assert.strictEqual(harness.manager.offlineRetry, true,
             'manager should enter offline retry mode');
         assert.strictEqual(harness.manager.offlineReason, 'The requested user is not live right now.');
+    });
+
+    await test('exhausted AUTO fallback clears connected state and schedules reconnect', async function() {
+        var harness = createHarness({ auto: [{ ok: true }] }, { allowProxy: false, localSignerEnabled: false });
+        harness.manager.signingProvider = 'euler-ws';
+        harness.manager.autoEulerProxyFallbackActive = true;
+        harness.manager.tryAutoFallbacksBeforePrompt = async function() { return false; };
+        harness.manager.lastConnectTimestamp = Date.now() - 5000;
+
+        harness.manager.handleDisconnect({ code: 4429, codeLabel: 'TOO_MANY_CONNECTIONS' });
+        await new Promise(function(resolve) { setTimeout(resolve, 20); });
+
+        assert.ok(harness.plan.statuses.some(function(status) { return status.status === 'disconnected'; }),
+            'exhausted fallbacks should notify the renderer that the source disconnected');
+        assert.strictEqual(harness.plan.reconnects.length, 1,
+            'exhausted fallbacks should continue through the normal reconnect path');
     });
 
     await test('pending streamEnd is cancelled by later traffic', async function() {

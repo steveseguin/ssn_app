@@ -43,7 +43,6 @@ const {
 } = require('electron')
 const { exec, spawn } = require('child_process');
 const http = require('http');
-const url = require('url');
 const contextMenu = require("electron-context-menu");
 const Yargs = require("yargs");
 const {
@@ -2306,7 +2305,11 @@ function setupRemoteControlServer() {
     });
 
     const server = http.createServer(async (req, res) => {
-        const parsed = url.parse(req.url, true);
+        const requestUrl = new URL(req.url || '/', 'http://127.0.0.1');
+        const parsed = {
+            pathname: requestUrl.pathname,
+            query: Object.fromEntries(requestUrl.searchParams)
+        };
         const isControlApiRequest = parsed.pathname.startsWith('/api/v1/');
         const handleControlApiRequest = async () => {
             try {
@@ -4886,6 +4889,29 @@ async function runHiddenCaptureDiagnostics() {
     }
     report.tabID = tabID;
 
+    const readHiddenWindowPlacement = () => {
+        let nativeVisible = null;
+        let bounds = null;
+        let intersectsScreen = null;
+        try { nativeVisible = view.isVisible(); } catch (_) { }
+        try {
+            bounds = view.getBounds();
+            intersectsScreen = sourceWindowIntersectsVirtualScreen(bounds);
+        } catch (_) { }
+
+        // Linux and headless-control mode deliberately unmap the window. Windows and macOS
+        // deliberately keep it mapped and park it beyond the virtual desktop so compositor
+        // frames continue. Both satisfy the user-facing requirement that it is not on screen.
+        const expectsNativeHide = headless || process.platform === 'linux';
+        const notOnScreen = expectsNativeHide
+            ? nativeVisible === false
+            : nativeVisible === false || intersectsScreen === false;
+        return {
+            notOnScreen,
+            detail: `isVisible()=${nativeVisible}, intersectsScreen=${intersectsScreen}, bounds=${JSON.stringify(bounds)}`
+        };
+    };
+
     try {
         await waitForCondition(() => {
             try { return !view.webContents.isLoading(); } catch (_) { return false; }
@@ -4954,10 +4980,11 @@ async function runHiddenCaptureDiagnostics() {
         check('startup.frames_running', visible.rafPerSecond > 5, `rAF/s=${visible.rafPerSecond}`);
         check('pump.installed', !!visible.pump, `pump=${JSON.stringify(visible.pump)}`);
         if (headless || startHidden) {
+            const startupPlacement = readHiddenWindowPlacement();
             check(
                 'startup.window_not_shown',
-                visible.nativeVisible === false,
-                `isVisible()=${visible.nativeVisible}`
+                startupPlacement.notOnScreen,
+                startupPlacement.detail
             );
         }
 
@@ -4995,12 +5022,11 @@ async function runHiddenCaptureDiagnostics() {
         applySourceWindowVisibility(view, { state: true });
         await sleep(1200);
 
-        let nativeVisibleWhileHidden = null;
-        try { nativeVisibleWhileHidden = view.isVisible(); } catch (_) { }
+        const hiddenPlacement = readHiddenWindowPlacement();
         check(
-            'hide.window_actually_hidden',
-            nativeVisibleWhileHidden === false,
-            `isVisible()=${nativeVisibleWhileHidden}`
+            'hide.window_not_on_screen',
+            hiddenPlacement.notOnScreen,
+            hiddenPlacement.detail
         );
         check('hide.logical_state', view.__ss_visible === false, `__ss_visible=${view.__ss_visible}`);
 
@@ -8946,7 +8972,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
         /Electron Security Warning/i
     ];
 
-    mainWindow.webContents.on('console-message', (event, level, message) => {
+    mainWindow.webContents.on('console-message', (event) => {
+        const message = typeof event?.message === 'string' ? event.message : '';
         if (consoleFilterPatterns.some((pattern) => pattern.test(message))) {
             if (typeof event?.preventDefault === 'function') {
                 event.preventDefault();

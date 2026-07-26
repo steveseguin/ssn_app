@@ -8,18 +8,18 @@ const crypto = require('node:crypto');
 const { PassThrough } = require('stream');
 const { pipeline } = require('stream/promises');
 
-let archiver;
+let zipArchivePromise;
 let unzipper;
 
 const FILE_MAGIC = Buffer.from('SSAPPBK1', 'ascii'); // 7 bytes
 const FILE_VERSION = 1;
 const AUTH_TAG_LENGTH = 16;
 
-function requireArchiver() {
-    if (!archiver) {
-        archiver = require('archiver');
+async function loadZipArchive() {
+    if (!zipArchivePromise) {
+        zipArchivePromise = import('archiver').then(module => module.ZipArchive);
     }
-    return archiver;
+    return await zipArchivePromise;
 }
 
 function requireUnzipper() {
@@ -240,7 +240,7 @@ async function createTransferBackup({
     ]);
 
     const ignore = getDefaultIgnoreGlobs({ includeCaches });
-    const Archiver = requireArchiver();
+    const ZipArchive = await loadZipArchive();
 
     const startedAt = Date.now();
     const reportProgress = typeof onProgress === 'function'
@@ -259,7 +259,7 @@ async function createTransferBackup({
 
         encrypted.pipe(out, { end: false });
 
-        const archive = Archiver('zip', { zlib: { level: compressionLevel } });
+        const archive = new ZipArchive({ zlib: { level: compressionLevel } });
         archive.on('warning', (err) => {
             if (err && err.code !== 'ENOENT') {
                 console.warn('[TransferBackup] archiver warning:', err);

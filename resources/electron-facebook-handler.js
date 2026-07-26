@@ -1,7 +1,6 @@
 ﻿'use strict';
 
 const http = require("http");
-const url = require("url");
 const { dialog, ipcMain, shell } = require("electron");
 
 const LOOPBACK_HOST = "127.0.0.1";
@@ -220,8 +219,8 @@ function runFacebookLoopbackOAuthSession(payload = {}) {
         activeSession = session;
 
         server = http.createServer((req, res) => {
-            const parsed = url.parse(req.url, true);
-            const query = parsed.query || {};
+            const parsed = new URL(req.url || "/", `http://${LOOPBACK_HOST}`);
+            const query = Object.fromEntries(parsed.searchParams);
 
             if (req.method === "POST" && parsed.pathname === RESULT_ENDPOINT) {
                 let body = "";

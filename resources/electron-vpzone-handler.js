@@ -3,7 +3,6 @@
 const crypto = require("crypto");
 const http = require("http");
 const https = require("https");
-const url = require("url");
 const { dialog, ipcMain, shell } = require("electron");
 
 const LOOPBACK_HOST = "127.0.0.1";
@@ -176,8 +175,8 @@ function runVpzoneLoopbackOAuthSession(payload = {}) {
 
 		server = http.createServer((req, res) => {
 			(async () => {
-				const parsed = url.parse(req.url, true);
-				const query = parsed.query || {};
+				const parsed = new URL(req.url || "/", `http://${LOOPBACK_HOST}`);
+				const query = Object.fromEntries(parsed.searchParams);
 
 				if (parsed.pathname !== CALLBACK_PATH && parsed.pathname !== "/callback" && parsed.pathname !== "/") {
 					res.writeHead(404, { "Content-Type": "text/plain" });

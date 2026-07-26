@@ -69,6 +69,7 @@ async function run() {
 		})}\n`);
 		const initialized = await waitForResponse(responses, 1, child, stderr);
 		assert.strictEqual(initialized.result.serverInfo.name, 'social-stream-ninja');
+		assert.strictEqual(initialized.result.serverInfo.version, '1.0.4');
 		assert.match(initialized.result.instructions, /capabilities/i);
 
 		child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })}\n`);

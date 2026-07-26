@@ -11,6 +11,8 @@
     "auto": "node auto-mode-regression.js",
     "gift": "node gift-count-regression.js",
     "social": "node social-signal-regression.js",
+    "auth": "node auth-ws-e2e.js",
+    "runner": "node runner-result-regression.js",
     "events": "node event-capture-regression.js",
     "emote": "node chat-emote-regression.js",
     "single-active": "node single-active-connection-regression.js",

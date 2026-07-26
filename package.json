@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "main": "bootstrap.js",
@@ -15,6 +15,7 @@
     "test:settings-rootcause": "node tests/electron/settings-rootcause-diagnostics.js",
     "test:settings-transfer": "node tests/electron/settings-transfer-e2e.js",
     "start:headless": "bash scripts/start-headless.sh",
+    "test:headless-launcher": "bash tests/electron/headless-launcher-regression.sh",
     "test:hidden-capture": "node tests/electron/hidden-capture-diagnostics.js",
     "test:hidden-capture:soak": "node tests/electron/hidden-capture-soak.js",
     "test:portable-paths": "node tests/electron/portable-data-paths-regression.js",
@@ -44,9 +45,12 @@
     "test:youtube-oauth-loopback": "node tests/electron/youtube-oauth-loopback-e2e.js",
     "test:chathistory-export": "node tests/electron/chathistory-export-regression.js",
     "test:packaging-prune": "node tests/electron/prune-packaged-native-binaries-regression.js",
+    "test:artifact-hook": "node tests/electron/artifact-hook-regression.js",
     "test:tiktok-auto-mode": "node tests/tiktok/auto-mode-regression.js",
     "test:tiktok-gift-regression": "node tests/tiktok/gift-count-regression.js",
     "test:tiktok-social-signals": "node tests/tiktok/social-signal-regression.js",
+    "test:tiktok-auth-ws": "node tests/tiktok/auth-ws-e2e.js",
+    "test:tiktok-runner": "node tests/tiktok/runner-result-regression.js",
     "test:recent-changes": "node tests/electron/stability-recovery-diagnostics.js && node tests/electron/settings-transfer-e2e.js && node tests/tiktok/auto-mode-regression.js && node tests/tiktok/gift-count-regression.js && node tests/tiktok/social-signal-regression.js",
     "submit:virustotal": "node scripts/submit-virustotal.js --dir dist",
     "test": "electron .",
@@ -255,22 +259,21 @@
     "afterAllArtifactBuild": "./afterPack.js"
   },
   "devDependencies": {
+    "app-builder-lib": "^26.15.7",
     "electron": "^43.2.0",
-    "electron-builder": "^26.5.0",
+    "electron-builder": "^26.15.7",
     "electron-notarize": "git+https://github.com/electron/notarize.git",
     "fs-extra": "^11.3.4",
     "jsonfile": "^6.1.0",
     "playwright-core": "^1.61.1",
     "rimraf": "^6.0.1",
     "run-script-os-fix": "^1.0.4",
-    "tsx": "^4.20.5"
+    "tsx": "^4.23.1"
   },
   "dependencies": {
     "@eulerstream/euler-websocket-sdk": "^0.0.6",
     "@huggingface/transformers": "git+https://github.com/steveseguin/transformers.js",
-    "app-builder-lib": "^26.0.12",
-    "archiver": "^7.0.1",
-    "archiver-utils": "^5.0.2",
+    "archiver": "^8.0.0",
     "bufferutil": "^4.0.9",
     "color": "^5.0.0",
     "color-convert": "^3.0.1",
@@ -286,8 +289,8 @@
     "minimalist": "^1.0.0",
     "minimist": "git+https://github.com/fortiZde/minimist.git",
     "phonemizer": "^1.2.1",
-    "sharp": "^0.34.5",
-    "tiktok-live-connector": "^2.1.0",
+    "sharp": "^0.35.3",
+    "tiktok-live-connector": "^2.4.0",
     "undici": "^7.5.0",
     "unzipper": "^0.12.3",
     "utf-8-validate": "^6.0.5",
@@ -295,12 +298,18 @@
     "yargs": "^17.7.2"
   },
   "overrides": {
+    "brace-expansion@<1.1.16": "1.1.16",
+    "brace-expansion@>=2.0.0 <2.1.2": "2.1.2",
+    "brace-expansion@>=3.0.0 <5.0.8": "5.0.8",
+    "fast-uri": "3.1.4",
+    "sharp": "$sharp",
+    "tar": "7.5.22",
     "tiktok-live-connector": {
       "protobufjs": "7.6.1"
     }
   },
   "engines": {
-    "node": ">=18.0.0",
+    "node": ">=20.9.0",
     "npm": ">=8.0.0"
   }
 }

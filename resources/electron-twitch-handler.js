@@ -1,6 +1,5 @@
 const { ipcMain, shell } = require('electron');
 const http = require('http');
-const url = require('url');
 
 function escapeHtml(str) {
     if (typeof str !== 'string') return '';
@@ -107,8 +106,8 @@ function runTwitchLoopbackOAuthSession(payload = {}) {
         activeSession = session;
 
         server = http.createServer((req, res) => {
-            const parsed = url.parse(req.url, true);
-            const query = parsed.query || {};
+            const parsed = new URL(req.url || '/', `http://${LOOPBACK_HOST}`);
+            const query = Object.fromEntries(parsed.searchParams);
 
             // Handle POST request with token data from the landing page JavaScript
             if (req.method === 'POST' && parsed.pathname === '/token') {

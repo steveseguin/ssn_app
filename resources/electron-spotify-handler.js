@@ -2,7 +2,6 @@
 
 const { BrowserWindow, ipcMain, shell } = require('electron');
 const http = require('http');
-const url = require('url');
 
 const LOOPBACK_HOST = '127.0.0.1';
 const LOOPBACK_PORTS = [8888, 8080, 8181];
@@ -359,9 +358,9 @@ function runLoopbackOAuthSession({ authUrl, redirectUri, state }) {
             attemptedPorts.push(currentPort);
 
             const candidateServer = http.createServer((req, res) => {
-                const parsedReq = url.parse(req.url, true);
+                const parsedReq = new URL(req.url || '/', `http://${LOOPBACK_HOST}`);
                 const reqPath = parsedReq.pathname || '/';
-                const query = parsedReq.query || {};
+                const query = Object.fromEntries(parsedReq.searchParams);
                 const attemptedRedirectUri = `http://${LOOPBACK_HOST}:${currentPort}${reqPath}`;
 
                 if (query.code) {

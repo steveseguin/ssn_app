@@ -6,7 +6,7 @@ const http = require('http');
 const https = require('https');
 const readline = require('readline');
 
-const MCP_SERVER_VERSION = '1.0.3';
+const MCP_SERVER_VERSION = '1.0.4';
 const MCP_PROTOCOL_VERSION = '2025-06-18';
 const DEFAULT_URL = 'http://127.0.0.1:17777';
 

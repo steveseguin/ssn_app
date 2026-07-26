@@ -26,7 +26,7 @@ machine as SSApp. They are not the cloud-control path.
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y xvfb
+sudo apt-get install -y xvfb x11-utils
 ```
 
 SSApp remains a browser application internally. Expect a few hundred MB of memory plus

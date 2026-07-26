@@ -12,6 +12,7 @@ const indexSource = fs.readFileSync(path.join(repoRoot, 'index.html'), 'utf8');
 const mainSource = fs.readFileSync(path.join(repoRoot, 'main.js'), 'utf8');
 const preloadSource = fs.readFileSync(path.join(repoRoot, 'preload.js'), 'utf8');
 const macosWorkflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'build-macos.yml'), 'utf8');
+const headlessLauncherSource = fs.readFileSync(path.join(repoRoot, 'scripts', 'start-headless.sh'), 'utf8');
 const { getTrustedStandaloneCustomJsPageType } = require('../../resources/custom-js-page-trust');
 
 function extractFunctionSource(source, functionName) {
@@ -444,12 +445,47 @@ function testMacosCheckoutFallback() {
 	assert.doesNotMatch(fallbackStep, /if:\s*failure\(\)/);
 }
 
+function testHeadlessLauncherLifecycle() {
+	assert.match(
+		headlessLauncherSource,
+		/command -v xdpyinfo/,
+		'the launcher should fail clearly when its X display probe is unavailable'
+	);
+	assert.doesNotMatch(
+		headlessLauncherSource,
+		/\bexec\s+"\$APP_BINARY"/,
+		'exec would bypass the EXIT trap and leave the launcher-owned Xvfb running'
+	);
+	assert.match(headlessLauncherSource, /APP_PID=\$!/);
+	assert.match(headlessLauncherSource, /if wait "\$APP_PID"/);
+	assert.match(headlessLauncherSource, /trap cleanup EXIT/);
+}
+
+function testElectron43ApiCompatibility() {
+	assert.doesNotMatch(
+		mainSource,
+		/const parsed = url\.parse\(req\.url, true\)/,
+		'the local control server should use the WHATWG URL API on Electron 43'
+	);
+	assert.match(
+		mainSource,
+		/const requestUrl = new URL\(req\.url \|\| '\/', 'http:\/\/127\.0\.0\.1'\);/
+	);
+	assert.match(
+		mainSource,
+		/mainWindow\.webContents\.on\('console-message', \(event\) => \{[\s\S]*?event\?\.message/,
+		'the main window should use Electron 43 console-message event details'
+	);
+}
+
 async function run() {
 	testCustomJsTrustBoundary();
 	await testHiddenRendererYield();
 	testLinuxWindowVisibility();
 	testFramePumpSemantics();
 	testMacosCheckoutFallback();
+	testHeadlessLauncherLifecycle();
+	testElectron43ApiCompatibility();
 	console.log('review-fixes-regression: all checks passed');
 }
 

@@ -8280,14 +8280,19 @@
                     const tiktokErrorAfterCreate = resolvedTarget === 'tiktok'
                         ? sourceAfterCreate?.error
                         : null;
+                    const tiktokReportedError = resolvedTarget === 'tiktok'
+                        && tiktokStatusAfterCreate === 'error';
                     const tiktokWaitingForConnect = resolvedTarget === 'tiktok'
                         && (normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')
-                        && !alreadyConnectedTikTok;
+                        && !alreadyConnectedTikTok
+                        && !tiktokReportedError;
                     const nonTikTokWssReportedError = resolvedTarget !== 'tiktok'
                         && normalizedMode === 'websocket'
                         && sourceAfterCreate?.status === 'error';
                     let statusValue;
                     if (nonTikTokWssReportedError) {
+                        statusValue = 'error';
+                    } else if (tiktokReportedError) {
                         statusValue = 'error';
                     } else if (alreadyConnectedTikTok) {
                         statusValue = 'active';
@@ -8309,7 +8314,7 @@
                         activeConnectionMode: resolvedActiveMode,
                         error: nonTikTokWssReportedError
                             ? (sourceAfterCreate?.error || 'Connection error')
-                            : (tiktokWaitingForConnect ? tiktokErrorAfterCreate : null)
+                            : (tiktokReportedError || tiktokWaitingForConnect ? tiktokErrorAfterCreate : null)
                     });
 
                     if (pendingTikTokToken) {
@@ -8327,6 +8332,14 @@
                         if (statusValue === 'active') {
                             restoreActivateButton(entry);
                         }
+                    }
+
+                    if (tiktokReportedError) {
+                        return {
+                            success: false,
+                            windowId,
+                            error: new Error(tiktokErrorAfterCreate || 'TikTok connection failed')
+                        };
                     }
 
                     return { success: true, windowId };
@@ -12326,7 +12339,10 @@
                                         entryElement._tiktokFallback.lastFailureStatus = 'failed';
                                         entryElement._tiktokFallback.lastFailureMessage = errorMessage || null;
                                     }
-                                    autoFallbackToNextTikTokMode(sourceId, 'failed', errorMessage || null);
+                                    const activationAttemptInProgress = !!entryElement?._tiktokFallback?.inProgress;
+                                    if (!activationAttemptInProgress) {
+                                        autoFallbackToNextTikTokMode(sourceId, 'failed', errorMessage || null);
+                                    }
                                 }
                             }
                             break;

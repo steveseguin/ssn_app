@@ -237,7 +237,7 @@ async function once(emitter, event) {
 async function waitFor(find, label, timeoutMs = 10000) {
 	const started = Date.now();
 	while (Date.now() - started < timeoutMs) {
-		const result = find();
+		const result = await find();
 		if (result) return result;
 		await delay(25);
 	}
@@ -299,9 +299,11 @@ async function run() {
 		});
 
 		await waitForRemoteControl(remotePort);
-		const windows = await requestJson(remotePort, '/windows');
-		const mainWindow = (windows.windows || []).find(window => typeof window.url === 'string' && window.url.includes('index.html'));
-		assert(mainWindow && mainWindow.id, `SSApp main window not found: ${JSON.stringify(windows)}`);
+		const mainWindow = await waitFor(async () => {
+			const windows = await requestJson(remotePort, '/windows');
+			return (windows.windows || []).find(window => typeof window.url === 'string' && window.url.includes('index.html'));
+		}, 'SSApp main window navigation', 60000);
+		assert(mainWindow && mainWindow.id, 'SSApp main window did not finish navigating');
 
 		const setup = await execInRenderer(remotePort, mainWindow.id, `
 			(async () => {
