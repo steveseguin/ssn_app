@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 #
-# Start Social Stream Ninja on a machine with no desktop: creates a virtual display,
-# launches the app with every window hidden, and turns on the local control API.
+# Start Social Stream Ninja on a machine with no desktop: creates a virtual display and
+# launches the app with every window hidden.
 #
-# See docs/CLOUD_HOSTING.md for the full walkthrough, including how to reach the control
-# API from your own machine and how to sign in to platforms that need it.
+# See docs/CLOUD_HOSTING.md for the full walkthrough.
 #
 #   ./scripts/start-headless.sh                     # run in the foreground
-#   SSAPP_CONTROL_PORT=17777 ./scripts/start-headless.sh
 #   SSAPP_DATA_DIR=/var/lib/ssapp ./scripts/start-headless.sh
 #
 set -euo pipefail
@@ -17,7 +15,6 @@ cd "$REPO_ROOT"
 
 DISPLAY_NUM="${SSAPP_DISPLAY_NUM:-99}"
 SCREEN_SIZE="${SSAPP_SCREEN_SIZE:-1920x1080x24}"
-CONTROL_PORT="${SSAPP_CONTROL_PORT:-17777}"
 DATA_DIR="${SSAPP_DATA_DIR:-$HOME/.local/share/ssapp-headless}"
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -78,27 +75,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# A stable token so restarts do not invalidate your saved client config. Generated once and
-# kept next to the data directory with owner-only permissions.
-TOKEN_FILE="$DATA_DIR/control-api-token"
-if [ ! -s "$TOKEN_FILE" ]; then
-	umask 077
-	head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$TOKEN_FILE"
-	echo >> "$TOKEN_FILE"
-	echo "[start-headless] generated a control API token at $TOKEN_FILE"
-fi
-chmod 600 "$TOKEN_FILE"
-
 cat <<INFO
 [start-headless] data directory : $DATA_DIR
-[start-headless] control API    : http://127.0.0.1:$CONTROL_PORT  (localhost only, token required)
-[start-headless] token file     : $TOKEN_FILE
-
-To reach it from your own machine, forward the port over SSH:
-  ssh -N -L $CONTROL_PORT:127.0.0.1:$CONTROL_PORT user@this-server
-then, locally:
-  curl -H "x-ssapp-token: \$(ssh user@this-server cat $TOKEN_FILE)" \\
-    http://127.0.0.1:$CONTROL_PORT/api/v1/status
+[start-headless] virtual display: :$DISPLAY_NUM
 
 INFO
 
@@ -116,8 +95,5 @@ fi
 
 exec "$APP_BINARY" "${APP_PATH_ARG[@]+"${APP_PATH_ARG[@]}"}" \
 	--ssapp-headless-control \
-	--ssapp-control-api \
-	--ssapp-control-port="$CONTROL_PORT" \
-	--ssapp-control-token-file="$TOKEN_FILE" \
 	"${GPU_ARGS[@]}" \
 	"$@"

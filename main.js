@@ -1994,12 +1994,10 @@ const legacyRemoteControlEnabled = (
 );
 const headlessControlEnabled = process.argv.includes('--ssapp-headless-control')
     || (process.env.SSAPP_HEADLESS_CONTROL || '').trim() === '1';
-const controlApiEnabled = legacyRemoteControlEnabled
-    || headlessControlEnabled
-    || process.argv.includes('--ssapp-control-api')
+const controlApiEnabled = process.argv.includes('--ssapp-control-api')
     || (process.env.SSAPP_CONTROL_API || '').trim() === '1'
     || store.get('controlApi.enabled', false) === true;
-const remoteControlEnabled = controlApiEnabled;
+const remoteControlEnabled = legacyRemoteControlEnabled || controlApiEnabled;
 const remoteControlPort = (() => {
     const inline = process.argv.find(value => typeof value === 'string' && value.startsWith('--ssapp-control-port='));
     const index = process.argv.indexOf('--ssapp-control-port');
@@ -2009,39 +2007,18 @@ const remoteControlPort = (() => {
     const parsed = parseInt(raw, 10);
     return Number.isInteger(parsed) && parsed >= 1024 && parsed <= 65535 ? parsed : 17777;
 })();
-const remoteControlToken = (() => {
-    const inline = process.argv.find(value => typeof value === 'string' && value.startsWith('--ssapp-control-token='));
-    const index = process.argv.indexOf('--ssapp-control-token');
-    const tokenFileInline = process.argv.find(value => typeof value === 'string' && value.startsWith('--ssapp-control-token-file='));
-    const tokenFileIndex = process.argv.indexOf('--ssapp-control-token-file');
-    const tokenFile = (tokenFileInline ? tokenFileInline.slice('--ssapp-control-token-file='.length) : (tokenFileIndex >= 0 ? process.argv[tokenFileIndex + 1] : ''))
-        || (process.env.SSAPP_CONTROL_TOKEN_FILE || '').trim();
-    let fileToken = '';
-    if (tokenFile) {
-        try {
-            fileToken = fs.readFileSync(path.resolve(tokenFile), 'utf8').trim();
-        } catch (error) {
-            console.warn('[Control API] Unable to read token file:', error && error.message ? error.message : error);
-        }
-    }
-    const env = fileToken
-        || (process.env.SSAPP_CONTROL_TOKEN || '').trim()
-        || (inline ? inline.slice('--ssapp-control-token='.length) : (index >= 0 ? process.argv[index + 1] : ''))
-        || (process.env.SSAPP_REMOTE_CONTROL_TOKEN || '').trim();
-    if (env) return env;
-    const stored = String(store.get('controlApi.token', '') || '').trim();
-    if (stored.length >= 32) return stored;
-    const generated = crypto.randomBytes(32).toString('hex');
-    store.set('controlApi.token', generated);
-    return generated;
+const legacyRemoteControlToken = (() => {
+    if (!legacyRemoteControlEnabled) return '';
+    return (process.env.SSAPP_REMOTE_CONTROL_TOKEN || '').trim()
+        || crypto.randomBytes(32).toString('hex');
 })();
 const remoteControlFileSelections = [];
 let llmControlCommandHandler = null;
 let controlApiRouter = null;
 
-function matchesRemoteControlToken(value) {
+function matchesLegacyRemoteControlToken(value) {
     const supplied = Buffer.from(String(value || ''), 'utf8');
-    const expected = Buffer.from(remoteControlToken, 'utf8');
+    const expected = Buffer.from(legacyRemoteControlToken, 'utf8');
     return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
 }
 
@@ -2311,7 +2288,7 @@ function setupRemoteControlServer() {
                     session: currentSessionName,
                     headless: headlessControlEnabled,
                     mainWindowReady: !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents),
-                    mainWindowVisible: !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+                    mainWindowVisible: !!(mainWindow && !mainWindow.isDestroyed() && mainWindowVisible),
                     localMedia: localMediaService ? localMediaService.getStatus() : null
                 },
                 sources: sources && sources.ok ? sources.payload.sources : [],
@@ -2329,24 +2306,26 @@ function setupRemoteControlServer() {
 
     const server = http.createServer(async (req, res) => {
         const parsed = url.parse(req.url, true);
-        const token = (parsed.query && parsed.query.token) || req.headers['x-ssapp-token'];
-        // Always enforce token auth — token is auto-generated if not configured
-        if (!matchesRemoteControlToken(token)) {
-            res.writeHead(403, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
-            return;
-        }
-
-        try {
-            if (await controlApiRouter.handle(req, res, parsed)) return;
-        } catch (error) {
-            console.error('[Control API] Request failed:', error && error.stack ? error.stack : error);
-            if (!res.headersSent) {
-                res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-                res.end(JSON.stringify({ ok: false, error: 'internal_error' }));
-            } else {
-                res.destroy();
+        const isControlApiRequest = parsed.pathname.startsWith('/api/v1/');
+        const handleControlApiRequest = async () => {
+            try {
+                return await controlApiRouter.handle(req, res, parsed);
+            } catch (error) {
+                console.error('[Control API] Request failed:', error && error.stack ? error.stack : error);
+                if (!res.headersSent) {
+                    res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+                    res.end(JSON.stringify({ ok: false, error: 'internal_error' }));
+                } else {
+                    res.destroy();
+                }
+                return true;
             }
+        };
+
+        // The product API is intentionally local and unauthenticated. The separate legacy
+        // renderer-execution test harness keeps its existing token gate below.
+        if (controlApiEnabled && isControlApiRequest) {
+            await handleControlApiRequest();
             return;
         }
 
@@ -2355,18 +2334,30 @@ function setupRemoteControlServer() {
             res.end(JSON.stringify(payload));
         };
 
-        if (parsed.pathname === '/ping') {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-                ok: true,
-                version: app.getVersion(),
-                windows: BrowserWindow.getAllWindows().length
-            }));
+        if (!legacyRemoteControlEnabled) {
+            sendJson(404, { ok: false, error: 'not_found' });
             return;
         }
 
-        if (!legacyRemoteControlEnabled) {
-            sendJson(404, { ok: false, error: 'not_found' });
+        const token = (parsed.query && parsed.query.token) || req.headers['x-ssapp-token'];
+        if (!matchesLegacyRemoteControlToken(token)) {
+            sendJson(403, { ok: false, error: 'unauthorized' });
+            return;
+        }
+
+        if (parsed.pathname === '/ping') {
+            sendJson(200, {
+                ok: true,
+                version: app.getVersion(),
+                windows: BrowserWindow.getAllWindows().length
+            });
+            return;
+        }
+
+        // A few Electron integration tests use the declarative API through the legacy
+        // harness. Keep that compatibility without making --remote-control a product mode.
+        if (isControlApiRequest) {
+            await handleControlApiRequest();
             return;
         }
 
@@ -4568,8 +4559,84 @@ const HIDDEN_CAPTURE_ROW_SELECTOR = [
     '.ssn-chat-row',                                                        // local fixture
     'yt-live-chat-text-message-renderer', 'yt-live-chat-paid-message-renderer', // YouTube
     '.chat-line__message', '[data-a-target="chat-line-message"]',           // Twitch
-    '.chat-entry', '[data-chat-entry]', '[id^="chatroom-message"]'          // Kick (unverified)
+    '.chat-entry', '[data-chat-entry]', '[id^="chatroom-message"]',         // Kick (unverified)
+    '[data-e2e="chat-message"]'                                             // TikTok
 ].join(', ');
+
+// Runs only during hidden-capture diagnostics and soak tests. It records messages at two real
+// background.js boundaries: when processing starts and when a message reaches the
+// destination fan-out. This proves the source injector delivered chat through SSApp,
+// rather than merely proving that a third-party page continued changing its DOM.
+const HIDDEN_CAPTURE_BACKGROUND_PROBE_INSTALL = `(function () {
+	try {
+		if (window.__ssnHiddenCaptureBackgroundProbe) {
+			return { status: "already-installed" };
+		}
+		if (typeof processIncomingMessage !== "function" || typeof sendToDestinations !== "function") {
+			return {
+				status: "waiting",
+				processIncomingMessage: typeof processIncomingMessage,
+				sendToDestinations: typeof sendToDestinations
+			};
+		}
+
+		var probe = {
+			processed: 0,
+			destinations: 0,
+			processedByType: {},
+			destinationsByType: {},
+			lastProcessed: null,
+			lastDestination: null
+		};
+		var countType = function (counts, value) {
+			var type = String((value && value.type) || "unknown");
+			counts[type] = (counts[type] || 0) + 1;
+		};
+		var snapshot = function (value) {
+			try { return JSON.parse(JSON.stringify(value)); } catch (error) {
+				return {
+					type: value && value.type,
+					chatname: value && value.chatname,
+					chatmessage: value && value.chatmessage
+				};
+			}
+		};
+		var originalProcessIncomingMessage = processIncomingMessage;
+		var originalSendToDestinations = sendToDestinations;
+
+		processIncomingMessage = async function () {
+			probe.processed++;
+			countType(probe.processedByType, arguments[0]);
+			probe.lastProcessed = snapshot(arguments[0]);
+			return await originalProcessIncomingMessage.apply(this, arguments);
+		};
+		sendToDestinations = async function () {
+			probe.destinations++;
+			countType(probe.destinationsByType, arguments[0]);
+			probe.lastDestination = snapshot(arguments[0]);
+			return await originalSendToDestinations.apply(this, arguments);
+		};
+		try { window.sendToDestinations = sendToDestinations; } catch (error) { }
+
+		window.__ssnHiddenCaptureBackgroundProbe = probe;
+		return { status: "installed" };
+	} catch (error) {
+		return { status: "error", message: (error && error.message) ? error.message : String(error) };
+	}
+})();`;
+
+const HIDDEN_CAPTURE_BACKGROUND_PROBE_READ = `(function () {
+	var probe = window.__ssnHiddenCaptureBackgroundProbe;
+	if (!probe) { return null; }
+	return {
+		processed: probe.processed || 0,
+		destinations: probe.destinations || 0,
+		processedByType: Object.assign({}, probe.processedByType || {}),
+		destinationsByType: Object.assign({}, probe.destinationsByType || {}),
+		lastProcessed: probe.lastProcessed || null,
+		lastDestination: probe.lastDestination || null
+	};
+})();`;
 
 const HIDDEN_CAPTURE_PROBE_INSTALL = `(function () {
 	try {
@@ -4623,13 +4690,127 @@ function getHiddenCaptureDiagnosticUrl() {
         const value = arg.slice('--hidden-capture-url='.length).trim();
         if (value) return value;
     }
-    return `file://${path.join(__dirname, 'tests', 'electron', 'fixtures', 'hidden-capture.html')}`;
+    return pathToFileURL(path.join(__dirname, 'tests', 'electron', 'fixtures', 'hidden-capture.html')).href;
+}
+
+function getHiddenCaptureDiagnosticSourceFiles(targetUrl) {
+    const explicit = process.argv
+        .filter((value) => typeof value === 'string' && value.startsWith('--hidden-capture-source='))
+        .map((value) => value.slice('--hidden-capture-source='.length).trim())
+        .filter(Boolean);
+    if (explicit.length) return [...new Set(explicit)];
+
+    try {
+        const parsed = new URL(targetUrl);
+        const hostname = String(parsed.hostname || '').toLowerCase();
+        if (
+            parsed.protocol === 'file:' &&
+            path.basename(fileURLToPath(parsed)) === 'hidden-capture.html'
+        ) {
+            const fixturePlatform = String(parsed.searchParams.get('platform') || 'youtube').toLowerCase();
+			if (['youtube', 'twitch', 'kick', 'tiktok'].includes(fixturePlatform)) {
+                return [`sources/${fixturePlatform}.js`];
+            }
+            return [];
+        }
+        if (hostname === 'youtube.com' || hostname.endsWith('.youtube.com')) return ['sources/youtube.js'];
+        if (hostname === 'twitch.tv' || hostname.endsWith('.twitch.tv')) return ['sources/twitch.js'];
+        if (hostname === 'kick.com' || hostname.endsWith('.kick.com')) return ['sources/kick.js'];
+        if (hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com')) return ['sources/tiktok.js'];
+    } catch (_) { }
+    return [];
+}
+
+function getHiddenCaptureDiagnosticSourceRoot() {
+    const arg = process.argv.find((value) => typeof value === 'string' && value.startsWith('--hidden-capture-filesource='));
+    return arg ? arg.slice('--hidden-capture-filesource='.length).trim() : '';
+}
+
+function getHiddenCaptureBackgroundFrame() {
+    try {
+        if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents) return null;
+        const rootFrame = mainWindow.webContents.mainFrame;
+        const frames = rootFrame && Array.isArray(rootFrame.framesInSubtree)
+            ? rootFrame.framesInSubtree
+            : (rootFrame && Array.isArray(rootFrame.frames) ? rootFrame.frames : []);
+        return frames.find((frame) => frame && matchesSocialStreamPagePath(frame.url || '', 'background')) || null;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function installHiddenCaptureBackgroundProbe() {
+    return await waitForCondition(async () => {
+        const frame = getHiddenCaptureBackgroundFrame();
+        if (!frame) return null;
+        try {
+            const result = await frame.executeJavaScript(HIDDEN_CAPTURE_BACKGROUND_PROBE_INSTALL, true);
+            if (result && (result.status === 'installed' || result.status === 'already-installed')) {
+                return { frame, result };
+            }
+        } catch (_) { }
+        return null;
+    }, 20000, 250);
+}
+
+async function readHiddenCaptureBackgroundProbe(frame) {
+    try {
+        if (!frame || (typeof frame.isDestroyed === 'function' && frame.isDestroyed())) return null;
+        return await frame.executeJavaScript(HIDDEN_CAPTURE_BACKGROUND_PROBE_READ, true);
+    } catch (_) {
+        return null;
+    }
+}
+
+function getHiddenCaptureOverlapRatio(sourceBounds, coverBounds) {
+    if (!sourceBounds || !coverBounds || sourceBounds.width <= 0 || sourceBounds.height <= 0) return 0;
+    const left = Math.max(sourceBounds.x, coverBounds.x);
+    const top = Math.max(sourceBounds.y, coverBounds.y);
+    const right = Math.min(sourceBounds.x + sourceBounds.width, coverBounds.x + coverBounds.width);
+    const bottom = Math.min(sourceBounds.y + sourceBounds.height, coverBounds.y + coverBounds.height);
+    const overlap = Math.max(0, right - left) * Math.max(0, bottom - top);
+    return overlap / (sourceBounds.width * sourceBounds.height);
+}
+
+async function createHiddenCaptureOccluder(view) {
+    const requestedBounds = view.getBounds();
+    const cover = new BrowserWindow({
+        x: requestedBounds.x,
+        y: requestedBounds.y,
+        width: requestedBounds.width,
+        height: requestedBounds.height,
+        show: false,
+        frame: false,
+        skipTaskbar: true,
+        alwaysOnTop: true,
+        backgroundColor: '#050505',
+        webPreferences: {
+            backgroundThrottling: false
+        }
+    });
+    await cover.loadURL('data:text/html;charset=utf-8,<title>Hidden capture occluder</title><body style="margin:0;background:%23050505"></body>');
+    try { cover.setBounds(requestedBounds); } catch (_) { }
+    cover.show();
+    try { cover.setAlwaysOnTop(true); } catch (_) { }
+    try { cover.focus(); } catch (_) { }
+    await sleep(800);
+
+    const sourceBounds = view.getBounds();
+    const coverBounds = cover.getBounds();
+    return {
+        cover,
+        sourceBounds,
+        coverBounds,
+        overlapRatio: getHiddenCaptureOverlapRatio(sourceBounds, coverBounds)
+    };
 }
 
 // Verifies the two things this issue is about: hiding a source window really hides it on
 // Linux, and capture keeps running while it is hidden.
 async function runHiddenCaptureDiagnostics() {
     const targetUrl = getHiddenCaptureDiagnosticUrl();
+    const sourceFiles = getHiddenCaptureDiagnosticSourceFiles(targetUrl);
+    const sourceRoot = getHiddenCaptureDiagnosticSourceRoot();
     const report = {
         startedAt: new Date().toISOString(),
         platform: process.platform,
@@ -4646,6 +4827,8 @@ async function runHiddenCaptureDiagnostics() {
             disable: app.commandLine.getSwitchValue('disable-features')
         },
         url: targetUrl,
+        sourceFiles,
+        sourceRoot: sourceRoot || null,
         phases: [],
         checks: [],
         summary: { passed: 0, failed: 0 }
@@ -4665,6 +4848,14 @@ async function runHiddenCaptureDiagnostics() {
     await waitForCondition(() => mainWindow && !mainWindow.isDestroyed(), 15000, 100);
     await sleep(500);
 
+    const backgroundProbe = await installHiddenCaptureBackgroundProbe();
+    report.backgroundProbeInstall = backgroundProbe.result;
+    check(
+        'pipeline.background_probe_installed',
+        !!backgroundProbe.frame,
+        `status=${backgroundProbe.result && backgroundProbe.result.status}`
+    );
+
     // Create the source window through the real IPC handler so the diagnostic exercises
     // the same preload, session, hide/show and injection code paths users get.
     if (typeof sourceWindowCreateHandler !== 'function') {
@@ -4677,10 +4868,13 @@ async function runHiddenCaptureDiagnostics() {
     report.startedHidden = startHidden;
 
     const created = {};
-    sourceWindowCreateHandler(created, {
+    const sourceWindowArgs = {
         url: targetUrl,
-        visible: !startHidden
-    });
+        visible: !startHidden,
+        sourceFiles
+    };
+    if (sourceRoot) sourceWindowArgs.filesource = sourceRoot;
+    sourceWindowCreateHandler(created, sourceWindowArgs);
     const tabID = created.returnValue;
     if (!tabID) {
         throw new Error('Source window creation returned no tab id');
@@ -4695,9 +4889,19 @@ async function runHiddenCaptureDiagnostics() {
         await waitForCondition(() => {
             try { return !view.webContents.isLoading(); } catch (_) { return false; }
         }, 45000, 250);
-        await sleep(6000); // let a real chat page connect and start streaming
+		await sleep(6000); // let a real chat page connect and start streaming
 
-        report.probeInstall = await view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_INSTALL, true);
+		report.pageState = await view.webContents.executeJavaScript(`(() => ({
+			href: location.href,
+			pathname: location.pathname,
+			readyState: document.readyState,
+			fixturePlatform: window.__fixturePlatform || null,
+			fixtureLocationError: window.__fixtureLocationError || null,
+			chatMessageRows: document.querySelectorAll('[data-e2e="chat-message"]').length,
+			hasChatRoom: !!document.querySelector('[data-e2e="chat-room"]')
+		}))()`, true);
+
+		report.probeInstall = await view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_INSTALL, true);
         await sleep(500);
 
         // Live chat arrives at whatever rate the stream happens to be busy at, so sample
@@ -4705,11 +4909,14 @@ async function runHiddenCaptureDiagnostics() {
         const sampleMs = targetUrl.startsWith('file:') ? 6000 : 10000;
 
         let zeroFramePhase = null;
+        let occludedPhase = null;
 
         const sample = async (label, ms = sampleMs) => {
             const before = await view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_READ, true);
+            const backgroundBefore = await readHiddenCaptureBackgroundProbe(backgroundProbe.frame);
             await sleep(ms);
             const after = await view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_READ, true);
+            const backgroundAfter = await readHiddenCaptureBackgroundProbe(backgroundProbe.frame);
             const phase = {
                 label,
                 windowMs: ms,
@@ -4720,6 +4927,12 @@ async function runHiddenCaptureDiagnostics() {
                 nativeVisible: (() => { try { return view.isVisible(); } catch (_) { return null; } })(),
                 minimized: (() => { try { return view.isMinimized(); } catch (_) { return null; } })(),
                 logicalVisible: view.__ss_visible !== false,
+                messagesProcessed: (backgroundBefore && backgroundAfter)
+                    ? backgroundAfter.processed - backgroundBefore.processed
+                    : null,
+                messagesSentToDestinations: (backgroundBefore && backgroundAfter)
+                    ? backgroundAfter.destinations - backgroundBefore.destinations
+                    : null,
                 pump: after.pump,
                 pumpedBatchesAdded: (after.pump && before.pump)
                     ? after.pump.pumpedBatches - before.pump.pumpedBatches
@@ -4745,6 +4958,36 @@ async function runHiddenCaptureDiagnostics() {
                 visible.nativeVisible === false,
                 `isVisible()=${visible.nativeVisible}`
             );
+        }
+
+        // A visible but fully covered Wayland surface is #875's exact failure mode. Put an
+        // opaque always-on-top window over the source and verify both compositor-driven work
+        // and the real Social Stream message pipeline continue. Hidden/headless runs skip
+        // this because those windows are never mapped in the first place.
+        if (process.platform === 'linux' && !headless && !startHidden) {
+            let occluder = null;
+            try {
+                occluder = await createHiddenCaptureOccluder(view);
+                report.occlusion = {
+                    sourceBounds: occluder.sourceBounds,
+                    coverBounds: occluder.coverBounds,
+                    overlapRatio: occluder.overlapRatio
+                };
+                check(
+                    'occluded.window_fully_covered',
+                    occluder.overlapRatio >= 0.98,
+                    `overlap=${Math.round(occluder.overlapRatio * 100)}%`
+                );
+                occludedPhase = await sample('fully occluded');
+                check('occluded.frames_running', occludedPhase.rafPerSecond > 5, `rAF/s=${occludedPhase.rafPerSecond}`);
+            } finally {
+                try {
+                    if (occluder && occluder.cover && !occluder.cover.isDestroyed()) {
+                        occluder.cover.destroy();
+                    }
+                } catch (_) { }
+            }
+            await sleep(500);
         }
 
         // Hide through the same code path the UI's hide button uses.
@@ -4880,13 +5123,22 @@ async function runHiddenCaptureDiagnostics() {
         // delivers messages at whatever rate it happens to be busy at, so a single quiet
         // sample window means nothing, whereas "rows arrived on screen but never once while
         // hidden" is exactly the reported bug.
-        const onScreenRows = visible.rowsAdded + revealed.rowsAdded;
-        const hiddenRows = hidden.rowsAdded + settled.rowsAdded + rearmed.rowsAdded
-            + (throttled ? throttled.rowsAdded : 0);
-        const zeroFrameRows = zeroFramePhase ? zeroFramePhase.rowsAdded : null;
-        report.rowGrowth = { onScreenRows, hiddenRows, zeroFrameRows };
+		const onScreenRows = visible.rowsAdded + revealed.rowsAdded;
+		const hiddenRows = hidden.rowsAdded + settled.rowsAdded + rearmed.rowsAdded
+			+ (throttled ? throttled.rowsAdded : 0);
+		const occludedRows = occludedPhase ? occludedPhase.rowsAdded : null;
+		const zeroFrameRows = zeroFramePhase ? zeroFramePhase.rowsAdded : null;
+		report.rowGrowth = { onScreenRows, hiddenRows, occludedRows, zeroFrameRows };
+		const pipelineOnlySource = sourceFiles.some((sourceFile) =>
+			String(sourceFile || '').replace(/\\/g, '/').includes('sources/websocket/')
+		);
+		report.pipelineOnlySource = pipelineOnlySource;
 
-        if (onScreenRows + hiddenRows === 0) {
+		if (pipelineOnlySource) {
+			// WebSocket source pages do not need to render chat rows. Their real success
+			// criterion is the background destination pipeline checked immediately below.
+			check('rows.not_required_for_transport_source', true, 'WebSocket source uses pipeline delivery.');
+		} else if (onScreenRows + hiddenRows === 0) {
             // Nothing to measure: the page never produced a chat row in any state, so this
             // says the target was unusable, not that capture is broken.
             check(
@@ -4905,6 +5157,52 @@ async function runHiddenCaptureDiagnostics() {
                     'rows.growing_with_zero_frames',
                     zeroFrameRows > 0,
                     `rows added=${zeroFrameRows} with no compositor frames`
+                );
+            }
+        }
+
+        const allPhases = report.phases || [];
+        const destinationMessages = allPhases.reduce(
+            (total, phase) => total + (Number.isFinite(phase.messagesSentToDestinations) ? phase.messagesSentToDestinations : 0),
+            0
+        );
+        const hiddenDestinationMessages = [hidden, settled, rearmed, throttled]
+            .filter(Boolean)
+            .reduce(
+                (total, phase) => total + (Number.isFinite(phase.messagesSentToDestinations) ? phase.messagesSentToDestinations : 0),
+                0
+            );
+        report.pipeline = {
+            destinationMessages,
+            hiddenDestinationMessages,
+            occludedDestinationMessages: occludedPhase ? occludedPhase.messagesSentToDestinations : null,
+            zeroFrameDestinationMessages: zeroFramePhase ? zeroFramePhase.messagesSentToDestinations : null,
+            finalProbe: await readHiddenCaptureBackgroundProbe(backgroundProbe.frame)
+        };
+
+        if (sourceFiles.length) {
+            check(
+                'pipeline.messages_reach_destinations',
+                destinationMessages > 0,
+                `messages=${destinationMessages}`
+            );
+            check(
+                'pipeline.hidden_messages_reach_destinations',
+                hiddenDestinationMessages > 0,
+                `messages=${hiddenDestinationMessages}`
+            );
+            if (occludedPhase) {
+                check(
+                    'pipeline.occluded_messages_reach_destinations',
+                    occludedPhase.messagesSentToDestinations > 0,
+                    `messages=${occludedPhase.messagesSentToDestinations}`
+                );
+            }
+            if (zeroFramePhase) {
+                check(
+                    'pipeline.zero_frame_messages_reach_destinations',
+                    zeroFramePhase.messagesSentToDestinations > 0,
+                    `messages=${zeroFramePhase.messagesSentToDestinations}`
                 );
             }
         }
@@ -4953,6 +5251,7 @@ async function runHiddenCaptureSoak() {
     // Windows created hidden never get compositor frames at all, so capture there runs
     // entirely on the frame pump. That is the harsher case and the one worth soaking.
     const startHidden = process.argv.includes('--hidden-capture-soak-start-hidden');
+    const sourceRoot = getHiddenCaptureDiagnosticSourceRoot();
 
     const appendLine = async (entry) => {
         if (!reportPath) return;
@@ -4977,6 +5276,7 @@ async function runHiddenCaptureSoak() {
 
     await waitForCondition(() => mainWindow && !mainWindow.isDestroyed(), 15000, 100);
     await sleep(500);
+    const backgroundProbe = await installHiddenCaptureBackgroundProbe();
     if (typeof sourceWindowCreateHandler !== 'function') {
         throw new Error('Source window IPC handler is not registered yet');
     }
@@ -4985,8 +5285,11 @@ async function runHiddenCaptureSoak() {
     // the hide button does.
     const windows = [];
     for (const url of urls) {
+        const sourceFiles = getHiddenCaptureDiagnosticSourceFiles(url);
+        const sourceWindowArgs = { url, visible: !startHidden, sourceFiles };
+        if (sourceRoot) sourceWindowArgs.filesource = sourceRoot;
         const created = {};
-        sourceWindowCreateHandler(created, { url, visible: !startHidden });
+        sourceWindowCreateHandler(created, sourceWindowArgs);
         const tabID = created.returnValue;
         const view = tabID ? browserViews[tabID] : null;
         if (!view) {
@@ -4994,7 +5297,8 @@ async function runHiddenCaptureSoak() {
             await appendLine({ type: 'error', at: new Date().toISOString(), url, error: 'window-not-created' });
             continue;
         }
-        windows.push({ url, tabID, view, samples: [], loadError: null });
+        const expectedType = sourceFiles.length ? path.basename(sourceFiles[0], '.js') : null;
+        windows.push({ url, tabID, view, sourceFiles, expectedType, samples: [], loadError: null });
     }
     if (!windows.length) {
         throw new Error('No source windows could be created');
@@ -5051,8 +5355,16 @@ async function runHiddenCaptureSoak() {
     const readSample = async (entry) => {
         const read = () => entry.view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_READ, true);
         const before = await read();
+        const backgroundBefore = await readHiddenCaptureBackgroundProbe(backgroundProbe.frame);
         await sleep(5000);
         const after = await read();
+        const backgroundAfter = await readHiddenCaptureBackgroundProbe(backgroundProbe.frame);
+        const beforeTypeCount = entry.expectedType && backgroundBefore
+            ? Number(backgroundBefore.destinationsByType && backgroundBefore.destinationsByType[entry.expectedType]) || 0
+            : null;
+        const afterTypeCount = entry.expectedType && backgroundAfter
+            ? Number(backgroundAfter.destinationsByType && backgroundAfter.destinationsByType[entry.expectedType]) || 0
+            : null;
         return {
             rafPerSecond: Math.round((after.raf - before.raf) / 5),
             timerPerSecond: Math.round((after.timer - before.timer) / 5),
@@ -5060,6 +5372,9 @@ async function runHiddenCaptureSoak() {
             rowsTotal: after.rows,
             visibilityState: after.visibility,
             nativeVisible: (() => { try { return entry.view.isVisible(); } catch (_) { return null; } })(),
+            messagesSentToDestinations: beforeTypeCount === null || afterTypeCount === null
+                ? null
+                : afterTypeCount - beforeTypeCount,
             pumped: after.pump ? after.pump.pumpedBatches : null,
             native: after.pump ? after.pump.nativeBatches : null
         };
@@ -5085,6 +5400,7 @@ async function runHiddenCaptureSoak() {
                     ? `ERROR ${sample.error}`
                     : `rAF/s=${String(sample.rafPerSecond).padStart(3)} timer/s=${String(sample.timerPerSecond).padStart(3)} ` +
                       `rows+=${String(sample.rowsAdded).padStart(4)} total=${String(sample.rowsTotal).padStart(5)} ` +
+                      `destinations+=${String(sample.messagesSentToDestinations ?? 0).padStart(4)} ` +
                       `visible=${sample.nativeVisible} frames(native/pumped)=${sample.native}/${sample.pumped}`)
             );
         }
@@ -5101,6 +5417,10 @@ async function runHiddenCaptureSoak() {
         const minutesWithRows = ok.filter((s) => s.rowsAdded > 0).length;
         const minRaf = ok.length ? Math.min(...ok.map((s) => s.rafPerSecond)) : null;
         const minTimer = ok.length ? Math.min(...ok.map((s) => s.timerPerSecond)) : null;
+        const destinationMessagesWhileHidden = ok.reduce(
+            (sum, sample) => sum + (Number.isFinite(sample.messagesSentToDestinations) ? sample.messagesSentToDestinations : 0),
+            0
+        );
         const everProducedRows = rowsWhileHidden > 0;
         const quietTailMinutes = everProducedRows ? (minutes - 1 - lastMinuteWithRows) : null;
         return {
@@ -5116,12 +5436,13 @@ async function runHiddenCaptureSoak() {
             quietTailMinutes,
             minRafPerSecond: minRaf,
             minTimerPerSecond: minTimer,
+            destinationMessagesWhileHidden,
             // Capture is considered stalled if frames stopped entirely, or if a chat that was
             // producing rows went quiet for the last third of the run.
             stalled: ok.length > 0 && (minRaf <= 0 || (everProducedRows && quietTailMinutes > Math.max(3, minutes / 3))),
             // No rows at all proves nothing about whether hiding breaks capture, so it must
             // not read as a pass. Usually it means the page is not showing a live chat.
-            inconclusive: !everProducedRows
+            inconclusive: !everProducedRows || (entry.sourceFiles.length > 0 && destinationMessagesWhileHidden <= 0)
         };
     });
 
@@ -6082,6 +6403,7 @@ let storageSavePending = false;
 let storageSavePendingAllowSettingsDowngrade = false;
 
 var mainWindow = null;
+let mainWindowVisible = false;
 let ttt = {
     width: 1280,
     height: 800
@@ -8570,6 +8892,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
         title: currentTitle,
     });
 
+    // BrowserWindow.isVisible() can stay true after hide() on Linux. Track the
+    // actual show/hide events so remote status reflects whether the window is up.
+    mainWindowVisible = false;
+    mainWindow.on("show", () => {
+        mainWindowVisible = true;
+    });
+    mainWindow.on("hide", () => {
+        mainWindowVisible = false;
+    });
+
 
     mainWindowReadyForInjectorToasts = false;
     if (mainWindow && mainWindow.webContents) {
@@ -9634,6 +9966,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     mainWindow.on("closed", async function (e) {
         log("mainWindow closed");
+        mainWindowVisible = false;
 
         // Clear any intervals attached to mainWindow
         if (mainWindow && mainWindow.intervals) {
@@ -14194,9 +14527,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
         if (MINIMIZED) {
             mainWindow.minimize();
             //+ KravchenkoAndrey 08.01.2022
-        } else if (UNCLICKABLE) {
-            mainWindow.showInactive();
-            //- KravchenkoAndrey 08.01.2022
+		} else if (UNCLICKABLE) {
+			// Electron does not support showInactive() on Wayland. The window already ignores
+			// mouse input in this mode, so showing it normally is the usable fallback there.
+			if (isWaylandSession()) {
+				mainWindow.show();
+			} else {
+				mainWindow.showInactive();
+			}
+			//- KravchenkoAndrey 08.01.2022
         } else {
             mainWindow.show();
         }
@@ -14945,8 +15284,8 @@ contextMenu({
             if (browserWindow.webContents.getURL().includes("youtube.com")) {
                 browserWindow.webContents.executeJavaScript(
                     '(function () {\
-						if (!xxxxxx){\
-							var xxxxxx = setInterval(function(){\
+						if (!window.__ssnYtAdSkipper){\
+							window.__ssnYtAdSkipper = setInterval(function(){\
 							if (document.querySelector(".ytp-ad-skip-button")){\
 								document.querySelector(".ytp-ad-skip-button").click();\
 							}\
@@ -16060,7 +16399,7 @@ app.whenReady().then(async function () {
             if (Argv.filesource) return Argv.filesource;
             return resolveBundledSocialStreamRoot('main');
         },
-        showOpenDialog: remoteControlEnabled ? async (dialogOptions) => {
+        showOpenDialog: (legacyRemoteControlEnabled || headlessControlEnabled) ? async (dialogOptions) => {
             const filePath = remoteControlFileSelections.shift();
             if (filePath) {
                 console.log('[Remote Control] Supplying queued local media selection:', path.basename(filePath));
@@ -16886,6 +17225,7 @@ async function quitApp() {
 
 function minimizeToTray() {
     if (mainWindow) {
+        mainWindowVisible = false;
         mainWindow.hide();
     }
 }
@@ -16912,6 +17252,7 @@ function showMainWindowFromTray() {
 
     try {
         mainWindow.show();
+        mainWindowVisible = true;
     } catch (_) { }
 
     try {
@@ -17856,10 +18197,10 @@ function createMenu() {
                     }
                 },
                 {
-                    label: 'AI / LLM Control',
+                    label: 'Local AI / Automation',
                     submenu: [
                         {
-                            label: 'Enable Control API',
+                            label: 'Enable Local Control API',
                             type: 'checkbox',
                             checked: store.get('controlApi.enabled', false) === true,
                             click: async menuItem => {
@@ -17869,8 +18210,8 @@ function createMenu() {
                                     buttons: ['Restart Now', 'Later'],
                                     defaultId: 0,
                                     cancelId: 1,
-                                    title: 'AI / LLM Control',
-                                    message: menuItem.checked ? 'Control API enabled.' : 'Control API disabled.',
+                                    title: 'Local AI / Automation',
+                                    message: menuItem.checked ? 'Local control API enabled.' : 'Local control API disabled.',
                                     detail: 'Restart Social Stream Ninja to apply this change.'
                                 });
                                 if (result.response === 0) {
@@ -17881,40 +18222,20 @@ function createMenu() {
                             }
                         },
                         {
-                            label: 'Copy Control Connection',
+                            label: 'Copy Local Connection',
                             enabled: controlApiEnabled,
                             click: async () => {
                                 clipboard.writeText(JSON.stringify({
                                     url: `http://127.0.0.1:${remoteControlPort}`,
-                                    token: remoteControlToken,
                                     ssappVersion: app.getVersion()
                                 }, null, 2));
                                 await dialog.showMessageBox({
                                     type: 'info',
                                     buttons: ['OK'],
-                                    title: 'Control Connection Copied',
-                                    message: 'The private localhost connection was copied.',
-                                    detail: 'Treat the token like a password. Do not paste it into public chats or logs.'
+                                    title: 'Local Connection Copied',
+                                    message: 'The localhost connection was copied.',
+                                    detail: 'It is available only to programs running on this computer.'
                                 });
-                            }
-                        },
-                        {
-                            label: 'Rotate Control Token',
-                            click: async () => {
-                                const confirmation = await dialog.showMessageBox({
-                                    type: 'warning',
-                                    buttons: ['Rotate and Restart', 'Cancel'],
-                                    defaultId: 1,
-                                    cancelId: 1,
-                                    title: 'Rotate Control Token',
-                                    message: 'Existing AI and automation clients will be disconnected.',
-                                    detail: 'You will need to copy the new connection after restart.'
-                                });
-                                if (confirmation.response !== 0) return;
-                                store.set('controlApi.token', crypto.randomBytes(32).toString('hex'));
-                                markStabilitySessionGraceful('control-api-token-rotation');
-                                app.relaunch();
-                                app.exit();
                             }
                         },
                         { type: 'separator' },

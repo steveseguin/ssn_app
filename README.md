@@ -82,16 +82,17 @@ For detailed usage instructions, visit the [Social Stream Ninja documentation](h
 ## Running on a Server
 
 The app can run on a machine with no monitor — a VPS or a home server — with every window
-hidden, and be controlled remotely over a token-authenticated API on localhost:
+hidden. Remote control continues to use Social Stream's existing WebRTC or WebSocket
+connection; headless mode does not open a new HTTP control service:
 
 ```bash
 sudo apt-get install -y xvfb
 ./scripts/start-headless.sh
 ```
 
-See [docs/CLOUD_HOSTING.md](docs/CLOUD_HOSTING.md) for the full walkthrough: reaching the API
-over an SSH tunnel, adding and starting sources with `curl`, signing in to platforms that
-need an account, running it under systemd, and checking that chat capture is healthy.
+See [docs/CLOUD_HOSTING.md](docs/CLOUD_HOSTING.md) for the full walkthrough: preparing a
+Social Stream session, running under systemd, and checking that hidden chat capture stays
+healthy.
 
 [docs/LINUX_NOTES.md](docs/LINUX_NOTES.md) covers what differs on Linux: portable mode,
 notifications, system TTS voices, the tray, transparency, GPU fallback and expected footprint.

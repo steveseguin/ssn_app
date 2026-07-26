@@ -796,6 +796,121 @@ async function run() {
 		assert.equal(backgroundBridge.result.ok, true, 'background SSApp route failed');
 		assert.equal(backgroundBridge.result.payload.source.id, seed.sourceId, 'background route returned wrong source');
 
+		const iframeTransportBridge = await execInRenderer(port, `
+			(async () => {
+				const frame = document.getElementById('frame2');
+				const bg = frame && frame.contentWindow;
+				if (!bg || typeof bg.processIncomingRequest !== 'function') {
+					return { ok: false, error: 'background request dispatcher unavailable' };
+				}
+
+				const transport = bg.document.createElement('iframe');
+				transport.style.display = 'none';
+				transport.srcdoc = '<!doctype html><title>WebRTC transport fixture</title>';
+				bg.document.body.appendChild(transport);
+				await new Promise(resolve => {
+					if (transport.contentDocument && transport.contentDocument.readyState === 'complete') resolve();
+					else transport.addEventListener('load', resolve, { once: true });
+				});
+
+				const originalIframe = bg.iframe;
+				const originalSendDataP2P = bg.sendDataP2P;
+				const peerId = 'webrtc-e2e-peer';
+				const packets = [];
+				bg.iframe = transport;
+				bg.sendDataP2P = function(data, UUID) {
+					packets.push({ data, UUID });
+					return true;
+				};
+
+				async function request(payload, callbackId) {
+					const before = packets.length;
+					const message = Object.assign({}, payload, { get: callbackId });
+					bg.dispatchEvent(new bg.MessageEvent('message', {
+						source: transport.contentWindow,
+						data: {
+							dataReceived: { overlayNinja: message },
+							UUID: peerId
+						}
+					}));
+					const started = Date.now();
+					while (Date.now() - started < 15000) {
+						const packet = packets.slice(before).find(entry =>
+							entry && entry.data && entry.data.callback && entry.data.callback.get === callbackId
+						);
+						if (packet) return packet;
+						await new Promise(resolve => setTimeout(resolve, 25));
+					}
+					return { timeout: true, callbackId, packets: packets.slice(before) };
+				}
+
+				try {
+					const capabilities = await request({ action: 'getCapabilities' }, 'webrtc-capabilities');
+					const existingSource = await request({
+						action: 'getSource',
+						target: 'ssapp',
+						value: '${seed.sourceId}'
+					}, 'webrtc-get-source');
+					const added = await request({
+						action: 'addSource',
+						target: 'ssapp',
+						value: {
+							target: 'youtube',
+							videoId: 'webrtc00001',
+							connectionMode: 'websocket',
+							autoActivate: false,
+							idempotencyKey: 'webrtc-public-cold-start'
+						}
+					}, 'webrtc-add-public-source');
+					const addedSourceId = added && added.data && added.data.callback && added.data.callback.result
+						&& added.data.callback.result.payload && added.data.callback.result.payload.source
+						? added.data.callback.result.payload.source.id
+						: null;
+					const started = addedSourceId ? await request({
+						action: 'startSource',
+						target: 'ssapp',
+						value: { sourceId: addedSourceId }
+					}, 'webrtc-start-public-source') : null;
+					const stopped = addedSourceId ? await request({
+						action: 'stopSource',
+						target: 'ssapp',
+						value: { sourceId: addedSourceId }
+					}, 'webrtc-stop-public-source') : null;
+					const removed = addedSourceId ? await request({
+						action: 'removeSource',
+						target: 'ssapp',
+						value: { sourceId: addedSourceId }
+					}, 'webrtc-remove-public-source') : null;
+					const rejectedSettings = await request({
+						action: 'getSettings',
+						target: 'ssapp',
+						value: {}
+					}, 'webrtc-local-only-settings');
+					return { ok: true, peerId, capabilities, existingSource, added, started, stopped, removed, rejectedSettings };
+				} finally {
+					bg.sendDataP2P = originalSendDataP2P;
+					bg.iframe = originalIframe;
+					transport.remove();
+				}
+			})()
+		`, 'background WebRTC iframe route');
+		assert.equal(iframeTransportBridge.ok, true, `WebRTC iframe route failed: ${JSON.stringify(iframeTransportBridge)}`);
+		assert.equal(iframeTransportBridge.capabilities.UUID, iframeTransportBridge.peerId, 'WebRTC capability response reached the wrong peer');
+		assert.equal(iframeTransportBridge.capabilities.data.callback.result.ssapp.available, true, 'WebRTC capabilities should advertise SSApp');
+		assert.equal(iframeTransportBridge.capabilities.data.callback.result.ssapp.settings, false, 'WebRTC capabilities exposed local settings control');
+		assert.equal(iframeTransportBridge.capabilities.data.callback.result.ssapp.appControls, false, 'WebRTC capabilities exposed local app lifecycle control');
+		assert.equal(iframeTransportBridge.existingSource.data.callback.result.ok, true, `WebRTC getSource failed: ${JSON.stringify(iframeTransportBridge.existingSource)}`);
+		assert.equal(iframeTransportBridge.existingSource.data.callback.result.payload.source.id, seed.sourceId, 'WebRTC getSource returned the wrong source');
+		assert.equal(iframeTransportBridge.added.data.callback.result.ok, true, `WebRTC public cold-start add failed: ${JSON.stringify(iframeTransportBridge.added)}`);
+		assert.equal(iframeTransportBridge.added.data.callback.result.payload.source.target, 'youtube', 'WebRTC added the wrong source type');
+		assert.equal(iframeTransportBridge.started.data.callback.result.ok, true, `WebRTC public cold-start activation failed: ${JSON.stringify(iframeTransportBridge.started)}`);
+		assert(['active', 'activating'].includes(iframeTransportBridge.started.data.callback.result.payload.source.status), `WebRTC source did not activate: ${JSON.stringify(iframeTransportBridge.started)}`);
+		assert.equal(iframeTransportBridge.stopped.data.callback.result.ok, true, `WebRTC public-source stop failed: ${JSON.stringify(iframeTransportBridge.stopped)}`);
+		assert.equal(iframeTransportBridge.stopped.data.callback.result.payload.source.status, 'inactive', 'WebRTC source did not stop cleanly');
+		assert.equal(iframeTransportBridge.removed.data.callback.result.ok, true, `WebRTC public-source cleanup failed: ${JSON.stringify(iframeTransportBridge.removed)}`);
+		assert.equal(iframeTransportBridge.rejectedSettings.data.callback.result.ok, false, 'WebRTC settings command should remain local-only');
+		assert.equal(iframeTransportBridge.rejectedSettings.data.callback.result.error.code, 'UNSUPPORTED_ACTION', 'WebRTC settings rejection used the wrong error');
+
 		relay = await createRelayServer();
 		const sessionId = `streamdeck-e2e-${Date.now()}`;
 		deckClient = await openDeckClient(relay.port, sessionId);
@@ -1000,6 +1115,8 @@ async function run() {
 			muted: mute.payload.source.isMuted,
 			onboarding: onboarding.ready,
 			backgroundRoute: backgroundBridge.result.ok,
+			iframeRoute: iframeTransportBridge.existingSource.data.callback.result.ok,
+			iframeStartStop: iframeTransportBridge.started.data.callback.result.ok && iframeTransportBridge.stopped.data.callback.result.ok,
 			socketRoute: socketCallback.callback.result.ok,
 			socketStartStop: socketStartCallback.callback.result.ok && socketStopCallback.callback.result.ok
 		}));

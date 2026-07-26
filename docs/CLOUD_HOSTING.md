@@ -1,49 +1,40 @@
-# Running Social Stream Ninja on a server
+# Running Social Stream Ninja headlessly
 
-This walks through running the desktop app on a machine you do not sit in front of — a VPS,
-a home server, a spare box — and controlling it from somewhere else. It is useful if you
-want chat capture to keep running when your PC is off, or you want to keep the capture load
-off your streaming machine.
+SSApp can run on a VPS, home server, or other Linux machine without a monitor. Headless
+mode keeps its Electron windows hidden; it does not turn SSApp into a new HTTP remote-control
+service.
 
-Everything below was tested on Ubuntu with app version 0.4.7 (Electron 43).
+Remote commands use the same Social Stream connection that already powers Stream Deck and
+other remote controls:
 
-**What works:** the app runs with every window hidden, connects sources, captures chat, and
-takes commands over an HTTP API on localhost.
+```text
+remote controller
+    -> Social Stream WebRTC or WebSocket transport
+    -> Social Stream command dispatcher
+    -> SSApp source controls
+```
 
-**What to know before you start:**
+The optional localhost `/api/v1` and MCP adapter are only for an AI tool running on the same
+machine as SSApp. They are not the cloud-control path.
 
-- It is still a desktop app. It needs a virtual display (a few MB of extra software), it is
-  not a small daemon, and it uses a few hundred MB of RAM plus a browser window per source.
-- The control API listens on `127.0.0.1` only, by design. You reach it over an SSH tunnel.
-  There is no built-in way to expose it safely to the internet, and you should not try.
-- Signing in to platforms that need an account is the awkward part. See
-  [Signing in](#6-signing-in-to-platforms) — it is solvable, just not one command.
+## What you need
 
-## 1. What you need
-
-- Linux with systemd (Ubuntu 22.04+ or Debian 12+ are the easy choices)
-- 2 GB RAM for a couple of platforms, 4 GB if you plan on several
-- 1 vCPU is enough; 2 gives you headroom
-- `xvfb` (the virtual display) — a normal package, no GPU required
-
-Measured here with everything hidden and chat flowing, using this launcher: **about 600 MB
-and 12 processes with one live YouTube source**, and roughly **120 MB per additional
-platform** after that. Extra sources on a platform you already run are close to free — a few
-MB each, and no extra processes, because same-origin windows share a renderer. Idle CPU with
-a hidden source window is under 1% of one core.
-
-Note that `--no-hwa` does not remove the GPU process; it still runs (about 100 MB) doing
-software compositing. What it buys you on a GPU-less server is avoiding repeated driver
-probing and the GL errors that come with it, not memory.
+- Ubuntu 22.04+, Debian 12+, or a similar Linux system
+- 2 GB RAM for a small setup; more for several source windows
+- Xvfb, because Electron still needs a display even when every window is hidden
+- A persistent data directory for the Social Stream session and source configuration
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y xvfb
 ```
 
-## 2. Get the app onto the server
+SSApp remains a browser application internally. Expect a few hundred MB of memory plus
+additional renderer processes as sources are added.
 
-Either run from source:
+## Install SSApp
+
+Run from source:
 
 ```bash
 git clone https://github.com/steveseguin/ssn_app.git
@@ -51,161 +42,91 @@ cd ssn_app
 npm install
 ```
 
-or download the Linux AppImage from the
-[releases page](https://github.com/steveseguin/social_stream/releases) and make it
-executable. If the AppImage will not start on a minimal server, either install `libfuse2`
-or extract it instead:
+Or use the Linux AppImage from the
+[Social Stream releases](https://github.com/steveseguin/social_stream/releases). If a minimal
+server cannot mount the AppImage, install `libfuse2` or extract it:
 
 ```bash
-./socialstreamninja.AppImage --appimage-extract   # gives you ./squashfs-root/socialstreamninja
+./socialstreamninja.AppImage --appimage-extract
 ```
 
-## 3. Start it
+## Prepare the normal Social Stream connection
 
-There is a launcher that sets up the display, hides every window, turns on the control API
-and generates a token for you:
+Use the same Social Stream session ID and optional password on SSApp and the remote client.
+WebRTC is the normal transport. If WebRTC is unsuitable for the environment, enable Social
+Stream's existing WebSocket server mode instead; both reach the same command dispatcher.
+
+The simplest setup is to open SSApp once on a desktop, choose the session ID/password and
+transport you want, then move that profile to the server. You can also attach VNC to the
+server's virtual display for this one-time setup. Keep the same `SSAPP_DATA_DIR` on later
+starts so the session remains stable.
+
+Once the remote connection is established, an empty source list is supported: the remote
+controller can add, start, stop, restart, mute, and hide public sources such as a YouTube
+pop-out chat that does not require sign-in. Remote OAuth, cookies, credentials, replies, and
+account setup are intentionally outside this first headless scope.
+
+## Start headlessly
+
+The included launcher starts or reuses Xvfb, selects a persistent data directory, disables
+hardware acceleration by default, and launches SSApp with every window hidden:
 
 ```bash
-npm run start:headless          # or: ./scripts/start-headless.sh
+npm run start:headless
 ```
 
-It prints where your data and token live, and the exact SSH command to reach it:
+Useful settings:
 
-```
-[start-headless] data directory : /home/you/.local/share/ssapp-headless
-[start-headless] control API    : http://127.0.0.1:17777  (localhost only, token required)
-[start-headless] token file     : /home/you/.local/share/ssapp-headless/control-api-token
-```
-
-Settings it respects, all optional:
-
-| Variable | Default | What it does |
-|---|---|---|
-| `SSAPP_DATA_DIR` | `~/.local/share/ssapp-headless` | Settings, sessions and logins live here |
-| `SSAPP_CONTROL_PORT` | `17777` | Control API port on localhost |
-| `SSAPP_DISPLAY_NUM` | `99` | Which virtual display to use |
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SSAPP_DATA_DIR` | `~/.local/share/ssapp-headless` | Settings, session, sources, and browser data |
+| `SSAPP_DISPLAY_NUM` | `99` | Virtual X display number |
 | `SSAPP_SCREEN_SIZE` | `1920x1080x24` | Virtual screen size |
-| `SSAPP_BINARY` | local Electron | Point this at your AppImage or extracted binary |
-| `SSAPP_ENABLE_GPU` | off | Keep hardware acceleration on (only if the host has a real GPU) |
+| `SSAPP_BINARY` | local Electron | AppImage or extracted executable to launch |
+| `SSAPP_ENABLE_GPU` | off | Keep hardware acceleration on when a real GPU is available |
 
-If you would rather not use the launcher, this is all it does:
+For example:
+
+```bash
+SSAPP_DATA_DIR=/var/lib/ssapp \
+SSAPP_BINARY=/opt/socialstream/socialstreamninja \
+./scripts/start-headless.sh
+```
+
+The equivalent manual launch is:
 
 ```bash
 Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
 export DISPLAY=:99
 export SSAPP_USER_DATA_DIR="$HOME/.local/share/ssapp-headless"
-./node_modules/electron/dist/electron . \
-  --ssapp-headless-control \
-  --ssapp-control-api \
-  --ssapp-control-port=17777 \
-  --ssapp-control-token-file="$SSAPP_USER_DATA_DIR/control-api-token" \
-  --no-hwa
+./node_modules/electron/dist/electron . --ssapp-headless-control --no-hwa
 ```
 
-Two details worth knowing:
+Use `SSAPP_USER_DATA_DIR`, not Chromium's `--user-data-dir`; SSApp sets its application data
+path during startup.
 
-- Use **`SSAPP_USER_DATA_DIR`**, not Chromium's `--user-data-dir`. The app calls
-  `app.setPath('userData', ...)` during startup, so `--user-data-dir` only ends up applying
-  to part of the app's state and you get settings in one place and logins in another.
-- `--ozone-platform=headless` looks like it should remove the need for Xvfb. It does not
-  work — the app segfaults during startup, with or without hardware acceleration, on both
-  Electron 38 and 43. Use Xvfb.
+`--ozone-platform=headless` is not a replacement for Xvfb. Electron capture windows still
+need a working display backend.
 
-## 4. Reach it from your own machine
+## Optional one-time VNC access
 
-Forward the port over SSH, then talk to it as if it were local:
-
-```bash
-# on your own machine
-ssh -N -L 17777:127.0.0.1:17777 you@your-server
-```
-
-```bash
-# in another terminal, still on your own machine
-TOKEN=$(ssh you@your-server cat .local/share/ssapp-headless/control-api-token)
-curl -H "x-ssapp-token: $TOKEN" http://127.0.0.1:17777/api/v1/status
-```
-
-The token can also go in a query string (`?token=...`) if a client cannot set headers.
-Requests without it get a `403`.
-
-## 5. Drive it
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/api/v1/status` | GET | App state and every source with its status |
-| `/api/v1/capabilities` | GET | Every command with its schema and risk level |
-| `/api/v1/command` | POST | Run a command |
-| `/api/v1/events` | GET | Event stream |
-| `/api/v1/operations/<id>` | GET | Result of an earlier command |
-
-Adding a YouTube live chat and starting it:
-
-```bash
-API=http://127.0.0.1:17777/api/v1
-AUTH="x-ssapp-token: $TOKEN"
-
-curl -s -X POST -H "$AUTH" -H 'content-type: application/json' -d '{
-  "action": "addSource",
-  "value": { "target": "youtube", "url": "https://www.youtube.com/live_chat?is_popout=1&v=VIDEO_ID" }
-}' $API/command
-
-curl -s -X POST -H "$AUTH" -H 'content-type: application/json' \
-  -d '{"action":"startSource","value":{"sourceId":"youtube-url-xxxxxx"}}' $API/command
-
-curl -s -H "$AUTH" $API/status      # the source should reach "status":"active"
-```
-
-`getCapabilities` lists the rest: stopping and restarting sources, muting, changing
-connection mode, updating settings, reloading, and shutting down. Destructive commands need
-`"confirm": true`.
-
-To shut the app down cleanly:
-
-```bash
-curl -s -X POST -H "$AUTH" -H 'content-type: application/json' \
-  -d '{"action":"shutdownApp","value":{"confirm":true}}' $API/command
-```
-
-There is also an MCP adapter (`npm run mcp`) if you want an LLM assistant driving the same
-commands.
-
-## 6. Signing in to platforms
-
-Public YouTube live chat needs no login, so the simplest setups need nothing here. Anything
-that needs an account does, and a server has no screen to click on. Pick one:
-
-**Option A — view the virtual display over VNC.** Attach a VNC server to the display the app
-is already using, tunnel it, and use the real UI once to sign in.
+VNC is useful for choosing the Social Stream session or completing a platform sign-in. It
+is not required after setup for public read-only chat sources.
 
 ```bash
 sudo apt-get install -y x11vnc
 x11vnc -display :99 -localhost -rfbport 5900 -nopw -forever &
 ```
 
+From your own machine:
+
 ```bash
-# on your own machine
 ssh -N -L 5900:127.0.0.1:5900 you@your-server
-# then point any VNC client at localhost:5900
 ```
 
-Keep `-localhost` on, so it is only reachable through the tunnel. Stop `x11vnc` when you are
-finished; it does not need to run while the app does.
+Connect a VNC client to `localhost:5900`, then stop `x11vnc` when finished.
 
-**Option B — sign in on your desktop and copy the profile up.** Sign in with the normal
-desktop app, stop it, then copy its data directory to the server's `SSAPP_DATA_DIR`:
-
-```bash
-rsync -a ~/.config/SocialStream/ you@your-server:.local/share/ssapp-headless/
-```
-
-Some saved logins are tied to the OS keyring or machine, so treat this as "usually works,
-sometimes needs a re-login".
-
-**Option C — avoid logins.** Public live chat URLs and the API- or websocket-based sources do
-not need an account. This is the least fragile option for an unattended server.
-
-## 7. Keep it running (systemd)
+## Keep it running with systemd
 
 ```ini
 # /etc/systemd/system/ssapp.service
@@ -221,7 +142,6 @@ Environment=SSAPP_DATA_DIR=/var/lib/ssapp
 ExecStart=/opt/ssn_app/scripts/start-headless.sh
 Restart=on-failure
 RestartSec=10
-# Give the app time to close sources and save settings.
 KillSignal=SIGTERM
 TimeoutStopSec=30
 
@@ -235,73 +155,84 @@ sudo systemctl enable --now ssapp
 journalctl -u ssapp -f
 ```
 
-The app handles `SIGTERM` and `SIGINT` as a clean shutdown, which is why the unit above uses
-`SIGTERM` and allows time for it. Avoid `SIGKILL`: the app treats an abrupt exit as a crash,
-and repeated crashes make it fall back to progressively more conservative graphics settings.
+SSApp handles `SIGTERM` and `SIGINT` as clean shutdowns. Avoid `SIGKILL` when possible.
 
-## 8. Check it is healthy
+## Check hidden capture
 
-The repo ships a diagnostic that creates a real source window, hides it, and confirms chat
-capture keeps running — the exact thing that tends to break on a machine with no screen:
+The hidden-capture diagnostic creates real Electron source windows through the normal IPC
+path and verifies that work continues while those windows are off screen:
 
 ```bash
 DISPLAY=:99 npm run test:hidden-capture -- --headless \
   --url="https://www.youtube.com/live_chat?is_popout=1&v=VIDEO_ID"
 ```
 
-Every check should pass. A healthy run reports chat rows arriving while the window is hidden,
-for example `chat rows captured: onScreen=9 hidden=17 withZeroFrames=7`. If chat rows stay at
-zero, check the video is actually live and has chat enabled — the diagnostic reports
-`rows.target_produces_chat` when the page never produced a single message.
-
-That check takes a couple of minutes. To confirm nothing degrades over a long session —
-which is the failure people actually notice, since chat can run fine for ten minutes and then
-stop — run the soak instead, with one `--url` per platform you care about:
+For a longer check across platforms:
 
 ```bash
-DISPLAY=:99 npm run test:hidden-capture:soak -- --minutes=60 \
+DISPLAY=:99 npm run test:hidden-capture:soak -- --minutes=60 --start-hidden \
   --url="https://www.youtube.com/live_chat?is_popout=1&v=VIDEO_ID" \
   --url="https://www.twitch.tv/popout/CHANNEL/chat?popout=" \
   --url="https://kick.com/popout/CHANNEL/chat"
 ```
 
-It hides every window, then reports rAF rate, timer rate and chat rows arriving per minute,
-streaming to a `.jsonl` file you can watch while it runs. Windows that never produce a chat
-row are reported as `NO DATA` with a snapshot of what the page actually was, rather than
-counting as a pass — usually that means the channel is offline, chat is followers-only, or
-the platform wants a login.
+A source that never produces a chat message is reported as inconclusive. Confirm the stream
+is live and chat is public before treating that as an app failure.
 
-## 9. Where your data lives
+## Local AI on the server itself
 
-Everything is under `SSAPP_DATA_DIR` (`~/.local/share/ssapp-headless` by default): settings,
-browser sessions and logins, logs, and the control API token. Back up that directory; it is
-the only state that matters. Stop the app first so nothing is written mid-copy.
+If an LLM or automation process runs on the same server, you may explicitly enable SSApp's
+loopback API as a separate local adapter:
 
-## 10. Troubleshooting
+```bash
+./scripts/start-headless.sh --ssapp-control-api
+```
 
-**`Missing X server or $DISPLAY` / the platform failed to initialize.** No virtual display.
-Start Xvfb and export `DISPLAY`, or use the launcher.
+It listens on `127.0.0.1` only. Do not forward or publish that port for remote users; use the
+normal Social Stream WebRTC/WebSocket path instead.
 
-**Xvfb dies immediately on startup.** Some hosts ship GPU drivers that advertise GLX but
-cannot serve it, and Xvfb crashes initialising the extension. Start it with
-`-extension GLX`. The launcher detects this and retries automatically.
+An agent does not find SSApp by scanning the server. Register the included MCP adapter once
+in that agent's MCP configuration. For a source checkout installed at `/opt/ssn_app`, the
+equivalent generic configuration is:
 
-**The app exits immediately as root, or in a container.** Add `--no-sandbox`. Prefer running
-as an ordinary user instead where you can.
+```json
+{
+  "mcpServers": {
+    "social-stream": {
+      "command": "/usr/bin/node",
+      "args": ["/opt/ssn_app/resources/ssapp-mcp.js"]
+    }
+  }
+}
+```
 
-**Log full of GL / EGL / WebGL errors.** Expected on a server with no GPU, and harmless.
-`--no-hwa` (which the launcher passes) keeps it quiet.
+The exact configuration filename depends on the AI client. Start SSApp before starting the
+client. During MCP setup the client asks the adapter for its tools; the adapter calls
+`GET /api/v1/capabilities` on loopback and exposes only commands supported by that running
+SSApp version. No port scanning, cloud registration, or separate remote API is involved.
 
-**`403` from the API.** Wrong or missing token. Read it from the token file; it is
-regenerated only if you delete it.
+The optional
+[`control-social-stream` skill](https://github.com/steveseguin/social_stream/tree/main/docs/skills/control-social-stream)
+adds operating guidance for agents that support installable skills. Install that whole folder
+in the agent's normal skill directory. The skill is not required for MCP connectivity; MCP
+tool discovery and runtime capabilities remain the source of truth.
 
-**Cannot reach the API from another machine.** It binds `127.0.0.1` deliberately. Use the SSH
-tunnel in [step 4](#4-reach-it-from-your-own-machine). Do not put it on a public interface.
+## Troubleshooting
 
-**Chat connects but no messages arrive.** Run the health check in step 8. Capture in a
-window nobody can see depends on machinery described in `hidden-window-keepalive.js`; if the
-check fails there, include its output in a bug report.
+**`Missing X server or $DISPLAY`.** Start Xvfb and export `DISPLAY`, or use the launcher.
 
-**Sources you did not add keep appearing.** Something is sharing a data directory. Each
-instance needs its own `SSAPP_DATA_DIR`, and each its own `SSAPP_CONTROL_PORT` and
-`SSAPP_DISPLAY_NUM`.
+**Xvfb exits immediately.** Some installed GPU drivers break Xvfb's GLX startup. The launcher
+automatically retries with `-extension GLX`.
+
+**The app exits as root or in a container.** Add `--no-sandbox`. Running as a normal user is
+preferred.
+
+**Chat connects but no messages arrive while hidden.** Run the hidden-capture diagnostic and
+include its output in a bug report. Check first that the channel is live and readable without
+sign-in.
+
+**Remote commands do not arrive.** Confirm SSApp and the controller use the same Social Stream
+session ID/password and that either WebRTC is connected or WebSocket server mode is enabled.
+
+**Sources or settings unexpectedly carry across instances.** Give every instance a different
+`SSAPP_DATA_DIR` and display number.

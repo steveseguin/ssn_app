@@ -60,7 +60,6 @@
     "build:rpi": "USE_SYSTEM_FPM=true electron-builder --armv7l --linux deb",
     "clean": "rimraf ./dist",
     "release": "electron-builder --publish always",
-    "preinstall": "npx npm-force-resolutions",
     "postinstall": "node scripts/patch-deps.js && node scripts/install-electron-binary.js"
   },
   "repository": {
@@ -258,7 +257,6 @@
     "electron-notarize": "git+https://github.com/electron/notarize.git",
     "fs-extra": "^11.3.4",
     "jsonfile": "^6.1.0",
-    "npm-force-resolutions": "^0.0.10",
     "playwright-core": "^1.61.1",
     "rimraf": "^6.0.1",
     "run-script-os-fix": "^1.0.4",

@@ -16,10 +16,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const { pathToFileURL } = require('url');
 
 const electronPath = require('electron');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
+const socialStreamRoot = path.resolve(repoRoot, '..', 'social_stream');
 const stamp = Date.now();
 const reportPath = process.env.SOAK_REPORT || path.join(os.tmpdir(), `ssapp-hidden-capture-soak-${stamp}.jsonl`);
 const userDataDir = path.join(os.tmpdir(), `ssapp-soak-profile-${stamp}`);
@@ -41,6 +43,10 @@ const args = [
 	`--hidden-capture-soak-minutes=${minutes}`,
 	`--hidden-capture-soak-report=${reportPath}`
 ];
+if (fs.existsSync(path.join(socialStreamRoot, 'sources', 'youtube.js'))) {
+	args.push('--filesource', pathToFileURL(socialStreamRoot + path.sep).href);
+	args.push(`--hidden-capture-filesource=${socialStreamRoot}`);
+}
 for (const url of urls) {
 	args.push(`--hidden-capture-soak-url=${url}`);
 }
@@ -49,6 +55,10 @@ if (process.argv.includes('--headless')) {
 }
 if (process.argv.includes('--start-hidden')) {
 	args.push('--hidden-capture-soak-start-hidden');
+}
+const ozonePlatform = process.argv.find((arg) => arg.startsWith('--ozone-platform='));
+if (ozonePlatform) {
+	args.push(ozonePlatform);
 }
 
 console.log(`[soak] ${minutes} minute(s), ${urls.length || 1} window(s)`);
@@ -89,6 +99,7 @@ child.on('exit', (code) => {
 		console.log(
 			`[soak]   ${state} ${w.url}\n` +
 			`[soak]           rows=${w.rowsWhileHidden} minutesWithRows=${w.minutesWithRows}/${w.samples} ` +
+			`destinations=${w.destinationMessagesWhileHidden} ` +
 			`minRaf=${w.minRafPerSecond}/s minTimer=${w.minTimerPerSecond}/s quietTail=${w.quietTailMinutes}min errors=${w.errors}` +
 			(w.inconclusive ? `\n[soak]           page was: ${JSON.stringify(w.snapshot).slice(0, 200)}` : '')
 		);

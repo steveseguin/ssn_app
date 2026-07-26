@@ -10,20 +10,122 @@
 		work, the way YouTube live chat flushes incoming messages. If the window stops
 		getting compositor frames and nothing pumps requestAnimationFrame, row growth
 		stops even though timers keep running.</p>
-	<div id="feed"></div>
+	<div id="fixture-root"></div>
 	<script>
 		(function () {
-			var feed = document.getElementById("feed");
+			var platform = new URLSearchParams(location.search).get("platform") || "youtube";
+			var root = document.getElementById("fixture-root");
+			var feed = null;
 			var received = 0;
+			window.__fixturePlatform = platform;
+			if (platform === "tiktok" && location.protocol === "file:") {
+				try {
+					history.replaceState(null, "", location.pathname + "/@hidden-capture/live" + location.search);
+				} catch (error) {
+					window.__fixtureLocationError = error && error.message ? error.message : String(error);
+				}
+			}
+
+			if (platform === "twitch") {
+				root.innerHTML = '<div class="chat-room__content"><div id="twitch-feed"></div></div>';
+				feed = document.getElementById("twitch-feed");
+			} else if (platform === "kick") {
+				root.innerHTML = '<div id="chatroom"></div>';
+				feed = document.getElementById("chatroom");
+			} else if (platform === "tiktok") {
+				root.innerHTML = '<div id="tiktok-feed" data-e2e="chat-room"></div>';
+				feed = document.getElementById("tiktok-feed");
+			} else {
+				root.innerHTML = '<yt-live-chat-app><yt-live-chat-item-list-renderer>' +
+					'<div id="item-scroller"><div id="item-offset">' +
+					'<div id="items" class="yt-live-chat-item-list-renderer"></div>' +
+					'</div></div></yt-live-chat-item-list-renderer></yt-live-chat-app>';
+				feed = document.getElementById("items");
+			}
+
+			function createYouTubeRow(id) {
+				var row = document.createElement("yt-live-chat-text-message-renderer");
+				var author = document.createElement("span");
+				var message = document.createElement("span");
+				row.id = "ssn-hidden-capture-" + id;
+				row.className = "ssn-chat-row";
+				row.style.display = "block";
+				author.id = "author-name";
+				author.textContent = "SSN Hidden Capture Fixture";
+				message.id = "message";
+				message.textContent = "hidden-capture message " + id;
+				row.appendChild(author);
+				row.appendChild(document.createTextNode(": "));
+				row.appendChild(message);
+				return row;
+			}
+
+			function createTwitchRow(id) {
+				var row = document.createElement("div");
+				var author = document.createElement("span");
+				var message = document.createElement("span");
+				row.id = "ssn-hidden-capture-" + id;
+				row.className = "chat-line__message ssn-chat-row";
+				author.className = "chat-author__display-name";
+				author.textContent = "SSN Hidden Capture Fixture";
+				message.dataset.aTarget = "chat-line-message-body";
+				message.textContent = "hidden-capture message " + id;
+				row.appendChild(author);
+				row.appendChild(document.createTextNode(": "));
+				row.appendChild(message);
+				return row;
+			}
+
+			function createKickRow(id) {
+				var row = document.createElement("div");
+				var identity = document.createElement("span");
+				var author = document.createElement("span");
+				var message = document.createElement("span");
+				row.id = "ssn-hidden-capture-" + id;
+				row.className = "chat-entry ssn-chat-row";
+				row.dataset.chatEntry = "hidden-capture-" + id;
+				identity.className = "chat-message-identity";
+				author.className = "chat-entry-username";
+				author.textContent = "SSN Hidden Capture Fixture";
+				message.className = "chat-entry-content";
+				message.textContent = "hidden-capture message " + id;
+				row.appendChild(identity);
+				row.appendChild(author);
+				row.appendChild(document.createTextNode(": "));
+				row.appendChild(message);
+				return row;
+			}
+
+			function createTikTokRow(id) {
+				var row = document.createElement("div");
+				var avatar = document.createElement("div");
+				var body = document.createElement("div");
+				var author = document.createElement("span");
+				var message = document.createElement("span");
+				row.id = "ssn-hidden-capture-" + id;
+				row.className = "ssn-chat-row";
+				row.dataset.e2e = "chat-message";
+				author.dataset.e2e = "message-owner-name";
+				author.textContent = "SSN Hidden Capture Fixture";
+				message.className = "break-words align-middle";
+				message.textContent = "hidden-capture message " + id;
+				body.appendChild(author);
+				body.appendChild(message);
+				row.appendChild(avatar);
+				row.appendChild(body);
+				return row;
+			}
 
 			// "Network" delivery keeps arriving on a timer; rendering the row is deferred to
 			// a frame callback, which is the part that stalls without frames.
 			setInterval(function () {
 				received++;
 				requestAnimationFrame(function () {
-					var row = document.createElement("div");
-					row.className = "ssn-chat-row";
-					row.textContent = "message " + received;
+					var row = platform === "twitch"
+						? createTwitchRow(received)
+						: (platform === "kick"
+							? createKickRow(received)
+							: (platform === "tiktok" ? createTikTokRow(received) : createYouTubeRow(received)));
 					feed.appendChild(row);
 					while (feed.childElementCount > 400) {
 						feed.removeChild(feed.firstElementChild);

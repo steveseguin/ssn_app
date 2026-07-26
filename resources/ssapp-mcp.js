@@ -2,12 +2,11 @@
 
 'use strict';
 
-const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const readline = require('readline');
 
-const MCP_SERVER_VERSION = '1.0.1';
+const MCP_SERVER_VERSION = '1.0.2';
 const MCP_PROTOCOL_VERSION = '2025-06-18';
 const DEFAULT_URL = 'http://127.0.0.1:17777';
 
@@ -83,23 +82,14 @@ function sourceTool(description, action, annotations) {
 	return tool(description, { sourceId: stringProperty('Stable source ID.') }, action, annotations);
 }
 
-function readToken() {
-	const tokenFile = String(process.env.SSAPP_CONTROL_TOKEN_FILE || '').trim();
-	if (tokenFile) return fs.readFileSync(tokenFile, 'utf8').trim();
-	return String(process.env.SSAPP_CONTROL_TOKEN || '').trim();
-}
-
 function apiRequest(pathname, body) {
 	const baseUrl = new URL(String(process.env.SSAPP_CONTROL_URL || DEFAULT_URL));
-	const token = readToken();
-	if (!token) return Promise.reject(new Error('Set SSAPP_CONTROL_TOKEN or SSAPP_CONTROL_TOKEN_FILE.'));
 	const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
 	const transport = baseUrl.protocol === 'https:' ? https : http;
 	return new Promise((resolve, reject) => {
 		const req = transport.request(new URL(pathname, baseUrl), {
 			method: payload ? 'POST' : 'GET',
 			headers: {
-				'X-SSAPP-Token': token,
 				...(payload ? { 'Content-Type': 'application/json', 'Content-Length': payload.length } : {}),
 			},
 			timeout: 35000,
