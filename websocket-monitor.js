@@ -13,143 +13,149 @@ const { session } = require('electron');
  * @returns {Promise<Function>} Cleanup function to stop monitoring
  */
 async function setupWebSocketMonitor(webContents, options = {}) {
-    const {
-        filter = null,
-        onMessage = () => { },
-        onOpen = () => { },
-        onClose = () => { },
-        onSend = () => { }
-    } = options;
+  const {
+    filter = null,
+    onMessage = () => { },
+    onOpen = () => { },
+    onClose = () => { },
+    onSend = () => { }
+  } = options;
 
-    let monitoringActive = false;
-    /**
-     * @type {Map<string, {url: string, requestId: string, timestampDelta: number?}>}
-     */
-    const webSocketConnections = new Map();
+  let monitoringActive = false;
+  /**
+   * @type {Map<string, {url: string, requestId: string, timestampDelta: number?}>}
+   */
+  const webSocketConnections = new Map();
 
-    // Handle debugger events
-    const messageHandler = (event, method, params) => {
-        if (!monitoringActive) return;
+  /**
+   * Calculates epoch timestamp in milliseconds for a WebSocket event payload.
+   * @param {number?} [timestampDelta] - Monotonic to wall-clock time delta in milliseconds
+   * @param {number} [timestamp] - CDP monotonic timestamp in seconds
+   * @returns {number} Epoch timestamp in milliseconds
+   */
+  function calculateWSTimestamp(timestampDelta, timestamp) {
+    if (timestampDelta == null || !timestamp) return Date.now();
 
-        try {
-            switch (method) {
-                case 'Network.webSocketCreated': {
-                    const { requestId, url } = params;
-                    if (!filter || filter(url)) {
-                        // timestampDelta will be calculated in `Network.webSocketWillSendHandshakeRequest`
-                        webSocketConnections.set(requestId, { url, requestId, timestampDelta: null });
-                        onOpen({ url, requestId, timestamp: Date.now() });
-                    }
-                } break;
+    return (timestamp * 1000) + timestampDelta;
+  }
 
-                case 'Network.webSocketWillSendHandshakeRequest': {
-                    const conn = webSocketConnections.get(params.requestId);
-                    if (conn && params.wallTime && params.timestamp) {
-                        // The exact difference in ms between MonotonicTime (sec) and Unix epoch clock time (sec)
-                        conn.timestampDelta = (params.wallTime - params.timestamp) * 1000;
-                    }
-                } break;
-
-                case 'Network.webSocketClosed': {
-                    const connection = webSocketConnections.get(params.requestId);
-                    if (connection) {
-                        let { timestampDelta } = connection;
-                        if (timestampDelta === null) {
-                            console.warn("Timestamp Delta missing in WS Connection data", connection.url, connection.requestId);
-                            timestampDelta = Date.now() - (params.timestamp * 1000);
-                        }
-                        onClose({
-                            url: connection.url,
-                            requestId: params.requestId,
-                            timestamp: (params.timestamp * 1000) + timestampDelta,
-                        });
-                        webSocketConnections.delete(params.requestId);
-                    }
-                } break;
-
-                case 'Network.webSocketFrameReceived':
-                    const receivedConn = webSocketConnections.get(params.requestId);
-                    if (receivedConn && params.response) {
-                        let { timestampDelta } = receivedConn;
-                        if (timestampDelta === null) {
-                            console.warn("Timestamp Delta missing in WS Connection data", receivedConn.url, receivedConn.requestId);
-                            timestampDelta = Date.now() - (params.timestamp * 1000);
-                        }
-                        onMessage({
-                            url: receivedConn.url,
-                            data: params.response.payloadData,
-                            opcode: params.response.opcode,
-                            timestamp: (params.timestamp * 1000) + timestampDelta,
-                            requestId: params.requestId
-                        });
-                    } break;
-
-                case 'Network.webSocketFrameSent': {
-                    const sentConn = webSocketConnections.get(params.requestId);
-                    if (sentConn && params.response) {
-                        let { timestampDelta } = sentConn;
-                        if (timestampDelta === null) {
-                            console.warn("Timestamp Delta missing in WS Connection data", sentConn.url, sentConn.requestId);
-                            timestampDelta = Date.now() - (params.timestamp * 1000);
-                        }
-                        onSend({
-                            url: sentConn.url,
-                            data: params.response.payloadData,
-                            timestamp: (params.timestamp * 1000) + timestampDelta,
-                            opcode: params.response.opcode,
-                            requestId: params.requestId
-                        });
-                    }
-                } break;
-            }
-        } catch (error) {
-            console.error('Error handling WebSocket event:', error);
-        }
-    };
-
-    webContents.debugger.on('message', messageHandler);
-
-    function cleanup() {
-        try {
-            webContents.debugger.off('message', messageHandler);
-        } catch (_) { }
-
-        if (monitoringActive) {
-            try {
-                webContents.debugger.detach();
-            } catch (err) {
-                console.error('Error detaching WebSocket monitor:', err);
-            }
-            monitoringActive = false;
-            webSocketConnections.clear();
-        }
-    }
+  // Handle debugger events
+  const messageHandler = (event, method, params) => {
+    if (!monitoringActive) return;
 
     try {
-        webContents.debugger.attach('1.3');
-        monitoringActive = true;
-        if (typeof options.onAttached === 'function') {
-            try {
-                await options.onAttached();
-            } catch (err) {
-                console.error('Error executing onAttached callback:', err);
-            }
-        }
-        await Promise.all([
-            webContents.debugger.sendCommand('Network.enable'),
-            // Enable runtime for WebSocket frame events
-            webContents.debugger.sendCommand('Runtime.enable'),
-        ]);
-    } catch (err) {
-        console.error('Failed to attach WebSocket monitor:', err);
-        cleanup();
-        throw err;
-    }
+      switch (method) {
+        case 'Network.webSocketCreated': {
+          const { requestId, url } = params;
+          if (!filter || filter(url)) {
+            // timestampDelta will be calculated in `Network.webSocketWillSendHandshakeRequest`
+            webSocketConnections.set(requestId, { url, requestId, timestampDelta: null });
+            onOpen({ url, requestId, timestamp: Date.now() });
+          }
+        } break;
 
-    // Cleanup function
-    return cleanup;
+        case 'Network.webSocketWillSendHandshakeRequest': {
+          const conn = webSocketConnections.get(params.requestId);
+          if (conn && params.wallTime && params.timestamp) {
+            // The exact difference in ms between MonotonicTime (sec) and Unix epoch clock time (sec)
+            conn.timestampDelta = (params.wallTime - params.timestamp) * 1000;
+          }
+        } break;
+
+        case 'Network.webSocketClosed': {
+          const connection = webSocketConnections.get(params.requestId);
+          if (connection) {
+            if (connection.timestampDelta === null) {
+              console.warn("Timestamp Delta missing in WS Connection data", connection.url, connection.requestId);
+            }
+            onClose({
+              url: connection.url,
+              requestId: params.requestId,
+              timestamp: calculateWSTimestamp(connection.timestampDelta, params.timestamp),
+            });
+            webSocketConnections.delete(params.requestId);
+          }
+        } break;
+
+        case 'Network.webSocketFrameReceived':
+          const receivedConn = webSocketConnections.get(params.requestId);
+          if (receivedConn && params.response) {
+            if (receivedConn.timestampDelta === null) {
+              console.warn("Timestamp Delta missing in WS Connection data", receivedConn.url, receivedConn.requestId);
+            }
+            onMessage({
+              url: receivedConn.url,
+              data: params.response.payloadData,
+              opcode: params.response.opcode,
+              timestamp: calculateWSTimestamp(receivedConn.timestampDelta, params.timestamp),
+              requestId: params.requestId
+            });
+          } break;
+
+        case 'Network.webSocketFrameSent': {
+          const sentConn = webSocketConnections.get(params.requestId);
+          if (sentConn && params.response) {
+            if (sentConn.timestampDelta === null) {
+              console.warn("Timestamp Delta missing in WS Connection data", sentConn.url, sentConn.requestId);
+            }
+            onSend({
+              url: sentConn.url,
+              data: params.response.payloadData,
+              timestamp: calculateWSTimestamp(sentConn.timestampDelta, params.timestamp),
+              opcode: params.response.opcode,
+              requestId: params.requestId
+            });
+          }
+        } break;
+      }
+    } catch (error) {
+      console.error('Error handling WebSocket event:', error);
+    }
+  };
+
+  webContents.debugger.on('message', messageHandler);
+
+  function cleanup() {
+    try {
+      webContents.debugger.off('message', messageHandler);
+    } catch (_) { }
+
+    if (monitoringActive) {
+      try {
+        webContents.debugger.detach();
+      } catch (err) {
+        console.error('Error detaching WebSocket monitor:', err);
+      }
+      monitoringActive = false;
+      webSocketConnections.clear();
+    }
+  }
+
+  try {
+    webContents.debugger.attach('1.3');
+    monitoringActive = true;
+    if (typeof options.onAttached === 'function') {
+      try {
+        await options.onAttached();
+      } catch (err) {
+        console.error('Error executing onAttached callback:', err);
+      }
+    }
+    await Promise.all([
+      webContents.debugger.sendCommand('Network.enable'),
+      // Enable runtime for WebSocket frame events
+      webContents.debugger.sendCommand('Runtime.enable'),
+    ]);
+  } catch (err) {
+    console.error('Failed to attach WebSocket monitor:', err);
+    cleanup();
+    throw err;
+  }
+
+  // Cleanup function
+  return cleanup;
 }
 
 module.exports = {
-    setupWebSocketMonitor
+  setupWebSocketMonitor
 };
