@@ -134,6 +134,12 @@ async function setupWebSocketMonitor(webContents, options = {}) {
   try {
     webContents.debugger.attach('1.3');
     monitoringActive = true;
+
+    // Queue CDP enable commands synchronously BEFORE loadURL() so Chromium
+    // processes Network.enable immediately when the renderer target spins up
+    const networkEnablePromise = webContents.debugger.sendCommand('Network.enable');
+    const runtimeEnablePromise = webContents.debugger.sendCommand('Runtime.enable');
+
     if (typeof options.onAttached === 'function') {
       try {
         await options.onAttached();
@@ -141,11 +147,9 @@ async function setupWebSocketMonitor(webContents, options = {}) {
         console.error('Error executing onAttached callback:', err);
       }
     }
-    await Promise.all([
-      webContents.debugger.sendCommand('Network.enable'),
-      // Enable runtime for WebSocket frame events
-      webContents.debugger.sendCommand('Runtime.enable'),
-    ]);
+
+    // Await the queued CDP enable promises
+    await Promise.all([networkEnablePromise, runtimeEnablePromise]);
   } catch (err) {
     console.error('Failed to attach WebSocket monitor:', err);
     cleanup();
