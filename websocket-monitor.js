@@ -1,16 +1,32 @@
 const { session } = require('electron');
 
 /**
- * Sets up WebSocket monitoring for a webContents instance
+ * @typedef {Object} WSOpenEvent
+ * @property {string} url - The WebSocket URL
+ * @property {string} requestId - The CDP request identifier
+ * @property {number} timestamp - Epoch timestamp in milliseconds
+ *
+ * @typedef {Object} WSCloseEvent
+ * @property {string} url - The WebSocket URL
+ * @property {string} requestId - The CDP request identifier
+ * @property {number} timestamp - Epoch timestamp in milliseconds
+ *
+ * @typedef {Object} WSFrameEvent
+ * @property {string} url - The WebSocket URL
+ * @property {string} data - Payload data of the frame
+ * @property {number} opcode - Frame opcode
+ * @property {number} timestamp - Epoch timestamp in milliseconds
+ * @property {string} requestId - The CDP request identifier
+ *
  * @param {Electron.WebContents} webContents - The webContents to monitor
  * @param {Object} [options] - Configuration options
  * @param {(url: string) => boolean} [options.filter] - Optional filter function to limit which WebSockets to monitor
- * @param {Function} [options.onAttached] - Optional async callback invoked immediately after debugger attaches, before CDP commands resolve
- * @param {Function} [options.onMessage] - Callback for WebSocket messages
- * @param {Function} [options.onOpen] - Callback for WebSocket open events
- * @param {Function} [options.onClose] - Callback for WebSocket close events
- * @param {Function} [options.onSend] - Callback for WebSocket send events
- * @returns {Promise<Function>} Cleanup function to stop monitoring
+ * @param {() => Promise<void>|void} [options.onAttached] - Optional async callback invoked immediately after debugger attaches, before CDP commands resolve
+ * @param {(event: WSFrameEvent) => void} [options.onMessage] - Callback for WebSocket messages
+ * @param {(event: WSOpenEvent) => void} [options.onOpen] - Callback for WebSocket open events
+ * @param {(event: WSCloseEvent) => void} [options.onClose] - Callback for WebSocket close events
+ * @param {(event: WSFrameEvent) => void} [options.onSend] - Callback for WebSocket send events
+ * @returns {Promise<() => void>} Cleanup function to stop monitoring
  */
 async function setupWebSocketMonitor(webContents, options = {}) {
   const {
