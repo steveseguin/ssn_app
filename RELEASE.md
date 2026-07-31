@@ -22,6 +22,14 @@ Run Windows builds from `ssapp`:
 npm run build:win32
 ```
 
+To package the current Social Stream `beta` branch as the app's `main` fallback for a numbered release:
+
+```powershell
+$env:SSN_SOCIALSTREAM_BRANCH = "beta"
+$env:SSN_SOCIALSTREAM_OUTPUT_BRANCH = "main"
+npm run build:win32
+```
+
 Expected Windows artifacts are written under `dist/`, including:
 
 ```txt

@@ -5,6 +5,7 @@ const { execFileSync } = require('child_process');
 
 const REPO_URL = process.env.SSN_SOCIALSTREAM_REPO || 'https://github.com/steveseguin/social_stream.git';
 const BRANCH = process.env.SSN_SOCIALSTREAM_BRANCH || 'main';
+const OUTPUT_BRANCH = process.env.SSN_SOCIALSTREAM_OUTPUT_BRANCH || BRANCH;
 const INCLUDE_TTS = /^true$/i.test(process.env.SSN_INCLUDE_TTS || '');
 const EXTRA_PATTERNS = (process.env.SSN_FALLBACK_EXTRA || '')
     .split(/[,;]+/)
@@ -92,7 +93,7 @@ function normalizePatterns(basePatterns, extraPatterns) {
 function updateFallback() {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ssn-socialstream-'));
     const cloneDir = path.join(tmpRoot, 'social_stream');
-    const fallbackRoot = path.join(__dirname, '..', 'resources', 'social_stream_fallback', BRANCH);
+    const fallbackRoot = path.join(__dirname, '..', 'resources', 'social_stream_fallback', OUTPUT_BRANCH);
 
     const sparsePatterns = normalizePatterns(BASE_PATTERNS, EXTRA_PATTERNS);
     if (!sparsePatterns.length) {
@@ -125,7 +126,7 @@ function updateFallback() {
             console.log(`[fallback] Extra patterns requested: ${EXTRA_PATTERNS.join(', ')}`);
         }
 
-        console.log(`[fallback] Updating bundle at ${fallbackRoot}`);
+        console.log(`[fallback] Updating ${BRANCH} source bundle at ${fallbackRoot}`);
         fs.removeSync(fallbackRoot);
         fs.ensureDirSync(fallbackRoot);
         fs.copySync(cloneDir, fallbackRoot, {
