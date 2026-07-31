@@ -2812,7 +2812,6 @@ try {
         getCachedSettings,
         isCaptureEventsEnabled,
         isCaptureJoinedEventEnabled,
-        isCaptureLikedEventEnabled,
         isViewerUpdateAllowed,
         isTextOnlyModeEnabled,
         connectionStates
@@ -2915,12 +2914,6 @@ function isCaptureJoinedEventEnabled() {
     const settings = cachedState && cachedState.settings;
     if (!settings || typeof settings !== 'object') return false;
     return Object.prototype.hasOwnProperty.call(settings, 'capturejoinedevent');
-}
-
-function isCaptureLikedEventEnabled() {
-    const settings = cachedState && cachedState.settings;
-    if (!settings || typeof settings !== 'object') return false;
-    return Object.prototype.hasOwnProperty.call(settings, 'capturelikeevent');
 }
 
 function isViewerUpdateAllowed() {
@@ -3241,6 +3234,57 @@ if (!sessions || !currentSessionName) {
 if (!sessions[currentSessionName]) {
     currentSessionName = 'default';
     store.set('currentSession', 'default');
+}
+
+const USER_SESSION_PERSISTED_STORE_KEYS = [
+    'cachedStateBackup',
+    'cachedStateBackupTime',
+    'localStorageBackup',
+    'localStorageBackupTime'
+];
+
+// Default keeps the legacy names so existing installs retain their data.
+// Additional User Sessions use hashed namespaces to prevent settings/source crossover.
+function getUserSessionPersistenceScope(sessionName = currentSessionName) {
+    const normalized = String(sessionName || 'default');
+    if (normalized === 'default') return 'default';
+    const digest = crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 24);
+    return `session-${digest}`;
+}
+
+function getUserSessionStoreKey(key, sessionName = currentSessionName) {
+    const scope = getUserSessionPersistenceScope(sessionName);
+    if (scope === 'default') return key;
+    return `userSessionData.${scope}.${key}`;
+}
+
+function getUserSessionStoreValue(key, defaultValue, sessionName = currentSessionName) {
+    return store.get(getUserSessionStoreKey(key, sessionName), defaultValue);
+}
+
+function setUserSessionStoreValue(key, value, sessionName = currentSessionName) {
+    store.set(getUserSessionStoreKey(key, sessionName), value);
+}
+
+function deleteUserSessionStoreValue(key, sessionName = currentSessionName) {
+    store.delete(getUserSessionStoreKey(key, sessionName));
+}
+
+function clearUserSessionPersistence(sessionName) {
+    USER_SESSION_PERSISTED_STORE_KEYS.forEach((key) => {
+        try {
+            deleteUserSessionStoreValue(key, sessionName);
+        } catch (_) { }
+    });
+
+    const paths = getSavedSyncPaths(sessionName);
+    [paths.mainPath, paths.tmpPath, paths.bakPath].forEach((filePath) => {
+        try {
+            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        } catch (error) {
+            console.warn(`[User Sessions] Failed to remove ${path.basename(filePath)}:`, error?.message || error);
+        }
+    });
 }
 
 process.on("uncaughtException", function (error) {
@@ -7020,6 +7064,12 @@ async function clearAllData() {
 	            setCachedStatePersistenceBaseline(resetBaselineCandidate);
 	        }
 
+        const userSessionsToClear = new Set(Object.keys(sessions || {}));
+        userSessionsToClear.add('default');
+        userSessionsToClear.add(currentSessionName);
+        userSessionsToClear.forEach((sessionName) => clearUserSessionPersistence(sessionName));
+        currentSessionName = 'default';
+
 	        const { mainPath: savedSyncPath, bakPath: savedSyncBackupPath } = getSavedSyncPaths();
         try {
             fs.writeFileSync(savedSyncPath, JSON.stringify(cachedState, null, 2));
@@ -7656,7 +7706,7 @@ const dialogApprovedPaths = loadDialogApprovedPaths();
 function migrateLegacyApprovedPaths() {
     let migrated = 0;
     try {
-        const localStorageBackup = store.get("localStorageBackup", {});
+        const localStorageBackup = getUserSessionStoreValue("localStorageBackup", {});
         if (!localStorageBackup || typeof localStorageBackup !== "object") return;
         for (const key of LEGACY_APPROVED_PATH_LOCAL_STORAGE_KEYS) {
             const candidate = localStorageBackup[key];
@@ -8343,6 +8393,7 @@ ipcMain.handle('deleteSession', (event, sessionId) => {
     const sessions = store.get('sessions', {});
     delete sessions[sessionId];
     store.set('sessions', sessions);
+    clearUserSessionPersistence(sessionId);
 
     // If deleting current session, switch to default
     if (sessionId === currentSessionName) {
@@ -8512,6 +8563,131 @@ function sendWindowNavigationWarning(view, args = {}, navUrl = '', reason = 'nav
             });
         }
     } catch (_) { }
+}
+
+function normalizeCloseOnNavigatePlatform(args = {}) {
+    const explicit = String(args.platform || args.target || '').trim().toLowerCase();
+    if (explicit) return explicit;
+
+    const sourcePath = String(args.source || '').trim().replace(/\\/g, '/').toLowerCase();
+    if (sourcePath.endsWith('/twitch.js') || sourcePath === 'sources/twitch.js' || sourcePath === 'twitch.js') {
+        return 'twitch';
+    }
+    if (sourcePath.endsWith('/vpzone.js') || sourcePath === 'sources/vpzone.js' || sourcePath === 'vpzone.js') {
+        return 'vpzone';
+    }
+    return '';
+}
+
+function normalizeNavigationChannel(value) {
+    let channel = String(value || '').trim().replace(/^@+/, '');
+    try {
+        channel = decodeURIComponent(channel);
+    } catch (_) { }
+    return channel.trim().toLowerCase();
+}
+
+function getNavigationChannel(platform, value) {
+    let parsed;
+    try {
+        parsed = new URL(value);
+    } catch (_) {
+        return '';
+    }
+
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    let channel = parsed.searchParams.get('channel') || '';
+    if (!channel && platform === 'vpzone') {
+        channel = parsed.searchParams.get('username')
+            || parsed.searchParams.get('streamUsername')
+            || '';
+    }
+
+    if (!channel && platform === 'twitch') {
+        if (parts[0] === 'popout' && parts[1]) {
+            channel = parts[1];
+        } else if ((parts[0] === 'moderator' || parts[0] === 'u') && parts[1]) {
+            channel = parts[1];
+        } else if (parts[0]) {
+            const reserved = new Set([
+                'directory', 'downloads', 'inventory', 'jobs', 'login', 'p',
+                'search', 'settings', 'signup', 'subscriptions', 'turbo', 'wallet'
+            ]);
+            if (!reserved.has(parts[0].toLowerCase())) {
+                channel = parts[0];
+            }
+        }
+    } else if (!channel && platform === 'vpzone') {
+        if (['watch', 'stream', 'u'].includes(String(parts[0] || '').toLowerCase()) && parts[1]) {
+            channel = parts[1];
+        }
+    }
+
+    return normalizeNavigationChannel(channel);
+}
+
+function isNavigationHostAllowed(platform, initialUrl, nextUrl) {
+    if (!initialUrl || !nextUrl) return false;
+    const initialHost = String(initialUrl.hostname || '').toLowerCase();
+    const nextHost = String(nextUrl.hostname || '').toLowerCase();
+    const isHostFamily = (host, base) => host === base || host.endsWith('.' + base);
+
+    if (platform === 'twitch' && isHostFamily(initialHost, 'twitch.tv')) {
+        return isHostFamily(nextHost, 'twitch.tv');
+    }
+    if (platform === 'vpzone' && isHostFamily(initialHost, 'vpzone.tv')) {
+        return isHostFamily(nextHost, 'vpzone.tv');
+    }
+    return nextUrl.origin === initialUrl.origin;
+}
+
+function createCloseOnNavigateAllowance(args = {}, mode = 'prefix') {
+    let initialHref = '';
+    let initialOrigin = '';
+    let initialNoHash = '';
+    let parsedInitialUrl = null;
+    try {
+        parsedInitialUrl = new URL(args.url);
+        initialHref = parsedInitialUrl.href.replace(/\/+$/, '/');
+        initialOrigin = parsedInitialUrl.origin;
+        initialNoHash = parsedInitialUrl.origin + parsedInitialUrl.pathname + (parsedInitialUrl.search || '');
+    } catch (_) {
+        initialHref = String(args.url || '').trim();
+        initialNoHash = initialHref.replace(/#.*$/, '');
+    }
+
+    const platform = normalizeCloseOnNavigatePlatform(args);
+    const initialChannel = mode === 'channel' ? getNavigationChannel(platform, args.url) : '';
+
+    return (url) => {
+        try {
+            const nextUrl = new URL(url);
+            const href = nextUrl.href.replace(/\/+$/, '/');
+            const noHash = nextUrl.origin + nextUrl.pathname + (nextUrl.search || '');
+            if (mode === 'origin') {
+                return initialOrigin && nextUrl.origin === initialOrigin;
+            }
+            if (mode === 'exact') {
+                // Treat hash-only changes as allowed; compare without hash fragment.
+                return noHash === initialNoHash;
+            }
+            if (mode === 'channel' && initialChannel) {
+                if (!isNavigationHostAllowed(platform, parsedInitialUrl, nextUrl)) {
+                    return false;
+                }
+                const nextChannel = getNavigationChannel(platform, nextUrl.href);
+                if (nextChannel) {
+                    return nextChannel === initialChannel;
+                }
+                // Ignore transient internal navigations, but stop once an HTTP(S) page
+                // no longer represents the configured capture channel.
+                return nextUrl.protocol !== 'http:' && nextUrl.protocol !== 'https:';
+            }
+            return href.startsWith(initialHref);
+        } catch (_) {
+            return true;
+        }
+    };
 }
 
 async function createWindow(args, reuse = false, mainApp = false) {
@@ -9272,40 +9448,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 try {
                     const enforceCloseOnNavigate = (!args.wss && args.config && args.config.closeOnNavigate === true);
                     if (enforceCloseOnNavigate) {
-                        const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact'
+                        const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact' | 'channel'
                         const preserveManualTikTokStandard = shouldPreserveManualTikTokStandardNavigation(args);
                         let navigationWarningSent = false;
-                        let initialHref = '';
-                        let initialOrigin = '';
-                        let initialNoHash = '';
-                        try {
-                            const u = new URL(args.url);
-                            initialHref = u.href.replace(/\/+$/, '/');
-                            initialOrigin = u.origin;
-                            initialNoHash = u.origin + u.pathname + (u.search || '');
-                        } catch (_) {
-                            initialHref = String(args.url || '').trim();
-                            initialOrigin = '';
-                            initialNoHash = initialHref.replace(/#.*$/, '');
-                        }
-
-                        const isAllowed = (url) => {
-                            try {
-                                const nu = new URL(url);
-                                const href = nu.href.replace(/\/+$/, '/');
-                                const noHash = nu.origin + nu.pathname + (nu.search || '');
-                                if (mode === 'origin') {
-                                    return initialOrigin && nu.origin === initialOrigin;
-                                } else if (mode === 'exact') {
-                                    // Treat hash-only changes as allowed; compare without hash fragment
-                                    return noHash === initialNoHash;
-                                } else { // prefix (default)
-                                    return href.startsWith(initialHref);
-                                }
-                            } catch (_) {
-                                return true; // If URL parsing fails, do not block
-                            }
-                        };
+                        const isAllowed = createCloseOnNavigateAllowance(args, mode);
 
                         const maybeClose = (navUrl, reason) => {
                             if (!isAllowed(navUrl)) {
@@ -10170,7 +10316,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Check if localStorage seems empty/reset and restore from backup if available
             try {
-                const localStorageBackup = store.get('localStorageBackup');
+                const localStorageBackup = getUserSessionStoreValue('localStorageBackup');
                 if (localStorageBackup && Object.keys(localStorageBackup).length > 0) {
                     // Check if localStorage appears empty or missing key settings
                     executeJavaScriptWithReport(mainWindow.webContents, `
@@ -10184,7 +10330,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         })();
                     `, 'main_window.localstorage_restore_check').then((result) => {
                         if (result && result.isEmpty) {
-                            const backupTime = store.get('localStorageBackupTime');
+                            const backupTime = getUserSessionStoreValue('localStorageBackupTime');
                             log(`localStorage appears empty (${result.count} keys), restoring from backup` +
                                 (backupTime ? ` (saved: ${new Date(backupTime).toISOString()})` : ""));
 
@@ -12399,40 +12545,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 try {
                     const enforceCloseOnNavigate = (!args.wss && args.config && args.config.closeOnNavigate === true);
                     if (enforceCloseOnNavigate) {
-                        const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact'
+                        const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact' | 'channel'
                         const preserveManualTikTokStandard = shouldPreserveManualTikTokStandardNavigation(args);
                         let navigationWarningSent = false;
-                        let initialHref = '';
-                        let initialOrigin = '';
-                        let initialNoHash = '';
-                        try {
-                            const u = new URL(args.url);
-                            initialHref = u.href.replace(/\/+$/, '/');
-                            initialOrigin = u.origin;
-                            initialNoHash = u.origin + u.pathname + (u.search || '');
-                        } catch (_) {
-                            initialHref = String(args.url || '').trim();
-                            initialOrigin = '';
-                            initialNoHash = initialHref.replace(/#.*$/, '');
-                        }
-
-                        const isAllowed = (url) => {
-                            try {
-                                const nu = new URL(url);
-                                const href = nu.href.replace(/\/+$/, '/');
-                                const noHash = nu.origin + nu.pathname + (nu.search || '');
-                                if (mode === 'origin') {
-                                    return initialOrigin && nu.origin === initialOrigin;
-                                } else if (mode === 'exact') {
-                                    // Treat hash-only changes as allowed; compare without hash fragment
-                                    return noHash === initialNoHash;
-                                } else { // prefix (default)
-                                    return href.startsWith(initialHref);
-                                }
-                            } catch (_) {
-                                return true; // If URL parsing fails, do not block
-                            }
-                        };
+                        const isAllowed = createCloseOnNavigateAllowance(args, mode);
 
                         const maybeClose = (navUrl, reason) => {
                             if (!isAllowed(navUrl)) {
@@ -15471,12 +15587,16 @@ if (!fs.existsSync(folder)) {
 app.setPath("userData", folder);
 log("folder: " + folder);
 
-function getSavedSyncPaths() {
-	const mainPath = path.join(folder, "savedSync.json");
+function getSavedSyncPaths(sessionName = currentSessionName) {
+	const sessionScope = getUserSessionPersistenceScope(sessionName);
+	const fileName = sessionScope === "default"
+		? "savedSync.json"
+		: `savedSync.${sessionScope}.json`;
+	const mainPath = path.join(folder, fileName);
 	return {
 		mainPath,
 		tmpPath: `${mainPath}.tmp`,
-		bakPath: path.join(folder, "savedSync.json.bak")
+		bakPath: `${mainPath}.bak`
 	};
 }
 
@@ -15703,8 +15823,8 @@ function collectCachedStateCandidates(options = {}) {
 
 	if (includeStoreBackup) {
 		try {
-			const storeBackup = store.get('cachedStateBackup');
-			const storeBackupTime = store.get('cachedStateBackupTime');
+			const storeBackup = getUserSessionStoreValue('cachedStateBackup');
+			const storeBackupTime = getUserSessionStoreValue('cachedStateBackupTime');
 			const candidate = createCachedStateCandidate(storeBackup, "electron-store backup", storeBackupTime);
 			if (candidate) candidates.push(candidate);
 		} catch (_) { }
@@ -15712,8 +15832,8 @@ function collectCachedStateCandidates(options = {}) {
 
 	if (includeLocalStorageBackup) {
 		try {
-			const localStorageBackup = store.get('localStorageBackup');
-			const localStorageBackupTime = store.get('localStorageBackupTime');
+			const localStorageBackup = getUserSessionStoreValue('localStorageBackup');
+			const localStorageBackupTime = getUserSessionStoreValue('localStorageBackupTime');
 			const reconstructed = parseCachedStateFromLocalStorageRecord(localStorageBackup);
 			const candidate = createCachedStateCandidate(reconstructed, "localStorage backup", localStorageBackupTime);
 			if (candidate) candidates.push(candidate);
@@ -15838,8 +15958,8 @@ function persistCachedStateSafely(state, options = {}) {
 	saveCachedStateAtomic(stateToPersist);
 	if (shouldPersistStoreBackup && (metrics.hasCoreData || !allowSettingsDowngrade)) {
 		try {
-			store.set('cachedStateBackup', stateToPersist);
-			store.set('cachedStateBackupTime', Date.now());
+			setUserSessionStoreValue('cachedStateBackup', stateToPersist);
+			setUserSessionStoreValue('cachedStateBackupTime', Date.now());
 		} catch (e) {
 			console.warn("Failed to update electron-store cachedState backup:", e?.message || e);
 		}
@@ -15854,10 +15974,10 @@ function persistCachedStateSafely(state, options = {}) {
 			console.warn("Failed to clear cachedState .bak during explicit reset:", e?.message || e);
 		}
 		try {
-			store.delete('cachedStateBackup');
-			store.delete('cachedStateBackupTime');
-			store.delete('localStorageBackup');
-			store.delete('localStorageBackupTime');
+			deleteUserSessionStoreValue('cachedStateBackup');
+			deleteUserSessionStoreValue('cachedStateBackupTime');
+			deleteUserSessionStoreValue('localStorageBackup');
+			deleteUserSessionStoreValue('localStorageBackupTime');
 		} catch (e) {
 			console.warn("Failed to clear cachedState backups during explicit reset:", e?.message || e);
 		}
@@ -15921,7 +16041,7 @@ function updateLocalStorageBackup(payload, options = {}) {
 			console.warn("Skipped localStorageBackup update due to partial settings downgrade gate");
 			return;
 		}
-		const existing = store.get('localStorageBackup');
+		const existing = getUserSessionStoreValue('localStorageBackup');
 		const merged = existing && typeof existing === "object" ? { ...existing } : {};
 		Object.entries(payload).forEach(([key, value]) => {
 			if (value === null || value === undefined) {
@@ -15930,8 +16050,8 @@ function updateLocalStorageBackup(payload, options = {}) {
 			}
 			merged[key] = value;
 		});
-		store.set('localStorageBackup', merged);
-		store.set('localStorageBackupTime', Date.now());
+		setUserSessionStoreValue('localStorageBackup', merged);
+		setUserSessionStoreValue('localStorageBackupTime', Date.now());
 		log(`Updated localStorageBackup with ${Object.keys(payload).length} keys`);
 	} catch (e) {
 		console.warn("Failed to update localStorageBackup:", e?.message || e);
@@ -16012,7 +16132,7 @@ function hydrateCachedStateFromLocalStorage(raw) {
 
 function hydrateCachedStateFromStoreBackup() {
 	try {
-		const backup = store.get('localStorageBackup');
+		const backup = getUserSessionStoreValue('localStorageBackup');
 		if (backup && typeof backup === "object" && Object.keys(backup).length > 0) {
 			return hydrateCachedStateFromLocalStorage(backup);
 		}
@@ -17163,8 +17283,8 @@ async function quitApp() {
                 `).catch(() => null);
 
                 if (localStorageData && Object.keys(localStorageData).length > 0) {
-                    store.set('localStorageBackup', localStorageData);
-                    store.set('localStorageBackupTime', Date.now());
+                    setUserSessionStoreValue('localStorageBackup', localStorageData);
+                    setUserSessionStoreValue('localStorageBackupTime', Date.now());
                     log(`Backed up ${Object.keys(localStorageData).length} localStorage keys on quit`);
                 }
             }

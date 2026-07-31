@@ -77,7 +77,6 @@ const env = {
     onStatus: () => { },
     isCaptureEventsEnabled: () => false,
     isCaptureJoinedEventEnabled: () => false,
-    isCaptureLikedEventEnabled: () => false,
     isViewerUpdateAllowed: () => false,
     isTextOnlyModeEnabled: () => false,
     getCachedSettings: () => ({}),
@@ -1067,14 +1066,6 @@ function isCaptureJoinedEventEnabled() {
     }
 }
 
-function isCaptureLikedEventEnabled() {
-    try {
-        return !!env.isCaptureLikedEventEnabled();
-    } catch (_) {
-        return false;
-    }
-}
-
 function isLikeTotalsEnabled() {
     const settings = getCachedSettings();
     const globalSetting = settings.captureliketotals;
@@ -1306,7 +1297,6 @@ function installTikTokProtoFetchTap(connector) {
  * @param {function} [options.getCachedSettings] - Returns the current cached settings object.
  * @param {function} [options.isCaptureEventsEnabled] - Indicates whether non-gift events should be forwarded.
  * @param {function} [options.isCaptureJoinedEventEnabled]
- * @param {function} [options.isCaptureLikedEventEnabled]
  * @param {function} [options.isViewerUpdateAllowed]
  * @param {function} [options.isTextOnlyModeEnabled]
  * @param {Map} [options.connectionStates] - Optional shared connection state map.
@@ -1328,7 +1318,6 @@ function createTikTokEnvironment(options = {}) {
         getCachedSettings: getCachedSettingsOverride = () => ({}),
         isCaptureEventsEnabled: captureEventsEnabledFn = () => false,
         isCaptureJoinedEventEnabled: captureJoinedFn = () => false,
-        isCaptureLikedEventEnabled: captureLikedFn = () => false,
         isViewerUpdateAllowed: viewerUpdateAllowedFn = () => false,
         isTextOnlyModeEnabled: textOnlyModeFn = () => false,
         connectionStates: sharedConnectionStates,
@@ -1400,7 +1389,6 @@ function createTikTokEnvironment(options = {}) {
     env.getCachedSettings = typeof getCachedSettingsOverride === 'function' ? getCachedSettingsOverride : () => ({});
     env.isCaptureEventsEnabled = typeof captureEventsEnabledFn === 'function' ? captureEventsEnabledFn : () => false;
     env.isCaptureJoinedEventEnabled = typeof captureJoinedFn === 'function' ? captureJoinedFn : () => false;
-    env.isCaptureLikedEventEnabled = typeof captureLikedFn === 'function' ? captureLikedFn : () => false;
     env.isViewerUpdateAllowed = typeof viewerUpdateAllowedFn === 'function' ? viewerUpdateAllowedFn : () => false;
     env.isTextOnlyModeEnabled = typeof textOnlyModeFn === 'function' ? textOnlyModeFn : () => false;
     env.log = typeof logFn === 'function' ? logFn : env.log;
@@ -9706,9 +9694,6 @@ class ConnectionManager {
         if (!canonicalEventType) {
             return;
         }
-        const directTarget = canonicalEventType === 'liked' && !isCaptureLikedEventEnabled()
-            ? 'reactions'
-            : null;
         if (this.shouldSuppressDuplicateEvent(canonicalEventType, data, message)) {
             return;
         }
@@ -9761,7 +9746,7 @@ class ConnectionManager {
             payload.meta = metaPayload;
         }
 
-        sendToBackground(payload, directTarget);
+        sendToBackground(payload);
     }
 
     shouldAllowEulerChatEndpoint() {

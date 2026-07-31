@@ -22,7 +22,6 @@ function buildConnectorStub() {
 }
 
 function createHarness({
-  captureLikedEvent = false,
   captureLikeTotals = false,
   legacyYouTubeLikeTotals = false,
   likeTotalMinIntervalMs = 5000,
@@ -58,7 +57,6 @@ function createHarness({
     getCachedSettings: () => cachedSettings,
     isCaptureEventsEnabled: () => true,
     isCaptureJoinedEventEnabled: () => true,
-    isCaptureLikedEventEnabled: () => captureLikedEvent,
     isViewerUpdateAllowed: () => false,
     isTextOnlyModeEnabled: () => false,
     connectionStates: new Map()
@@ -75,7 +73,7 @@ function createHarness({
 }
 
 function runCanonicalizationAssertions() {
-  const { emitted, manager } = createHarness({ captureLikedEvent: true });
+  const { emitted, manager } = createHarness();
 
   manager.sendEventMessage(
     { uniqueId: 'alice', nickname: 'Alice' },
@@ -101,8 +99,8 @@ function runCanonicalizationAssertions() {
   assert.strictEqual(emitted[2].event, 'liked', 'like should normalize to liked');
 }
 
-function runLikeGateAssertions() {
-  const { emitted, manager, postedMessages } = createHarness({ captureLikedEvent: false });
+function runBackgroundLikeRoutingAssertions() {
+  const { emitted, manager, postedMessages } = createHarness();
 
   manager.sendEventMessage(
     { uniqueId: 'dave', nickname: 'Dave' },
@@ -110,16 +108,16 @@ function runLikeGateAssertions() {
     'Dave liked the stream!'
   );
 
-  assert.strictEqual(emitted.length, 0, 'liked events should be gated from the main stream when capturelikeevent is disabled');
-  assert.strictEqual(postedMessages.length, 1, 'liked events should still be forwarded to the reactions target');
+  assert.strictEqual(emitted.length, 1, 'SSApp should emit liked events without applying the background-owned main-feed toggle');
+  assert.strictEqual(postedMessages.length, 1, 'liked events should be forwarded through the background bridge');
   assert.strictEqual(postedMessages[0].channel, 'fromMain', 'liked event should use the background frame bridge');
-  assert.strictEqual(postedMessages[0].payload.target, 'reactions', 'liked event should be routed to reactions only');
-  assert.strictEqual(postedMessages[0].payload.message.event, 'liked', 'reactions payload should preserve liked event type');
-  assert.strictEqual(postedMessages[0].payload.message.chatname, 'Dave', 'reactions payload should preserve viewer name');
+  assert.ok(!Object.prototype.hasOwnProperty.call(postedMessages[0].payload, 'target'), 'SSApp must let background.js route individual likes');
+  assert.strictEqual(postedMessages[0].payload.message.event, 'liked', 'background payload should preserve liked event type');
+  assert.strictEqual(postedMessages[0].payload.message.chatname, 'Dave', 'background payload should preserve viewer name');
 }
 
 function runFollowShareDedupeAssertions() {
-  const { emitted, manager } = createHarness({ captureLikedEvent: true });
+  const { emitted, manager } = createHarness();
 
   manager.sendEventMessage(
     { uniqueId: 'eve', nickname: 'Eve', displayType: 'follow_message' },
@@ -150,7 +148,7 @@ function runFollowShareDedupeAssertions() {
 }
 
 function runLikePassthroughAssertions() {
-  const { emitted, manager } = createHarness({ captureLikedEvent: true });
+  const { emitted, manager } = createHarness();
 
   manager.sendEventMessage(
     { uniqueId: 'grace', nickname: 'Grace' },
@@ -212,7 +210,7 @@ function runLegacyLikeTotalGuardAssertions() {
 }
 
 function runSparseSharePayloadAssertions() {
-  const { emitted, manager } = createHarness({ captureLikedEvent: true });
+  const { emitted, manager } = createHarness();
 
   const sparseSharePayload = {
     common: {
@@ -242,7 +240,7 @@ function runSparseSharePayloadAssertions() {
 }
 
 function runEulerShareReplayDedupeAssertions() {
-  const { emitted, manager } = createHarness({ captureLikedEvent: true });
+  const { emitted, manager } = createHarness();
 
   manager.sendEventMessage(
     {
@@ -273,7 +271,7 @@ function runEulerShareReplayDedupeAssertions() {
 
 function run() {
   runCanonicalizationAssertions();
-  runLikeGateAssertions();
+  runBackgroundLikeRoutingAssertions();
   runFollowShareDedupeAssertions();
   runLikePassthroughAssertions();
   runLikeTotalAssertions();

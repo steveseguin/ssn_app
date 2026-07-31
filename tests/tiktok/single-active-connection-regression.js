@@ -39,7 +39,6 @@ function createHarness() {
     getCachedSettings: () => ({}),
     isCaptureEventsEnabled: () => true,
     isCaptureJoinedEventEnabled: () => true,
-    isCaptureLikedEventEnabled: () => true,
     isViewerUpdateAllowed: () => true,
     isTextOnlyModeEnabled: () => false,
     connectionStates
