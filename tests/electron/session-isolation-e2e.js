@@ -3,6 +3,7 @@
 "use strict";
 
 const assert = require("assert");
+const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const net = require("net");
@@ -173,6 +174,49 @@ async function readSessionMarkers(port) {
 	})()`);
 }
 
+async function waitForSessionMarkers(port, expected, timeoutMs = 30000) {
+	const started = Date.now();
+	let markers = null;
+	while (Date.now() - started < timeoutMs) {
+		markers = await readSessionMarkers(port);
+		if (Object.entries(expected).every(([key, value]) => markers[key] === value)) return markers;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	throw new Error(`Timed out waiting for session markers: ${JSON.stringify({ expected, markers })}`);
+}
+
+async function readImportedSessionState(port, sourceId) {
+	return execInMain(port, `(() => {
+		let storedState = null;
+		try { storedState = JSON.parse(localStorage.getItem("socialStreamState") || "null"); } catch (_) {}
+		const source = typeof stateManager !== "undefined" ? stateManager.getSource(${JSON.stringify(sourceId)}) : null;
+		return {
+			localMarker: localStorage.getItem("sessionImportProbe"),
+			storedMarker: storedState && storedState.global && storedState.global.sessionImportProbe || null,
+			stateMarker: typeof stateManager !== "undefined" && stateManager.state.global.sessionImportProbe || null,
+			sourceUsername: source && source.username || null
+		};
+	})()`);
+}
+
+async function createIndexedDbMarker(port, databaseName) {
+	return execInMain(port, `new Promise((resolve, reject) => {
+		const request = indexedDB.open(${JSON.stringify(databaseName)}, 1);
+		request.onupgradeneeded = () => request.result.createObjectStore("marker");
+		request.onsuccess = () => {
+			request.result.close();
+			resolve(true);
+		};
+		request.onerror = () => reject(request.error || new Error("IndexedDB marker failed"));
+	})`);
+}
+
+async function hasIndexedDbMarker(port, databaseName) {
+	return execInMain(port, `indexedDB.databases().then((databases) => {
+		return databases.some((database) => database.name === ${JSON.stringify(databaseName)});
+	})`);
+}
+
 async function selectSessionForNextLaunch(port, sessionId) {
 	const result = await execInMain(
 		port,
@@ -201,6 +245,13 @@ async function run() {
 	let instance = launchApp(port);
 	const defaultMarker = `default-${Date.now()}`;
 	const secondaryMarker = `secondary-${Date.now()}`;
+	const importedMarker = `imported-${Date.now()}`;
+	const importedSourceId = "imported-session-source";
+	const secondarySessionId = "probe-secondary";
+	const overlappingInactiveSessionId = `${secondarySessionId}-inactive`;
+	const indexedDbMarker = `deleted-session-${Date.now()}`;
+	const secondaryScope = `session-${crypto.createHash("sha256").update(secondarySessionId).digest("hex").slice(0, 24)}`;
+	const secondarySavedSyncPath = path.join(profileDir, `savedSync.${secondaryScope}.json`);
 
 	try {
 		await waitForStatus(port, "default");
@@ -218,13 +269,13 @@ async function run() {
 		})()`);
 		assert.ok(defaultBackup.every((result) => result?.success), JSON.stringify(defaultBackup));
 		const created = await execInMain(port, `require("electron").ipcRenderer.invoke("createSession", {
-			id: "probe-secondary",
+			id: ${JSON.stringify(secondarySessionId)},
 			name: "Probe Secondary",
 			description: "Session isolation diagnostic"
 		})`);
 		assert.strictEqual(created?.success, true, JSON.stringify(created));
 		await new Promise((resolve) => setTimeout(resolve, 500));
-		await selectSessionForNextLaunch(port, "probe-secondary");
+		await selectSessionForNextLaunch(port, secondarySessionId);
 		const secondaryInitial = await readSessionMarkers(port);
 		assert.strictEqual(secondaryInitial.cached, null, JSON.stringify(secondaryInitial));
 		assert.strictEqual(secondaryInitial.localSettings, null, JSON.stringify(secondaryInitial));
@@ -238,7 +289,114 @@ async function run() {
 		assert.strictEqual(defaultRestored.cached, defaultMarker, JSON.stringify(defaultRestored));
 		assert.strictEqual(defaultRestored.localSettings, defaultMarker, JSON.stringify(defaultRestored));
 
-		console.log("SSApp User Session isolation Electron end-to-end checks passed.");
+		const importedState = {
+			sources: [[importedSourceId, {
+				id: importedSourceId,
+				target: "twitch",
+				username: "imported-channel",
+				status: "inactive",
+				connectionMode: "classic",
+				isAutoDiscovered: false,
+				isVisible: true,
+				isMuted: false,
+				autoActivate: false
+			}]],
+			groups: [],
+			global: { sessionImportProbe: importedMarker }
+		};
+		const stagedImport = await execInMain(port, `require("electron").ipcRenderer.invoke(
+			"stageUserSessionImport",
+			${JSON.stringify(secondarySessionId)},
+			{
+				sessionImportProbe: ${JSON.stringify(importedMarker)},
+				settings: ${JSON.stringify(JSON.stringify({ sessionIsolationProbe: importedMarker }))},
+				socialStreamState: ${JSON.stringify(JSON.stringify(importedState))}
+			}
+		)`);
+		assert.strictEqual(stagedImport?.success, true, JSON.stringify(stagedImport));
+
+		const defaultBeforeImport = await readImportedSessionState(port, importedSourceId);
+		assert.strictEqual(defaultBeforeImport.localMarker, null, JSON.stringify(defaultBeforeImport));
+		assert.strictEqual(defaultBeforeImport.sourceUsername, null, JSON.stringify(defaultBeforeImport));
+
+		await selectSessionForNextLaunch(port, secondarySessionId);
+		const secondaryRestored = await readSessionMarkers(port);
+		assert.strictEqual(secondaryRestored.cached, importedMarker, JSON.stringify(secondaryRestored));
+		assert.strictEqual(secondaryRestored.localSettings, importedMarker, JSON.stringify(secondaryRestored));
+		assert.strictEqual(secondaryRestored.partitionOnly, secondaryMarker, JSON.stringify(secondaryRestored));
+
+		const importedSession = await readImportedSessionState(port, importedSourceId);
+		assert.strictEqual(importedSession.localMarker, importedMarker, JSON.stringify(importedSession));
+		assert.strictEqual(importedSession.storedMarker, importedMarker, JSON.stringify(importedSession));
+		assert.strictEqual(importedSession.stateMarker, importedMarker, JSON.stringify(importedSession));
+		assert.strictEqual(importedSession.sourceUsername, "imported-channel", JSON.stringify(importedSession));
+		const consumedImport = await execInMain(port, `require("electron").ipcRenderer.invoke("getPendingUserSessionImport")`);
+		assert.strictEqual(consumedImport?.pendingImport, null, JSON.stringify(consumedImport));
+		assert.strictEqual(await createIndexedDbMarker(port, indexedDbMarker), true);
+		assert.strictEqual(await hasIndexedDbMarker(port, indexedDbMarker), true);
+
+		assert.strictEqual(fs.existsSync(secondarySavedSyncPath), true, secondarySavedSyncPath);
+		await execInMain(port, `(() => {
+			require("electron").ipcRenderer.invoke("deleteSession", ${JSON.stringify(secondarySessionId)});
+			return true;
+		})()`);
+		await waitForStatus(port, "default", 90000);
+
+		const sessionsAfterDelete = await execInMain(port, `require("electron").ipcRenderer.invoke("getSessions")`);
+		assert.strictEqual(Object.prototype.hasOwnProperty.call(sessionsAfterDelete.sessions || {}, secondarySessionId), false);
+		const defaultAfterDelete = await waitForSessionMarkers(port, {
+			cached: defaultMarker,
+			localSettings: defaultMarker
+		});
+		assert.strictEqual(defaultAfterDelete.cached, defaultMarker, JSON.stringify(defaultAfterDelete));
+		assert.strictEqual(defaultAfterDelete.localSettings, defaultMarker, JSON.stringify(defaultAfterDelete));
+		assert.strictEqual(fs.existsSync(secondarySavedSyncPath), false, secondarySavedSyncPath);
+		assert.strictEqual(fs.existsSync(`${secondarySavedSyncPath}.tmp`), false, `${secondarySavedSyncPath}.tmp`);
+		assert.strictEqual(fs.existsSync(`${secondarySavedSyncPath}.bak`), false, `${secondarySavedSyncPath}.bak`);
+		const storeData = JSON.parse(fs.readFileSync(path.join(profileDir, "config.json"), "utf8"));
+		const deletedScope = storeData.userSessionData?.[secondaryScope] || {};
+		assert.deepStrictEqual(Object.keys(deletedScope), [], JSON.stringify(deletedScope));
+		assert.strictEqual(storeData.pendingUserSessionPartitionCleanup, undefined, JSON.stringify(storeData.pendingUserSessionPartitionCleanup));
+
+		const recreated = await execInMain(port, `require("electron").ipcRenderer.invoke("createSession", {
+			id: ${JSON.stringify(secondarySessionId)},
+			name: "Recreated Probe Secondary",
+			description: "Deleted partition cleanup diagnostic"
+		})`);
+		assert.strictEqual(recreated?.success, true, JSON.stringify(recreated));
+		await selectSessionForNextLaunch(port, secondarySessionId);
+
+		const recreatedMarkers = await readSessionMarkers(port);
+		assert.strictEqual(recreatedMarkers.cached, null, JSON.stringify(recreatedMarkers));
+		assert.strictEqual(recreatedMarkers.localSettings, null, JSON.stringify(recreatedMarkers));
+		assert.strictEqual(recreatedMarkers.partitionOnly, null, JSON.stringify(recreatedMarkers));
+		assert.strictEqual(recreatedMarkers.sourceBackup, null, JSON.stringify(recreatedMarkers));
+		const recreatedImportState = await readImportedSessionState(port, importedSourceId);
+		assert.strictEqual(recreatedImportState.localMarker, null, JSON.stringify(recreatedImportState));
+		assert.strictEqual(recreatedImportState.sourceUsername, null, JSON.stringify(recreatedImportState));
+		assert.strictEqual(await hasIndexedDbMarker(port, indexedDbMarker), false);
+
+		const recreatedMarker = `recreated-${Date.now()}`;
+		await setSessionMarker(port, recreatedMarker);
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		const overlappingInactive = await execInMain(port, `require("electron").ipcRenderer.invoke("createSession", {
+			id: ${JSON.stringify(overlappingInactiveSessionId)},
+			name: "Overlapping Inactive Probe",
+			description: "Exact partition cleanup diagnostic"
+		})`);
+		assert.strictEqual(overlappingInactive?.success, true, JSON.stringify(overlappingInactive));
+		const inactiveDelete = await execInMain(
+			port,
+			`require("electron").ipcRenderer.invoke("deleteSession", ${JSON.stringify(overlappingInactiveSessionId)})`
+		);
+		assert.strictEqual(inactiveDelete?.success, true, JSON.stringify(inactiveDelete));
+		assert.strictEqual(inactiveDelete?.partitionCleanupPending, false, JSON.stringify(inactiveDelete));
+		const activeAfterOverlappingDelete = await readSessionMarkers(port);
+		assert.strictEqual(activeAfterOverlappingDelete.cached, recreatedMarker, JSON.stringify(activeAfterOverlappingDelete));
+		assert.strictEqual(activeAfterOverlappingDelete.localSettings, recreatedMarker, JSON.stringify(activeAfterOverlappingDelete));
+		assert.strictEqual(activeAfterOverlappingDelete.partitionOnly, recreatedMarker, JSON.stringify(activeAfterOverlappingDelete));
+
+		console.log("SSApp User Session isolation, import, deletion, and partition cleanup Electron end-to-end checks passed.");
 	} catch (error) {
 		throw new Error(`${error.stack || error.message}\n${instance.getOutput().slice(-8000)}`);
 	} finally {

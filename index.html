@@ -11006,7 +11006,48 @@
 
         // DOMContentLoaded Listener
         document.addEventListener('DOMContentLoaded', async function () {
+            let pendingUserSessionImport = null;
+            try {
+                const result = await ipcRenderer.invoke('getPendingUserSessionImport');
+                if (result?.success && result.pendingImport?.localStorage) {
+                    pendingUserSessionImport = result.pendingImport;
+                    for (const [key, value] of Object.entries(pendingUserSessionImport.localStorage)) {
+                        if (value === null) {
+                            localStorage.removeItem(key);
+                        } else {
+                            localStorage.setItem(key, value);
+                        }
+                    }
+                    const importedSettings = pendingUserSessionImport.localStorage.settings;
+                    if (typeof importedSettings === 'string') {
+                        const parsedSettings = JSON.parse(importedSettings);
+                        if (parsedSettings && typeof parsedSettings === 'object' && !Array.isArray(parsedSettings)) {
+                            ipcRenderer.sendSync('storageSave', { settings: parsedSettings });
+                        }
+                    }
+                }
+                // Older builds staged imports in the source partition. Never consume those here.
+                localStorage.removeItem('pendingImport');
+            } catch (e) {
+                console.error('Error applying pending User Session import:', e);
+                pendingUserSessionImport = null;
+                Toast.error('Import Error', 'Failed to apply imported session settings and sources');
+            }
+
             await stateManager.init();
+
+            if (pendingUserSessionImport) {
+                try {
+                    const result = await ipcRenderer.invoke('completeUserSessionImport', pendingUserSessionImport.id);
+                    if (!result?.success) {
+                        throw new Error(result?.message || 'Failed to complete session import');
+                    }
+                    Toast.success('Import Complete', 'Session settings and sources were imported successfully');
+                } catch (e) {
+                    console.error('Error completing pending User Session import:', e);
+                    Toast.warning('Import Incomplete', 'Imported data was applied but could not be marked complete');
+                }
+            }
 
             if (cliForcesTikTokClassic && !stateManager.state.global.forceTikTokClassic) {
                 tikTokClassicSilentUpdate = true;
@@ -11183,28 +11224,6 @@
                     }
                 });
             }, 2000); // Small delay to ensure UI is ready 
-
-            // Check for pending import from session import
-            const pendingImport = localStorage.getItem('pendingImport');
-            if (pendingImport) {
-                try {
-                    const importData = JSON.parse(pendingImport);
-                    // Restore all the localStorage data from the import
-                    for (const [key, value] of Object.entries(importData)) {
-                        if (value !== null) {
-                            localStorage.setItem(key, value);
-                        }
-                    }
-                    localStorage.removeItem('pendingImport');
-                    // Re-initialize state manager with imported data
-                    await stateManager.init();
-                    Toast.success('Import Complete', 'Session data has been imported successfully');
-                } catch (e) {
-                    console.error('Error applying pending import:', e);
-                    Toast.error('Import Error', 'Failed to apply imported session data');
-                    localStorage.removeItem('pendingImport');
-                }
-            }
 
             isBetaMode = stateManager.state.global.betaMode;
             localStorage.setItem('betaMode', isBetaMode.toString());
@@ -13270,7 +13289,7 @@
         async function exportCurrentSession() {
             try {
                 // Show loading indicator
-                Toast.info('Exporting...', 'Gathering all session data from all windows...');
+                Toast.info('Exporting...', 'Gathering session settings and sources...');
 
                 // Get current session data
                 const { sessions, currentSession } = await ipcRenderer.invoke('getSessions');
@@ -13281,14 +13300,6 @@
                     return;
                 }
 
-                // Get ALL session data including cookies from all windows/partitions
-                const allSessionDataResult = await ipcRenderer.invoke('exportAllSessionData');
-
-                if (!allSessionDataResult.success) {
-                    throw new Error(allSessionDataResult.error || 'Failed to export session data');
-                }
-
-                // Combine with current window's localStorage data
                 const exportData = {
                     sessionInfo: {
                         name: sessionData.name,
@@ -13297,9 +13308,6 @@
                         exportedAt: new Date().toISOString(),
                         currentSessionId: currentSession
                     },
-                    // Include all session data from all windows/partitions
-                    allSessions: allSessionDataResult.data,
-                    // Include current window's localStorage as well
                     mainWindowLocalStorage: {
                         socialStreamState: localStorage.getItem('socialStreamState'),
                         settings: localStorage.getItem('settings'),
@@ -13311,7 +13319,8 @@
                         config: localStorage.getItem('config'),
                         language: localStorage.getItem('language')
                     },
-                    version: '2.0'
+                    includes: ['settings', 'sources'],
+                    version: '2.1'
                 };
 
                 // Create a blob and download it
@@ -13319,15 +13328,13 @@
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `session-${sessionData.name.replace(/[^a-z0-9]/gi, '-')}-${new Date().toISOString().split('T')[0]}-complete.json`;
+                a.download = `session-${sessionData.name.replace(/[^a-z0-9]/gi, '-')}-${new Date().toISOString().split('T')[0]}.json`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
 
-                // Show summary
-                const sessionCount = Object.keys(allSessionDataResult.data.sessions).length;
-                Toast.success('Export Complete', `Exported "${sessionData.name}" with data from ${sessionCount} windows/partitions`);
+                Toast.success('Export Complete', `Exported settings and sources from "${sessionData.name}"`);
             } catch (e) {
                 console.error('Error exporting session:', e);
                 Toast.error('Export Failed', 'Failed to export session: ' + e.message);
@@ -13354,8 +13361,10 @@
                             throw new Error('Invalid session file format');
                         }
 
-                        // Check if this is the new format with all session data
-                        const isNewFormat = importData.version === '2.0' && importData.allSessions;
+                        const importedLocalStorage = importData.mainWindowLocalStorage || importData.localStorage;
+                        if (!importedLocalStorage || typeof importedLocalStorage !== 'object' || Array.isArray(importedLocalStorage)) {
+                            throw new Error('Session file does not contain settings and sources');
+                        }
 
                         // Prompt for session name
                         const name = prompt('Enter a name for the imported session:', importData.sessionInfo.name || 'Imported Session');
@@ -13370,51 +13379,26 @@
                             throw new Error(result.error || 'Failed to create session');
                         }
 
+                        const stageResult = await ipcRenderer.invoke(
+                            'stageUserSessionImport',
+                            result.sessionId,
+                            importedLocalStorage
+                        );
+                        if (!stageResult?.success) {
+                            try {
+                                await ipcRenderer.invoke('deleteSession', result.sessionId);
+                            } catch (_) { }
+                            throw new Error(stageResult?.message || 'Failed to prepare imported session');
+                        }
+
                         // Ask if they want to switch to the imported session
-                        const switchNow = confirm('Session imported! Do you want to switch to it now?\n\nNote: This will restart the application and load the imported data.');
+                        const switchNow = confirm('Session settings and sources are ready. Do you want to switch to it now?\n\nSaved sign-ins are not included. Switching will restart the application.');
 
                         if (switchNow) {
-                            if (isNewFormat) {
-                                // New format: Import all session data including cookies
-                                Toast.info('Importing...', 'Restoring all session data including cookies...');
-
-                                // Import all the session data (cookies, etc)
-                                const importResult = await ipcRenderer.invoke('importAllSessionData', importData.allSessions);
-
-                                if (!importResult.success) {
-                                    throw new Error(importResult.error || 'Failed to import session data');
-                                }
-
-                                // Store the main window localStorage data
-                                localStorage.setItem('pendingImport', JSON.stringify(importData.mainWindowLocalStorage));
-
-                                // Store the full session data for window restoration
-                                await ipcRenderer.invoke('store-set', 'pendingSessionImport', importData.allSessions);
-
-                                const summary = `Imported ${importResult.results.totalSessions} sessions with ${importResult.results.totalCookies} cookies`;
-                                Toast.success('Import Progress', summary);
-                            } else {
-                                // Old format: Only localStorage
-                                localStorage.setItem('pendingImport', JSON.stringify(importData.localStorage));
-                            }
-
-                            // Switch to the new session
+                            Toast.info('Importing...', 'Restarting with the imported settings and sources...');
                             await ipcRenderer.invoke('switchSession', result.sessionId);
                         } else {
-                            if (isNewFormat) {
-                                // Import session data without switching
-                                Toast.info('Importing...', 'Restoring session data...');
-                                const importResult = await ipcRenderer.invoke('importAllSessionData', importData.allSessions);
-
-                                if (importResult.success) {
-                                    const summary = `Imported ${importResult.results.totalSessions} sessions with ${importResult.results.totalCookies} cookies`;
-                                    Toast.success('Import Complete', `Session "${name}" imported. ${summary}`);
-                                } else {
-                                    Toast.warning('Partial Import', `Session "${name}" created but some data could not be imported`);
-                                }
-                            } else {
-                                Toast.success('Import Complete', `Session "${name}" imported successfully. You can switch to it later.`);
-                            }
+                            Toast.success('Import Ready', `Session "${name}" is ready. Its settings and sources will load when you switch to it.`);
                             await loadSessions();
                         }
 

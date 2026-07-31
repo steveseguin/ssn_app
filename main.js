@@ -3240,8 +3240,17 @@ const USER_SESSION_PERSISTED_STORE_KEYS = [
     'cachedStateBackup',
     'cachedStateBackupTime',
     'localStorageBackup',
-    'localStorageBackupTime'
+    'localStorageBackupTime',
+    'pendingImport'
 ];
+const PENDING_USER_SESSION_PARTITION_CLEANUP_KEY = 'pendingUserSessionPartitionCleanup';
+
+let suppressedUserSessionPersistence = null;
+
+function getUserSessionPartitionName(sessionName) {
+    const normalized = String(sessionName || 'default');
+    return normalized === 'default' ? 'persist:abc' : `persist:session-${normalized}`;
+}
 
 // Default keeps the legacy names so existing installs retain their data.
 // Additional User Sessions use hashed namespaces to prevent settings/source crossover.
@@ -3285,6 +3294,98 @@ function clearUserSessionPersistence(sessionName) {
             console.warn(`[User Sessions] Failed to remove ${path.basename(filePath)}:`, error?.message || error);
         }
     });
+}
+
+function shouldSuppressCurrentUserSessionPersistence() {
+    return suppressedUserSessionPersistence !== null
+        && suppressedUserSessionPersistence === currentSessionName;
+}
+
+function getPendingUserSessionPartitionCleanup() {
+    const pending = store.get(PENDING_USER_SESSION_PARTITION_CLEANUP_KEY, []);
+    if (!Array.isArray(pending)) return [];
+    return Array.from(new Set(
+        pending
+            .filter((sessionId) => typeof sessionId === 'string')
+            .map((sessionId) => sessionId.trim())
+            .filter((sessionId) => sessionId && sessionId !== 'default')
+    ));
+}
+
+function setPendingUserSessionPartitionCleanup(sessionIds) {
+    const pending = Array.from(new Set(sessionIds));
+    if (pending.length > 0) {
+        store.set(PENDING_USER_SESSION_PARTITION_CLEANUP_KEY, pending);
+    } else {
+        store.delete(PENDING_USER_SESSION_PARTITION_CLEANUP_KEY);
+    }
+}
+
+function queueUserSessionPartitionCleanup(sessionId) {
+    const pending = getPendingUserSessionPartitionCleanup();
+    if (!pending.includes(sessionId)) pending.push(sessionId);
+    setPendingUserSessionPartitionCleanup(pending);
+}
+
+function isElectronSessionInUse(targetSession) {
+    try {
+        return electron.webContents.getAllWebContents().some((contents) => {
+            return contents && !contents.isDestroyed() && contents.session === targetSession;
+        });
+    } catch (_) {
+        return true;
+    }
+}
+
+async function processPendingUserSessionPartitionCleanup(onlySessionId = null) {
+    const pending = getPendingUserSessionPartitionCleanup();
+    if (!pending.length) return { cleared: [], pending: [] };
+
+    const remaining = [];
+    const cleared = [];
+
+    for (const sessionId of pending) {
+        if (onlySessionId && sessionId !== onlySessionId) {
+            remaining.push(sessionId);
+            continue;
+        }
+
+        // A recreated session owns this partition now. Favor preserving data over cleanup.
+        const knownSessions = store.get('sessions', {});
+        if (Object.prototype.hasOwnProperty.call(knownSessions, sessionId)) {
+            console.warn(`[User Sessions] Skipped partition cleanup because session ${sessionId} exists again.`);
+            continue;
+        }
+        if (sessionId === currentSessionName) {
+            console.warn(`[User Sessions] Deferred cleanup for active session ${sessionId}.`);
+            remaining.push(sessionId);
+            continue;
+        }
+
+        const partitionName = getUserSessionPartitionName(sessionId);
+        const targetSession = session.fromPartition(partitionName);
+        if (isElectronSessionInUse(targetSession)) {
+            console.warn(`[User Sessions] Deferred cleanup for in-use partition ${partitionName}.`);
+            remaining.push(sessionId);
+            continue;
+        }
+
+        const didClear = await clearSessionData(targetSession);
+        if (!didClear) {
+            remaining.push(sessionId);
+            continue;
+        }
+
+        clearUserSessionPersistence(sessionId);
+        cleared.push(sessionId);
+        console.log(`[User Sessions] Cleared deleted session partition ${partitionName}.`);
+    }
+
+    const latestPending = getPendingUserSessionPartitionCleanup();
+    const queuedWhileClearing = latestPending.filter((sessionId) => !pending.includes(sessionId));
+    const nextPending = [...remaining, ...queuedWhileClearing];
+    setPendingUserSessionPartitionCleanup(nextPending);
+    return { cleared, pending: nextPending };
 }
 
 process.on("uncaughtException", function (error) {
@@ -3376,7 +3477,7 @@ const createdPartitions = new Set();
 
 // Helper function to get and track partition name
 function getTrackedPartition(sessionName) {
-    const partition = sessionName === 'default' ? "persist:abc" : `persist:session-${sessionName}`;
+    const partition = getUserSessionPartitionName(sessionName);
     createdPartitions.add(partition); // Track this partition
     return partition;
 }
@@ -7269,8 +7370,10 @@ async function clearSessionData(ses) {
         if (typeof ses.clearHttpCache === 'function') {
             await ses.clearHttpCache();
         }
+        return true;
     } catch (error) {
         console.error(`Error clearing session data: ${error}`);
+        return false;
     }
 }
 
@@ -8361,6 +8464,75 @@ ipcMain.handle('createSession', (event, sessionData) => {
     };
 });
 
+ipcMain.handle('stageUserSessionImport', (event, sessionId, localStorageData) => {
+    const knownSessions = store.get('sessions', {});
+    if (!sessionId || !Object.prototype.hasOwnProperty.call(knownSessions, sessionId)) {
+        return {
+            success: false,
+            message: 'Target session not found'
+        };
+    }
+    if (!localStorageData || typeof localStorageData !== 'object' || Array.isArray(localStorageData)) {
+        return {
+            success: false,
+            message: 'Invalid session import data'
+        };
+    }
+
+    const normalizedLocalStorage = Object.fromEntries(
+        Object.entries(localStorageData)
+            .filter(([, value]) => value === null || ['string', 'number', 'boolean'].includes(typeof value))
+            .map(([key, value]) => [String(key), value === null ? null : String(value)])
+    );
+    for (const key of ['settings', 'socialStreamState']) {
+        const value = normalizedLocalStorage[key];
+        if (value === null || value === undefined) continue;
+        try {
+            const parsed = JSON.parse(value);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                throw new Error('Expected an object');
+            }
+        } catch (_) {
+            return {
+                success: false,
+                message: `Invalid ${key} data in session import`
+            };
+        }
+    }
+    const pendingImport = {
+        id: crypto.randomBytes(16).toString('hex'),
+        stagedAt: Date.now(),
+        localStorage: normalizedLocalStorage
+    };
+    setUserSessionStoreValue('pendingImport', pendingImport, sessionId);
+    return {
+        success: true,
+        importId: pendingImport.id
+    };
+});
+
+ipcMain.handle('getPendingUserSessionImport', () => {
+    const pendingImport = getUserSessionStoreValue('pendingImport', null);
+    return {
+        success: true,
+        pendingImport: pendingImport && typeof pendingImport === 'object' ? pendingImport : null
+    };
+});
+
+ipcMain.handle('completeUserSessionImport', (event, importId) => {
+    const pendingImport = getUserSessionStoreValue('pendingImport', null);
+    if (!pendingImport || pendingImport.id !== importId) {
+        return {
+            success: false,
+            message: 'Pending session import not found'
+        };
+    }
+    deleteUserSessionStoreValue('pendingImport');
+    return {
+        success: true
+    };
+});
+
 ipcMain.handle('switchSession', async (event, sessionId) => {
     if (sessionId === currentSessionName) {
         return {
@@ -8382,7 +8554,7 @@ ipcMain.handle('switchSession', async (event, sessionId) => {
     };
 });
 
-ipcMain.handle('deleteSession', (event, sessionId) => {
+ipcMain.handle('deleteSession', async (event, sessionId) => {
     if (sessionId === 'default') {
         return {
             success: false,
@@ -8391,20 +8563,36 @@ ipcMain.handle('deleteSession', (event, sessionId) => {
     }
 
     const sessions = store.get('sessions', {});
+    if (!sessionId || !Object.prototype.hasOwnProperty.call(sessions, sessionId)) {
+        return {
+            success: false,
+            message: 'Session not found'
+        };
+    }
+
+    queueUserSessionPartitionCleanup(sessionId);
+    const deletingActiveSession = sessionId === currentSessionName;
+    if (deletingActiveSession) {
+        suppressedUserSessionPersistence = sessionId;
+    }
+
     delete sessions[sessionId];
     store.set('sessions', sessions);
     clearUserSessionPersistence(sessionId);
 
     // If deleting current session, switch to default
-    if (sessionId === currentSessionName) {
+    if (deletingActiveSession) {
         store.set('currentSession', 'default');
         markStabilitySessionGraceful('session-delete-restart');
         app.relaunch();
         app.exit();
+    } else {
+        await processPendingUserSessionPartitionCleanup(sessionId);
     }
 
     return {
-        success: true
+        success: true,
+        partitionCleanupPending: getPendingUserSessionPartitionCleanup().includes(sessionId)
     };
 });
 
@@ -9085,7 +9273,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'), // Regular preload without anti-detection
             pageVisibility: true,
-            partition: currentSessionName === 'default' ? "persist:abc" : `persist:session-${currentSessionName}`,
+            partition: getUserSessionPartitionName(currentSessionName),
             contextIsolation: false,
             backgroundThrottling: !shouldDisableBackgroundThrottlingForGeneralWindows(),
             webSecurity: webSecurity, // this is a locally hosted file, so it should be fine.
@@ -9299,7 +9487,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     webPreferences: {
                         preload: path.join(__dirname, "preload.js"),
                         pageVisibility: true,
-                        partition: currentSessionName === 'default' ? "persist:abc" : `persist:session-${currentSessionName}`,
+                        partition: getUserSessionPartitionName(currentSessionName),
                         contextIsolation: true,
                         backgroundThrottling: !shouldDisableBackgroundThrottlingForGeneralWindows(),
                         webSecurity: true, // this is probably a remote file, so we will ensure its off
@@ -10385,18 +10573,25 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 console.error('localStorage restore check failed:', e);
             }
 
-	            // Ensure cachedState and localStorage stay in sync
-	            try {
-	                if (shouldRecoverCachedStateFromBackups(cachedState)) {
-                    const diskResult = loadCachedStateWithBackupSource({ logSelection: true, updateBaseline: false });
-	                    if (diskResult && diskResult.state && typeof diskResult.state === "object") {
-	                        applyRecoveredCachedState(diskResult, "did-finish-load");
-	                    }
-	                }
-	                syncCachedStateWithLocalStorage(mainWindow, "did-finish-load");
-	            } catch (e) {
-	                console.warn("Failed to sync cachedState/localStorage:", e?.message || e);
-	            }
+            // Ensure cachedState and localStorage stay in sync. A staged User Session import
+            // owns these values during startup; mirroring the old cached state here can race
+            // the renderer import and overwrite the newly imported settings.
+            try {
+                const pendingUserSessionImport = getUserSessionStoreValue('pendingImport', null);
+                if (pendingUserSessionImport && typeof pendingUserSessionImport === 'object') {
+                    log('[User Sessions] Skipping startup cachedState mirror while an import is pending');
+                } else {
+                    if (shouldRecoverCachedStateFromBackups(cachedState)) {
+                        const diskResult = loadCachedStateWithBackupSource({ logSelection: true, updateBaseline: false });
+                        if (diskResult && diskResult.state && typeof diskResult.state === "object") {
+                            applyRecoveredCachedState(diskResult, "did-finish-load");
+                        }
+                    }
+                    syncCachedStateWithLocalStorage(mainWindow, "did-finish-load");
+                }
+            } catch (e) {
+                console.warn("Failed to sync cachedState/localStorage:", e?.message || e);
+            }
         }
 
         if (mainWindow && mainWindow.webContents && mainWindow.webContents.getURL().includes("youtube.com")) {
@@ -16335,6 +16530,12 @@ app.whenReady().then(async function () {
 
     if (await handlePendingPortableMigration()) return;
 
+    try {
+        await processPendingUserSessionPartitionCleanup();
+    } catch (error) {
+        console.warn('[User Sessions] Deferred partition cleanup failed:', error?.message || error);
+    }
+
     // Log actual app locale to see what Electron is using
     log(`Electron app.getLocale(): ${app.getLocale()}`);
     log(`Expected SYSTEM_LOCALE: ${SYSTEM_LOCALE}`);
@@ -17242,32 +17443,44 @@ app.on('browser-window-created', (event, window) => {
 async function quitApp() {
     app.isQuitting = true;
     markStabilitySessionGraceful('quitApp');
+    const skipUserSessionPersistence = shouldSuppressCurrentUserSessionPersistence();
 
     // Flush any pending debounced storageSave immediately to prevent data loss
     // This also cancels the debounce timer so it won't fire after windows are destroyed
-    try {
-        if (typeof global.flushPendingStorageSave === 'function') {
-            global.flushPendingStorageSave();
+    if (skipUserSessionPersistence) {
+        clearTimeout(storageSaveDebounceTimer);
+        storageSaveDebounceTimer = null;
+        storageSavePending = false;
+        storageSavePendingAllowSettingsDowngrade = false;
+        log(`[User Sessions] Skipping shutdown persistence for deleted session ${currentSessionName}`);
+    } else {
+        try {
+            if (typeof global.flushPendingStorageSave === 'function') {
+                global.flushPendingStorageSave();
+            }
+        } catch (e) {
+            console.warn("Failed to flush pending storageSave on quit:", e?.message || e);
         }
-    } catch (e) {
-        console.warn("Failed to flush pending storageSave on quit:", e?.message || e);
     }
 
     // Save cachedState before quitting to prevent data loss
-    try {
-        if (cachedState && Object.keys(cachedState).length > 0) {
-            const persistResult = persistCachedStateSafely(cachedState, { reason: "quitApp" });
-            if (persistResult && persistResult.saved) {
-                log("Saved cachedState on quit (primary + electron-store backup)");
-            } else {
-                log(`[cachedState] Quit persist skipped: ${persistResult && persistResult.reason ? persistResult.reason : "unknown"}`);
+    if (!skipUserSessionPersistence) {
+        try {
+            if (cachedState && Object.keys(cachedState).length > 0) {
+                const persistResult = persistCachedStateSafely(cachedState, { reason: "quitApp" });
+                if (persistResult && persistResult.saved) {
+                    log("Saved cachedState on quit (primary + electron-store backup)");
+                } else {
+                    log(`[cachedState] Quit persist skipped: ${persistResult && persistResult.reason ? persistResult.reason : "unknown"}`);
+                }
             }
+        } catch (e) {
+            console.error("Failed to save cachedState on quit:", e);
         }
-    } catch (e) {
-        console.error("Failed to save cachedState on quit:", e);
     }
 
-        // Backup localStorage from main window before destroying (lightweight settings backup)
+    // Backup localStorage from main window before destroying (lightweight settings backup)
+    if (!skipUserSessionPersistence) {
         try {
             if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
                 await mirrorCachedStateToLocalStorage(mainWindow);
@@ -17291,6 +17504,7 @@ async function quitApp() {
         } catch (e) {
             console.error("Failed to backup localStorage on quit:", e);
         }
+    }
 
 
     // Clear all global intervals

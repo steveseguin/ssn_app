@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "main": "bootstrap.js",
@@ -301,9 +301,9 @@
     "yargs": "^17.7.2"
   },
   "overrides": {
-    "brace-expansion@<1.1.16": "1.1.16",
-    "brace-expansion@>=2.0.0 <2.1.2": "2.1.2",
-    "brace-expansion@>=3.0.0 <5.0.8": "5.0.8",
+    "brace-expansion@<1.1.18": "1.1.18",
+    "brace-expansion@>=2.0.0 <2.1.4": "2.1.4",
+    "brace-expansion@>=3.0.0 <5.0.9": "5.0.9",
     "fast-uri": "3.1.4",
     "sharp": "$sharp",
     "tar": "7.5.22",
