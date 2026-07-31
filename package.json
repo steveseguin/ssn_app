@@ -19,6 +19,7 @@
     "test:headless-launcher": "bash tests/electron/headless-launcher-regression.sh",
     "test:hidden-capture": "node tests/electron/hidden-capture-diagnostics.js",
     "test:hidden-capture:soak": "node tests/electron/hidden-capture-soak.js",
+    "test:twitch-websocket:soak": "node tests/electron/twitch-websocket-soak.js",
     "test:source-navigation-safety": "node tests/electron/source-navigation-safety-e2e.js",
     "test:portable-paths": "node tests/electron/portable-data-paths-regression.js",
     "test:portable-migration": "node tests/electron/portable-migration-runner-regression.js",
