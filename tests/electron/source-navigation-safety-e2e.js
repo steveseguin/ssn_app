@@ -33,7 +33,7 @@ async function getFreePort() {
 	});
 }
 
-function requestJson(port, pathname, body) {
+function requestJson(port, pathname, body, timeoutMs = 10000) {
 	return new Promise((resolve, reject) => {
 		const payload = body ? JSON.stringify(body) : null;
 		const requestPath = `${pathname}${pathname.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
@@ -66,6 +66,9 @@ function requestJson(port, pathname, body) {
 			});
 		});
 		req.on('error', reject);
+		req.setTimeout(timeoutMs, () => {
+			req.destroy(new Error(`HTTP request timed out after ${timeoutMs}ms`));
+		});
 		if (payload) req.write(payload);
 		req.end();
 	});
@@ -147,6 +150,11 @@ async function waitForSourceStopped(port, sourceId, windowId, label) {
 async function startFixtureServer() {
 	const port = await getFreePort();
 	const server = http.createServer((req, res) => {
+		if (req.url === '/redirect-frame') {
+			res.writeHead(302, { Location: `http://127.0.0.1:${port}/redirect-target` });
+			res.end();
+			return;
+		}
 		res.writeHead(200, {
 			'Content-Type': 'text/html; charset=utf-8',
 			'Cache-Control': 'no-store'
@@ -239,6 +247,17 @@ async function runSoftNavigationCase(port, fixtureOrigin, platform) {
 	await sleep(250);
 	await assertSourceActive(port, source.sourceId, source.windowId, `${platform} DOM rerender`);
 
+	await execInWindow(port, source.windowId, `
+		(() => {
+			const frame = document.createElement('iframe');
+			frame.src = ${JSON.stringify(fixtureOrigin + '/redirect-frame')};
+			document.body.appendChild(frame);
+			return true;
+		})()
+	`, `${platform} subframe redirect`);
+	await sleep(500);
+	await assertSourceActive(port, source.sourceId, source.windowId, `${platform} subframe redirect`);
+
 	const queryRewrite = platform === 'twitch'
 		? `/popout/${channel}/chat?react=1&popout=#state`
 		: `/watch/${channel}?react=1#state`;
@@ -274,6 +293,7 @@ async function runSoftNavigationCase(port, fixtureOrigin, platform) {
 	return {
 		platform,
 		domRerender: 'active',
+		subframeRedirect: 'active',
 		queryRewrite: 'active',
 		sameChannelRouteRewrite: 'active',
 		sameChannelReload: 'active',
@@ -333,16 +353,18 @@ async function run() {
 	assertPlatformConfigs();
 	const remotePort = await getFreePort();
 	const fixture = await startFixtureServer();
+	const electronArgs = [
+		'.',
+		'--running-from-source',
+		'--multiinstance',
+		'--filesource',
+		socialStreamRoot,
+		'--remote-control'
+	];
+	if (process.platform === 'linux') electronArgs.push('--no-sandbox', '--ozone-platform=x11');
 	const child = spawn(
 		electronPath,
-		[
-			'.',
-			'--running-from-source',
-			'--multiinstance',
-			'--filesource',
-			socialStreamRoot,
-			'--remote-control'
-		],
+		electronArgs,
 		{
 			cwd: repoRoot,
 			env: {

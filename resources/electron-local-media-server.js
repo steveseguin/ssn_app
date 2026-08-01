@@ -7,6 +7,7 @@ const http = require('http');
 const path = require('path');
 const { pipeline } = require('stream/promises');
 const { fileURLToPath } = require('url');
+const { normalizeLocalWebSocketPort } = require('./local-websocket-config');
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 3001;
@@ -270,6 +271,16 @@ class LocalMediaService {
 		params.delete('js');
 		if (sessionId && !params.has('session')) params.set('session', String(sessionId));
 		if (options.localserver === true && !params.has('localserver')) params.set('localserver', '');
+		if (params.has('localserver')) {
+			const requestedPort = options.localserverport !== undefined
+				? options.localserverport
+				: params.get('localserverport');
+			const localWebSocketPort = normalizeLocalWebSocketPort(requestedPort);
+			if (localWebSocketPort !== null) params.set('localserverport', String(localWebSocketPort));
+			else params.delete('localserverport');
+		} else {
+			params.delete('localserverport');
+		}
 		const query = params.toString().replace('localserver=', 'localserver');
 		return `${this.getBaseUrl()}/actions.html${query ? `?${query}` : ''}`;
 	}
@@ -554,6 +565,7 @@ function setupElectronLocalMedia(options = {}) {
 	handle('local-media:flow-url', (payload) => ({
 		url: service.getFlowActionsUrl(payload.sessionId, {
 			localserver: payload.localserver === true,
+			localserverport: payload.localserverport,
 			search: payload.search,
 		}),
 		status: service.getStatus(),

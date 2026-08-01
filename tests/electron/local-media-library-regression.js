@@ -182,12 +182,14 @@ async function run() {
 		const flowUrl = service.getFlowActionsUrl('room-one', {
 			search: '?password=secret&volume=0.5&js=https://example.com/unsafe.js',
 			localserver: true,
+			localserverport: 3003,
 		});
 		const parsedFlowUrl = new URL(flowUrl);
 		assert.strictEqual(parsedFlowUrl.searchParams.get('session'), 'room-one');
 		assert.strictEqual(parsedFlowUrl.searchParams.get('password'), 'secret');
 		assert.strictEqual(parsedFlowUrl.searchParams.get('volume'), '0.5');
 		assert.strictEqual(parsedFlowUrl.searchParams.has('localserver'), true);
+		assert.strictEqual(parsedFlowUrl.searchParams.get('localserverport'), '3003');
 		assert.strictEqual(parsedFlowUrl.searchParams.has('js'), false);
 
 		await fsp.rm(mediaPath);

@@ -60,7 +60,7 @@ No new remote listener or transport is required.
 
 ## Existing systems that remain unchanged
 
-- The optional built-in WebSocket relay/server mode on port 3000.
+- The optional built-in WebSocket relay/server mode (port 3000 by default, configurable in the File menu or at launch).
 - Social Stream's existing VDO.Ninja WebRTC transport and its reliable-send behavior.
 - Temporary localhost HTTP callback listeners used while completing OAuth sign-in.
 - Existing Social Stream remote actions and transport switching.
