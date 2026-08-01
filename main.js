@@ -11831,13 +11831,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Determine preload script based on configuration
             let preloadScript = null;
+            const isFacebookSignIn = platform === 'facebook' || domain === 'facebook.com';
 
             // Domains known to use Kasada protection
             const kasadaDomains = ['twitch.tv', 'kick.com'];
             const isKasadaDomain = kasadaDomains.some(kd => domain.includes(kd));
 
             // Check if there's a specific preload config for this domain's signin
-            if (args.config && args.config.signin && args.config.signin.preload !== undefined) {
+            if (isFacebookSignIn) {
+                // Facebook's login and two-factor pages use native Credential Management and
+                // WebAuthn APIs. The Kasada preload replaces window.navigator with a Proxy,
+                // which makes those native calls fail with "Illegal invocation".
+                preloadScript = null;
+                if (args?.config?.signin?.preload && args.config.signin.preload !== 'none') {
+                    log(`[Facebook] Ignoring incompatible sign-in preload: ${args.config.signin.preload}`);
+                }
+            } else if (args.config && args.config.signin && args.config.signin.preload !== undefined) {
                 const preloadConfig = args.config.signin.preload;
                 if (preloadConfig === 'none' || preloadConfig === false) {
                     preloadScript = null;
@@ -11982,7 +11991,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             view.setMenuBarVisibility(true);
 
-            const enforceSignInCSP = shouldEnforceSignInCSP(args);
+            const enforceSignInCSP = isFacebookSignIn ? false : shouldEnforceSignInCSP(args);
 
             // Set Content-Security-Policy once per session to avoid listener accumulation
             // (skip when preload is disabled, for Kasada preload, or when disabled via config)

@@ -2840,6 +2840,7 @@
                 younow: "YouNow username",
                 bilibilicom: "Bilibili.com room ID or URL",
                 bilibilitv: "Bilibili.tv live path or URL",
+                facebook: "Facebook username or URL",
                 vpzone: "VPZONE username"
             };
             const promptTargetLabel = promptTargetLabels[target] || `${target} user name`;
@@ -2863,7 +2864,8 @@
                 if (target === "facebook") {
                     const messageParts = [];
                     if (errorMessage) messageParts.push(errorMessage);
-                    messageParts.push("When you activate this source, you'll need to still manually select the video in the page.");
+                    messageParts.push("Enter a Facebook username, paste a Facebook Live/video URL, or paste the Facebook Gaming page URL.");
+                    messageParts.push("A direct Live/video URL opens that video. A username or the Gaming page lets you manually select the video after activation.");
                     const allowSpacesForChannel = (target === 'youtube' || target === 'youtubeshorts' || target === 'rumble') && isChannelName;
                     if (allowSpacesForChannel) {
                         messageParts.push('Channel names can include spaces when the channel option is enabled.');
@@ -3404,6 +3406,9 @@
                         if (kickSlug) {
                             username = kickSlug;
                         }
+                    }
+                    else if (target === 'facebook' && /(^|\.)facebook\.com$/i.test(hostname)) {
+                        return newOtherSource('facebook', url.toString(), startup, initialState);
                     }
                     else if (target === 'bilibilicom' && /(^|\.)bilibili\.com$/i.test(hostname)) {
                         const roomMatch = url.pathname.match(/\/(\d+)/);
