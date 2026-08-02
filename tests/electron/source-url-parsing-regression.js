@@ -74,6 +74,7 @@ this.helpers = {
 	normalizeTikTokUsernameInput,
 	getExplicitSourceIdentifier,
 	getWebSocketChannelForSource,
+	extractFacebookVideoId,
 	getWebSocketScriptPathForSource,
 	buildWebSocketLaunchPlan,
 	buildYouTubeWebSocketQueryParams,
@@ -92,6 +93,7 @@ const {
 	normalizeTikTokUsernameInput,
 	getExplicitSourceIdentifier,
 	getWebSocketChannelForSource,
+	extractFacebookVideoId,
 	getWebSocketScriptPathForSource,
 	buildWebSocketLaunchPlan,
 	buildYouTubeWebSocketQueryParams,
@@ -438,6 +440,16 @@ for (const testCase of scriptCases) {
 console.log(`getWebSocketScriptPathForSource: ${scriptCases.length} cases passed`);
 
 const launchCases = [
+	{
+		name: "Facebook video URL launch plan",
+		source: { target: "facebook", username: "facebook.com", url: "https://www.facebook.com/HeadlockedGaming/videos/1906282487324916/" },
+		options: {},
+		expected: {
+			websocketTarget: "facebook",
+			scriptPath: "sources/websocket/facebook.js",
+			queryParams: { videoId: "1906282487324916", ssapp: "1" }
+		}
+	},
 	{
 		name: "VPZONE launch plan",
 		source: { target: "vpzone", username: "vpzone.tv", url: "https://vpzone.tv/watch/evarate", sourceFile: "sources/vpzone.js" },

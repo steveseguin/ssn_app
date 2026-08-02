@@ -1471,6 +1471,23 @@
             return storedIdentifier || urlIdentifier;
         }
 
+        function extractFacebookVideoId(sourceUrl) {
+            const value = typeof sourceUrl === "string" ? sourceUrl.trim() : "";
+            if (!value) return "";
+            try {
+                const normalized = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `https://${value}`;
+                const url = new URL(normalized);
+                const hostname = url.hostname.toLowerCase().replace(/^www\./, "");
+                if (hostname !== "facebook.com" && !hostname.endsWith(".facebook.com")) return "";
+                const queryVideoId = url.searchParams.get("v");
+                if (queryVideoId && /^\d+$/.test(queryVideoId)) return queryVideoId;
+                const pathMatch = url.pathname.match(/\/(?:videos|reel)\/(\d+)(?:\/|$)/i);
+                return pathMatch && pathMatch[1] ? pathMatch[1] : "";
+            } catch (_) {
+                return "";
+            }
+        }
+
         function getWebSocketScriptPathForSource(source, websocketTarget) {
             const target = websocketTarget || getWebSocketManifestTarget(source && source.target) || (source && source.target) || "";
             const fallbackScriptPath = `sources/websocket/${target}.js`;
@@ -1519,7 +1536,12 @@
             const websocketTarget = getWebSocketManifestTarget(source && source.target) || (source && source.target) || "";
             const queryParams = {};
             const channel = getWebSocketChannelForSource(source);
-            if (channel) {
+            const facebookVideoId = source && source.target === "facebook"
+                ? extractFacebookVideoId(source.url || source.URL || "")
+                : "";
+            if (facebookVideoId) {
+                queryParams.videoId = facebookVideoId;
+            } else if (channel) {
                 queryParams.channel = channel;
             }
             if (isYouTubeShortsSource(source)) {
