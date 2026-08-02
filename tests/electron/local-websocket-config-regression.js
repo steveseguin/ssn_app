@@ -58,7 +58,8 @@ assert.strictEqual(resolveLocalWebSocketPort({ argv: [], env: {}, storedPort: '3
 assert.strictEqual(normalizeLocalWebSocketHost('loopback'), '127.0.0.1');
 assert.strictEqual(normalizeLocalWebSocketHost('localhost'), '127.0.0.1');
 assert.strictEqual(normalizeLocalWebSocketHost('LAN'), '0.0.0.0');
-assert.strictEqual(normalizeLocalWebSocketHost('10.0.0.20'), '10.0.0.20');
+assert.strictEqual(normalizeLocalWebSocketHost('10.0.0.20'), null);
+assert.strictEqual(normalizeLocalWebSocketHost('192.168.1.25'), null);
 assert.strictEqual(normalizeLocalWebSocketHost('example.com'), null);
 assert.strictEqual(isLoopbackHost('127.0.0.2'), true);
 assert.strictEqual(isLoopbackHost('0.0.0.0'), false);
@@ -73,8 +74,8 @@ assert.strictEqual(resolveLocalWebSocketHost({
 }).host, '0.0.0.0');
 assert.strictEqual(resolveLocalWebSocketHost({
 	argv: ['electron', '.', '--ssapp-local-server-host=invalid'],
-	env: { SSAPP_LOCAL_SERVER_HOST: '10.0.0.20' },
-}).host, '10.0.0.20');
+	env: { SSAPP_LOCAL_SERVER_HOST: 'lan' },
+}).host, '0.0.0.0');
 assert.deepStrictEqual(resolveLocalWebSocketConfig({
 	argv: ['electron', '.', '--ssapp-ws-port=3010', '--ssapp-ws-host=loopback'],
 	env: {},

@@ -141,7 +141,9 @@ The server binds to `127.0.0.1` by default. **File → Allow Local Server Connec
 the LAN** changes the binding to `0.0.0.0` after a security warning. Managed launches can
 use `--ssapp-local-server-host=0.0.0.0` (alias `--ssapp-ws-host`) or the
 `SSAPP_LOCAL_SERVER_HOST` / `SSAPP_WS_HOST` environment variables. `loopback` and `lan`
-are accepted as readable aliases.
+are accepted as readable aliases. Bind hosts are intentionally limited to loopback
+(`127.0.0.1`) or all interfaces (`0.0.0.0`), since Social Stream pages connect through
+the loopback address on the SSApp machine.
 
 LAN mode has no authentication or encryption and should only be enabled on a trusted
 network. Prefer Social Stream's WebRTC mode when the sender and receiver are on different

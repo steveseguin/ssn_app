@@ -1,7 +1,5 @@
 'use strict';
 
-const net = require('net');
-
 // New installs bind 3003 so the relay does not collide with other tools that
 // claim 3000 (Buzz's dev relay among them). Installs that already had the local
 // server enabled keep 3000 — see migrateLegacyLocalServerPort in main.js, which
@@ -71,7 +69,7 @@ function normalizeLocalWebSocketHost(value) {
 	if (['lan', 'all', '0.0.0.0', '::'].includes(candidate)) {
 		return LAN_LOCAL_WEBSOCKET_HOST;
 	}
-	return net.isIP(candidate) ? candidate : null;
+	return null;
 }
 
 function isLoopbackHost(value) {
