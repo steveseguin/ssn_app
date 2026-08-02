@@ -13,6 +13,7 @@ const { spawn } = require('child_process');
 const WebSocket = require('ws');
 
 const electronPath = require('electron');
+const { linuxLaunchArgs } = require('./helpers/electron-launch');
 const repoRoot = path.resolve(__dirname, '..', '..');
 const socialStreamRoot = path.resolve(repoRoot, '..', 'social_stream');
 const socialStreamUrl = pathToFileURL(socialStreamRoot + path.sep).href;
@@ -165,8 +166,8 @@ async function run() {
 		`--ssapp-control-port=${controlPort}`,
 		`--ssapp-local-server-port=${localRelayPort}`,
 		'--no-hwa',
+		...linuxLaunchArgs(),
 	];
-	if (process.platform === 'linux') args.push('--no-sandbox', '--ozone-platform=x11');
 	const child = spawn(electronPath, args, {
 		cwd: repoRoot,
 		env: {

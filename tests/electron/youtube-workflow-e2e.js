@@ -10,6 +10,7 @@ const { pathToFileURL } = require('url');
 const { spawn } = require('child_process');
 
 const electronPath = require('electron');
+const { linuxLaunchArgs } = require('./helpers/electron-launch');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 const socialStreamRoot = pathToFileURL(path.resolve(repoRoot, '..', 'social_stream') + path.sep).href;
@@ -527,13 +528,9 @@ async function run() {
 		'--running-from-source',
 		'--filesource',
 		socialStreamRoot,
-		'--remote-control'
+		'--remote-control',
+		...linuxLaunchArgs(),
 	];
-	if (process.platform === 'linux') {
-		// The npm Electron binary is not installed with a root-owned setuid
-		// sandbox helper. These flags apply only to this isolated E2E process.
-		electronArgs.push('--no-sandbox', '--ozone-platform=x11');
-	}
 	const child = spawn(
 		electronPath,
 		electronArgs,
