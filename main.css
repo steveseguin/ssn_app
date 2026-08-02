@@ -1252,13 +1252,15 @@ button.group-control {
   max-width: 560px;
 }
 
-.youtube-source-choice-list {
+.youtube-source-choice-list,
+.source-choice-list {
   display: grid;
   gap: 10px;
   margin: 16px 0 8px;
 }
 
-.modal-content button.youtube-source-choice {
+.modal-content button.youtube-source-choice,
+.modal-content button.source-choice {
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -1271,12 +1273,18 @@ button.group-control {
   color: var(--text-primary);
 }
 
-.modal-content button.youtube-source-choice:hover {
+.modal-content button.source-choice {
+  min-height: 90px;
+}
+
+.modal-content button.youtube-source-choice:hover,
+.modal-content button.source-choice:hover {
   background: rgba(59, 130, 246, 0.18);
   border-color: var(--border-accent);
 }
 
-.youtube-source-choice-icon-wrap {
+.youtube-source-choice-icon-wrap,
+.source-choice-icon-wrap {
   display: inline-flex;
   width: 34px;
   height: 34px;
@@ -1287,18 +1295,28 @@ button.group-control {
   background: rgba(255, 255, 255, 0.08);
 }
 
-.youtube-source-choice-icon {
+.youtube-source-choice-icon,
+.source-choice-icon {
   width: 24px;
   height: 24px;
   border-radius: 50%;
 }
 
-.youtube-source-choice-copy {
+.source-choice-icon-fallback {
+  color: #85c742;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.youtube-source-choice-copy,
+.source-choice-copy {
   display: block;
   min-width: 0;
 }
 
-.youtube-source-choice-heading {
+.youtube-source-choice-heading,
+.source-choice-heading {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1306,13 +1324,15 @@ button.group-control {
   margin-bottom: 5px;
 }
 
-.youtube-source-choice-title {
+.youtube-source-choice-title,
+.source-choice-title {
   display: inline-block;
   font-size: 15px;
   font-weight: 600;
 }
 
-.youtube-source-choice-badge {
+.youtube-source-choice-badge,
+.source-choice-badge {
   display: inline-flex;
   align-items: center;
   min-height: 20px;
@@ -1325,7 +1345,8 @@ button.group-control {
   line-height: 1;
 }
 
-.youtube-source-choice-description {
+.youtube-source-choice-description,
+.source-choice-description {
   display: block;
   color: var(--text-secondary);
   font-size: 12px;

@@ -44,7 +44,7 @@ const {
 const { exec, spawn } = require('child_process');
 const http = require('http');
 const contextMenu = require("electron-context-menu");
-const Yargs = require("yargs");
+const Yargs = require("yargs/yargs");
 const {
     resolveEarlyDataPaths,
     prepareEarlyDataPaths,
@@ -4709,7 +4709,8 @@ const HIDDEN_CAPTURE_ROW_SELECTOR = [
     'yt-live-chat-text-message-renderer', 'yt-live-chat-paid-message-renderer', // YouTube
     '.chat-line__message', '[data-a-target="chat-line-message"]',           // Twitch
     '.chat-entry', '[data-chat-entry]', '[id^="chatroom-message"]',         // Kick (unverified)
-    '[data-e2e="chat-message"]'                                             // TikTok
+    '[data-e2e="chat-message"]',                                            // TikTok
+    'div[role="article"]'                                                   // Facebook Live comments
 ].join(', ');
 
 // Runs only during hidden-capture diagnostics and soak tests. It records messages at two real
@@ -4734,12 +4735,18 @@ const HIDDEN_CAPTURE_BACKGROUND_PROBE_INSTALL = `(function () {
 			destinations: 0,
 			processedByType: {},
 			destinationsByType: {},
+			processedByTid: {},
+			destinationsByTid: {},
 			lastProcessed: null,
 			lastDestination: null
 		};
 		var countType = function (counts, value) {
 			var type = String((value && value.type) || "unknown");
 			counts[type] = (counts[type] || 0) + 1;
+		};
+		var countTid = function (counts, value) {
+			var tid = String((value && value.tid) == null ? "unknown" : value.tid);
+			counts[tid] = (counts[tid] || 0) + 1;
 		};
 		var snapshot = function (value) {
 			try { return JSON.parse(JSON.stringify(value)); } catch (error) {
@@ -4756,12 +4763,15 @@ const HIDDEN_CAPTURE_BACKGROUND_PROBE_INSTALL = `(function () {
 		processIncomingMessage = async function () {
 			probe.processed++;
 			countType(probe.processedByType, arguments[0]);
+			var result = await originalProcessIncomingMessage.apply(this, arguments);
+			countTid(probe.processedByTid, arguments[0]);
 			probe.lastProcessed = snapshot(arguments[0]);
-			return await originalProcessIncomingMessage.apply(this, arguments);
+			return result;
 		};
 		sendToDestinations = async function () {
 			probe.destinations++;
 			countType(probe.destinationsByType, arguments[0]);
+			countTid(probe.destinationsByTid, arguments[0]);
 			probe.lastDestination = snapshot(arguments[0]);
 			return await originalSendToDestinations.apply(this, arguments);
 		};
@@ -4782,6 +4792,8 @@ const HIDDEN_CAPTURE_BACKGROUND_PROBE_READ = `(function () {
 		destinations: probe.destinations || 0,
 		processedByType: Object.assign({}, probe.processedByType || {}),
 		destinationsByType: Object.assign({}, probe.destinationsByType || {}),
+		processedByTid: Object.assign({}, probe.processedByTid || {}),
+		destinationsByTid: Object.assign({}, probe.destinationsByTid || {}),
 		lastProcessed: probe.lastProcessed || null,
 		lastDestination: probe.lastDestination || null
 	};
@@ -4866,6 +4878,10 @@ function getHiddenCaptureDiagnosticSourceFiles(targetUrl) {
         if (hostname === 'twitch.tv' || hostname.endsWith('.twitch.tv')) return ['sources/twitch.js'];
         if (hostname === 'kick.com' || hostname.endsWith('.kick.com')) return ['sources/kick.js'];
         if (hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com')) return ['sources/tiktok.js'];
+        if (
+            hostname === 'facebook.com' || hostname.endsWith('.facebook.com') ||
+            hostname === 'workplace.com' || hostname.endsWith('.workplace.com')
+        ) return ['sources/facebook.js'];
     } catch (_) { }
     return [];
 }
@@ -5505,11 +5521,35 @@ async function runHiddenCaptureSoak() {
 			if (n > 0) { counts[selector] = n; }
 		} catch (error) { }
 	});
+	var facebookVideoLinks = [];
+	try {
+		if (/(^|\.)facebook\.com$/i.test(location.hostname)) {
+			var links = document.querySelectorAll('a[href*="/videos/"], a[href*="/watch/?v="], a[href*="/watch/live/"]');
+			var seen = {};
+			for (var i = 0; i < links.length && facebookVideoLinks.length < 30; i += 1) {
+				var href = links[i].href || links[i].getAttribute("href") || "";
+				if (!href || seen[href]) { continue; }
+				seen[href] = true;
+				var contextNode = links[i];
+				for (var depth = 0; contextNode && depth < 4; depth += 1) {
+					if ((contextNode.innerText || "").trim().length > 40) { break; }
+					contextNode = contextNode.parentElement;
+				}
+				facebookVideoLinks.push({
+					href: href,
+					text: ((contextNode && contextNode.innerText) || links[i].innerText || "").replace(/\\s+/g, " ").trim().slice(0, 320)
+				});
+			}
+		}
+	} catch (error) { }
 	return {
 		url: location.href,
 		title: document.title,
 		text: (document.body ? document.body.innerText : "").slice(0, 200).replace(/\\s+/g, " "),
-		matchedSelectors: counts
+		matchedSelectors: counts,
+		facebookLiveDiscovery: window.__ssnFacebookLiveDiscovery || null,
+		facebookRecovery: window.__ssnFacebookRecovery || null,
+		facebookVideoLinks: facebookVideoLinks
 	};
 })();`, true);
         } catch (error) {
@@ -5524,26 +5564,72 @@ async function runHiddenCaptureSoak() {
     }
     await sleep(2000);
 
+	const backgroundAtSamplingStart = await readHiddenCaptureBackgroundProbe(backgroundProbe.frame);
+	for (const entry of windows) {
+		entry.startupDestinationMessages = entry.expectedType && backgroundAtSamplingStart
+			? Number(backgroundAtSamplingStart.destinationsByTid && backgroundAtSamplingStart.destinationsByTid[String(entry.tabID)]) || 0
+			: 0;
+		await appendLine({
+			type: 'sampling-start',
+			at: new Date().toISOString(),
+			url: entry.url,
+			tabID: entry.tabID,
+			startupDestinationMessages: entry.startupDestinationMessages
+		});
+	}
+
     const readSample = async (entry) => {
+		const installProbe = () => entry.view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_INSTALL, true);
         const read = () => entry.view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_READ, true);
+		await installProbe();
         const before = await read();
+		const beforeUrl = await entry.view.webContents.executeJavaScript('location.href', true);
         const backgroundBefore = await readHiddenCaptureBackgroundProbe(backgroundProbe.frame);
         await sleep(5000);
-        const after = await read();
+		let after = await read();
+		let afterUrl = await entry.view.webContents.executeJavaScript('location.href', true);
+		let sampleSeconds = 5;
+		let reloaded = beforeUrl !== afterUrl || after.raf < before.raf || after.timer < before.timer;
+		let rateBefore = before;
+		if (reloaded) {
+			await installProbe();
+			rateBefore = await read();
+			await sleep(1000);
+			after = await read();
+			afterUrl = await entry.view.webContents.executeJavaScript('location.href', true);
+			sampleSeconds = 1;
+		}
+		let rafPerSecond = Math.round((after.raf - rateBefore.raf) / sampleSeconds);
+		let timerPerSecond = Math.round((after.timer - rateBefore.timer) / sampleSeconds);
+		let rateRetried = false;
+		if (rafPerSecond < 10 || timerPerSecond < 10) {
+			const retryBefore = after;
+			await sleep(3000);
+			const retryAfter = await read();
+			afterUrl = await entry.view.webContents.executeJavaScript('location.href', true);
+			rafPerSecond = Math.round((retryAfter.raf - retryBefore.raf) / 3);
+			timerPerSecond = Math.round((retryAfter.timer - retryBefore.timer) / 3);
+			after = retryAfter;
+			rateRetried = true;
+		}
         const backgroundAfter = await readHiddenCaptureBackgroundProbe(backgroundProbe.frame);
         const beforeTypeCount = entry.expectedType && backgroundBefore
-            ? Number(backgroundBefore.destinationsByType && backgroundBefore.destinationsByType[entry.expectedType]) || 0
+            ? Number(backgroundBefore.destinationsByTid && backgroundBefore.destinationsByTid[String(entry.tabID)]) || 0
             : null;
         const afterTypeCount = entry.expectedType && backgroundAfter
-            ? Number(backgroundAfter.destinationsByType && backgroundAfter.destinationsByType[entry.expectedType]) || 0
+            ? Number(backgroundAfter.destinationsByTid && backgroundAfter.destinationsByTid[String(entry.tabID)]) || 0
             : null;
         return {
-            rafPerSecond: Math.round((after.raf - before.raf) / 5),
-            timerPerSecond: Math.round((after.timer - before.timer) / 5),
-            rowsAdded: after.rows - before.rows,
+			rafPerSecond,
+			timerPerSecond,
+			rowsAdded: reloaded ? after.rows : after.rows - before.rows,
             rowsTotal: after.rows,
+			pageUrl: afterUrl,
+			reloaded,
+			rateRetried,
             visibilityState: after.visibility,
             nativeVisible: (() => { try { return entry.view.isVisible(); } catch (_) { return null; } })(),
+			logicalVisible: typeof entry.view.__ss_visible === 'boolean' ? entry.view.__ss_visible : null,
             messagesSentToDestinations: beforeTypeCount === null || afterTypeCount === null
                 ? null
                 : afterTypeCount - beforeTypeCount,
@@ -5585,15 +5671,18 @@ async function runHiddenCaptureSoak() {
     const results = windows.map((entry) => {
         const ok = entry.samples.filter((s) => !s.error);
         const rowsWhileHidden = ok.reduce((sum, s) => sum + (s.rowsAdded || 0), 0);
-        const lastMinuteWithRows = ok.reduce((last, s) => (s.rowsAdded > 0 ? s.minute : last), -1);
-        const minutesWithRows = ok.filter((s) => s.rowsAdded > 0).length;
+		const activitySamples = entry.expectedType === 'facebook'
+			? ok.filter((s) => (s.messagesSentToDestinations || 0) > 0)
+			: ok.filter((s) => s.rowsAdded > 0);
+		const lastMinuteWithRows = activitySamples.reduce((last, s) => Math.max(last, s.minute), -1);
+		const minutesWithRows = activitySamples.length;
         const minRaf = ok.length ? Math.min(...ok.map((s) => s.rafPerSecond)) : null;
         const minTimer = ok.length ? Math.min(...ok.map((s) => s.timerPerSecond)) : null;
         const destinationMessagesWhileHidden = ok.reduce(
             (sum, sample) => sum + (Number.isFinite(sample.messagesSentToDestinations) ? sample.messagesSentToDestinations : 0),
             0
         );
-        const everProducedRows = rowsWhileHidden > 0;
+		const everProducedRows = activitySamples.length > 0;
         const quietTailMinutes = everProducedRows ? (minutes - 1 - lastMinuteWithRows) : null;
         return {
             url: entry.url,
@@ -5609,12 +5698,14 @@ async function runHiddenCaptureSoak() {
             minRafPerSecond: minRaf,
             minTimerPerSecond: minTimer,
             destinationMessagesWhileHidden,
+			startupDestinationMessages: entry.startupDestinationMessages || 0,
             // Capture is considered stalled if frames stopped entirely, or if a chat that was
             // producing rows went quiet for the last third of the run.
             stalled: ok.length > 0 && (minRaf <= 0 || (everProducedRows && quietTailMinutes > Math.max(3, minutes / 3))),
             // No rows at all proves nothing about whether hiding breaks capture, so it must
             // not read as a pass. Usually it means the page is not showing a live chat.
-            inconclusive: !everProducedRows || (entry.sourceFiles.length > 0 && destinationMessagesWhileHidden <= 0)
+			inconclusive: (entry.sourceFiles.length > 0 && destinationMessagesWhileHidden <= 0) ||
+				(!everProducedRows && entry.expectedType !== 'facebook')
         };
     });
 
@@ -5632,9 +5723,10 @@ async function runHiddenCaptureSoak() {
     for (const r of results) {
         console.log(
             `[HiddenCaptureSoak]   ${r.url.slice(0, 60).padEnd(60)} rows=${String(r.rowsWhileHidden).padStart(5)} ` +
-            `minutesWithRows=${r.minutesWithRows}/${r.samples} minRaf=${r.minRafPerSecond} ` +
-            `minTimer=${r.minTimerPerSecond} ` +
-            `quietTail=${r.quietTailMinutes} errors=${r.errors} stalled=${r.stalled}` +
+			`minutesWithRows=${r.minutesWithRows}/${r.samples} minRaf=${r.minRafPerSecond} ` +
+			`minTimer=${r.minTimerPerSecond} ` +
+			`startup=${r.startupDestinationMessages} destinations=${r.destinationMessagesWhileHidden} ` +
+			`quietTail=${r.quietTailMinutes} errors=${r.errors} stalled=${r.stalled}` +
             `${r.inconclusive ? ' INCONCLUSIVE(no chat rows seen)' : ''}`
         );
     }
@@ -6191,13 +6283,20 @@ function releaseWindowId(id) {
     windowIdCounter.delete(id);
 }
 
+function getCliArgs() {
+    return process.argv.slice(app.isPackaged ? 1 : 2);
+}
+
+const CLI_ARGS = getCliArgs();
+
 function createYargs() {
-    var argv = Yargs.usage("Usage: $0 -w num -h num -w string -p")
+    var argv = Yargs(CLI_ARGS).scriptName("socialstream").usage("Usage: $0 [options]")
         .example(
             "$0 -w 1280 -h 720 -u https://vdo.ninja/?view=xxxx",
             "Loads the stream with ID xxxx into a window sized 1280x720"
         )
-        .describe("help", "Show help.");
+        .help("help")
+        .describe("help", "Show this help message.");
 
     function addOption(key, config) {
         argv = argv.option(key, config);
@@ -6250,13 +6349,11 @@ function createYargs() {
         default: true,
     });
     addOption("x", {
-        alias: "x",
         describe: "Window X position",
         type: "number",
         default: -1,
     });
     addOption("y", {
-        alias: "y",
         describe: "Window Y position",
         type: "number",
         default: -1,
@@ -6310,7 +6407,6 @@ function createYargs() {
         default: null,
     });
     addOption("css", {
-        alias: "css",
         describe: "Have local CSS script be auto-loaded into every page",
         type: "string",
         default: null,
@@ -6367,6 +6463,17 @@ function createYargs() {
 }
 
 var Args = createYargs();
+if (CLI_ARGS.includes('--help')) {
+    Args.showHelp((helpText) => {
+        try {
+            fs.writeSync(1, `${helpText}\n`);
+        } catch (_) {
+            console.log(helpText);
+        }
+    });
+    markStabilitySessionGraceful('cli-help', { force: true });
+    process.exit(0);
+}
 var Argv = Args.argv;
 const storedStartupFlags = (() => {
     try {

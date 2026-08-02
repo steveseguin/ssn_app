@@ -162,12 +162,8 @@
                             src="https://cache.socialstream.ninja/sources/images/nimo.png" class="icon" />Nimo</button></span>
                 <span><button onclick="newSourcePrompt('sooplive');"><img
                             src="https://cache.socialstream.ninja/sources/images/sooplive.png" class="icon" />SOOP Live</button></span>
-                <span><button onclick="newSourcePrompt('rumble');"><img
+                <span><button onclick="showRumbleAddSourcePrompt();" data-source-type="rumble"><img
                             src="https://cache.socialstream.ninja/sources/images/rumble.png" class="icon" />Rumble</button></span>
-                <span><button onclick="newSourceVideoIDPrompt('rumble');"><img
-                            src="https://cache.socialstream.ninja/sources/images/rumble.png" class="icon" />Rumble Video</button></span>
-                <span><button onclick="newRumbleApiTrackerPrompt();"><img
-                            src="https://cache.socialstream.ninja/sources/images/rumble.png" class="icon" />Rumble API Tracker</button></span>
                 <span><button onclick="newSourcePrompt('beamstream');"><img
                             src="https://cache.socialstream.ninja/sources/images/beamstream.png" class="icon" />Beamstream</button></span>
                 <span><button onclick="newSourcePrompt('parti');"><img
@@ -490,6 +486,60 @@
             </div>
             <div class="modal-footer">
                 <button data-youtube-add-mode="cancel" data-type="cancel" type="button">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal hidden" id="rumbleAddModeModal" role="dialog" aria-modal="true"
+        aria-labelledby="rumbleAddModeTitle">
+        <div class="modal-content modal-md">
+            <h2 id="rumbleAddModeTitle">Add a Rumble source</h2>
+            <div class="source-choice-list">
+                <button class="source-choice" data-rumble-add-mode="channel" type="button">
+                    <span class="source-choice-icon-wrap">
+                        <img src="https://cache.socialstream.ninja/sources/images/rumble.png" alt="" class="source-choice-icon"
+                            onerror="this.classList.add('hidden'); this.nextElementSibling.classList.remove('hidden');" />
+                        <span class="source-choice-icon-fallback hidden" aria-hidden="true">R</span>
+                    </span>
+                    <span class="source-choice-copy">
+                        <span class="source-choice-heading">
+                            <span class="source-choice-title">Find a live stream</span>
+                            <span class="source-choice-badge">Auto-find</span>
+                        </span>
+                        <span class="source-choice-description">Enter a username or channel. SSApp finds the current live stream and can keep checking for it.</span>
+                    </span>
+                </button>
+                <button class="source-choice" data-rumble-add-mode="video" type="button">
+                    <span class="source-choice-icon-wrap">
+                        <img src="https://cache.socialstream.ninja/sources/images/rumble.png" alt="" class="source-choice-icon"
+                            onerror="this.classList.add('hidden'); this.nextElementSibling.classList.remove('hidden');" />
+                        <span class="source-choice-icon-fallback hidden" aria-hidden="true">R</span>
+                    </span>
+                    <span class="source-choice-copy">
+                        <span class="source-choice-heading">
+                            <span class="source-choice-title">Use a stream link</span>
+                            <span class="source-choice-badge">Direct</span>
+                        </span>
+                        <span class="source-choice-description">Paste a normal Rumble stream or video URL. The stream must already be live.</span>
+                    </span>
+                </button>
+                <button class="source-choice" data-rumble-add-mode="api" type="button">
+                    <span class="source-choice-icon-wrap">
+                        <img src="https://cache.socialstream.ninja/sources/images/rumble.png" alt="" class="source-choice-icon"
+                            onerror="this.classList.add('hidden'); this.nextElementSibling.classList.remove('hidden');" />
+                        <span class="source-choice-icon-fallback hidden" aria-hidden="true">R</span>
+                    </span>
+                    <span class="source-choice-copy">
+                        <span class="source-choice-heading">
+                            <span class="source-choice-title">Use the Live Stream API</span>
+                            <span class="source-choice-badge">Advanced</span>
+                        </span>
+                        <span class="source-choice-description">Paste your private API URL to track live activity and total followers without a capture page.</span>
+                    </span>
+                </button>
+            </div>
+            <div class="modal-footer">
+                <button data-rumble-add-mode="cancel" data-type="cancel" type="button">Cancel</button>
             </div>
         </div>
     </div>
@@ -2261,7 +2311,21 @@
             }
         }
 
+        async function showRumbleAddSourcePrompt() {
+            const mode = await showRumbleAddModeModal();
+            if (mode === 'channel') {
+                return newSourcePrompt('rumble');
+            }
+            if (mode === 'video') {
+                return newSourceVideoIDPrompt('rumble');
+            }
+            if (mode === 'api') {
+                return newRumbleApiTrackerPrompt();
+            }
+        }
+
         let activeYouTubeAddModeCleanup = null;
+        let activeRumbleAddModeCleanup = null;
         let activeYouTubeOwnerConfirmCleanup = null;
         let activeYouTubeOwnerManageCleanup = null;
 
@@ -2283,6 +2347,44 @@
                     button.onclick = () => cleanup(button.dataset.youtubeAddMode);
                 });
                 modal.classList.remove('hidden');
+            });
+        }
+
+        function showRumbleAddModeModal() {
+            const modal = document.getElementById('rumbleAddModeModal');
+            if (!modal) return Promise.resolve('channel');
+            if (activeRumbleAddModeCleanup) activeRumbleAddModeCleanup(null);
+            return new Promise(resolve => {
+                const buttons = Array.from(modal.querySelectorAll('[data-rumble-add-mode]'));
+                const previousFocus = document.activeElement;
+                const onKeyDown = (event) => {
+                    if (event.key !== 'Escape') return;
+                    event.preventDefault();
+                    cleanup(null);
+                };
+                const onBackdropClick = (event) => {
+                    if (event.target === modal) cleanup(null);
+                };
+                const cleanup = (value) => {
+                    if (activeRumbleAddModeCleanup !== cleanup) return;
+                    activeRumbleAddModeCleanup = null;
+                    buttons.forEach(button => { button.onclick = null; });
+                    document.removeEventListener('keydown', onKeyDown);
+                    modal.removeEventListener('click', onBackdropClick);
+                    modal.classList.add('hidden');
+                    if (previousFocus && previousFocus.isConnected && typeof previousFocus.focus === 'function') {
+                        previousFocus.focus();
+                    }
+                    resolve(value);
+                };
+                activeRumbleAddModeCleanup = cleanup;
+                buttons.forEach(button => {
+                    button.onclick = () => cleanup(button.dataset.rumbleAddMode);
+                });
+                document.addEventListener('keydown', onKeyDown);
+                modal.addEventListener('click', onBackdropClick);
+                modal.classList.remove('hidden');
+                buttons.find(button => button.dataset.rumbleAddMode !== 'cancel')?.focus();
             });
         }
 
@@ -2865,7 +2967,7 @@
                     const messageParts = [];
                     if (errorMessage) messageParts.push(errorMessage);
                     messageParts.push("Enter a Facebook username, paste a Facebook Live/video URL, or paste the Facebook Gaming page URL.");
-                    messageParts.push("A direct Live/video URL opens that video. A username or the Gaming page lets you manually select the video after activation.");
+                    messageParts.push("A direct Live/video URL opens that video. A username automatically looks for that account's current live video; the Gaming page still lets you choose one manually.");
                     const allowSpacesForChannel = (target === 'youtube' || target === 'youtubeshorts' || target === 'rumble') && isChannelName;
                     if (allowSpacesForChannel) {
                         messageParts.push('Channel names can include spaces when the channel option is enabled.');
@@ -3471,7 +3573,7 @@
                     else if (target === "vimm") sourceUrl = `https://www.vimm.tv/c/${username}`;
                     else if (target === "bilibilicom" || target === "bilibili") sourceUrl = `https://live.bilibili.com/${username}`;
                     else if (target === "bilibilitv") sourceUrl = `https://www.bilibili.tv/en/live/${username}`;
-                    else if (target === "facebook") sourceUrl = `https://www.facebook.com/${username}/videos`;
+                    else if (target === "facebook") sourceUrl = `https://www.facebook.com/${username}/live`;
                     else if (target === "arenasocial") sourceUrl = `https://arena.social/live/${username}`;
                     // Add other URL constructions as needed
                 }

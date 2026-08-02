@@ -99,7 +99,7 @@ child.on('exit', (code) => {
 		console.log(
 			`[soak]   ${state} ${w.url}\n` +
 			`[soak]           rows=${w.rowsWhileHidden} minutesWithRows=${w.minutesWithRows}/${w.samples} ` +
-			`destinations=${w.destinationMessagesWhileHidden} ` +
+			`startup=${w.startupDestinationMessages || 0} destinations=${w.destinationMessagesWhileHidden} ` +
 			`minRaf=${w.minRafPerSecond}/s minTimer=${w.minTimerPerSecond}/s quietTail=${w.quietTailMinutes}min errors=${w.errors}` +
 			(w.inconclusive ? `\n[soak]           page was: ${JSON.stringify(w.snapshot).slice(0, 200)}` : '')
 		);
