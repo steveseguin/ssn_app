@@ -13,6 +13,7 @@
 // A run that sees no real chat message is reported as inconclusive rather than passed.
 
 const fs = require('fs');
+const { linuxLaunchArgs } = require('./helpers/electron-launch');
 const http = require('http');
 const net = require('net');
 const os = require('os');
@@ -248,7 +249,8 @@ function launchApp() {
 		'--multiinstance',
 		'--filesource',
 		socialStreamUrl,
-		'--remote-control'
+		'--remote-control',
+		...linuxLaunchArgs(),
 	];
 	child = spawn(electronPath, args, {
 		cwd: repoRoot,

@@ -3,6 +3,7 @@
 "use strict";
 
 const assert = require("assert");
+const { linuxLaunchArgs } = require('./helpers/electron-launch');
 const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
@@ -67,6 +68,7 @@ function launchApp(port) {
 		"--preferlocalassets",
 		`--filesource=${socialStreamRoot}`,
 		"--remote-control",
+		...linuxLaunchArgs(),
 	], {
 		cwd: repoRoot,
 		env: {

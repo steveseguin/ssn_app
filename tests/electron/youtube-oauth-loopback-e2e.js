@@ -3,6 +3,7 @@
 'use strict';
 
 const assert = require('assert');
+const { linuxLaunchArgs } = require('./helpers/electron-launch');
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
@@ -93,7 +94,7 @@ if (process.versions.electron) {
 	const electronPath = require('electron');
 	const environment = { ...process.env };
 	delete environment.ELECTRON_RUN_AS_NODE;
-	const child = spawn(electronPath, [__filename], {
+	const child = spawn(electronPath, [__filename, ...linuxLaunchArgs()], {
 		cwd: path.resolve(__dirname, '..', '..'),
 		env: environment,
 		stdio: 'inherit',

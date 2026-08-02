@@ -3,6 +3,7 @@
 'use strict';
 
 const assert = require('assert');
+const { linuxLaunchArgs } = require('./helpers/electron-launch');
 const fs = require('fs');
 const http = require('http');
 const net = require('net');
@@ -94,6 +95,7 @@ async function waitForWindow(port, predicate, timeoutMs = 20000) {
 async function startApp(remotePort) {
 	const child = spawn(electronPath, [
 		'.', '--running-from-source', '--multiinstance', '--filesource', socialStreamUrl, '--remote-control',
+		...linuxLaunchArgs(),
 	], {
 		cwd: repoRoot,
 		env: {
