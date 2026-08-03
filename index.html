@@ -1199,6 +1199,56 @@
             }
         }
 
+        function isValidTwitchUsername(value) {
+            const candidate = String(value || "").trim().replace(/^@+/, "");
+            return /^[A-Za-z0-9_]{1,25}$/.test(candidate);
+        }
+
+        function normalizeTwitchUsernameInput(value) {
+            const raw = String(value || "").trim();
+            if (!raw) return "";
+
+            const input = raw.replace(/^@+/, "").trim();
+            const hasExplicitUrlScheme = /^https?:\/\//i.test(input);
+            const looksLikeTwitchHost = /(^|\.)twitch\.tv(?:[\/:?#]|$)/i.test(input);
+
+            if (hasExplicitUrlScheme || looksLikeTwitchHost) {
+                try {
+                    const twitchUrl = new URL(hasExplicitUrlScheme ? input : `https://${input}`);
+                    const hostname = twitchUrl.hostname.toLowerCase();
+                    const allowedHosts = new Set(["twitch.tv", "www.twitch.tv", "m.twitch.tv", "player.twitch.tv"]);
+                    if (!allowedHosts.has(hostname)) return "";
+
+                    const queryChannel = (twitchUrl.searchParams.get("channel") || "").replace(/^@+/, "").trim();
+                    if (isValidTwitchUsername(queryChannel)) return queryChannel;
+
+                    const pathParts = twitchUrl.pathname.split("/").filter(Boolean);
+                    const firstPart = (pathParts[0] || "").toLowerCase();
+                    const channelRouteIndexes = new Set(["embed", "moderator", "popout"]);
+                    const reservedPaths = new Set([
+                        "activate", "directory", "downloads", "inventory", "jobs", "login", "p", "search",
+                        "settings", "signup", "subscriptions", "turbo", "videos", "wallet"
+                    ]);
+                    let channel = "";
+                    if (channelRouteIndexes.has(firstPart)) {
+                        channel = pathParts[1] || "";
+                    } else if (!reservedPaths.has(firstPart)) {
+                        channel = pathParts[0] || "";
+                    }
+                    try {
+                        channel = decodeURIComponent(channel);
+                    } catch (_) { }
+                    channel = channel.replace(/^@+/, "").trim();
+                    return isValidTwitchUsername(channel) ? channel : "";
+                } catch (_) {
+                    return "";
+                }
+            }
+
+            const username = input.split(/[\/?#]/)[0].replace(/^@+/, "").trim();
+            return isValidTwitchUsername(username) ? username : "";
+        }
+
         function isGenericVpzoneChannel(value) {
             const normalized = String(value || "").trim().toLowerCase();
             return normalized === "vpzone" || normalized === "vpzone.tv" || normalized === "www.vpzone.tv";
@@ -2953,6 +3003,7 @@
             const promptTargetLabels = {
                 chzzk: "CHZZK channel ID",
                 kick: "Kick channel URL or slug",
+                twitch: "Twitch username or channel URL",
                 mixcloud: "Mixcloud username",
                 nimo: "Nimo username",
                 sooplive: "SOOP broadcaster ID/name",
@@ -2972,6 +3023,7 @@
             const spaceErrorMessage = translate('error.username.spaces');
             const emptyErrorMessage = translate('error.username.empty');
             const invalidTikTokErrorMessage = translate('error.tiktok.invalid');
+            const invalidTwitchErrorMessage = 'Enter a Twitch username or Twitch channel/chat URL.';
 
             while (true) {
                 const errorType = lastError;
@@ -2981,6 +3033,8 @@
                         ? emptyErrorMessage
                         : errorType === 'tiktok-invalid'
                             ? invalidTikTokErrorMessage
+                            : errorType === 'twitch-invalid'
+                                ? invalidTwitchErrorMessage
                             : '';
                 lastError = '';
 
@@ -3059,6 +3113,8 @@
                     if (target === "kick") {
                         messageParts.push('Paste the Kick channel URL, like https://kick.com/koos-kaap, or enter only the URL slug, like koos-kaap.');
                         messageParts.push('Do not use the display name if it differs from the URL. Kick display names can use underscores while the URL slug uses hyphens.');
+                    } else if (target === "twitch") {
+                        messageParts.push('Paste a Twitch channel or popout-chat URL, like https://www.twitch.tv/popout/evarate/chat?popout=, or enter only the username.');
                     } else if (target === "tiktok") {
                         messageParts.push('Paste the TikTok live URL, like https://www.tiktok.com/@username/live, or enter only the username.');
                     } else if (target === "instagram" || target === "instagramlive") {
@@ -3135,7 +3191,20 @@
                     continue;
                 }
 
-                if (target === 'kick') {
+                if (target === 'twitch') {
+                    const twitchUsername = normalizeTwitchUsernameInput(trimmedInput);
+                    if (!twitchUsername) {
+                        lastError = 'twitch-invalid';
+                        if (lastInvalidToast) {
+                            Toast.hide(lastInvalidToast);
+                            lastInvalidToast = null;
+                        }
+                        lastInvalidToast = Toast.warning(translate('toast.invalidusername'), invalidTwitchErrorMessage);
+                        username = inputValue;
+                        continue;
+                    }
+                    normalizedInput = twitchUsername;
+                } else if (target === 'kick') {
                     const kickSlug = extractKickSlugFromInput(trimmedInput);
                     if (kickSlug) {
                         normalizedInput = kickSlug;
@@ -3406,6 +3475,7 @@
         async function newSource(target, username, startup = false, initialState = {}, isChannelName = false) {
             document.getElementById('welcomeFrame')?.remove();
             const invalidTikTokSourceMessage = translate('error.tiktok.invalidsource');
+            const invalidTwitchSourceMessage = 'Enter a Twitch username or Twitch channel/chat URL.';
             let partiSourceInfo = null;
 
             if (username) {
@@ -3419,6 +3489,17 @@
                 } else {
                     // For YouTube, just trim whitespace but preserve @, UC, c/ prefixes
                     username = username.trim();
+                }
+                if (target === 'twitch') {
+                    const twitchUsername = normalizeTwitchUsernameInput(username);
+                    if (!twitchUsername) {
+                        console.warn("Invalid Twitch username or URL:", username);
+                        if (!startup) {
+                            Toast.warning(translate('toast.invalidusername'), invalidTwitchSourceMessage);
+                        }
+                        return;
+                    }
+                    username = twitchUsername;
                 }
                 if (target === 'tiktok') {
                     const tiktokUsername = normalizeTikTokUsernameInput(username);
@@ -3660,6 +3741,20 @@
                     }
                     sourceData.username = tiktokUsername;
                     sourceData.url = `https://www.tiktok.com/@${tiktokUsername}/live`;
+                }
+                if (target === 'twitch') {
+                    const twitchUsername = normalizeTwitchUsernameInput(sourceData.username)
+                        || normalizeTwitchUsernameInput(username)
+                        || normalizeTwitchUsernameInput(sourceData.url);
+                    if (!twitchUsername) {
+                        console.warn("Invalid Twitch source data:", sourceData.username || sourceData.url || username);
+                        if (!startup) {
+                            Toast.warning(translate('toast.invalidusername'), invalidTwitchSourceMessage);
+                        }
+                        return;
+                    }
+                    sourceData.username = twitchUsername;
+                    sourceData.url = `https://www.twitch.tv/popout/${twitchUsername}/chat?popout=`;
                 }
                 if (sourceFile) { // Add sourceFile to the data if it was determined
                     sourceData.sourceFile = sourceFile;

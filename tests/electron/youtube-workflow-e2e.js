@@ -192,6 +192,7 @@ const rendererWorkflow = String.raw`
 		return stateManager.getSources().map(source => ({
 			id: source.id,
 			target: source.target,
+			username: source.username,
 			videoId: source.videoId,
 			url: source.url,
 			replyOnly: !!source.replyOnly,
@@ -210,6 +211,8 @@ const rendererWorkflow = String.raw`
 		&& typeof parseYoutubeUrl === 'function'
 		&& typeof extractYoutubeID === 'function'
 		&& typeof normalizeYouTubePublicSourceInput === 'function'
+		&& typeof normalizeTwitchUsernameInput === 'function'
+		&& typeof newSourcePrompt === 'function'
 		&& typeof showYouTubeAddModeModal === 'function'
 		&& typeof showYouTubeOwnerChannelConfirm === 'function'
 		&& typeof showYouTubeOwnerManageModal === 'function'
@@ -221,6 +224,7 @@ const rendererWorkflow = String.raw`
 	await Promise.resolve();
 
 	const originalConfirm = window.confirm;
+	const originalPrompt = window.prompt;
 	const confirmMessages = [];
 	window.confirm = (message) => {
 		confirmMessages.push(String(message || ''));
@@ -228,6 +232,14 @@ const rendererWorkflow = String.raw`
 	};
 
 	try {
+		window.prompt = () => 'https://www.twitch.tv/popout/evarate/chat?popout=';
+		await newSourcePrompt('twitch');
+		const twitchSource = stateManager.getSources().find(source => source.target === 'twitch');
+		assertRenderer(twitchSource?.username === 'evarate', 'Twitch popout URL should be reduced to the channel username');
+		assertRenderer(twitchSource?.url === 'https://www.twitch.tv/popout/evarate/chat?popout=',
+			'Twitch popout URL should produce the canonical chat URL');
+		window.prompt = originalPrompt;
+
 		const normalizedWatchUrl = normalizeYouTubePublicSourceInput('https://www.youtube.com/watch?v=urlroute001');
 		const normalizedShortUrl = normalizeYouTubePublicSourceInput('youtu.be/urlroute002');
 		assertRenderer(normalizedWatchUrl.value === 'https://www.youtube.com/watch?v=urlroute001' && normalizedWatchUrl.isChannelName === false,
@@ -516,6 +528,7 @@ const rendererWorkflow = String.raw`
 		};
 	} finally {
 		window.confirm = originalConfirm;
+		window.prompt = originalPrompt;
 	}
 })()
 `;

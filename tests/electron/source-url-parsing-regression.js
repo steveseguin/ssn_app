@@ -28,7 +28,7 @@ function extractFunction(source, name) {
 	throw new Error(`Unable to extract function ${name}`);
 }
 
-const helperStart = indexSource.indexOf("function isGenericVpzoneChannel");
+const helperStart = indexSource.indexOf("function isValidTwitchUsername");
 const helperEnd = indexSource.indexOf("// Helper: should sign-in be disabled", helperStart);
 assert(helperStart >= 0 && helperEnd > helperStart, "Missing source URL helper block");
 
@@ -72,6 +72,7 @@ this.helpers = {
 	extractSourceUrlIdentifier,
 	isValidTikTokUsername,
 	normalizeTikTokUsernameInput,
+	normalizeTwitchUsernameInput,
 	getExplicitSourceIdentifier,
 	getWebSocketChannelForSource,
 	extractFacebookVideoId,
@@ -91,6 +92,7 @@ const {
 	extractSourceUrlIdentifier,
 	isValidTikTokUsername,
 	normalizeTikTokUsernameInput,
+	normalizeTwitchUsernameInput,
 	getExplicitSourceIdentifier,
 	getWebSocketChannelForSource,
 	extractFacebookVideoId,
@@ -118,6 +120,17 @@ runCases("extractYoutubeVideoId", [
 	{ input: "https://www.youtube.com/live_chat?is_popout=1&v=abcdefghijk&shorts", expected: "abcdefghijk" },
 	{ input: "abcdefghijk", expected: "abcdefghijk" }
 ], extractYoutubeVideoId);
+
+runCases("normalizeTwitchUsernameInput", [
+	{ input: "evarate", expected: "evarate" },
+	{ input: "@evarate", expected: "evarate" },
+	{ input: "https://www.twitch.tv/evarate", expected: "evarate" },
+	{ input: "https://www.twitch.tv/popout/evarate/chat?popout=", expected: "evarate" },
+	{ input: "www.twitch.tv/embed/evarate/chat", expected: "evarate" },
+	{ input: "https://player.twitch.tv/?channel=evarate&parent=example.com", expected: "evarate" },
+	{ input: "https://www.twitch.tv/directory", expected: "" },
+	{ input: "https://example.com/evarate", expected: "" }
+], normalizeTwitchUsernameInput);
 
 const parseYoutubeUrlCases = [
 	{
