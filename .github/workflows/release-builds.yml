@@ -14,6 +14,11 @@ on:
         required: false
         type: boolean
         default: false
+      build_release:
+        description: Build numbered release artifacts without publishing them in this repository
+        required: false
+        type: boolean
+        default: false
       ref:
         description: Optional branch, tag, or SHA to build
         required: false
@@ -84,6 +89,15 @@ jobs:
             CHANNEL="dev"
             RELEASE_TAG="dev-build"
             RELEASE_NAME="Social Stream Ninja developer build"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" && "${{ github.event.inputs.build_release }}" == "true" ]]; then
+            if [[ "$VERSION" == "0.0.0" ]]; then
+              echo "::error::Numbered release builds require a non-development package version"
+              exit 1
+            fi
+            PUBLISH=true
+            CHANNEL="artifact"
+            RELEASE_TAG="v$VERSION"
+            RELEASE_NAME="Social Stream Ninja v$VERSION"
           elif [[ "$EVENT_NAME" == "workflow_dispatch" && "${{ github.event.inputs.publish_dev }}" == "true" ]]; then
             if [[ "$VERSION" != "0.0.0" ]]; then
               echo "::error::Developer publish only runs when package.json version is 0.0.0"
@@ -183,7 +197,7 @@ jobs:
     needs:
       - prepare
       - build
-    if: needs.prepare.outputs.publish == 'true'
+    if: needs.prepare.outputs.publish == 'true' && needs.prepare.outputs.channel != 'artifact'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
