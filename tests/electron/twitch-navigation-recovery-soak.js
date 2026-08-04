@@ -320,7 +320,7 @@ async function run() {
 					&& typeof createWindow === 'function'
 					&& typeof configReady !== 'undefined'
 					&& configReady
-					&& config.twitch?.closeOnNavigate === true
+					&& (config.twitch?.closeOnNavigateV2 === true || config.twitch?.closeOnNavigate === true)
 					&& config.twitch?.closeOnNavigateMode === 'channel'
 			)`, 'wait for renderer initialization');
 		}, 'SSApp renderer initialization');

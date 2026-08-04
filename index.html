@@ -12173,6 +12173,18 @@
                     return target ? target.charAt(0).toUpperCase() + target.slice(1) : 'the chat service';
                 }
 
+                function describeBlockedDestination(url) {
+                    try {
+                        const parsed = new URL(String(url || ''));
+                        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+                        let label = parsed.host + (parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '');
+                        if (label.length > 60) label = `${label.slice(0, 57)}...`;
+                        return label;
+                    } catch (_) {
+                        return '';
+                    }
+                }
+
                 function clearSourceNavigationRecoveryTimers(recovery) {
                     if (!recovery) return;
                     if (recovery.timer) clearTimeout(recovery.timer);
@@ -12218,7 +12230,8 @@
 
                     const chatLabel = describeSourceChat(source);
                     const platform = describeSourcePlatform(source);
-                    const message = `SSN couldn't reconnect to ${chatLabel} after ${SOURCE_NAVIGATION_RETRY_DELAYS_MS.length} tries, so this chat source was stopped. Check the channel name or sign in to ${platform}, then start it again.`;
+                    const blockedNote = recovery.lastBlockedDestination ? ` The page kept opening ${recovery.lastBlockedDestination}.` : '';
+                    const message = `SSN couldn't reconnect to ${chatLabel} after ${SOURCE_NAVIGATION_RETRY_DELAYS_MS.length} tries, so this chat source was stopped.${blockedNote} Check the channel name or sign in to ${platform}, then start it again.`;
                     updateSourceNavigationRecoveryStatus(sourceId, 'error', message, false);
                     const entryElement = document.querySelector(`[data-source-id="${sourceId}"]`);
                     if (entryElement) restoreActivateButton(entryElement);
@@ -12321,10 +12334,11 @@
 
                     const chatLabel = describeSourceChat(source);
                     const seconds = Math.max(1, Math.round(delayMs / 1000));
+                    const blockedNote = recovery.lastBlockedDestination ? ` (${recovery.lastBlockedDestination})` : '';
                     updateSourceNavigationRecoveryStatus(
                         sourceId,
                         'info',
-                        `${chatLabel} opened another page. Reconnecting in ${seconds} second${seconds === 1 ? '' : 's'} (try ${recovery.attempt} of ${SOURCE_NAVIGATION_RETRY_DELAYS_MS.length})...`,
+                        `${chatLabel} opened another page${blockedNote}. Reconnecting in ${seconds} second${seconds === 1 ? '' : 's'} (try ${recovery.attempt} of ${SOURCE_NAVIGATION_RETRY_DELAYS_MS.length})...`,
                         true
                     );
                     recovery.timer = setTimeout(() => {
@@ -12332,9 +12346,10 @@
                     }, delayMs);
                 }
 
-                function recoverSourceAfterNavigation(source) {
+                function recoverSourceAfterNavigation(source, blockedUrl) {
                     const sourceId = source.id;
                     let recovery = sourceNavigationRecoveries.get(sourceId);
+                    const blockedDestination = describeBlockedDestination(blockedUrl);
 
                     if (!recovery) {
                         recovery = {
@@ -12344,11 +12359,16 @@
                             resetTimer: null,
                             inProgress: false,
                             redirectedDuringAttempt: false,
-                            windowId: null
+                            windowId: null,
+                            lastBlockedDestination: ''
                         };
+                        if (blockedDestination) recovery.lastBlockedDestination = blockedDestination;
                         sourceNavigationRecoveries.set(sourceId, recovery);
-                        const message = `${describeSourceChat(source)} opened another page. SSN will reconnect to the chat you added.`;
+                        const blockedNote = blockedDestination ? ` (${blockedDestination})` : '';
+                        const message = `${describeSourceChat(source)} opened another page${blockedNote}. SSN will reconnect to the chat you added.`;
                         Toast.info('Reconnecting Chat', message);
+                    } else if (blockedDestination) {
+                        recovery.lastBlockedDestination = blockedDestination;
                     }
 
                     if (recovery.successTimer) clearTimeout(recovery.successTimer);
@@ -12415,12 +12435,13 @@
                         const source = getSourceForWindowPayload(payload || {});
                         if (!source) return;
                         if (payload?.mode === 'channel' && (source.connectionMode || 'classic') === 'classic') {
-                            recoverSourceAfterNavigation(source);
+                            recoverSourceAfterNavigation(source, payload?.newUrl);
                             return;
                         }
 
                         stateManager.updateSource(source.id, { status: 'inactive', vid: null, activeConnectionMode: null });
-                        const message = `${describeSourceChat(source)} opened another page, so this chat source was stopped to avoid capturing the wrong chat.`;
+                        const blockedDestination = describeBlockedDestination(payload?.newUrl);
+                        const message = `${describeSourceChat(source)} opened another page${blockedDestination ? ` (${blockedDestination})` : ''}, so this chat source was stopped to avoid capturing the wrong chat.`;
                         updateSourceNavigationRecoveryStatus(source.id, 'error', message, false);
                         Toast.info('Chat Source Stopped', message);
                     } catch (e) {

@@ -8900,7 +8900,9 @@ function getNavigationChannel(platform, value) {
 
     if (!channel && platform === 'twitch') {
         if (parts[0] === 'popout' && parts[1]) {
-            channel = parts[1];
+            // Moderator/dashboard popout variants keep the channel one segment deeper
+            // (/popout/moderator/<channel>/chat, /popout/u/<channel>/...).
+            channel = ((parts[1] === 'moderator' || parts[1] === 'u') && parts[2]) ? parts[2] : parts[1];
         } else if ((parts[0] === 'moderator' || parts[0] === 'u') && parts[1]) {
             channel = parts[1];
         } else if (parts[0]) {
@@ -8935,6 +8937,11 @@ function isNavigationHostAllowed(platform, initialUrl, nextUrl) {
     }
     return nextUrl.origin === initialUrl.origin;
 }
+
+// Redirect chains and auth bounces are judged only where navigation settles; a
+// disallowed committed URL gets this long to return to an allowed one before the
+// capture window is closed.
+const CLOSE_ON_NAVIGATE_SETTLE_MS = 2500;
 
 function createCloseOnNavigateAllowance(args = {}, mode = 'prefix') {
     let initialHref = '';
@@ -12875,65 +12882,91 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (view.webContents) {
                 // Auto-close on navigate for activated (classic) windows only
                 try {
-                    const enforceCloseOnNavigate = (!args.wss && args.config && args.config.closeOnNavigate === true);
+                    const enforceCloseOnNavigate = (!args.wss && args.config
+                        && (args.config.closeOnNavigate === true || args.config.closeOnNavigateV2 === true));
                     if (enforceCloseOnNavigate) {
                         const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact' | 'channel'
                         const preserveManualTikTokStandard = shouldPreserveManualTikTokStandardNavigation(args);
                         let navigationWarningSent = false;
                         let navigationCloseStarted = false;
+                        let pendingViolationTimer = null;
                         const isAllowed = createCloseOnNavigateAllowance(args, mode);
 
-                        const maybeClose = (navUrl, reason) => {
-                            if (!isAllowed(navUrl)) {
-                                if (preserveManualTikTokStandard) {
-                                    try { log(`Keeping manual TikTok Standard window open after navigation (${reason}): ${navUrl}`); } catch (_) { }
-                                    if (!navigationWarningSent) {
-                                        navigationWarningSent = true;
-                                        sendWindowNavigationWarning(view, args, navUrl, reason, mode);
-                                    }
-                                    return;
-                                }
-                                if (navigationCloseStarted) return;
-                                navigationCloseStarted = true;
-                                try { log(`Auto-closing activated window due to navigation (${reason}): ${navUrl}`); } catch (_) { }
-
-                                // Best-effort UI notification with details for toast
-                                try {
-                                    if (mainWindow && !mainWindow.isDestroyed()) {
-                                        mainWindow.webContents.send('window-auto-closed', {
-                                            tabID: view.tabID,
-                                            sourceId: view.args && view.args.sourceId,
-                                            reason,
-                                            mode,
-                                            initialUrl: args.url,
-                                            newUrl: navUrl
-                                        });
-                                    }
-                                } catch (_) { }
-
-                                // Also send the legacy per-tab closed event (used by sign-in flow, harmless here)
-                                try {
-                                    if (mainWindow && !mainWindow.isDestroyed()) {
-                                        mainWindow.webContents.send(`window-closed-${view.tabID}`);
-                                    }
-                                } catch (_) { }
-
-                                // Destroy the window and clean up bookkeeping
-                                try { if (!isBrowserViewDestroyed(view)) view.destroy(); } catch (_) { }
-                                try { delete browserViews[view.tabID]; releaseWindowId(view.tabID); } catch (_) { }
+                        const clearPendingViolation = () => {
+                            if (pendingViolationTimer) {
+                                clearTimeout(pendingViolationTimer);
+                                pendingViolationTimer = null;
                             }
                         };
 
-                        view.webContents.on('will-navigate', (event, url) => { maybeClose(url, 'will-navigate'); });
-                        view.webContents.on('did-navigate', (event, url) => { maybeClose(url, 'did-navigate'); });
+                        const closeNow = (navUrl, reason) => {
+                            if (navigationCloseStarted) return;
+                            navigationCloseStarted = true;
+                            clearPendingViolation();
+                            try { log(`Auto-closing activated window due to navigation (${reason}): ${navUrl}`); } catch (_) { }
+
+                            // Best-effort UI notification with details for toast
+                            try {
+                                if (mainWindow && !mainWindow.isDestroyed()) {
+                                    mainWindow.webContents.send('window-auto-closed', {
+                                        tabID: view.tabID,
+                                        sourceId: view.args && view.args.sourceId,
+                                        reason,
+                                        mode,
+                                        initialUrl: args.url,
+                                        newUrl: navUrl
+                                    });
+                                }
+                            } catch (_) { }
+
+                            // Also send the legacy per-tab closed event (used by sign-in flow, harmless here)
+                            try {
+                                if (mainWindow && !mainWindow.isDestroyed()) {
+                                    mainWindow.webContents.send(`window-closed-${view.tabID}`);
+                                }
+                            } catch (_) { }
+
+                            // Destroy the window and clean up bookkeeping
+                            try { if (!isBrowserViewDestroyed(view)) view.destroy(); } catch (_) { }
+                            try { delete browserViews[view.tabID]; releaseWindowId(view.tabID); } catch (_) { }
+                        };
+
+                        // Only committed navigations are judged: redirect chains (login,
+                        // consent, anti-bot bounces) pass through disallowed URLs but only
+                        // commit at their final destination, and a disallowed commit still
+                        // gets a settle window to bounce back before the window is closed.
+                        const handleCommittedNavigation = (navUrl, reason) => {
+                            if (isAllowed(navUrl)) {
+                                clearPendingViolation();
+                                return;
+                            }
+                            if (preserveManualTikTokStandard) {
+                                try { log(`Keeping manual TikTok Standard window open after navigation (${reason}): ${navUrl}`); } catch (_) { }
+                                if (!navigationWarningSent) {
+                                    navigationWarningSent = true;
+                                    sendWindowNavigationWarning(view, args, navUrl, reason, mode);
+                                }
+                                return;
+                            }
+                            if (navigationCloseStarted || pendingViolationTimer) return;
+                            pendingViolationTimer = setTimeout(() => {
+                                pendingViolationTimer = null;
+                                if (navigationCloseStarted || isBrowserViewDestroyed(view)) return;
+                                let settledUrl = navUrl;
+                                try { settledUrl = view.webContents.getURL() || navUrl; } catch (_) { }
+                                if (isAllowed(settledUrl)) return;
+                                closeNow(settledUrl, reason);
+                            }, CLOSE_ON_NAVIGATE_SETTLE_MS);
+                        };
+
+                        view.webContents.on('did-navigate', (event, url) => {
+                            handleCommittedNavigation(getCloseOnNavigateEventUrl(event, url), 'did-navigate');
+                        });
                         view.webContents.on('did-navigate-in-page', (event, url, isMainFrame) => {
                             if (!isCloseOnNavigateMainFrameEvent(event, isMainFrame)) return;
-                            maybeClose(getCloseOnNavigateEventUrl(event, url), 'did-navigate-in-page');
+                            handleCommittedNavigation(getCloseOnNavigateEventUrl(event, url), 'did-navigate-in-page');
                         });
-                        view.webContents.on('did-redirect-navigation', (event, url, _isInPlace, isMainFrame) => {
-                            if (!isCloseOnNavigateMainFrameEvent(event, isMainFrame)) return;
-                            maybeClose(getCloseOnNavigateEventUrl(event, url), 'redirect');
-                        });
+                        view.webContents.once('destroyed', clearPendingViolation);
                     }
                 } catch (e) {
                     try { console.warn('Error attaching closeOnNavigate handlers (classic window):', e); } catch (_) { }

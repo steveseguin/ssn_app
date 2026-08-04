@@ -204,7 +204,19 @@ async function startFixtureServer() {
 			res.end();
 			return;
 		}
+		if (pathname === '/session-refresh') {
+			res.writeHead(302, { Location: `/login-hop${requestUrl.search || ''}` });
+			res.end();
+			return;
+		}
+		if (pathname === '/login-hop') {
+			const returnChannel = requestUrl.searchParams.get('channel') || 'twitch-bounce-through-alpha';
+			res.writeHead(302, { Location: `/popout/${returnChannel}/chat?popout=&resumed=1` });
+			res.end();
+			return;
+		}
 		const shouldRedirectOnEveryLoad = pathname.includes('navigation-loop-alpha');
+		const shouldBounceThroughOnFirstLoad = pathname.includes('bounce-through');
 		res.writeHead(200, {
 			'Content-Type': 'text/html; charset=utf-8',
 			'Cache-Control': 'no-store'
@@ -218,6 +230,7 @@ async function startFixtureServer() {
 						window.__fixtureLoads = Number(sessionStorage.getItem('fixtureLoads') || '0') + 1;
 						sessionStorage.setItem('fixtureLoads', String(window.__fixtureLoads));
 						${shouldRedirectOnEveryLoad ? "setTimeout(() => location.assign('/directory?from=navigation-loop'), 500);" : ''}
+						${shouldBounceThroughOnFirstLoad ? "if (!location.search.includes('resumed=1')) { setTimeout(() => location.assign('/session-refresh?channel=' + encodeURIComponent(location.pathname.split('/')[2] || '')), 500); }" : ''}
 					</script>
 				</body>
 			</html>`);
@@ -420,6 +433,37 @@ async function runInvalidRouteCase(port, fixtureOrigin, platform) {
 	return { platform, invalidCaptureRoute: 'recovered-original-chat' };
 }
 
+async function runRedirectBounceThroughCase(port, fixture) {
+	const platform = 'twitch';
+	const channel = 'twitch-bounce-through-alpha';
+	const initialPath = `/popout/${channel}/chat?popout=`;
+	const initialUrl = fixture.origin + initialPath;
+	const source = await launchClassicSource(port, platform, channel, initialUrl);
+
+	const returnedUrl = `${fixture.origin}/popout/${channel}/chat?popout=&resumed=1`;
+	await waitFor(async () => {
+		const windows = await listWindows(port);
+		return windows.some(windowInfo => windowInfo.id === source.windowId && windowInfo.url === returnedUrl);
+	}, 'twitch bounce-through return to chat');
+
+	// Outlast the settle window so a wrongly armed violation timer would have fired.
+	await sleep(4000);
+	await assertSourceActive(port, source.sourceId, source.windowId, 'twitch redirect bounce-through');
+	const state = await getSourceState(port, source.sourceId);
+	assert.strictEqual(
+		state.navigationEvents.length,
+		0,
+		'redirect chain that returns to the same channel should not trigger source recovery'
+	);
+	const popoutLoads = fixture.getRequestCount(`/popout/${channel}/chat`);
+	assert.strictEqual(popoutLoads, 2, 'bounce-through should load the chat page exactly twice (initial + return)');
+	assert.strictEqual(fixture.getRequestCount('/session-refresh'), 1, 'bounce-through should hit the session-refresh hop once');
+	assert.strictEqual(fixture.getRequestCount('/login-hop'), 1, 'bounce-through should hit the login hop once');
+
+	await removeSource(port, source.sourceId);
+	return { platform, redirectBounceThrough: 'stayed-connected', popoutLoads };
+}
+
 async function runNavigationLoopProtectionCase(port, fixture) {
 	const platform = 'twitch';
 	const channel = 'twitch-navigation-loop-alpha';
@@ -427,7 +471,7 @@ async function runNavigationLoopProtectionCase(port, fixture) {
 	const initialUrl = fixture.origin + initialPath;
 	const source = await launchClassicSource(port, platform, channel, initialUrl);
 
-	await waitForSourceStopped(port, source.sourceId, source.windowId, 'repeated redirect retry limit', 45000);
+	await waitForSourceStopped(port, source.sourceId, source.windowId, 'repeated redirect retry limit', 75000);
 	const requestPath = `/popout/${channel}/chat`;
 	const requestCountAtStop = fixture.getRequestCount(requestPath);
 	assert.strictEqual(requestCountAtStop, 4, 'navigation recovery should load the original chat once plus three retries');
@@ -461,7 +505,12 @@ function assertPlatformConfigs() {
 		const filePath = path.join(socialStreamFsRoot, 'settings', fileName);
 		const config = JSON.parse(fs.readFileSync(filePath, 'utf8'));
 		for (const platform of ['twitch', 'vpzone']) {
-			assert.strictEqual(config[platform]?.closeOnNavigate, true, `${fileName}: ${platform} closeOnNavigate should be enabled`);
+			assert.strictEqual(config[platform]?.closeOnNavigateV2, true, `${fileName}: ${platform} closeOnNavigateV2 should be enabled`);
+			assert.strictEqual(
+				config[platform]?.closeOnNavigate,
+				undefined,
+				`${fileName}: ${platform} legacy closeOnNavigate must stay absent so pre-0.4.12 builds keep the guard disarmed`
+			);
 			assert.strictEqual(config[platform]?.closeOnNavigateMode, 'channel', `${fileName}: ${platform} should use channel navigation mode`);
 		}
 	}
@@ -545,6 +594,7 @@ async function run() {
 			results.push(await runFullNavigationCase(remotePort, fixture.origin, platform));
 			results.push(await runInvalidRouteCase(remotePort, fixture.origin, platform));
 		}
+		results.push(await runRedirectBounceThroughCase(remotePort, fixture));
 		results.push(await runNavigationLoopProtectionCase(remotePort, fixture));
 
 		console.log('Source navigation safety E2E passed.');
