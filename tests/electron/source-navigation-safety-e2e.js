@@ -112,14 +112,33 @@ async function getSourceState(port, sourceId) {
 	return await execInMain(port, `
 		(() => {
 			const source = stateManager.getSource(${JSON.stringify(sourceId)});
+			const navigationEvents = Array.isArray(window.__ssappNavigationTestEvents)
+				? window.__ssappNavigationTestEvents.filter(payload => payload?.sourceId === ${JSON.stringify(sourceId)})
+				: [];
 			return source ? {
 				id: source.id,
 				status: source.status,
 				vid: source.vid || null,
-				activeConnectionMode: source.activeConnectionMode || null
+				activeConnectionMode: source.activeConnectionMode || null,
+				navigationEvents
 			} : null;
 		})()
 	`, 'read source state');
+}
+
+async function installNavigationEventProbe(port) {
+	await execInMain(port, `
+		(() => {
+			if (window.__ssappNavigationTestListener) return true;
+			window.__ssappNavigationTestEvents = [];
+			const testIpcRenderer = require('electron').ipcRenderer;
+			window.__ssappNavigationTestListener = (_event, payload) => {
+				window.__ssappNavigationTestEvents.push(payload || {});
+			};
+			testIpcRenderer.on('window-auto-closed', window.__ssappNavigationTestListener);
+			return true;
+		})()
+	`, 'install navigation event probe');
 }
 
 async function assertSourceActive(port, sourceId, windowId, label) {
@@ -132,7 +151,36 @@ async function assertSourceActive(port, sourceId, windowId, label) {
 	assert.strictEqual(source.activeConnectionMode, 'classic', `${label}: source should remain in Standard mode`);
 }
 
-async function waitForSourceStopped(port, sourceId, windowId, label) {
+async function waitForSourceRecovered(port, sourceId, previousWindowId, expectedUrl, label) {
+	let lastSnapshot = null;
+	const stateChanges = [];
+	let lastStateKey = null;
+	try {
+		return await waitFor(async () => {
+			const windows = await listWindows(port);
+			const source = await getSourceState(port, sourceId);
+			lastSnapshot = { windows, source, previousWindowId, expectedUrl };
+			const stateKey = JSON.stringify(lastSnapshot);
+			if (stateKey !== lastStateKey) {
+				stateChanges.push(lastSnapshot);
+				lastStateKey = stateKey;
+			}
+			const recoveredWindow = windows.find(windowInfo => windowInfo.url === expectedUrl);
+			return recoveredWindow
+				&& source
+				&& source.navigationEvents.length > 0
+				&& source.status === 'active'
+				&& source.vid
+				&& source.activeConnectionMode === 'classic'
+				? recoveredWindow.id
+				: false;
+		}, label, 30000);
+	} catch (error) {
+		throw new Error(`${error.message}; state changes: ${JSON.stringify(stateChanges.slice(-20))}`);
+	}
+}
+
+async function waitForSourceStopped(port, sourceId, windowId, label, timeoutMs = 30000) {
 	await waitFor(async () => {
 		const windows = await listWindows(port);
 		const source = await getSourceState(port, sourceId);
@@ -141,12 +189,22 @@ async function waitForSourceStopped(port, sourceId, windowId, label) {
 			&& source.status === 'inactive'
 			&& !source.vid
 			&& !source.activeConnectionMode;
-	}, label);
+	}, label, timeoutMs);
 }
 
 async function startFixtureServer() {
 	const port = await getFreePort();
+	const requestCounts = new Map();
 	const server = http.createServer((req, res) => {
+		const requestUrl = new URL(req.url, `http://127.0.0.1:${port}`);
+		const pathname = requestUrl.pathname;
+		requestCounts.set(pathname, (requestCounts.get(pathname) || 0) + 1);
+		if (pathname === '/subframe-redirect') {
+			res.writeHead(302, { Location: '/subframe-target' });
+			res.end();
+			return;
+		}
+		const shouldRedirectOnEveryLoad = pathname.includes('navigation-loop-alpha');
 		res.writeHead(200, {
 			'Content-Type': 'text/html; charset=utf-8',
 			'Cache-Control': 'no-store'
@@ -159,6 +217,7 @@ async function startFixtureServer() {
 					<script>
 						window.__fixtureLoads = Number(sessionStorage.getItem('fixtureLoads') || '0') + 1;
 						sessionStorage.setItem('fixtureLoads', String(window.__fixtureLoads));
+						${shouldRedirectOnEveryLoad ? "setTimeout(() => location.assign('/directory?from=navigation-loop'), 500);" : ''}
 					</script>
 				</body>
 			</html>`);
@@ -169,7 +228,10 @@ async function startFixtureServer() {
 	});
 	return {
 		server,
-		origin: `http://127.0.0.1:${port}`
+		origin: `http://127.0.0.1:${port}`,
+		getRequestCount(pathname) {
+			return requestCounts.get(pathname) || 0;
+		}
 	};
 }
 
@@ -213,8 +275,15 @@ async function launchClassicSource(port, platform, channel, url) {
 
 async function removeSource(port, sourceId) {
 	await execInMain(port, `
-		stateManager.removeSource(${JSON.stringify(sourceId)});
-		true;
+		(async () => {
+			const entry = document.querySelector('[data-source-id="${sourceId}"]');
+			if (entry) {
+				await deleteThis(entry);
+			} else {
+				stateManager.removeSource(${JSON.stringify(sourceId)});
+			}
+			return true;
+		})()
 	`, 'remove test source').catch(() => null);
 }
 
@@ -238,6 +307,36 @@ async function runSoftNavigationCase(port, fixtureOrigin, platform) {
 	`, `${platform} DOM rerender`);
 	await sleep(250);
 	await assertSourceActive(port, source.sourceId, source.windowId, `${platform} DOM rerender`);
+
+	await execInWindow(port, source.windowId, `
+		(() => {
+			const iframe = document.createElement('iframe');
+			iframe.id = 'redirecting-subframe';
+			iframe.src = ${JSON.stringify(fixtureOrigin + '/subframe-redirect')};
+			document.body.appendChild(iframe);
+			return true;
+		})()
+	`, `${platform} subframe redirect`);
+	await waitFor(async () => {
+		return await execInWindow(port, source.windowId, `
+			(() => {
+				const iframe = document.getElementById('redirecting-subframe');
+				try {
+					return iframe?.contentWindow?.location?.pathname === '/subframe-target';
+				} catch (_) {
+					return false;
+				}
+			})()
+		`, `${platform} subframe redirect completion`);
+	}, `${platform} subframe redirect completion`);
+	await sleep(250);
+	await assertSourceActive(port, source.sourceId, source.windowId, `${platform} subframe redirect`);
+	const stateAfterSubframeRedirect = await getSourceState(port, source.sourceId);
+	assert.strictEqual(
+		stateAfterSubframeRedirect.navigationEvents.length,
+		0,
+		`${platform} subframe redirect should not trigger source recovery`
+	);
 
 	const queryRewrite = platform === 'twitch'
 		? `/popout/${channel}/chat?react=1&popout=#state`
@@ -268,16 +367,17 @@ async function runSoftNavigationCase(port, fixtureOrigin, platform) {
 		history.pushState({ raid: true }, '', ${JSON.stringify(changedPath)});
 		true;
 	`, `${platform} SPA channel change`).catch(() => null);
-	await waitForSourceStopped(port, source.sourceId, source.windowId, `${platform} SPA channel change`);
+	await waitForSourceRecovered(port, source.sourceId, source.windowId, initialUrl, `${platform} SPA channel recovery`);
 	await removeSource(port, source.sourceId);
 
 	return {
 		platform,
 		domRerender: 'active',
+		subframeRedirect: 'active',
 		queryRewrite: 'active',
 		sameChannelRouteRewrite: 'active',
 		sameChannelReload: 'active',
-		spaChannelChange: 'stopped'
+		spaChannelChange: 'recovered-original-chat'
 	};
 }
 
@@ -290,15 +390,16 @@ async function runFullNavigationCase(port, fixtureOrigin, platform) {
 	const nextPath = platform === 'twitch'
 		? `/popout/${nextChannel}/chat?popout=`
 		: `/watch/${nextChannel}`;
-	const source = await launchClassicSource(port, platform, channel, fixtureOrigin + initialPath);
+	const initialUrl = fixtureOrigin + initialPath;
+	const source = await launchClassicSource(port, platform, channel, initialUrl);
 
 	await execInWindow(port, source.windowId, `
 		location.assign(${JSON.stringify(fixtureOrigin + nextPath)});
 		true;
 	`, `${platform} full channel navigation`).catch(() => null);
-	await waitForSourceStopped(port, source.sourceId, source.windowId, `${platform} full channel navigation`);
+	await waitForSourceRecovered(port, source.sourceId, source.windowId, initialUrl, `${platform} full channel recovery`);
 	await removeSource(port, source.sourceId);
-	return { platform, fullChannelNavigation: 'stopped' };
+	return { platform, fullChannelNavigation: 'recovered-original-chat' };
 }
 
 async function runInvalidRouteCase(port, fixtureOrigin, platform) {
@@ -307,15 +408,52 @@ async function runInvalidRouteCase(port, fixtureOrigin, platform) {
 		? `/popout/${channel}/chat?popout=`
 		: `/watch/${channel}`;
 	const invalidPath = platform === 'twitch' ? '/directory' : '/';
-	const source = await launchClassicSource(port, platform, channel, fixtureOrigin + initialPath);
+	const initialUrl = fixtureOrigin + initialPath;
+	const source = await launchClassicSource(port, platform, channel, initialUrl);
 
 	await execInWindow(port, source.windowId, `
 		history.pushState({ invalid: true }, '', ${JSON.stringify(invalidPath)});
 		true;
 	`, `${platform} invalid capture route`).catch(() => null);
-	await waitForSourceStopped(port, source.sourceId, source.windowId, `${platform} invalid capture route`);
+	await waitForSourceRecovered(port, source.sourceId, source.windowId, initialUrl, `${platform} invalid-route recovery`);
 	await removeSource(port, source.sourceId);
-	return { platform, invalidCaptureRoute: 'stopped' };
+	return { platform, invalidCaptureRoute: 'recovered-original-chat' };
+}
+
+async function runNavigationLoopProtectionCase(port, fixture) {
+	const platform = 'twitch';
+	const channel = 'twitch-navigation-loop-alpha';
+	const initialPath = `/popout/${channel}/chat?popout=`;
+	const initialUrl = fixture.origin + initialPath;
+	const source = await launchClassicSource(port, platform, channel, initialUrl);
+
+	await waitForSourceStopped(port, source.sourceId, source.windowId, 'repeated redirect retry limit', 45000);
+	const requestPath = `/popout/${channel}/chat`;
+	const requestCountAtStop = fixture.getRequestCount(requestPath);
+	assert.strictEqual(requestCountAtStop, 4, 'navigation recovery should load the original chat once plus three retries');
+
+	const finalStatus = await execInMain(port, `
+		(() => {
+			const entry = document.querySelector('[data-source-id="${source.sourceId}"]');
+			return entry?.querySelector('.ws-status')?.textContent || '';
+		})()
+	`, 'read exhausted navigation recovery status');
+	assert(finalStatus.includes("couldn't reconnect"), `final status should explain the reconnect failure: ${finalStatus}`);
+	const normalizedFinalStatus = finalStatus.toLowerCase();
+	assert(
+		!normalizedFinalStatus.includes('closed due to navigation')
+			&& !normalizedFinalStatus.includes('channel via redirect'),
+		`final status should avoid internal navigation wording: ${finalStatus}`
+	);
+
+	await sleep(3000);
+	assert.strictEqual(
+		fixture.getRequestCount(requestPath),
+		requestCountAtStop,
+		'navigation recovery should not keep reloading after the retry limit'
+	);
+	await removeSource(port, source.sourceId);
+	return { platform, repeatedRedirects: 'stopped-after-three-retries', totalLoads: requestCountAtStop };
 }
 
 function assertPlatformConfigs() {
@@ -399,6 +537,7 @@ async function run() {
 		}, 'SSApp renderer initialization', 60000);
 
 		await execInMain(remotePort, 'stateManager.clearAllSourcesAndGroups(); true;', 'clear source state');
+		await installNavigationEventProbe(remotePort);
 
 		const results = [];
 		for (const platform of ['twitch', 'vpzone']) {
@@ -406,6 +545,7 @@ async function run() {
 			results.push(await runFullNavigationCase(remotePort, fixture.origin, platform));
 			results.push(await runInvalidRouteCase(remotePort, fixture.origin, platform));
 		}
+		results.push(await runNavigationLoopProtectionCase(remotePort, fixture));
 
 		console.log('Source navigation safety E2E passed.');
 		console.log(JSON.stringify(results, null, 2));

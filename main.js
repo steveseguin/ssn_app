@@ -8985,6 +8985,18 @@ function createCloseOnNavigateAllowance(args = {}, mode = 'prefix') {
     };
 }
 
+function getCloseOnNavigateEventUrl(event, legacyUrl) {
+    if (event && typeof event.url === 'string' && event.url) return event.url;
+    return legacyUrl;
+}
+
+function isCloseOnNavigateMainFrameEvent(event, legacyIsMainFrame) {
+    const isMainFrame = event && typeof event.isMainFrame === 'boolean'
+        ? event.isMainFrame
+        : legacyIsMainFrame;
+    return isMainFrame !== false;
+}
+
 async function createWindow(args, reuse = false, mainApp = false) {
     try {
         var webSecurity = true;
@@ -9746,6 +9758,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact' | 'channel'
                         const preserveManualTikTokStandard = shouldPreserveManualTikTokStandardNavigation(args);
                         let navigationWarningSent = false;
+                        let navigationCloseStarted = false;
                         const isAllowed = createCloseOnNavigateAllowance(args, mode);
 
                         const maybeClose = (navUrl, reason) => {
@@ -9758,6 +9771,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                     }
                                     return;
                                 }
+                                if (navigationCloseStarted) return;
+                                navigationCloseStarted = true;
                                 try { log(`Auto-closing activated window due to navigation (${reason}): ${navUrl}`); } catch (_) { }
                                 try {
                                     // Inform renderer (best-effort)
@@ -9772,8 +9787,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                         view.webContents.on('will-navigate', (event, url) => { maybeClose(url, 'will-navigate'); });
                         view.webContents.on('did-navigate', (event, url) => { maybeClose(url, 'did-navigate'); });
-                        view.webContents.on('did-navigate-in-page', (event, url) => { maybeClose(url, 'did-navigate-in-page'); });
-                        view.webContents.on('did-redirect-navigation', (event, url) => { maybeClose(url, 'redirect'); });
+                        view.webContents.on('did-navigate-in-page', (event, url, isMainFrame) => {
+                            if (!isCloseOnNavigateMainFrameEvent(event, isMainFrame)) return;
+                            maybeClose(getCloseOnNavigateEventUrl(event, url), 'did-navigate-in-page');
+                        });
+                        view.webContents.on('did-redirect-navigation', (event, url, _isInPlace, isMainFrame) => {
+                            if (!isCloseOnNavigateMainFrameEvent(event, isMainFrame)) return;
+                            maybeClose(getCloseOnNavigateEventUrl(event, url), 'redirect');
+                        });
                     }
                 } catch (e) {
                     try { console.warn('Error attaching closeOnNavigate handlers:', e); } catch (_) { }
@@ -12859,6 +12880,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact' | 'channel'
                         const preserveManualTikTokStandard = shouldPreserveManualTikTokStandardNavigation(args);
                         let navigationWarningSent = false;
+                        let navigationCloseStarted = false;
                         const isAllowed = createCloseOnNavigateAllowance(args, mode);
 
                         const maybeClose = (navUrl, reason) => {
@@ -12871,6 +12893,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                     }
                                     return;
                                 }
+                                if (navigationCloseStarted) return;
+                                navigationCloseStarted = true;
                                 try { log(`Auto-closing activated window due to navigation (${reason}): ${navUrl}`); } catch (_) { }
 
                                 // Best-effort UI notification with details for toast
@@ -12902,8 +12926,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                         view.webContents.on('will-navigate', (event, url) => { maybeClose(url, 'will-navigate'); });
                         view.webContents.on('did-navigate', (event, url) => { maybeClose(url, 'did-navigate'); });
-                        view.webContents.on('did-navigate-in-page', (event, url) => { maybeClose(url, 'did-navigate-in-page'); });
-                        view.webContents.on('did-redirect-navigation', (event, url) => { maybeClose(url, 'redirect'); });
+                        view.webContents.on('did-navigate-in-page', (event, url, isMainFrame) => {
+                            if (!isCloseOnNavigateMainFrameEvent(event, isMainFrame)) return;
+                            maybeClose(getCloseOnNavigateEventUrl(event, url), 'did-navigate-in-page');
+                        });
+                        view.webContents.on('did-redirect-navigation', (event, url, _isInPlace, isMainFrame) => {
+                            if (!isCloseOnNavigateMainFrameEvent(event, isMainFrame)) return;
+                            maybeClose(getCloseOnNavigateEventUrl(event, url), 'redirect');
+                        });
                     }
                 } catch (e) {
                     try { console.warn('Error attaching closeOnNavigate handlers (classic window):', e); } catch (_) { }

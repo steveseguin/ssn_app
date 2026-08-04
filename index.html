@@ -4061,6 +4061,7 @@
                             }
 
                             // Remove from state
+                            cancelSourceNavigationRecovery(source.id);
                             stateManager.removeSource(source.id);
                             removedCount++;
                             debugInfo.removed++;
@@ -4384,6 +4385,7 @@
         const rumbleIntervals = new Map();
         const rumbleCountdownIntervals = new Map();
         const RUMBLE_AUTO_CHECK_INTERVAL_MS = 60000;
+        let cancelSourceNavigationRecovery = () => false;
 
         // Track recent manual activation attempts so we can distinguish them from auto-activations
         const MANUAL_ACTIVATION_WINDOW_MS = 15000;
@@ -6575,11 +6577,13 @@
                             if (ipcRenderer) await ipcRenderer.sendSync('closeWindow', { vid: source.vid });
                         } catch (e) { console.warn('Error closing window/WSS during delete:', e); }
                     }
+                    cancelSourceNavigationRecovery(sourceId);
                     stateManager.removeSource(sourceId);
                 }
             } else if (groupId) {
                 const group = stateManager.getGroup(groupId);
                 if (group) {
+                    (group.streams || []).forEach(sourceId => cancelSourceNavigationRecovery(sourceId));
                     stateManager.removeGroup(groupId);
                 }
             }
@@ -6591,6 +6595,7 @@
 
             const sourcesSnapshot = stateManager.getSources();
             const groupsSnapshot = stateManager.getGroups ? stateManager.getGroups() : [];
+            sourcesSnapshot.forEach(source => source?.id && cancelSourceNavigationRecovery(source.id));
 
             if (sourcesSnapshot.length === 0 && groupsSnapshot.length === 0) {
                 if (typeof Toast !== 'undefined' && Toast?.info) {
@@ -6852,6 +6857,22 @@
             if (!source) return;
             const effectiveMode = getEffectiveConnectionMode(source) || source.connectionMode;
             const tikTokWssId = getTikTokWssId(source);
+            const canceledNavigationRecovery = cancelSourceNavigationRecovery(sourceId);
+
+            if (canceledNavigationRecovery && !hasConnectionHandles(source)) {
+                stateManager.updateSource(sourceId, {
+                    status: 'inactive',
+                    vid: null,
+                    wssId: null,
+                    tiktokWssId: null,
+                    activeConnectionMode: null,
+                    error: null
+                });
+                updateConnectionStatus(entry, 'stopped', 'Reconnect stopped.');
+                setTimeout(() => updateConnectionStatus(entry, 'clear'), 1000);
+                restoreActivateButton(entry);
+                return;
+            }
 
             if (ele.dataset.connecting === "true" && source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy')) {
                 cancelPendingTikTokActivation(sourceId);
@@ -7343,6 +7364,7 @@
                     const stopped = await stopSourceInternal(sourceId);
                     if (!stopped.ok) return stopped;
                 }
+                cancelSourceNavigationRecovery(sourceId);
                 stateManager.removeSource(sourceId);
                 return ok({ sourceId, removed: true });
             }
@@ -12133,6 +12155,223 @@
                     return translate('tiktok.standard.redirected');
                 }
 
+                const SOURCE_NAVIGATION_RETRY_DELAYS_MS = [2000, 5000, 15000];
+                const SOURCE_NAVIGATION_SUCCESS_MESSAGE_DELAY_MS = 4000;
+                const SOURCE_NAVIGATION_STABLE_RESET_MS = 30000;
+                const sourceNavigationRecoveries = new Map();
+
+                function describeSourceChat(source) {
+                    const channel = String(source?.username || source?.channel || '').trim();
+                    if (channel) return `${channel}'s chat`;
+                    const target = String(source?.target || 'source').trim();
+                    const platform = target ? target.charAt(0).toUpperCase() + target.slice(1) : 'This';
+                    return `${platform} chat`;
+                }
+
+                function describeSourcePlatform(source) {
+                    const target = String(source?.target || '').trim();
+                    return target ? target.charAt(0).toUpperCase() + target.slice(1) : 'the chat service';
+                }
+
+                function clearSourceNavigationRecoveryTimers(recovery) {
+                    if (!recovery) return;
+                    if (recovery.timer) clearTimeout(recovery.timer);
+                    if (recovery.successTimer) clearTimeout(recovery.successTimer);
+                    if (recovery.resetTimer) clearTimeout(recovery.resetTimer);
+                    recovery.timer = null;
+                    recovery.successTimer = null;
+                    recovery.resetTimer = null;
+                }
+
+                cancelSourceNavigationRecovery = function (sourceId) {
+                    const recovery = sourceNavigationRecoveries.get(sourceId);
+                    if (!recovery) return false;
+                    clearSourceNavigationRecoveryTimers(recovery);
+                    sourceNavigationRecoveries.delete(sourceId);
+                    return true;
+                };
+
+                function updateSourceNavigationRecoveryStatus(sourceId, type, message, connecting = false) {
+                    const entryElement = document.querySelector(`[data-source-id="${sourceId}"]`);
+                    if (!entryElement) return;
+                    updateConnectionStatus(entryElement, type, message, { persistent: true });
+                    if (connecting) {
+                        setActivateButtonConnecting(entryElement);
+                    }
+                }
+
+                function stopSourceAfterNavigationRecovery(sourceId, recovery) {
+                    if (sourceNavigationRecoveries.get(sourceId) !== recovery) return;
+                    clearSourceNavigationRecoveryTimers(recovery);
+                    sourceNavigationRecoveries.delete(sourceId);
+
+                    const source = stateManager.getSource(sourceId);
+                    if (!source) return;
+                    stateManager.updateSource(sourceId, {
+                        status: 'inactive',
+                        vid: null,
+                        wssId: null,
+                        tiktokWssId: null,
+                        activeConnectionMode: null,
+                        error: null
+                    });
+
+                    const chatLabel = describeSourceChat(source);
+                    const platform = describeSourcePlatform(source);
+                    const message = `SSN couldn't reconnect to ${chatLabel} after ${SOURCE_NAVIGATION_RETRY_DELAYS_MS.length} tries, so this chat source was stopped. Check the channel name or sign in to ${platform}, then start it again.`;
+                    updateSourceNavigationRecoveryStatus(sourceId, 'error', message, false);
+                    const entryElement = document.querySelector(`[data-source-id="${sourceId}"]`);
+                    if (entryElement) restoreActivateButton(entryElement);
+                    Toast.warning('Chat Source Stopped', message);
+                }
+
+                async function reconnectSourceAfterNavigation(sourceId, recovery) {
+                    if (sourceNavigationRecoveries.get(sourceId) !== recovery) return;
+                    recovery.timer = null;
+
+                    const source = stateManager.getSource(sourceId);
+                    if (!source) {
+                        cancelSourceNavigationRecovery(sourceId);
+                        return;
+                    }
+                    if ((source.connectionMode || 'classic') !== 'classic') {
+                        cancelSourceNavigationRecovery(sourceId);
+                        return;
+                    }
+                    if (hasConnectionHandles(source)) {
+                        cancelSourceNavigationRecovery(sourceId);
+                        return;
+                    }
+
+                    const entryElement = document.querySelector(`[data-source-id="${sourceId}"]`);
+                    const activateButton = entryElement?.querySelector('[data-activatehtml]');
+                    if (!activateButton) {
+                        queueSourceNavigationReconnect(sourceId, recovery);
+                        return;
+                    }
+
+                    recovery.inProgress = true;
+                    recovery.redirectedDuringAttempt = false;
+                    const chatLabel = describeSourceChat(source);
+                    updateSourceNavigationRecoveryStatus(
+                        sourceId,
+                        'info',
+                        `Reconnecting to ${chatLabel} (try ${recovery.attempt} of ${SOURCE_NAVIGATION_RETRY_DELAYS_MS.length})...`,
+                        true
+                    );
+
+                    let windowId = false;
+                    try {
+                        windowId = await createWindow(activateButton);
+                    } catch (error) {
+                        console.warn('[Navigation Recovery] Reconnect failed:', error?.message || error);
+                    }
+
+                    if (sourceNavigationRecoveries.get(sourceId) !== recovery) return;
+                    recovery.inProgress = false;
+                    if (recovery.redirectedDuringAttempt) {
+                        recovery.redirectedDuringAttempt = false;
+                        queueSourceNavigationReconnect(sourceId, recovery);
+                        return;
+                    }
+                    if (!windowId) {
+                        queueSourceNavigationReconnect(sourceId, recovery);
+                        return;
+                    }
+
+                    recovery.windowId = windowId;
+                    updateSourceNavigationRecoveryStatus(sourceId, 'info', `Checking ${chatLabel}...`, false);
+                    recovery.successTimer = setTimeout(() => {
+                        if (sourceNavigationRecoveries.get(sourceId) !== recovery) return;
+                        const currentSource = stateManager.getSource(sourceId);
+                        if (!currentSource || currentSource.vid !== windowId || currentSource.status !== 'active') return;
+                        updateSourceNavigationRecoveryStatus(sourceId, 'info', `Reconnected to ${chatLabel}.`, false);
+                    }, SOURCE_NAVIGATION_SUCCESS_MESSAGE_DELAY_MS);
+                    recovery.resetTimer = setTimeout(() => {
+                        if (sourceNavigationRecoveries.get(sourceId) !== recovery) return;
+                        clearSourceNavigationRecoveryTimers(recovery);
+                        sourceNavigationRecoveries.delete(sourceId);
+                    }, SOURCE_NAVIGATION_STABLE_RESET_MS);
+                }
+
+                function queueSourceNavigationReconnect(sourceId, recovery) {
+                    if (sourceNavigationRecoveries.get(sourceId) !== recovery) return;
+                    if (recovery.timer || recovery.inProgress) return;
+                    if (recovery.attempt >= SOURCE_NAVIGATION_RETRY_DELAYS_MS.length) {
+                        stopSourceAfterNavigationRecovery(sourceId, recovery);
+                        return;
+                    }
+
+                    const source = stateManager.getSource(sourceId);
+                    if (!source) {
+                        cancelSourceNavigationRecovery(sourceId);
+                        return;
+                    }
+
+                    const delayMs = SOURCE_NAVIGATION_RETRY_DELAYS_MS[recovery.attempt];
+                    recovery.attempt += 1;
+                    stateManager.updateSource(sourceId, {
+                        status: 'activating',
+                        vid: null,
+                        wssId: null,
+                        tiktokWssId: null,
+                        activeConnectionMode: 'classic',
+                        error: null
+                    });
+
+                    const chatLabel = describeSourceChat(source);
+                    const seconds = Math.max(1, Math.round(delayMs / 1000));
+                    updateSourceNavigationRecoveryStatus(
+                        sourceId,
+                        'info',
+                        `${chatLabel} opened another page. Reconnecting in ${seconds} second${seconds === 1 ? '' : 's'} (try ${recovery.attempt} of ${SOURCE_NAVIGATION_RETRY_DELAYS_MS.length})...`,
+                        true
+                    );
+                    recovery.timer = setTimeout(() => {
+                        reconnectSourceAfterNavigation(sourceId, recovery);
+                    }, delayMs);
+                }
+
+                function recoverSourceAfterNavigation(source) {
+                    const sourceId = source.id;
+                    let recovery = sourceNavigationRecoveries.get(sourceId);
+
+                    if (!recovery) {
+                        recovery = {
+                            attempt: 0,
+                            timer: null,
+                            successTimer: null,
+                            resetTimer: null,
+                            inProgress: false,
+                            redirectedDuringAttempt: false,
+                            windowId: null
+                        };
+                        sourceNavigationRecoveries.set(sourceId, recovery);
+                        const message = `${describeSourceChat(source)} opened another page. SSN will reconnect to the chat you added.`;
+                        Toast.info('Reconnecting Chat', message);
+                    }
+
+                    if (recovery.successTimer) clearTimeout(recovery.successTimer);
+                    if (recovery.resetTimer) clearTimeout(recovery.resetTimer);
+                    recovery.successTimer = null;
+                    recovery.resetTimer = null;
+
+                    stateManager.updateSource(sourceId, {
+                        status: 'activating',
+                        vid: null,
+                        wssId: null,
+                        tiktokWssId: null,
+                        activeConnectionMode: 'classic',
+                        error: null
+                    });
+
+                    if (recovery.inProgress) {
+                        recovery.redirectedDuringAttempt = true;
+                        return;
+                    }
+                    queueSourceNavigationReconnect(sourceId, recovery);
+                }
+
                 ipcRenderer.on('window-navigation-warning', (event, payload) => {
                     try {
                         const source = getSourceForWindowPayload(payload || {});
@@ -12173,14 +12412,17 @@
                 // Auto-close notification from main when a classic window navigates away
                 ipcRenderer.on('window-auto-closed', (event, payload) => {
                     try {
-                        const { reason, mode } = payload || {};
                         const source = getSourceForWindowPayload(payload || {});
-                        if (source) {
-                            stateManager.updateSource(source.id, { status: 'inactive', vid: null, activeConnectionMode: null });
+                        if (!source) return;
+                        if (payload?.mode === 'channel' && (source.connectionMode || 'classic') === 'classic') {
+                            recoverSourceAfterNavigation(source);
+                            return;
                         }
-                        const title = 'Source Stopped';
-                        const msg = `Closed due to navigation change (${mode || 'prefix'} via ${reason || 'navigate'}).`;
-                        Toast.info(title, msg);
+
+                        stateManager.updateSource(source.id, { status: 'inactive', vid: null, activeConnectionMode: null });
+                        const message = `${describeSourceChat(source)} opened another page, so this chat source was stopped to avoid capturing the wrong chat.`;
+                        updateSourceNavigationRecoveryStatus(source.id, 'error', message, false);
+                        Toast.info('Chat Source Stopped', message);
                     } catch (e) {
                         console.warn('Failed to handle window-auto-closed event:', e);
                     }

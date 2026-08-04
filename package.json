@@ -48,6 +48,7 @@
     "test:youtube-owner-discovery": "node tests/electron/youtube-owner-discovery-regression.js",
     "test:youtube-oauth-loopback": "node tests/electron/youtube-oauth-loopback-e2e.js",
     "test:chathistory-export": "node tests/electron/chathistory-export-regression.js",
+    "test:chathistory-origin:e2e": "node tests/electron/chathistory-origin-compat-e2e.js",
     "test:packaging-prune": "node tests/electron/prune-packaged-native-binaries-regression.js",
     "test:artifact-hook": "node tests/electron/artifact-hook-regression.js",
     "test:tiktok-auto-mode": "node tests/tiktok/auto-mode-regression.js",
