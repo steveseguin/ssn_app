@@ -89,7 +89,7 @@ let activeAuthWsHostRef = { count: 0, host: null };
 
 const SIGNING_SERVICE_HELP_URL = (process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL && process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL.trim())
     ? process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL.trim()
-    : 'https://github.com/SocialStreamNinja/ssapp/wiki/TikTok-Signing';
+    : 'https://socialstream.ninja/docs/tiktok-signing.html';
 const EULER_DASHBOARD_URL = 'https://www.eulerstream.com/dashboard';
 const EULER_RATE_LIMITS_URL = 'https://www.eulerstream.com/docs/sign-server/rate-limits';
 const SHARED_EULER_SIGNING_FALLBACK_KEY = (process.env.SSAPP_TIKTOK_SHARED_EULER_SIGNING_KEY && process.env.SSAPP_TIKTOK_SHARED_EULER_SIGNING_KEY.trim())

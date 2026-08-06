@@ -680,7 +680,7 @@
         const ssappSigningGuideEnv = (typeof process !== 'undefined' && process?.env?.SSAPP_TIKTOK_SIGNING_GUIDE_URL)
             ? String(process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL).trim()
             : '';
-        const defaultSigningGuideUrl = ssappSigningGuideEnv || 'https://github.com/SocialStreamNinja/ssapp/wiki/TikTok-Signing';
+        const defaultSigningGuideUrl = ssappSigningGuideEnv || 'https://socialstream.ninja/docs/tiktok-signing.html';
         window.SSAPP_SIGNING_HELP_URL = defaultSigningGuideUrl;
 
         function ssappEscapeHtml(value) {
@@ -5708,7 +5708,7 @@
 
             const signingHelpUrl = typeof window.SSAPP_SIGNING_HELP_URL === 'string' && window.SSAPP_SIGNING_HELP_URL.trim()
                 ? window.SSAPP_SIGNING_HELP_URL.trim()
-                : 'https://github.com/SocialStreamNinja/ssapp/wiki/TikTok-Signing';
+                : 'https://socialstream.ninja/docs/tiktok-signing.html';
 
             const content = `
                 <div style="padding: 20px; background: #2a2a2a; border-radius: 8px; max-height: 90vh; overflow-y: auto; width: 100%; max-width: 760px;">
