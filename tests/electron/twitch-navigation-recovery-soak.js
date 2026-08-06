@@ -16,6 +16,7 @@ const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 
 const electronPath = require('electron');
+const { linuxLaunchArgs } = require('./helpers/electron-launch');
 const repoRoot = path.resolve(__dirname, '..', '..');
 const socialStreamFsRoot = path.resolve(repoRoot, '..', 'social_stream');
 const socialStreamRoot = pathToFileURL(socialStreamFsRoot + path.sep).href;
@@ -255,7 +256,8 @@ async function run() {
 		'--multiinstance',
 		'--filesource',
 		socialStreamRoot,
-		'--remote-control'
+		'--remote-control',
+		...linuxLaunchArgs()
 	], {
 		cwd: repoRoot,
 		env: {

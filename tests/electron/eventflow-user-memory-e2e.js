@@ -9,6 +9,7 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const { chromium } = require("playwright-core");
+const { linuxLaunchArgs } = require("./helpers/electron-launch");
 
 const APP_ROOT = path.resolve(__dirname, "..", "..");
 const SOURCE_ROOT = path.resolve(process.env.SOCIAL_STREAM_SOURCE_DIR || path.join(APP_ROOT, "..", "social_stream"));
@@ -57,6 +58,7 @@ function launchApp(profileDirectory, port) {
 			"--multiinstance",
 			"--disable-logs",
 			`--remote-debugging-port=${port}`,
+			...linuxLaunchArgs(),
 		],
 		{
 			cwd: APP_ROOT,

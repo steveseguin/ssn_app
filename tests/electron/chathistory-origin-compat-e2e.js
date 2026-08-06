@@ -10,6 +10,7 @@ const os = require("os");
 const path = require("path");
 const { execFile, spawn } = require("child_process");
 const { chromium } = require("playwright-core");
+const { linuxLaunchArgs } = require("./helpers/electron-launch");
 
 const APP_ROOT = path.resolve(__dirname, "..", "..");
 const SOCIAL_STREAM_ROOT = path.resolve(process.env.SOCIAL_STREAM_SOURCE_DIR || path.join(APP_ROOT, "..", "social_stream"));
@@ -149,6 +150,7 @@ function launchApp(debugPort, sourcePort) {
 		`--filesource=http://127.0.0.1:${sourcePort}/`,
 		`--remote-debugging-port=${debugPort}`,
 		"--disable-logs",
+		...linuxLaunchArgs(),
 	];
 	if (!EXECUTABLE_OVERRIDE) args.splice(ELECTRON_APP_ARGS.length, 0, "--running-from-source");
 
