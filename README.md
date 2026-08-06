@@ -118,6 +118,45 @@ The app stores configuration in:
 The directory comes from Electron's `app.name`, so the capitalisation matters on Linux, where
 the filesystem is case-sensitive. Set `SSAPP_USER_DATA_DIR` to put it somewhere else.
 
+### Local WebSocket server port
+
+The optional local WebSocket server uses port `3003` by default on new installs, which
+keeps it clear of other tools that commonly claim `3000`. Installs that already had the
+local server enabled keep port `3000`, so existing overlay links and OBS browser sources
+continue to connect without being edited; that choice is saved on first launch after
+upgrading and does not change again.
+
+Change the port from **File → Set Local Server Port…**; the app persists the choice and
+adds the matching `localserverport` parameter to Social Stream pages while the server is
+enabled. Pages opened without that parameter still assume port `3000`, so if you hand-write
+an overlay URL on a new install, include `localserverport=3003`.
+
+For managed or development launches, `--ssapp-local-server-port=3003` (alias:
+`--ssapp-ws-port=3003`) overrides the saved value. The `SSAPP_LOCAL_SERVER_PORT` and
+`SSAPP_WS_PORT` environment variables are also accepted. Ports must be whole numbers from
+1024 through 65535. Command-line, environment, saved, and default values are considered in
+that order.
+
+The server binds to `127.0.0.1` by default. **File → Allow Local Server Connections from
+the LAN** changes the binding to `0.0.0.0` after a security warning. Managed launches can
+use `--ssapp-local-server-host=0.0.0.0` (alias `--ssapp-ws-host`) or the
+`SSAPP_LOCAL_SERVER_HOST` / `SSAPP_WS_HOST` environment variables. `loopback` and `lan`
+are accepted as readable aliases. Bind hosts are intentionally limited to loopback
+(`127.0.0.1`) or all interfaces (`0.0.0.0`), since Social Stream pages connect through
+the loopback address on the SSApp machine.
+
+LAN mode has no authentication or encryption and should only be enabled on a trusted
+network. Prefer Social Stream's WebRTC mode when the sender and receiver are on different
+computers.
+
+To package a local Social Stream checkout (including uncommitted integration work) instead
+of downloading the release branch, set `SSN_SOCIALSTREAM_SOURCE`. The standard allowlist is
+still applied, so `.git`, development-only files, and large optional TTS assets are not copied:
+
+```bash
+SSN_SOCIALSTREAM_SOURCE=/path/to/social_stream npm run build:linux
+```
+
 ## Code Signing
 
 Official releases are signed. You can verify the authenticity using the included `code-signing-cert.pem` file. See [CODE_SIGNING.md](CODE_SIGNING.md) for details.

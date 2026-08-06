@@ -715,9 +715,15 @@
             }
         }
 
+        function normalizeLocalWebSocketPort(value) {
+            const port = Number(value);
+            return Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : 3000;
+        }
+
         let cachedSsappEnvironment = (window.ssappEnvironment && typeof window.ssappEnvironment.getCached === 'function')
             ? (window.ssappEnvironment.getCached() || null)
             : null;
+        let localWebSocketPort = normalizeLocalWebSocketPort(cachedSsappEnvironment && cachedSsappEnvironment.localWebSocketPort);
         let cachedBasePath = null;
 
         const activeFallbackAssets = new Map();
@@ -776,11 +782,13 @@
 
         async function ensureSsappEnvironment() {
             if (cachedSsappEnvironment) {
+                localWebSocketPort = normalizeLocalWebSocketPort(cachedSsappEnvironment.localWebSocketPort);
                 return cachedSsappEnvironment;
             }
             if (window.ssappEnvironment && typeof window.ssappEnvironment.get === 'function') {
                 try {
                     cachedSsappEnvironment = await window.ssappEnvironment.get();
+                    localWebSocketPort = normalizeLocalWebSocketPort(cachedSsappEnvironment && cachedSsappEnvironment.localWebSocketPort);
                     return cachedSsappEnvironment || {};
                 } catch (error) {
                     console.warn('[SSAPP] Failed to load environment details:', error);
@@ -792,8 +800,12 @@
 
         function buildFrameQueryParams(extraParams = []) {
             const params = ['ssapp=2'];
-            if (localServer) {
+            const localWebSocketEnabled = !!localServer || !!(cachedSsappEnvironment && cachedSsappEnvironment.localWebSocketEnabled);
+            if (localWebSocketEnabled) {
                 params.push('localserver');
+                if (localWebSocketPort !== 3000) {
+                    params.push(`localserverport=${localWebSocketPort}`);
+                }
             }
             params.push(`basePath=${encodeURIComponent(getBasePath())}`);
             if (Array.isArray(extraParams) && extraParams.length) {
@@ -12093,12 +12105,24 @@
                     log("FROM MAIN TO INDEX", args[0]);
                     if (args[0] == "serverStarted") {
                         console.log("serverStarted");
+                        if (args[1] && args[1].port !== undefined) {
+                            localWebSocketPort = normalizeLocalWebSocketPort(args[1].port);
+                        }
+                        if (cachedSsappEnvironment) cachedSsappEnvironment.localWebSocketEnabled = true;
                         localServer = "&localserver";
                         await setupIframeSource();
                     } else if (args[0] == "serverStopped") {
                         console.log("serverStopped");
+                        if (args[1] && args[1].port !== undefined) {
+                            localWebSocketPort = normalizeLocalWebSocketPort(args[1].port);
+                        }
+                        if (cachedSsappEnvironment) cachedSsappEnvironment.localWebSocketEnabled = false;
                         localServer = "";
                         await setupIframeSource();
+                    } else if (args[0] == "serverPortChanged") {
+                        if (args[1] && args[1].port !== undefined) {
+                            localWebSocketPort = normalizeLocalWebSocketPort(args[1].port);
+                        }
                     }
                     const currentFrame1Src = document.getElementById("frame1")?.src;
                     let expectedFrame1Src = "";

@@ -137,6 +137,11 @@ async function startApp(port) {
 	const child = spawn(electronPath, [
 		'.', '--running-from-source', '--multiinstance', '--filesource', socialStreamUrl,
 		'--ssapp-headless-control', '--ssapp-control-api', `--ssapp-control-port=${port}`, '--no-hwa',
+		// Electron's ozone auto-detection does not reach `ready` on a Wayland
+		// session, so app.whenReady() never resolves and the control API never
+		// binds. Pinning x11 (XWayland) is what the other Electron specs here
+		// already do.
+		'--ozone-platform=x11',
 	], {
 		cwd: repoRoot,
 		env: {
@@ -167,7 +172,12 @@ async function assertHeadlessDoesNotEnableControlApi(port) {
 	const headlessOnlyProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-headless-no-api-'));
 	const child = spawn(electronPath, [
 		'.', '--running-from-source', '--multiinstance', '--filesource', socialStreamUrl,
+		// Same Wayland pin as startApp. It matters more here: without it the app
+		// never reaches `ready`, so this negative check would pass because
+		// nothing started rather than because headless correctly leaves the API
+		// closed.
 		'--ssapp-headless-control', `--ssapp-control-port=${port}`, '--no-hwa',
+		'--ozone-platform=x11',
 	], {
 		cwd: repoRoot,
 		env: {

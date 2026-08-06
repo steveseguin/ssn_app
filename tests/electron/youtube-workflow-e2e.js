@@ -535,15 +535,21 @@ const rendererWorkflow = String.raw`
 
 async function run() {
 	const port = await getFreePort();
+	const electronArgs = [
+		'.',
+		'--running-from-source',
+		'--filesource',
+		socialStreamRoot,
+		'--remote-control'
+	];
+	if (process.platform === 'linux') {
+		// The npm Electron binary is not installed with a root-owned setuid
+		// sandbox helper. These flags apply only to this isolated E2E process.
+		electronArgs.push('--no-sandbox', '--ozone-platform=x11');
+	}
 	const child = spawn(
 		electronPath,
-		[
-			'.',
-			'--running-from-source',
-			'--filesource',
-			socialStreamRoot,
-			'--remote-control'
-		],
+		electronArgs,
 		{
 			cwd: repoRoot,
 			env: {

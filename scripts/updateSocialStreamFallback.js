@@ -6,6 +6,7 @@ const { execFileSync } = require('child_process');
 const REPO_URL = process.env.SSN_SOCIALSTREAM_REPO || 'https://github.com/steveseguin/social_stream.git';
 const BRANCH = process.env.SSN_SOCIALSTREAM_BRANCH || 'main';
 const OUTPUT_BRANCH = process.env.SSN_SOCIALSTREAM_OUTPUT_BRANCH || BRANCH;
+const LOCAL_SOURCE = String(process.env.SSN_SOCIALSTREAM_SOURCE || '').trim();
 const INCLUDE_TTS = /^true$/i.test(process.env.SSN_INCLUDE_TTS || '');
 const EXTRA_PATTERNS = (process.env.SSN_FALLBACK_EXTRA || '')
     .split(/[,;]+/)
@@ -90,9 +91,56 @@ function normalizePatterns(basePatterns, extraPatterns) {
     return normalized;
 }
 
+function globToRegExp(pattern) {
+    const normalized = String(pattern || '').replace(/^\/+/, '').replace(/\\/g, '/');
+    let expression = '^';
+    for (let index = 0; index < normalized.length; index += 1) {
+        const character = normalized[index];
+        if (character === '*') {
+            if (normalized[index + 1] === '*') {
+                expression += '.*';
+                index += 1;
+            } else {
+                expression += '[^/]*';
+            }
+        } else if (character === '?') {
+            expression += '[^/]';
+        } else {
+            expression += character.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+        }
+    }
+    return new RegExp(`${expression}$`);
+}
+
+function copyLocalFallback(sourceRoot, fallbackRoot, sparsePatterns) {
+    const matchers = sparsePatterns.map(globToRegExp);
+    let copiedFiles = 0;
+
+    function visit(directory) {
+        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            if (entry.name === '.git') continue;
+            const absolutePath = path.join(directory, entry.name);
+            const relativePath = path.relative(sourceRoot, absolutePath).split(path.sep).join('/');
+            if (entry.isDirectory()) {
+                visit(absolutePath);
+                continue;
+            }
+            if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+            if (!matchers.some((matcher) => matcher.test(relativePath))) continue;
+            const destination = path.join(fallbackRoot, relativePath);
+            fs.ensureDirSync(path.dirname(destination));
+            fs.copySync(absolutePath, destination, { dereference: true });
+            copiedFiles += 1;
+        }
+    }
+
+    visit(sourceRoot);
+    return copiedFiles;
+}
+
 function updateFallback() {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ssn-socialstream-'));
-    const cloneDir = path.join(tmpRoot, 'social_stream');
+    let tmpRoot = null;
+    let sourceRoot = null;
     const fallbackRoot = path.join(__dirname, '..', 'resources', 'social_stream_fallback', OUTPUT_BRANCH);
 
     const sparsePatterns = normalizePatterns(BASE_PATTERNS, EXTRA_PATTERNS);
@@ -105,12 +153,22 @@ function updateFallback() {
     }
 
     try {
-        console.log(`[fallback] Cloning ${REPO_URL}#${BRANCH} with sparse checkout ...`);
-        runGit(['clone', '--filter=blob:none', '--sparse', '--branch', BRANCH, REPO_URL, cloneDir]);
+        if (LOCAL_SOURCE) {
+            sourceRoot = path.resolve(LOCAL_SOURCE);
+            if (!fs.existsSync(sourceRoot) || !fs.statSync(sourceRoot).isDirectory()) {
+                throw new Error(`SSN_SOCIALSTREAM_SOURCE is not a directory: ${sourceRoot}`);
+            }
+            console.log(`[fallback] Using local Social Stream source at ${sourceRoot}`);
+        } else {
+            tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ssn-socialstream-'));
+            sourceRoot = path.join(tmpRoot, 'social_stream');
+            console.log(`[fallback] Cloning ${REPO_URL}#${BRANCH} with sparse checkout ...`);
+            runGit(['clone', '--filter=blob:none', '--sparse', '--branch', BRANCH, REPO_URL, sourceRoot]);
 
-        console.log('[fallback] Configuring sparse-checkout allowlist...');
-        runGit(['-C', cloneDir, 'sparse-checkout', 'init', '--no-cone']);
-        runGit(['-C', cloneDir, 'sparse-checkout', 'set', ...sparsePatterns]);
+            console.log('[fallback] Configuring sparse-checkout allowlist...');
+            runGit(['-C', sourceRoot, 'sparse-checkout', 'init', '--no-cone']);
+            runGit(['-C', sourceRoot, 'sparse-checkout', 'set', ...sparsePatterns]);
+        }
 
         console.log('[fallback] Included patterns:');
         for (const pattern of sparsePatterns) {
@@ -126,26 +184,34 @@ function updateFallback() {
             console.log(`[fallback] Extra patterns requested: ${EXTRA_PATTERNS.join(', ')}`);
         }
 
-        console.log(`[fallback] Updating ${BRANCH} source bundle at ${fallbackRoot}`);
+        console.log(`[fallback] Updating ${OUTPUT_BRANCH} source bundle at ${fallbackRoot}`);
         fs.removeSync(fallbackRoot);
         fs.ensureDirSync(fallbackRoot);
-        fs.copySync(cloneDir, fallbackRoot, {
-            dereference: true,
-            filter: (src) => {
-                const rel = path.relative(cloneDir, src);
-                if (!rel || rel === '') return true;
-                return !rel.split(path.sep).includes('.git');
-            }
-        });
+        if (LOCAL_SOURCE) {
+            const copiedFiles = copyLocalFallback(sourceRoot, fallbackRoot, sparsePatterns);
+            if (!copiedFiles) throw new Error('No files matched the fallback allowlist in the local source.');
+            console.log(`[fallback] Copied ${copiedFiles} allowlisted files from the local source.`);
+        } else {
+            fs.copySync(sourceRoot, fallbackRoot, {
+                dereference: true,
+                filter: (src) => {
+                    const rel = path.relative(sourceRoot, src);
+                    if (!rel || rel === '') return true;
+                    return !rel.split(path.sep).includes('.git');
+                }
+            });
+        }
         console.log('[fallback] Bundle update complete.');
     } catch (error) {
         console.error('[fallback] Failed to update Social Stream fallback bundle:', error && error.message ? error.message : error);
         process.exit(1);
     } finally {
-        try {
-            fs.removeSync(tmpRoot);
-        } catch (cleanupError) {
-            console.warn('[fallback] Failed to clean temporary directory:', cleanupError && cleanupError.message ? cleanupError.message : cleanupError);
+        if (tmpRoot) {
+            try {
+                fs.removeSync(tmpRoot);
+            } catch (cleanupError) {
+                console.warn('[fallback] Failed to clean temporary directory:', cleanupError && cleanupError.message ? cleanupError.message : cleanupError);
+            }
         }
     }
 }

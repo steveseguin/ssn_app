@@ -52,6 +52,16 @@ const {
     markPortableProfileInitialized
 } = require('./resources/portable-data-paths');
 const { getTrustedStandaloneCustomJsPageType } = require('./resources/custom-js-page-trust');
+const {
+    DEFAULT_LOCAL_WEBSOCKET_HOST,
+    DEFAULT_LOCAL_WEBSOCKET_PORT,
+    LEGACY_LOCAL_WEBSOCKET_PORT,
+    LAN_LOCAL_WEBSOCKET_HOST,
+    isLoopbackHost,
+    normalizeLocalWebSocketHost,
+    normalizeLocalWebSocketPort,
+    resolveLocalWebSocketConfig
+} = require('./resources/local-websocket-config');
 
 let earlyDataPaths = resolveEarlyDataPaths();
 let portableMigrationPending = null;
@@ -233,6 +243,18 @@ const { Worker } = require('worker_threads');
 
 const Store = require("electron-store");
 const store = new Store();
+const localWebSocketConfig = resolveLocalWebSocketConfig({
+    argv: process.argv,
+    env: process.env,
+    storedPort: store.get('localWebSocket.port'),
+    storedHost: store.get('localWebSocket.host')
+});
+if (localWebSocketConfig.invalidSources.length) {
+    console.warn(`[Local WebSocket] Ignored invalid configuration from: ${localWebSocketConfig.invalidSources.join(', ')}`);
+}
+if (!isLoopbackHost(localWebSocketConfig.host)) {
+    console.warn(`[Local WebSocket] LAN access enabled on ${localWebSocketConfig.host}; traffic is not authenticated or encrypted.`);
+}
 let localMediaService = null;
 const reporter = require('./error-reporter');
 reporter.init(store);
@@ -4106,7 +4128,11 @@ ipcMain.handle('ssapp:get-environment', async () => {
     return {
         isPackaged: app.isPackaged,
         preferLocalAssets: !!(preferLocalAssetsFlag && hasFallback),
-        hasFallbackBundle: hasFallback
+        hasFallbackBundle: hasFallback,
+        localWebSocketEnabled: !!wsServer.server,
+        localWebSocketPort: wsServer.port,
+        localWebSocketHost: wsServer.host,
+        localWebSocketLanAccess: !isLoopbackHost(wsServer.host)
     };
 });
 
@@ -6809,9 +6835,10 @@ async function formatURL(inputURL, browserWindow) {
 }
 
 class WebSocketServer {
-    constructor() {
+    constructor(port = DEFAULT_LOCAL_WEBSOCKET_PORT, host = DEFAULT_LOCAL_WEBSOCKET_HOST) {
         this.server = null;
-        this.port = 3000;
+        this.port = normalizeLocalWebSocketPort(port) || DEFAULT_LOCAL_WEBSOCKET_PORT;
+        this.host = normalizeLocalWebSocketHost(host) || DEFAULT_LOCAL_WEBSOCKET_HOST;
         this.connections = new Set();
         this.started = false;
         this.callback = {};
@@ -6888,6 +6915,13 @@ class WebSocketServer {
 
                 this.server.clients.forEach(client => {
                     if (webSocketClient != client) {
+                        // Rooms are the local relay's session boundary. Without this
+                        // check, clients using the same port but different Social
+                        // Stream sessions can receive each other's traffic whenever
+                        // their channel numbers happen to match.
+                        if (!webSocketClient.room || client.room !== webSocketClient.room) {
+                            return;
+                        }
                         if (client.inn && outChannel) {
                             if (client.inn == outChannel) {
                                 try {
@@ -6925,16 +6959,32 @@ class WebSocketServer {
         }
 
         try {
-            this.server = new WebSocket.Server({
-                port: this.port
+            const server = new WebSocket.Server({
+                port: this.port,
+                host: this.host
             });
+            this.server = server;
             this.server.on('connection', (ws, req) => this.handleConnection(ws, req));
+            this.server.on('error', (error) => {
+                console.error(`[Local WebSocket] Server error on ${this.host}:${this.port}:`, error && error.message ? error.message : error);
+                if (this.server === server) this.server = null;
+                this.started = false;
+                try {
+                    cachedState.wsServer = false;
+                    if (mainWindow && !mainWindow.isDestroyed()) {
+                        mainWindow.webContents.send("fromMainToIndex", "serverStopped", { port: this.port });
+                    }
+                    createMenu();
+                } catch (notifyError) {
+                    log(notifyError);
+                }
+            });
             this.started = true;
 
             try {
                 cachedState.wsServer = true;
                 if (update) {
-                    mainWindow.webContents.mainFrame.postMessage("fromMainToIndex", "serverStarted");
+                    mainWindow.webContents.send("fromMainToIndex", "serverStarted", { port: this.port });
                 }
             } catch (error) {
                 log(error);
@@ -6942,14 +6992,14 @@ class WebSocketServer {
 
             return {
                 success: true,
-                message: `Server started on port ${this.port}`
+                message: `Server started on ${this.host}:${this.port}`
             };
         } catch (error) {
 
             try {
                 cachedState.wsServer = false;
                 if (update) {
-                    mainWindow.webContents.mainFrame.postMessage("fromMainToIndex", "serverStopped");
+                    mainWindow.webContents.send("fromMainToIndex", "serverStopped");
                 }
             } catch (error) {
                 log(error);
@@ -6972,14 +7022,14 @@ class WebSocketServer {
         try {
             cachedState.wsServer = false;
             if (update) {
-                mainWindow.webContents.mainFrame.postMessage("fromMainToIndex", "serverStopped");
+                mainWindow.webContents.send("fromMainToIndex", "serverStopped", { port: this.port });
             }
         } catch (error) {
             log(error);
         }
         try {
             for (const client of this.connections) {
-                client.close();
+                client.terminate();
             }
             this.connections.clear();
         } catch (error) {
@@ -7003,9 +7053,111 @@ class WebSocketServer {
             };
         }
     }
+
+    async stopAndWait(update = false) {
+        const server = this.server;
+        if (!server) return this.stop(update);
+        const closed = new Promise(resolve => server.once('close', resolve));
+        const result = this.stop(update);
+        if (!result.success) return result;
+        await closed;
+        return result;
+    }
 }
 
-const wsServer = new WebSocketServer();
+const wsServer = new WebSocketServer(localWebSocketConfig.port, localWebSocketConfig.host);
+
+// The default local-server port moved from 3000 to 3003 so new installs do not
+// collide with other tools on 3000. Anyone who already had the local server
+// enabled keeps 3000: their existing overlay links and OBS browser sources have
+// no localserverport parameter and would otherwise silently stop connecting.
+// Runs once, before the server ever binds, and pins the legacy value so the
+// choice survives later upgrades.
+function migrateLegacyLocalServerPort() {
+    // An explicit CLI flag, environment variable, or stored setting always wins.
+    if (localWebSocketConfig.portSource !== 'default') return false;
+    if (store.get('localWebSocket.port') !== undefined) return false;
+
+    store.set('localWebSocket.port', LEGACY_LOCAL_WEBSOCKET_PORT);
+    wsServer.port = LEGACY_LOCAL_WEBSOCKET_PORT;
+    log(`[Local WebSocket] Existing install detected — keeping legacy port ${LEGACY_LOCAL_WEBSOCKET_PORT}. New installs default to ${DEFAULT_LOCAL_WEBSOCKET_PORT}.`);
+    return true;
+}
+
+async function configureLocalWebSocketPort() {
+    const rawPort = await prompt({
+        title: 'Local WebSocket Server Port',
+        label: 'Port (1024–65535):',
+        value: String(wsServer.port),
+        inputAttrs: {
+            type: 'number',
+            min: String(1024),
+            max: String(65535),
+            step: '1'
+        },
+        buttonLabels: {
+            ok: 'Save',
+            cancel: 'Cancel'
+        },
+        type: 'input'
+    }, mainWindow);
+
+    if (rawPort === null) return;
+    const port = normalizeLocalWebSocketPort(rawPort);
+    if (port === null) {
+        await dialog.showMessageBox(mainWindow, {
+            type: 'error',
+            title: 'Invalid Local Server Port',
+            message: 'Enter a whole-number port between 1024 and 65535.'
+        });
+        return;
+    }
+    if (port === wsServer.port) return;
+
+    const wasRunning = !!wsServer.server;
+    if (wasRunning) await wsServer.stopAndWait(false);
+    wsServer.port = port;
+    store.set('localWebSocket.port', port);
+
+    if (wasRunning) {
+        wsServer.start(true);
+    } else if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("fromMainToIndex", "serverPortChanged", { port });
+    }
+    createMenu();
+}
+
+async function configureLocalWebSocketLanAccess(enabled) {
+    const host = enabled ? LAN_LOCAL_WEBSOCKET_HOST : DEFAULT_LOCAL_WEBSOCKET_HOST;
+    if (host === wsServer.host) return;
+
+    if (enabled) {
+        const response = await dialog.showMessageBox(mainWindow, {
+            type: 'warning',
+            title: 'Allow Local Server on Your Network?',
+            message: 'Other devices on this network will be able to connect to the Social Stream relay.',
+            detail: 'The local relay does not provide authentication or encryption. Prefer P2P mode for communication between computers, and enable this only on a trusted network.',
+            buttons: ['Cancel', 'Allow LAN Connections'],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true
+        });
+        if (response.response !== 1) {
+            createMenu();
+            return;
+        }
+    }
+
+    const wasRunning = !!wsServer.server;
+    if (wasRunning) await wsServer.stopAndWait(false);
+    wsServer.host = host;
+    store.set('localWebSocket.host', host);
+
+    if (wasRunning) {
+        wsServer.start(true);
+    }
+    createMenu();
+}
 
 // Track sessions we've already configured to avoid stacking listeners
 const cspConfiguredSessions = new WeakSet();
@@ -9864,7 +10016,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
         // this doens't run tho, does it?
         log("BACKGROUND LOADED");
         if (mainWindow && mainWindow.webContents) {
-            mainWindow.webContents.mainFrame.postMessage("fromMainToIndex", (cachedState.wsServer || wsServer.server) ? "serverStarted" : "loadPopup");
+            mainWindow.webContents.send(
+                "fromMainToIndex",
+                (cachedState.wsServer || wsServer.server) ? "serverStarted" : "loadPopup",
+                { port: wsServer.port }
+            );
         }
     });
 
@@ -9963,7 +10119,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 }
             });
 
-            mainWindow.webContents.mainFrame.postMessage("fromMainToIndex", (cachedState.wsServer || wsServer.server) ? "serverStarted" : "loadPopup"); // let the index.html page know the pop out should be loaded
+            mainWindow.webContents.send(
+                "fromMainToIndex",
+                (cachedState.wsServer || wsServer.server) ? "serverStarted" : "loadPopup",
+                { port: wsServer.port }
+            ); // let the index.html page know the pop out should be loaded
         }
         eventRet.returnValue = cachedState;
     });
@@ -16894,6 +17054,9 @@ app.whenReady().then(async function () {
 		            }
 
 	            if (cachedState.wsServer) {
+	                // cachedState.wsServer is only truthy for installs that already
+	                // had the local server switched on, so this is the upgrade path.
+	                migrateLegacyLocalServerPort();
 	                wsServer.start();
 	            }
 	        } else {
@@ -18904,7 +19067,7 @@ function createMenu() {
                     type: 'separator'
                 },
                 {
-                    label: wsServer.server ? 'Stop Local Server' : 'Enable Local Server',
+                    label: wsServer.server ? `Stop Local Server (${wsServer.port})` : `Enable Local Server (${wsServer.port})`,
                     click: async () => {
                         if (wsServer.server) {
                             const result = wsServer.stop(true);
@@ -18915,6 +19078,20 @@ function createMenu() {
                             log(result.success);
                             createMenu();
                         }
+                    }
+                },
+                {
+                    label: `Set Local Server Port… (current: ${wsServer.port})`,
+                    click: async () => {
+                        await configureLocalWebSocketPort();
+                    }
+                },
+                {
+                    label: 'Allow Local Server Connections from the LAN',
+                    type: 'checkbox',
+                    checked: !isLoopbackHost(wsServer.host),
+                    click: async menuItem => {
+                        await configureLocalWebSocketLanAccess(menuItem.checked);
                     }
                 },
                 {

@@ -3,6 +3,7 @@
   "version": "0.4.11",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
+  "desktopName": "socialstreamninja.desktop",
   "main": "bootstrap.js",
   "scripts": {
     "start": "electron .",
@@ -31,6 +32,10 @@
     "test:cohost-stt": "node tests/electron/cohost-stt-e2e.js",
     "test:cohost-stt:matrix": "node tests/electron/cohost-stt-audio-matrix.js",
     "test:local-media": "node tests/electron/local-media-library-regression.js",
+    "test:local-websocket-config": "node tests/electron/local-websocket-config-regression.js",
+		"test:local-websocket:e2e": "node tests/electron/local-websocket-port-e2e.js",
+		"test:local-websocket:lan": "node tests/electron/local-websocket-port-e2e.js --lan",
+		"test:local-websocket:packaged": "node tests/electron/local-websocket-port-e2e.js --packaged",
     "test:local-media:e2e": "node tests/electron/local-media-library-e2e.js",
     "test:eventflow-user-memory:e2e": "node tests/electron/eventflow-user-memory-e2e.js",
     "test:individual-likes:e2e": "node tests/electron/individual-like-routing-e2e.js",
@@ -45,6 +50,7 @@
     "test:ipc-scaffold": "node tests/electron/ipc-scaffold-regression.js",
     "test:source-url-parsing": "node tests/electron/source-url-parsing-regression.js",
     "test:youtube-workflow": "node tests/electron/youtube-workflow-e2e.js",
+    "test:live-chat": "node tests/electron/live-chat-capture-e2e.js",
     "test:youtube-owner-discovery": "node tests/electron/youtube-owner-discovery-regression.js",
     "test:youtube-oauth-loopback": "node tests/electron/youtube-oauth-loopback-e2e.js",
     "test:chathistory-export": "node tests/electron/chathistory-export-regression.js",
@@ -220,6 +226,7 @@
       "artifactName": "socialstreamninja_linux_v${version}_${arch}.${ext}",
       "target": "AppImage",
       "executableName": "socialstreamninja",
+      "syncDesktopName": true,
       "desktop": {
         "entry": {
           "Name": "Social Stream Ninja",

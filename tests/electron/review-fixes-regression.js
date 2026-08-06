@@ -15,6 +15,12 @@ const macosWorkflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows'
 const headlessLauncherSource = fs.readFileSync(path.join(repoRoot, 'scripts', 'start-headless.sh'), 'utf8');
 const { getTrustedStandaloneCustomJsPageType } = require('../../resources/custom-js-page-trust');
 
+assert.doesNotMatch(
+	mainSource,
+	/mainFrame\.postMessage\(\s*["']fromMainToIndex["'][\s\S]{0,180}\{\s*port\s*:/,
+	'fromMainToIndex port updates must use webContents.send; postMessage treats its third argument as a transfer list'
+);
+
 function extractFunctionSource(source, functionName) {
 	const signature = `function ${functionName}(`;
 	const startIndex = source.indexOf(signature);
