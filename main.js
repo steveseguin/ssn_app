@@ -12665,7 +12665,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
     }
 
     // Keep the old sync handler for backward compatibility  
-    const originalCreateWindowHandler = function (eventRet, args2) {
+  const originalCreateWindowHandler = async function (eventRet, args2) {
         log("IPC CREATE WINDOW");
         var args = Object.assign({}, Argv, args2);
         let runningLocally = args.filesource || "";
@@ -13000,28 +13000,126 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
 
 
-                // Load URL
-                log(`Loading regular window URL: ${args.url}`);
-                log(`User agent config: ${args.config?.userAgent}`);
-                const navigationOptions = {};
-                const initialHeaderOverrides = resolveHeaderOverridesFromConfig(args.config, args.url);
-                if (view.args?.config?.userAgent) {
-                    navigationOptions.userAgent = view.args.config.userAgent;
-                    try { view.webContents.setUserAgent(view.args.config.userAgent); } catch (_) { }
-                    log(`Setting custom user agent for source window loadURL: ${view.args.config.userAgent}`);
+        // Helper to load the URL after monitor setup (or if it is skipped/failed)
+        const loadURL = () => {
+          if (view.isDestroyed()) return;
+          log(`Loading regular window URL: ${args.url}`);
+          log(`User agent config: ${args.config?.userAgent}`);
+          const navigationOptions = {};
+          const initialHeaderOverrides = resolveHeaderOverridesFromConfig(args.config, args.url);
+          if (view.args?.config?.userAgent) {
+            navigationOptions.userAgent = view.args.config.userAgent;
+            try { view.webContents.setUserAgent(view.args.config.userAgent); } catch (_) { }
+            log(`Setting custom user agent for source window loadURL: ${view.args.config.userAgent}`);
+          } else {
+            log(`Using default user agent for loadURL`);
+          }
+          if (initialHeaderOverrides.referer) {
+            navigationOptions.httpReferrer = {
+              url: initialHeaderOverrides.referer,
+              policy: 'strict-origin-when-cross-origin'
+            };
+          }
+          if (Object.keys(navigationOptions).length) {
+            return view.webContents.loadURL(args.url, navigationOptions);
+          } else {
+            return view.webContents.loadURL(args.url);
+          }
+        };
+
+                // Set up WebSocket monitoring if configured in args or config
+                // Configuration can be set in config files (e.g., config_0.json) or passed via args
+                // Configuration options:
+                //   websocketMonitoring = true                           // Monitor all WebSockets
+                //   websocketMonitoring = "streamelements.com"           // Monitor WebSockets containing this domain
+                //   websocketMonitoring = { filter: "domain.com" }       // Object format with filter
+                const websocketMonitoring = args.websocketMonitoring || (args.config && args.config.websocketMonitoring);
+                if (websocketMonitoring) {
+          /**
+           * Normalizes WebSocket frame data, returning the raw string for text frames (opcode 1)
+           * or a decoded Uint8Array for binary frames (other opcodes).
+           * @param {string} data A utf-8 or base64 encoded string
+           * @param {number} opcode The opcode received from the Network.webSocketFrameReceived or Network.webSocketFrameSent event
+           * @returns {opcode extends 1 ? string : Uint8Array<Buffer>}
+           */
+          function normalizeWSData(data, opcode) {
+            if (opcode === 1) return data;
+
+            return Uint8Array.from(Buffer.from(data, 'base64'));
+          }
+
+                        let websocketFilter = null;
+
+                        // Handle different configuration formats
+                        if (typeof websocketMonitoring === 'object' && websocketMonitoring.filter) {
+                            // Object format: { filter: "domain.com" }
+                            const filterDomain = websocketMonitoring.filter;
+                            websocketFilter = (url) => url && url.includes(filterDomain);
+                        } else if (typeof websocketMonitoring === 'string') {
+                            // String format: "domain.com"
+                            const filterDomain = websocketMonitoring;
+                            websocketFilter = (url) => url && url.includes(filterDomain);
+                        } else if (websocketMonitoring === true) {
+                            // Boolean true: monitor all WebSockets
+                            websocketFilter = null;
+                        }
+
+          (async () => {
+            try {
+              if (view.isDestroyed()) return;
+              // Attach debugger & enable CDP Network and Runtime domains
+              const cleanup = await setupWebSocketMonitor(view.webContents, {
+                            filter: websocketFilter,
+                            onAttached: () => loadURL(),
+                            onMessage: (data) => {
+                                view.webContents.send('websocket-message', {
+                                    type: 'message',
+                                    data: normalizeWSData(data.data, data.opcode),
+                                    url: data.url,
+                                    timestamp: data.timestamp,
+                                    requestId: data.requestId
+                                });
+                            },
+                            onOpen: (data) => {
+                                view.webContents.send('websocket-message', {
+                                    type: 'open',
+                                    url: data.url,
+                                    timestamp: data.timestamp,
+                                    requestId: data.requestId
+                                });
+                            },
+                            onClose: (data) => {
+                                view.webContents.send('websocket-message', {
+                                    type: 'close',
+                                    url: data.url,
+                                    timestamp: data.timestamp,
+                                    requestId: data.requestId
+                                });
+                            },
+                            onSend: (data) => {
+                                view.webContents.send('websocket-message', {
+                                    type: 'send',
+                                    data: normalizeWSData(data.data, data.opcode),
+                                    url: data.url,
+                                    timestamp: data.timestamp,
+                                    requestId: data.requestId
+                                });
+                            }
+                        });
+
+              if (view.isDestroyed()) {
+                try { cleanup(); } catch (_) { }
+                return;
+              }
+                        // Store cleanup function for later
+                        view.__websocketMonitorCleanup = cleanup;
+                        log(`WebSocket monitoring enabled${websocketFilter ? ' with filter' : ' for all WebSockets'}`);
+                    } catch (error) {
+                        log('Failed to set up WebSocket monitoring:', error);
+            }
+          })();
                 } else {
-                    log(`Using default user agent for loadURL`);
-                }
-                if (initialHeaderOverrides.referer) {
-                    navigationOptions.httpReferrer = {
-                        url: initialHeaderOverrides.referer,
-                        policy: 'strict-origin-when-cross-origin'
-                    };
-                }
-                if (Object.keys(navigationOptions).length) {
-                    view.webContents.loadURL(args.url, navigationOptions);
-                } else {
-                    view.webContents.loadURL(args.url);
+          loadURL();
                 }
             }
 
@@ -13079,74 +13177,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     view.webContents.setAudioMuted(true);
                 }
 
-                // Set up WebSocket monitoring if configured in args or config
-                // Configuration can be set in config files (e.g., config_0.json) or passed via args
-                // Configuration options:
-                //   websocketMonitoring = true                           // Monitor all WebSockets
-                //   websocketMonitoring = "streamelements.com"           // Monitor WebSockets containing this domain
-                //   websocketMonitoring = { filter: "domain.com" }       // Object format with filter
-                const websocketMonitoring = args.websocketMonitoring || (args.config && args.config.websocketMonitoring);
-                if (websocketMonitoring) {
-                    try {
-
-                        let websocketFilter = null;
-
-                        // Handle different configuration formats
-                        if (typeof websocketMonitoring === 'object' && websocketMonitoring.filter) {
-                            // Object format: { filter: "domain.com" }
-                            const filterDomain = websocketMonitoring.filter;
-                            websocketFilter = (url) => url.includes(filterDomain);
-                        } else if (typeof websocketMonitoring === 'string') {
-                            // String format: "domain.com"
-                            const filterDomain = websocketMonitoring;
-                            websocketFilter = (url) => url.includes(filterDomain);
-                        } else if (websocketMonitoring === true) {
-                            // Boolean true: monitor all WebSockets
-                            websocketFilter = null;
-                        }
-
-                        const cleanup = setupWebSocketMonitor(view.webContents, {
-                            filter: websocketFilter,
-                            onMessage: (data) => {
-                                // Forward to content script via preload
-                                view.webContents.send('websocket-message', {
-                                    type: 'message',
-                                    data: data.data,
-                                    url: data.url,
-                                    timestamp: data.timestamp
-                                });
-                            },
-                            onOpen: (data) => {
-                                view.webContents.send('websocket-message', {
-                                    type: 'open',
-                                    url: data.url,
-                                    timestamp: Date.now()
-                                });
-                            },
-                            onClose: (data) => {
-                                view.webContents.send('websocket-message', {
-                                    type: 'close',
-                                    url: data.url,
-                                    timestamp: Date.now()
-                                });
-                            },
-                            onSend: (data) => {
-                                view.webContents.send('websocket-message', {
-                                    type: 'send',
-                                    data: data.data,
-                                    url: data.url,
-                                    timestamp: Date.now()
-                                });
-                            }
-                        });
-
-                        // Store cleanup function for later
-                        view.__websocketMonitorCleanup = cleanup;
-                        log(`WebSocket monitoring enabled${websocketFilter ? ' with filter' : ' for all WebSockets'}`);
-                    } catch (error) {
-                        log('Failed to set up WebSocket monitoring:', error);
-                    }
-                }
 
                 //view.webContents.on("will-navigate", handleNavigation);
                 //view.webContents.on("new-window", handleNavigation);
@@ -13439,9 +13469,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                 const onFrameCreated = (_event, details = {}) => {
                     if (!frameInjectionCode || !details || !details.frame) return;
+          const processId = details.frame.processId;
+          const routingId = details.frame.routingId;
                     setTimeout(() => {
                         try {
-                            injectSourceIntoFrame(details.frame, "frame-created");
+              const frame = webFrameMain.fromId(processId, routingId);
+              if (frame) {
+                injectSourceIntoFrame(frame, "frame-created");
+              }
                         } catch (_) { }
                     }, 250);
                 };

@@ -1,4 +1,288 @@
 var { ipcRenderer, contextBridge } = require('electron');
+/**
+ * @typedef {Object} WsMessagePayload
+ * @property {'open' | 'close' | 'message' | 'send'} [type]
+ * @property {string} [requestId]
+ * @property {any} [data]
+ * @property {number} [timestamp]
+ */
+
+/**
+ * @typedef {Object} WrappedWsEvent
+ * @property {number} seq
+ * @property {WsMessagePayload} payload
+ */
+
+/**
+ * @typedef {Object} WsConnectionBuffer
+ * @property {string} requestId
+ * @property {string} url
+ * @property {boolean} active
+ * @property {boolean} closed
+ * @property {WrappedWsEvent?} openEvent
+ * @property {WrappedWsEvent?} closeEvent
+ * @property {WrappedWsEvent[]} events - Array of wrapped message and send events for this connection
+ */
+
+/** @type {WsConnectionBuffer[]} */
+const wsConnectionBuffers = [];
+/** @type {Map<string, WsConnectionBuffer>} */
+const connectionLookup = new Map();
+
+const wsMessageCallbacks = new Set();
+const MAX_ACTIVE_WS_CONNECTIONS = 100;
+const MAX_WS_BUFFER_SIZE = 1000;
+const PRUNE_WS_TARGET_SIZE = 800;
+
+/**
+ * Adds a WebSocket connection buffer to both the ordered array and lookup map.
+ * @param {WsConnectionBuffer} conn - The WebSocket connection object to add
+ * @returns {WsConnectionBuffer} The added connection object
+ */
+function addWsConnection(conn) {
+  wsConnectionBuffers.push(conn);
+  if (conn.requestId) {
+    connectionLookup.set(conn.requestId, conn);
+  }
+  return conn;
+}
+
+/**
+ * Removes a WebSocket connection buffer at the specified index from both the array and lookup map.
+ * @param {number} index - The index of the connection to remove
+ * @returns {WsConnectionBuffer | null} The removed connection object, or null if index is invalid
+ */
+function removeWsConnectionAt(index) {
+  if (index < 0 || index >= wsConnectionBuffers.length) return null;
+  const [removed] = wsConnectionBuffers.splice(index, 1);
+  if (removed?.requestId) {
+    connectionLookup.delete(removed.requestId);
+  }
+  return removed;
+}
+
+/**
+ * Retrieves an existing WebSocket connection buffer by requestId or creates a new one.
+ * @param {string} [requestId] - The unique connection request ID
+ * @param {string} [url] - The WebSocket URL
+ * @param {boolean} [isActive=true] - Whether the connection is active
+ * @returns {WsConnectionBuffer} The existing or newly created connection object
+ */
+function getOrCreateWsConnection(requestId, url, isActive = true) {
+  let conn = requestId ? connectionLookup.get(requestId) : null;
+  if (!conn) {
+    conn = {
+      requestId: requestId || '',
+      url: url || '',
+      active: isActive,
+      closed: !isActive,
+      openEvent: null,
+      closeEvent: null,
+      events: []
+    };
+    addWsConnection(conn);
+  }
+  return conn;
+}
+
+/**
+ * Shifts and removes the oldest WebSocket connection buffer from the front of the array and lookup map.
+ * @returns {WsConnectionBuffer | null} The shifted connection object, or null if buffer is empty
+ */
+function shiftWsConnection() {
+  return removeWsConnectionAt(0);
+}
+
+/**
+ * Calculates the total event count of a connection object (open + messages + close).
+ * @param {WsConnectionBuffer|null} [conn] - The connection object
+ * @returns {number} The event count for this connection
+ */
+function getConnectionEventCount(conn) {
+  if (!conn) return 0;
+
+  let count = conn.events.length;
+  if (conn.openEvent) count++;
+  if (conn.closeEvent) count++;
+
+  return count;
+}
+
+/**
+ * Calculates the total number of buffered events across all connections (open + messages + close).
+ * @returns {number} The total event count
+ */
+function getTotalBufferedEventsCount() {
+  let total = 0;
+  for (const conn of wsConnectionBuffers) {
+    total += getConnectionEventCount(conn);
+  }
+  return total;
+}
+
+function pruneWsConnectionBuffers() {
+  let currentCount = getTotalBufferedEventsCount();
+  if (currentCount < MAX_WS_BUFFER_SIZE) return;
+
+  let excess = currentCount - PRUNE_WS_TARGET_SIZE;
+
+  // Pass 1: Evict empty inactive connections (0 data messages)
+  let i = 0;
+  while (i < wsConnectionBuffers.length && excess > 0) {
+    const conn = wsConnectionBuffers[i];
+    if (!conn.active && conn.events.length === 0) {
+      const removed = removeWsConnectionAt(i);
+      excess -= getConnectionEventCount(removed);
+    } else {
+      i++;
+    }
+  }
+
+  // Pass 2: Trim data messages from inactive connections (oldest to newest) before deleting connection metadata
+  i = 0;
+  while (i < wsConnectionBuffers.length && excess > 0) {
+    const conn = wsConnectionBuffers[i];
+    if (!conn.active) {
+      // Trim needed excess messages in a single batch operation
+      if (conn.events.length > 0) {
+        const toRemove = Math.min(conn.events.length, excess);
+        conn.events.splice(0, toRemove);
+        excess -= toRemove;
+      }
+      // If the connection is now empty of messages and we still need to prune, remove the connection metadata
+      if (conn.events.length === 0 && excess > 0) {
+      const removed = removeWsConnectionAt(i);
+        excess -= getConnectionEventCount(removed);
+      } else {
+        i++;
+      }
+    } else {
+      i++;
+    }
+  }
+
+  // Pass 3: Trim oldest data messages from oldest active connections if still over target size
+  for (const conn of wsConnectionBuffers) {
+    if (excess <= 0) break;
+    if (conn.events.length > 0) {
+      const toRemove = Math.min(conn.events.length, excess);
+      conn.events.splice(0, toRemove);
+      excess -= toRemove;
+      }
+    }
+  }
+
+let eventArrivalCounter = 0;
+
+function replayAndDrainWsBuffers(callback) {
+  // Collect all valid events across connection buffers
+  const allEvents = [];
+
+  for (const conn of wsConnectionBuffers) {
+    if (conn.openEvent) {
+      allEvents.push(conn.openEvent);
+    }
+
+    const closeTimestamp = conn.closeEvent ? (conn.closeEvent.payload.timestamp || Infinity) : Infinity;
+    const closeSeq = conn.closeEvent ? conn.closeEvent.seq : Infinity;
+
+    for (const item of conn.events) {
+      const evtTimestamp = item.payload.timestamp || 0;
+      // Do not emit post-close frames (frames arriving after close)
+      if (evtTimestamp <= closeTimestamp && item.seq <= closeSeq) {
+        allEvents.push(item);
+      }
+    }
+
+    if (conn.closeEvent) {
+      allEvents.push(conn.closeEvent);
+    }
+  }
+
+  // Sort all events by arrival sequence / timestamp to guarantee true chronological arrival order
+  allEvents.sort((a, b) => {
+    return a.seq - b.seq;
+  });
+
+  // Replay sorted events
+  for (const item of allEvents) {
+    try {
+      callback(item.payload);
+    } catch (e) {
+      console.error('[Preload] Error replaying WS event:', e);
+    }
+  }
+
+  // Drain buffers
+  wsConnectionBuffers.length = 0;
+  connectionLookup.clear();
+}
+
+ipcRenderer.on('websocket-message', (event, data) => {
+  if (!data || typeof data !== 'object') return;
+
+  if (wsMessageCallbacks.size > 0) {
+    wsMessageCallbacks.forEach((cb) => {
+      try {
+        cb(data);
+      } catch (err) {
+        console.error('[Preload] Error delivering WebSocket message:', err);
+      }
+    });
+    return;
+  }
+
+  const { type, requestId } = data;
+  const wrappedEvent = {
+    seq: ++eventArrivalCounter,
+    payload: data
+  };
+
+  // Buffer events when no callbacks are registered yet
+  if (type === 'open') {
+    const conn = getOrCreateWsConnection(requestId, data.url, true);
+    conn.active = true;
+    conn.openEvent = wrappedEvent;
+
+    // Enforce active connection cap
+    let activeCount = 0;
+    for (const c of wsConnectionBuffers) { if (c.active) activeCount++; }
+    if (activeCount > MAX_ACTIVE_WS_CONNECTIONS) {
+      const oldestActive = wsConnectionBuffers.find(c => c.active && c !== conn);
+      if (oldestActive) oldestActive.active = false;
+    }
+  } else if (type === 'close') {
+    const conn = requestId ? connectionLookup.get(requestId) : null;
+    if (conn) {
+      conn.active = false;
+      conn.closed = true;
+      conn.closeEvent = wrappedEvent;
+    } else {
+      const closedConn = getOrCreateWsConnection(requestId, data.url, false);
+      closedConn.closeEvent = wrappedEvent;
+    }
+  } else { // 'message' or 'send'
+    const conn = getOrCreateWsConnection(requestId, data.url, true);
+    conn.events.push(wrappedEvent);
+  }
+
+  pruneWsConnectionBuffers();
+});
+
+/**
+ * Registers a listener for WebSocket messages and events.
+ * Replays any buffered early events upon registration in true arrival order.
+ * @param {(data: WsMessagePayload) => void} callback - Callback receiving WebSocket event payload
+ * @returns {() => void} Unsubscribe function to remove the listener
+ */
+function subscribeToWebSocketMessages(callback) {
+  if (typeof callback !== 'function') return () => {};
+  wsMessageCallbacks.add(callback);
+  replayAndDrainWsBuffers(callback);
+  return () => {
+    wsMessageCallbacks.delete(callback);
+  };
+}
 
 let cachedEnvironment = null;
 const environmentPromise = (async () => {
@@ -548,11 +832,7 @@ function configureContextBridge(){
 				});
 			  },
 			  
-			  onWebSocketMessage: (callback) => {
-				ipcRenderer.on('websocket-message', (event, data) => {
-				  callback(data);
-				});
-			  },
+      onWebSocketMessage: subscribeToWebSocketMessages,
 			  
 			  sendDeviceList: (response) => {
 				ipcRenderer.send('deviceList', response);
@@ -740,11 +1020,7 @@ try {
 				}
 			},
 			
-			onWebSocketMessage: (callback) => {
-				ipcRenderer.on('websocket-message', (event, data) => {
-				  callback(data);
-				});
-			},
+      onWebSocketMessage: subscribeToWebSocketMessages,
 			
 			// Add other necessary methods
 			exposeDoSomethingInWebApp: (callback) => {
