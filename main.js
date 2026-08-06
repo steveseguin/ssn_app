@@ -12665,7 +12665,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
     }
 
     // Keep the old sync handler for backward compatibility  
-  const originalCreateWindowHandler = async function (eventRet, args2) {
+  const originalCreateWindowHandler = function (eventRet, args2) {
         log("IPC CREATE WINDOW");
         var args = Object.assign({}, Argv, args2);
         let runningLocally = args.filesource || "";
@@ -13065,12 +13065,16 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         }
 
           (async () => {
+            let navigationStarted = false;
             try {
               if (view.isDestroyed()) return;
               // Attach debugger & enable CDP Network and Runtime domains
               const cleanup = await setupWebSocketMonitor(view.webContents, {
                             filter: websocketFilter,
-                            onAttached: () => loadURL(),
+                            onAttached: () => {
+                                navigationStarted = true;
+                                return loadURL();
+                            },
                             onMessage: (data) => {
                                 view.webContents.send('websocket-message', {
                                     type: 'message',
@@ -13116,6 +13120,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         log(`WebSocket monitoring enabled${websocketFilter ? ' with filter' : ' for all WebSockets'}`);
                     } catch (error) {
                         log('Failed to set up WebSocket monitoring:', error);
+                        // Monitor failure must not leave the source window blank
+                        if (!navigationStarted && !view.isDestroyed()) {
+                            try { loadURL(); } catch (_) { }
+                        }
             }
           })();
                 } else {

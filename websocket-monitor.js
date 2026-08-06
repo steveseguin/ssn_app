@@ -131,9 +131,19 @@ async function setupWebSocketMonitor(webContents, options = {}) {
 
   webContents.debugger.on('message', messageHandler);
 
+  // Sockets belong to a document; drop tracking on main-frame navigation so a
+  // prior document's late frames are never forwarded into the new document
+  const navigationHandler = () => {
+    webSocketConnections.clear();
+  };
+  webContents.on('did-navigate', navigationHandler);
+
   function cleanup() {
     try {
       webContents.debugger.off('message', messageHandler);
+    } catch (_) { }
+    try {
+      webContents.off('did-navigate', navigationHandler);
     } catch (_) { }
 
     if (monitoringActive) {
