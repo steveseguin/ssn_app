@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("assert");
+const { linuxLaunchArgs } = require('./helpers/electron-launch');
 const fs = require("fs");
 const http = require("http");
 const net = require("net");
@@ -138,7 +139,8 @@ async function run() {
 		"--running-from-source",
 		"--filesource",
 		socialStreamRoot,
-		"--remote-control"
+		"--remote-control",
+		...linuxLaunchArgs(),
 	], {
 		cwd: repoRoot,
 		env: {

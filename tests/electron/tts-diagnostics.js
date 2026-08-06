@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const { linuxLaunchArgs } = require('./helpers/electron-launch');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -41,7 +42,8 @@ function run() {
 				'.',
 				'--running-from-source',
 				'--tts-diagnostics',
-				`--tts-report=${reportPath}`
+				`--tts-report=${reportPath}`,
+				...linuxLaunchArgs(),
 			],
 			{
 				cwd: repoRoot,

@@ -3,6 +3,7 @@
 'use strict';
 
 const assert = require('assert');
+const { linuxLaunchArgs } = require('./helpers/electron-launch');
 const fs = require('fs');
 const http = require('http');
 const net = require('net');
@@ -156,7 +157,7 @@ async function stopApp(child) {
 	}
 	const commonArgs = [
 		'--ssapp-headless-control', '--ssapp-control-api', '--remote-control', `--ssapp-control-port=${controlPort}`,
-		`--ssapp-local-server-port=${localWebSocketPort}`, '--no-hwa', '--no-sandbox', '--ozone-platform=x11',
+		`--ssapp-local-server-port=${localWebSocketPort}`, '--no-hwa', ...linuxLaunchArgs(),
 		...(lanMode ? ['--ssapp-local-server-host=lan'] : []),
 	];
 	const child = spawn(packagedMode ? packagedAppPath : electronPath, packagedMode
