@@ -14046,8 +14046,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                         if (window.__ss_fetch_patched__) return; window.__ss_fetch_patched__ = true;
                                         var _orig = window.fetch;
                                         if (typeof _orig !== 'function') return;
-                                        var lastAt = 0; var throttle = 3000;
-                                        var ping = function(status, msg){ var now = Date.now(); if (now - lastAt > throttle) { __ss_wssNotify('error', msg || ('YouTube API error: ' + status)); lastAt = now; } };
+                                        var lastAt = 0; var throttle = 3000; var hadError = false;
+                                        var ping = function(status, msg){ hadError = true; var now = Date.now(); if (now - lastAt > throttle) { __ss_wssNotify('error', msg || ('YouTube API error: ' + status)); lastAt = now; } };
                                         window.fetch = async function(input, init){
                                           try {
                                             var res = await _orig(input, init);
@@ -14065,6 +14065,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                                   }
                                                 } catch(_){ }
                                                 ping(res.status, msg);
+                                              } else if (hadError) {
+                                                hadError = false;
+                                                __ss_wssNotify('connected', 'YouTube API recovered');
                                               }
                                             }
                                             return res;
@@ -14332,8 +14335,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                                   try {
                                                     if (window.__ss_fetch_patched__) return; window.__ss_fetch_patched__ = true;
                                                     var _orig = window.fetch; if (typeof _orig !== 'function') return;
-                                                    var lastAt=0, throttle=3000;
-                                                    var ping=function(status,msg){ var now=Date.now(); if (now-lastAt>throttle){ __ss_wssNotify('error', msg || ('YouTube API error: ' + status)); lastAt=now; } };
+                                                    var lastAt=0, throttle=3000, hadError=false;
+                                                    var ping=function(status,msg){ hadError=true; var now=Date.now(); if (now-lastAt>throttle){ __ss_wssNotify('error', msg || ('YouTube API error: ' + status)); lastAt=now; } };
                                                     window.fetch = async function(input, init){
                                                       try {
                                                         var res = await _orig(input, init);
@@ -14350,6 +14353,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                                               }
                                                             } catch(_){ }
                                                             ping(res.status, msg);
+                                                          } else if (hadError) {
+                                                            hadError = false;
+                                                            __ss_wssNotify('connected', 'YouTube API recovered');
                                                           }
                                                         }
                                                         return res;

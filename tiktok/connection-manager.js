@@ -91,7 +91,7 @@ const SIGNING_SERVICE_HELP_URL = (process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL && 
     ? process.env.SSAPP_TIKTOK_SIGNING_GUIDE_URL.trim()
     : 'https://socialstream.ninja/docs/tiktok-signing.html';
 const EULER_DASHBOARD_URL = 'https://www.eulerstream.com/dashboard';
-const EULER_RATE_LIMITS_URL = 'https://www.eulerstream.com/docs/sign-server/rate-limits';
+const EULER_RATE_LIMITS_URL = 'https://www.eulerstream.com/docs/api/rate-limits';
 const SHARED_EULER_SIGNING_FALLBACK_KEY = (process.env.SSAPP_TIKTOK_SHARED_EULER_SIGNING_KEY && process.env.SSAPP_TIKTOK_SHARED_EULER_SIGNING_KEY.trim())
     ? process.env.SSAPP_TIKTOK_SHARED_EULER_SIGNING_KEY.trim()
     : 'euler_OTlhOWRhNGRiZGYxM2U1MTQyY2EzNDA0ZTdlNDgyMjkxOGRkZjIzNmNhODIyOTExZjE4MDVk';
