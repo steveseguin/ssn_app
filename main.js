@@ -199,6 +199,7 @@ const { setupVpzoneOAuthHandler } = require('./resources/electron-vpzone-handler
 const { setupMediaUploadHandler } = require('./resources/electron-media-upload-handler');
 const { setupElectronLocalMedia } = require('./resources/electron-local-media-server');
 const { createControlApiRouter } = require('./resources/electron-control-api');
+const { SourceObservationService } = require('./resources/source-observation-service');
 const { buildMcpLaunchConfig } = require('./resources/mcp-launch-config');
 const { KickWsClient } = require('./resources/kick-ws-client');
 
@@ -2038,6 +2039,40 @@ const remoteControlFileSelections = [];
 let llmControlCommandHandler = null;
 let controlApiRouter = null;
 
+function findSourceObservationView(sourceId, tabId) {
+    if (Number.isFinite(Number(tabId))) {
+        const byTab = getActiveBrowserView(Number(tabId)) || browserViews[Number(tabId)];
+        if (byTab) return byTab;
+    }
+    for (const view of Object.values(browserViews)) {
+        if (!view || isBrowserViewDestroyed(view)) continue;
+        if (view.sourceId === sourceId || view.args?.sourceId === sourceId) return view;
+    }
+    return null;
+}
+
+function sourceIdForObservedMessage(tabId, sender) {
+    try {
+        const view = findSourceObservationView('', tabId);
+        const sourceId = view?.args?.sourceId || view?.sourceId;
+        if (sourceId) return sourceId;
+    } catch (_) { }
+    try {
+        const sourceWindow = BrowserWindow.fromWebContents(sender);
+        return sourceWindow?.args?.sourceId || sourceWindow?.sourceId || null;
+    } catch (_) {
+        return null;
+    }
+}
+
+const sourceObservationService = controlApiEnabled ? new SourceObservationService({
+    resolveView: findSourceObservationView,
+    getAppMetrics: () => app.getAppMetrics(),
+    publish: (type, data) => {
+        if (controlApiRouter) controlApiRouter.publish(type, data);
+    }
+}) : null;
+
 function matchesLegacyRemoteControlToken(value) {
     const supplied = Buffer.from(String(value || ''), 'utf8');
     const expected = Buffer.from(legacyRemoteControlToken, 'utf8');
@@ -2049,6 +2084,7 @@ if (headlessControlEnabled) {
         const keepHidden = () => {
             try {
                 if (!window || window.isDestroyed()) return;
+                if (window.__ssappHumanHandoff === true) return;
                 window.setSkipTaskbar(true);
                 window.hide();
             } catch (_) { }
@@ -2295,6 +2331,46 @@ function setupRemoteControlServer() {
     const executeControlCommand = async (command) => {
         if (!llmControlCommandHandler) {
             return { ok: false, error: { code: 'SSAPP_UNAVAILABLE', message: 'SSApp controller is not ready.' } };
+        }
+        const action = command && typeof command.action === 'string' ? command.action : '';
+        const value = command && command.value && typeof command.value === 'object' ? command.value : {};
+        if (action === 'showSourceForHuman') {
+            const result = await llmControlCommandHandler({
+                action: 'setSourceVisibility',
+                value: { sourceId: value.sourceId, isVisible: true, humanHandoff: true }
+            });
+            if (!result || !result.ok) return result;
+            const shown = result.payload?.source?.isVisible === true;
+            if (!shown) {
+                return {
+                    ok: false,
+                    error: {
+                        code: 'STATE_CONFLICT',
+                        message: 'The source window cannot be shown while SSApp is running headless.'
+                    }
+                };
+            }
+            return {
+                ...result,
+                payload: {
+                    ...(result.payload || {}),
+                    sourceId: value.sourceId,
+                    shown,
+                    humanActionRequired: true
+                }
+            };
+        }
+        if (sourceObservationService && sourceObservationService.handles(action)) {
+            let source = null;
+            if (!['getRecentSourceEvents', 'waitForSourceEvents'].includes(action)) {
+                const sourceResult = await llmControlCommandHandler({
+                    action: 'getSource',
+                    value: { sourceId: value.sourceId }
+                });
+                if (!sourceResult || !sourceResult.ok) return sourceResult;
+                source = sourceResult.payload && sourceResult.payload.source;
+            }
+            return sourceObservationService.execute(action, value, source);
         }
         return llmControlCommandHandler(command);
     };
@@ -8613,7 +8689,9 @@ function stealthShowView(view, options = {}) {
 // args.state semantics (legacy): true => hide, false => show, null/undefined => toggle
 function applySourceWindowVisibility(view, args = {}) {
     if (!view) return { newState: false };
-    if (headlessControlEnabled) {
+    const humanHandoff = args.humanHandoff === true;
+    if (headlessControlEnabled && !humanHandoff) {
+        view.__ssappHumanHandoff = false;
         stealthHideView(view);
         return { newState: false };
     }
@@ -8634,8 +8712,10 @@ function applySourceWindowVisibility(view, args = {}) {
     }
 
     if (hide) {
+        view.__ssappHumanHandoff = false;
         stealthHideView(view);
     } else {
+        if (humanHandoff) view.__ssappHumanHandoff = true;
         stealthShowView(view, { bringToFront: userInitiatedReveal });
     }
 
@@ -11104,6 +11184,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     ...statusPayload,
                     sourceId
                 };
+                if (sourceObservationService) {
+                    sourceObservationService.recordStatus(payload, { sourceId, tabId: tabID });
+                }
                 if (mainWindow && mainWindow.webContents) {
                     mainWindow.webContents.send('wssStatus', payload);
                 }
@@ -11129,6 +11212,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         sourceId,
                         ...statusPayload
                     });
+                }
+                if (sourceObservationService) {
+                    sourceObservationService.recordStatus(statusPayload, { sourceId, tabId: tabID });
                 }
                 eventRet.returnValue = { ok: true };
                 return;
@@ -11204,6 +11290,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
             let backgroundPayload = dockResponsePayload !== undefined ? dockResponsePayload : args[0];
             backgroundPayload = attachSourceAccountMetaToPayload(backgroundPayload, tabID);
             if (backgroundPayload !== null) {
+                if (sourceObservationService) {
+                    const sourceId = sourceIdForObservedMessage(tabID, eventRet.sender);
+                    const observedView = findSourceObservationView(sourceId, tabID);
+                    if (observedView) sourceObservationService.trackView(observedView);
+                    sourceObservationService.recordCapture(backgroundPayload, { sourceId, tabId: tabID });
+                }
                 mainWindow.webContents.mainFrame.frames.forEach((frame) => {
                     if (matchesSocialStreamPagePath(frame.url, "background")) {
                         frame.postMessage("fromMainSender", [backgroundPayload, {
@@ -12326,6 +12418,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             view.__ss_visible = true;
             try { view.setSkipTaskbar(false); } catch (_) { }
             browserViews[view.tabID] = view;
+            if (sourceObservationService) sourceObservationService.trackView(view);
             const releaseSignInWindowSessionHooks = registerActivatedWindowSessionHooks(view, args);
 
 
@@ -12996,6 +13089,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             view.tabID = generateUniqueWindowId();;
             browserViews[view.tabID] = view;
+            if (sourceObservationService) sourceObservationService.trackView(view);
             const sourceWindowMode = args.wss ? "wss" : "classic";
             const rememberedSourceWindowBounds = loadRememberedSourceWindowBounds(args, sourceWindowMode);
             view.__prevBounds = rememberedSourceWindowBounds;
@@ -16154,6 +16248,9 @@ app.on("before-quit", (event) => {
     }
     if (controlApiRouter) {
         controlApiRouter.close();
+    }
+    if (sourceObservationService) {
+        sourceObservationService.close();
     }
 });
 

@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 
-const CONTROL_API_VERSION = '1.1.5';
+const CONTROL_API_VERSION = '1.2.0';
 const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_OPERATIONS = 200;
@@ -29,17 +29,25 @@ const COMMAND_DEFINITIONS = Object.freeze({
 	setSourceVisibility: definition('Set source-window visibility.', 'mutating', { sourceId: 'string', isVisible: 'boolean' }),
 	toggleSourceVisibility: definition('Toggle source-window visibility.', 'mutating', { sourceId: 'string' }),
 	setSourceConnectionMode: definition('Set connection mode while a source is stopped.', 'mutating', { sourceId: 'string', mode: 'string' }),
+	getSourceDiagnostics: definition('Read bounded runtime diagnostics for one source.', 'read-only', { sourceId: 'string' }, false, '0.4.13'),
+	getRecentSourceEvents: definition('Read bounded captured source events after an optional cursor.', 'read-only', { sourceId: 'string?', afterId: 'integer?', limit: 'integer?', types: 'string[]?' }, false, '0.4.13'),
+	waitForSourceEvents: definition('Wait briefly for captured source events after a cursor.', 'read-only', { sourceId: 'string?', afterId: 'integer?', limit: 'integer?', types: 'string[]?', timeoutMs: 'integer?' }, false, '0.4.13'),
+	captureSourceScreenshot: definition('Capture the real Electron source window.', 'read-only', { sourceId: 'string', format: 'png|jpeg?', maxWidth: 'integer?' }, false, '0.4.13'),
+	inspectSourcePage: definition('Read a bounded semantic page snapshot and short-lived opaque element references.', 'read-only', { sourceId: 'string', maxElements: 'integer?', maxTextChars: 'integer?' }, false, '0.4.13'),
+	interactSourcePage: definition('Perform one confirmed, allowlisted action through an opaque page reference.', 'mutating', { sourceId: 'string', ref: 'string', action: 'click|focus|scroll|fill|pressKey', text: 'string?', key: 'string?', confirm: 'boolean' }, true, '0.4.13'),
+	reloadSourcePage: definition('Reload one active source browser page.', 'disruptive', { sourceId: 'string', confirm: 'boolean' }, true, '0.4.13'),
+	showSourceForHuman: definition('Reveal one source window for human sign-in or intervention.', 'disruptive', { sourceId: 'string', confirm: 'boolean' }, true, '0.4.13'),
 	reloadApp: definition('Reload the SSApp renderer.', 'disruptive', { confirm: 'boolean' }, true),
 	shutdownApp: definition('Gracefully shut down SSApp.', 'disruptive', { confirm: 'boolean' }, true),
 });
 
-function definition(description, risk, properties, confirmationRequired = false) {
+function definition(description, risk, properties, confirmationRequired = false, minimumSsappVersion = '0.4.2') {
 	return Object.freeze({
 		description,
 		risk,
 		readOnly: risk === 'read-only',
 		confirmationRequired,
-		minimumSsappVersion: '0.4.2',
+		minimumSsappVersion,
 		inputSchema: Object.freeze({ type: 'object', properties: Object.freeze({ ...properties }) }),
 	});
 }
@@ -73,8 +81,11 @@ function readBodyLimited(req, maxBytes = MAX_BODY_BYTES) {
 
 function statusForError(error) {
 	const code = error && error.code;
-	if (code === 'SSAPP_UNAVAILABLE' || code === 'SSAPP_TIMEOUT') return 503;
-	if (code === 'SOURCE_ACTIVE' || code === 'STATE_CONFLICT') return 409;
+	if (code === 'SSAPP_UNAVAILABLE' || code === 'SSAPP_TIMEOUT' || code === 'SSAPP_NOT_READY') return 503;
+	if (
+		code === 'SOURCE_ACTIVE' || code === 'STATE_CONFLICT' || code === 'SOURCE_WINDOW_UNAVAILABLE' ||
+		code === 'STALE_PAGE_REF' || code === 'ELEMENT_DISABLED'
+	) return 409;
 	if (code === 'SOURCE_NOT_FOUND' || code === 'OPERATION_NOT_FOUND') return 404;
 	if (code === 'REQUEST_TOO_LARGE') return 413;
 	return 400;

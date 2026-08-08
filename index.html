@@ -7197,8 +7197,32 @@
                     isVisible: source.isVisible !== false,
                     isMuted: !!source.isMuted,
                     autoActivate: !!source.autoActivate,
-                    groupId: source.groupId || null
+                    groupId: source.groupId || null,
+                    error: sanitizeControlError(source.error),
+                    replyOnly: !!source.replyOnly,
+                    accountRole: normalizeAccountRole(source.accountRole),
+                    customSession: typeof source.customSession === 'string' ? source.customSession.slice(0, 200) : null,
+                    supportsWSS: source.supportsWSS === true || platformSupportsWebSocket(source.target)
                 };
+            }
+
+            function sanitizeControlError(value) {
+                if (typeof value !== 'string' || !value.trim()) return null;
+                return value
+                    .replace(/https?:\/\/[^\s<>"']+/gi, match => {
+                        try {
+                            const parsed = new URL(match.replace(/[),.;!?]+$/, ''));
+                            if (
+                                parsed.protocol === 'https:' && parsed.hostname === 'www.tiktok.com' && !parsed.port &&
+                                /^\/@[A-Za-z0-9._-]{1,64}\/live\/?$/.test(parsed.pathname)
+                            ) return `https://www.tiktok.com${parsed.pathname.replace(/\/$/, '')}`;
+                            return parsed.origin;
+                        } catch (_) {
+                            return '[url-redacted]';
+                        }
+                    })
+                    .replace(/\b(token|password|secret|authorization|cookie)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]')
+                    .slice(0, 2000);
             }
 
             const controllableGlobalSettings = new Set([
@@ -7226,20 +7250,56 @@
                 preferTikTokLegacy: { type: 'boolean', default: false, restartRequired: false, sensitive: false },
                 lastTikTokMode: { type: 'string', enum: ['classic', 'tiktok-websocket', 'tiktok-legacy'], default: 'tiktok-legacy', restartRequired: false, sensitive: false }
             });
+            function controlPlatform(inputMethods, connectionModes = ['classic'], defaultConnectionMode = 'classic', sourceFile = null) {
+                return Object.freeze({
+                    addSupported: true,
+                    inputMethods,
+                    identifiers: inputMethods,
+                    connectionModes,
+                    defaultConnectionMode,
+                    sourceFile
+                });
+            }
+
+            // This registry describes what the control API can add safely. It is separate from
+            // the desktop UI, whose platform prompts and defaults remain unchanged.
             const platformDefinitions = Object.freeze({
-                twitch: { identifiers: ['username'], connectionModes: ['classic', 'websocket'], defaultConnectionMode: 'websocket' },
-                kick: { identifiers: ['username'], connectionModes: ['classic', 'websocket'], defaultConnectionMode: 'websocket' },
-                youtube: { identifiers: ['videoId', 'url'], connectionModes: ['classic', 'websocket'], defaultConnectionMode: 'classic' },
-                youtubeshorts: { identifiers: ['videoId', 'url'], connectionModes: ['classic', 'websocket'], defaultConnectionMode: 'classic' },
-                tiktok: { identifiers: ['username'], connectionModes: ['classic', 'tiktok-websocket', 'tiktok-legacy'], defaultConnectionMode: 'tiktok-legacy' },
-                instagram: { identifiers: ['username'], connectionModes: ['classic'], defaultConnectionMode: 'classic' },
-                instagramlive: { identifiers: ['username'], connectionModes: ['classic'], defaultConnectionMode: 'classic' },
-                picarto: { identifiers: ['username'], connectionModes: ['classic'], defaultConnectionMode: 'classic' },
-                mixcloud: { identifiers: ['username'], connectionModes: ['classic'], defaultConnectionMode: 'classic' },
-                chzzk: { identifiers: ['username'], connectionModes: ['classic'], defaultConnectionMode: 'classic' },
-                nimo: { identifiers: ['username'], connectionModes: ['classic'], defaultConnectionMode: 'classic' },
-                bilibilicom: { identifiers: ['username'], connectionModes: ['classic', 'websocket'], defaultConnectionMode: 'classic' },
-                bilibilitv: { identifiers: ['username'], connectionModes: ['classic'], defaultConnectionMode: 'classic' }
+                twitch: controlPlatform(['username', 'url'], ['classic', 'websocket'], 'websocket'),
+                kick: controlPlatform(['username', 'url'], ['classic', 'websocket'], 'websocket'),
+                youtube: controlPlatform(['videoId', 'url'], ['classic', 'websocket']),
+                youtubeshorts: controlPlatform(['videoId', 'url'], ['classic', 'websocket']),
+                tiktok: controlPlatform(['username', 'url'], ['classic', 'tiktok-websocket', 'tiktok-legacy'], 'tiktok-legacy'),
+                instagram: controlPlatform(['username', 'url'], ['classic'], 'classic', 'sources/instagram.js'),
+                instagramlive: controlPlatform(['username', 'url'], ['classic'], 'classic', 'sources/instagram.js'),
+                picarto: controlPlatform(['username', 'url']),
+                mixcloud: controlPlatform(['username', 'url']),
+                chzzk: controlPlatform(['username', 'url']),
+                nimo: controlPlatform(['username', 'url']),
+                bilibilicom: controlPlatform(['username', 'url'], ['classic', 'websocket']),
+                bilibilitv: controlPlatform(['username', 'url'], ['classic'], 'classic', 'sources/bilibili.js'),
+                facebook: controlPlatform(['url'], ['classic', 'websocket']),
+                x: controlPlatform(['url']),
+                rumble: controlPlatform(['url'], ['classic', 'websocket']),
+                parti: controlPlatform(['url']),
+                beamstream: controlPlatform(['url']),
+                vpzone: controlPlatform(['url'], ['classic', 'websocket'], 'websocket'),
+                velora: controlPlatform(['url'], ['classic', 'websocket'], 'websocket'),
+                peertube: controlPlatform(['url']),
+                zoom: controlPlatform(['url']),
+                arenasocial: controlPlatform(['url']),
+                pilled: controlPlatform(['url']),
+                sooplive: controlPlatform(['url']),
+                twitcasting: controlPlatform(['url']),
+                younow: controlPlatform(['url']),
+                other: Object.freeze({
+                    addSupported: true,
+                    inputMethods: ['url'],
+                    identifiers: ['url'],
+                    connectionModes: ['classic'],
+                    defaultConnectionMode: 'classic',
+                    sourceFile: null,
+                    automaticDetectionRequired: true
+                })
             });
 
             function supportedConnectionModesForSource(source) {
@@ -7332,14 +7392,33 @@
                 if (unavailable) return unavailable;
                 const value = requestValue(request);
                 if (!value || typeof value !== 'object' || Array.isArray(value)) return err('INVALID_TARGET', 'Source details are required.');
-                const target = String(value.target || '').trim().toLowerCase();
-                if (!platformDefinitions[target]) return err('INVALID_TARGET', 'Unsupported source target. Check capabilities.platforms.');
-                const username = String(value.username || '').trim().replace(/^@/, '').slice(0, 200);
+                let target = String(value.target || '').trim().toLowerCase();
+                if (!platformDefinitions[target]?.addSupported) return err('INVALID_TARGET', 'Unsupported source target. Check capabilities.platforms.');
+                let username = String(value.username || '').trim().replace(/^@/, '').slice(0, 200);
                 const videoId = String(value.videoId || '').trim().slice(0, 200);
                 const url = buildSourceUrl(target, username, value.url, videoId);
                 if (!url) return err('INVALID_TARGET', 'Provide a valid HTTP(S) URL or a username for a supported platform.');
+                let sourceFiles = [];
+                const requestedTarget = target;
+                if (target === 'other') {
+                    sourceFiles = (typeof checkSupported === 'function' ? checkSupported(url) : [])
+                        .map(normalizeSourceScriptPath)
+                        .filter(Boolean);
+                    sourceFiles = [...new Set(sourceFiles)];
+                    if (!sourceFiles.length) {
+                        return err('INVALID_TARGET', 'This URL needs a source script selected in the desktop UI because it could not be detected automatically.');
+                    }
+                    target = sourceFiles[0].split('.js')[0].split('/').pop();
+                    if (/live\.bilibili\.com/i.test(url)) target = 'bilibilicom';
+                    else if (/bilibili\.tv/i.test(url)) target = 'bilibilitv';
+                    if (!username) {
+                        try { username = new URL(url).hostname.slice(0, 200); } catch (_) { }
+                    }
+                }
                 const requestedMode = String(value.connectionMode || '').trim();
-                const platformDefinition = platformDefinitions[target];
+                const platformDefinition = requestedTarget === 'other'
+                    ? platformDefinitions.other
+                    : platformDefinitions[target];
                 if (requestedMode && !platformDefinition.connectionModes.includes(requestedMode)) return err('INVALID_TARGET', 'Unsupported connection mode for this platform.');
                 const idempotencyKey = String(value.idempotencyKey || '').trim().slice(0, 200);
                 if (idempotencyKey) {
@@ -7359,6 +7438,8 @@
                     accountRole: value.accountRole,
                     customSession: typeof value.customSession === 'string' ? value.customSession.slice(0, 200) : undefined,
                     supportsWSS: platformSupportsWebSocket(target),
+                    sourceFile: platformDefinition.sourceFile || undefined,
+                    sourceFiles: sourceFiles.length ? sourceFiles : undefined,
                     controlIdempotencyKey: idempotencyKey || undefined,
                     urlGeneratedFromUsername: !String(value.url || '').trim()
                 });
@@ -7437,6 +7518,8 @@
             function getCapabilities() {
                 return ok({
                     available: true,
+                    ready: configReady === true,
+                    readiness: configReady === true ? 'ready' : 'loading-source-configuration',
                     runtime: 'electron',
                     version: null,
                     appControls: { status: true, reload: true, shutdown: true, headless: true },
@@ -7474,6 +7557,19 @@
                     sourceStatus: {
                         get: true,
                         values: sourceStatusValues.slice()
+                    },
+                    observation: {
+                        diagnostics: true,
+                        recentEvents: true,
+                        waitForEvents: true,
+                        screenshot: true,
+                        semanticPageSnapshot: true,
+                        opaqueRefActions: ['click', 'focus', 'scroll', 'fill', 'pressKey'],
+                        pageReload: true,
+                        showForHuman: true,
+                        arbitraryJavaScript: false,
+                        selectors: false,
+                        credentials: false
                     },
                     settings: { get: true, update: true, keys: Array.from(controllableGlobalSettings), definitions: settingDefinitions },
                     platforms: platformDefinitions
@@ -7513,6 +7609,13 @@
             async function startSourceInternal(sourceId) {
                 const source = stateManager.getSource(sourceId);
                 if (!source) return err('SOURCE_NOT_FOUND', 'Source was not found.');
+                const readinessDeadline = Date.now() + 15000;
+                while (!configReady && Date.now() < readinessDeadline) {
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                }
+                if (!configReady) {
+                    return err('SSAPP_NOT_READY', 'SSApp is still loading source configuration. Try again shortly.');
+                }
                 const entry = entryForSourceId(sourceId);
                 if (!entry) return err('SOURCE_NOT_FOUND', 'Source UI entry was not found.');
                 if (hasConnectionHandles(source)) {
@@ -7521,10 +7624,20 @@
                 const button = entry.querySelector('[data-activatehtml]');
                 if (!button) return err('INVALID_TARGET', 'Source activate button is unavailable.');
                 stateManager.updateSource(sourceId, { status: 'activating', error: null });
-                setTimeout(() => {
-                    activateSource(button).catch(error => {
+                setTimeout(async () => {
+                    try {
+                        await activateSource(button);
+                        await waitForNextRender();
+                        const latest = stateManager.getSource(sourceId);
+                        if (latest && latest.status === 'activating' && !hasConnectionHandles(latest)) {
+                            stateManager.updateSource(sourceId, {
+                                status: 'error',
+                                error: 'Source activation did not create a connection.'
+                            });
+                        }
+                    } catch (error) {
                         stateManager.updateSource(sourceId, { status: 'error', error: error?.message || 'Source activation failed.' });
-                    });
+                    }
                 }, 0);
                 return ok({ accepted: true, source: normalizeSourceForStreamDeck(stateManager.getSource(sourceId) || source) });
             }
@@ -7674,7 +7787,8 @@
                     const response = await ipcRenderer.invoke('showWindow', {
                         vid: source.vid,
                         state: !desired,
-                        userInitiated: true
+                        userInitiated: true,
+                        humanHandoff: value.humanHandoff === true
                     });
                     let actual = desired;
                     if (response && typeof response.newState === 'boolean') {
