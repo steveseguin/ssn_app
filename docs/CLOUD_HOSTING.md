@@ -206,11 +206,12 @@ checkout, separate adapter download, or Node installation is required:
 }
 ```
 
-The exact configuration filename depends on the AI client. Start the main SSApp process before
-starting the client. During MCP setup the client launches a second lightweight instance of the
-downloaded executable in adapter mode, asks it for tools, and the adapter calls
-`GET /api/v1/capabilities` on loopback and exposes only commands supported by that running
-SSApp version. No port scanning, cloud registration, or separate remote API is involved.
+The exact configuration filename depends on the AI client. During MCP setup the client launches
+a second lightweight instance of the downloaded executable in adapter mode and asks it for tools.
+SSApp 0.4.11 and newer expose the adapter's stable tool set even when the main app starts later;
+each tool call still checks `GET /api/v1/capabilities` on loopback before sending a version-gated
+command. Older versions should start the main SSApp process before the client. No port scanning,
+cloud registration, or separate remote API is involved.
 
 The optional
 [`control-social-stream` skill](https://github.com/steveseguin/social_stream/tree/main/docs/skills/control-social-stream)

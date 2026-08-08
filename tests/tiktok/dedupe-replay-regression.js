@@ -93,6 +93,36 @@ test('chat dedupe: fallback uses user + createTime + comment', () => {
     assert.notStrictEqual(k1, k2, 'different comment should produce different keys');
 });
 
+test('chat dedupe: v3 content participates in the fallback key', () => {
+    const k1 = buildChatDedupeKey({
+        user: { id: '123' },
+        common: { createTime: '1700000000' },
+        content: 'hello'
+    });
+    const k2 = buildChatDedupeKey({
+        user: { id: '123' },
+        common: { createTime: '1700000000' },
+        content: 'different'
+    });
+    assert.ok(k1, 'first v3 key should be non-null');
+    assert.ok(k2, 'second v3 key should be non-null');
+    assert.notStrictEqual(k1, k2, 'different v3 content should produce different keys');
+});
+
+test('chat dedupe: legacy and v3 payloads share a fallback key', () => {
+    const legacyKey = buildChatDedupeKey({
+        user: { id: '123' },
+        common: { createTime: '1700000000' },
+        comment: 'Same Message'
+    });
+    const v3Key = buildChatDedupeKey({
+        user: { id: '123' },
+        common: { createTime: '1700000000' },
+        content: 'Same Message'
+    });
+    assert.strictEqual(v3Key, legacyKey, 'schema changes must not bypass fallback dedupe');
+});
+
 test('chat dedupe: sparse payload with only user returns null', () => {
     const key = buildChatDedupeKey({ user: { uniqueId: 'u1' }, comment: '' });
     assert.strictEqual(key, null, 'user alone with empty comment should not produce a key');

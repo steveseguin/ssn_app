@@ -3,6 +3,7 @@
 'use strict';
 
 const assert = require('assert');
+const net = require('net');
 const path = require('path');
 const { spawn } = require('child_process');
 
@@ -11,6 +12,17 @@ const packagedBinary = String(process.env.SSAPP_MCP_BINARY || '').trim();
 const command = packagedBinary || require('electron');
 const args = packagedBinary ? ['--ssapp-mcp'] : [repoRoot, '--ssapp-mcp'];
 if (process.platform === 'linux') args.push('--ozone-platform=headless');
+
+function getFreePort() {
+	return new Promise((resolve, reject) => {
+		const server = net.createServer();
+		server.once('error', reject);
+		server.listen(0, '127.0.0.1', () => {
+			const port = server.address().port;
+			server.close(() => resolve(port));
+		});
+	});
+}
 
 function waitForResponse(responses, id, child, stderr, timeoutMs = 15000) {
 	return new Promise((resolve, reject) => {
@@ -35,9 +47,11 @@ function waitForResponse(responses, id, child, stderr, timeoutMs = 15000) {
 }
 
 async function run() {
+	const offlinePort = await getFreePort();
 	const env = { ...process.env };
 	delete env.DISPLAY;
 	delete env.WAYLAND_DISPLAY;
+	env.SSAPP_CONTROL_URL = `http://127.0.0.1:${offlinePort}`;
 	const child = spawn(command, args, {
 		cwd: repoRoot,
 		env,
@@ -69,14 +83,36 @@ async function run() {
 		})}\n`);
 		const initialized = await waitForResponse(responses, 1, child, stderr);
 		assert.strictEqual(initialized.result.serverInfo.name, 'social-stream-ninja');
-		assert.strictEqual(initialized.result.serverInfo.version, '1.0.4');
+		assert.strictEqual(initialized.result.serverInfo.version, '1.0.6');
+		assert.strictEqual(initialized.result.capabilities.tools.listChanged, false);
 		assert.match(initialized.result.instructions, /capabilities/i);
+		assert.match(initialized.result.instructions, /offline/i);
 
 		child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })}\n`);
 		child.stdin.end();
 		const listed = await waitForResponse(responses, 2, child, stderr);
-		assert.ok(listed.result.tools.some(tool => tool.name === 'ssapp_get_capabilities'));
-		assert.ok(listed.result.tools.some(tool => tool.name === 'ssapp_get_status'));
+		assert.deepStrictEqual(
+			listed.result.tools.map(tool => tool.name).sort(),
+			[
+				'ssapp_add_source',
+				'ssapp_get_capabilities',
+				'ssapp_get_settings',
+				'ssapp_get_status',
+				'ssapp_list_sources',
+				'ssapp_reload_source',
+				'ssapp_remove_source',
+				'ssapp_shutdown',
+				'ssapp_start_source',
+				'ssapp_stop_source',
+				'ssapp_update_settings',
+				'ssapp_update_source',
+			].sort(),
+			'Offline MCP discovery did not expose the stable tool set.'
+		);
+		assert.strictEqual(listed.result._meta.ssappVersion, 'unavailable');
+		const addSourceTool = listed.result.tools.find(tool => tool.name === 'ssapp_add_source');
+		assert.match(addSourceTool.description, /MCP adapter use WebSocket Auto/i);
+		assert.match(addSourceTool.inputSchema.properties.connectionMode.description, /tiktok-websocket/i);
 	} finally {
 		if (!child.stdin.writableEnded) child.stdin.end();
 		await Promise.race([

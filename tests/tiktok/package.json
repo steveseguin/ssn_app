@@ -16,6 +16,6 @@
     "events": "node event-capture-regression.js",
     "emote": "node chat-emote-regression.js",
     "single-active": "node single-active-connection-regression.js",
-    "regression": "node auto-mode-regression.js && node gift-count-regression.js && node social-signal-regression.js && node event-capture-regression.js && node chat-emote-regression.js && node single-active-connection-regression.js"
+    "regression": "node auto-mode-regression.js && node gift-count-regression.js && node social-signal-regression.js && node event-capture-regression.js && node chat-emote-regression.js && node dedupe-replay-regression.js && node single-active-connection-regression.js"
   }
 }

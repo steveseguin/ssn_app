@@ -5,8 +5,10 @@
 // No access or refresh token is returned to this process or written to the report.
 //
 // Recommended overnight run:
-//   npm run test:twitch-websocket:soak -- --minutes=480
+//   node tests/electron/twitch-websocket-soak.js --minutes=480
 // Add --channel=TWITCH_LOGIN only when intentionally monitoring another channel.
+// Add --send-test-message to post one unique public message to the signed-in account's own channel
+// and verify that the IRC echo is rendered and forwarded exactly once with a native Twitch ID.
 //
 // The test performs a controlled invalid-access-token exercise in the isolated profile to prove
 // that the hosted refresh-token path recovers, then closes EventSub once to prove it reconnects.
@@ -73,7 +75,7 @@ function normalizeChannel(value) {
 }
 
 function printUsage() {
-	console.log('Usage: npm run test:twitch-websocket:soak -- [options]');
+	console.log('Usage: node tests/electron/twitch-websocket-soak.js [options]');
 	console.log('');
 	console.log('Options:');
 	console.log('  --channel=TWITCH_LOGIN        Channel to monitor (default: signed-in account)');
@@ -86,6 +88,7 @@ function printUsage() {
 	console.log('  --no-auth                     Do not open the browser if sign-in is needed');
 	console.log('  --no-force-refresh            Skip the controlled token-refresh exercise');
 	console.log('  --no-eventsub-reconnect       Skip the controlled EventSub reconnect exercise');
+	console.log('  --send-test-message[=TEXT]    Post one public message to your own channel and verify its echo');
 }
 
 const channel = normalizeChannel(argValue('channel') || process.env.TWITCH_CHANNEL);
@@ -101,6 +104,9 @@ const reportPath = path.resolve(
 const allowInteractiveAuth = !hasArg('no-auth');
 const forceRefresh = !hasArg('no-force-refresh');
 const exerciseEventSubReconnect = !hasArg('no-eventsub-reconnect');
+const requestedChatSendTestMessage = argValue('send-test-message').trim();
+const exerciseChatSendEnabled = hasArg('send-test-message') || Boolean(requestedChatSendTestMessage);
+const chatSendTestMessage = requestedChatSendTestMessage || `ssapp-e2e-${stamp}`;
 
 let child = null;
 let remotePort = null;
@@ -421,6 +427,15 @@ async function installTracker() {
 				refreshFailures: 0,
 				validateRequests: 0,
 				validateFailures: 0,
+				chatSendRequests: 0,
+				chatSendAccepted: 0,
+				chatSendFailures: 0,
+				lastChatSendHttpStatus: null,
+				lastChatSendResponse: null,
+				testMessageText: '',
+				testMessageMatches: 0,
+				testMessageIds: [],
+				testDomRowsAdded: 0,
 				eventSocket: null,
 				eventExerciseOriginal: null,
 				eventExerciseStartedAt: 0
@@ -438,7 +453,13 @@ async function installTracker() {
 						if (active && message && typeof message === 'object') {
 							active.forwardedMessages += 1;
 							active.lastForwardedAt = Date.now();
-							if (typeof message.chatmessage === 'string' && message.chatmessage.length) active.chatMessages += 1;
+							if (typeof message.chatmessage === 'string' && message.chatmessage.length) {
+								active.chatMessages += 1;
+								if (active.testMessageText && message.chatmessage === active.testMessageText) {
+									active.testMessageMatches += 1;
+									active.testMessageIds.push(message.id ? String(message.id) : '');
+								}
+							}
 							if (message.event) active.forwardedEvents += 1;
 						}
 					} catch (_) { }
@@ -457,8 +478,10 @@ async function installTracker() {
 					} catch (_) { }
 					const isRefresh = url.includes('sso.socialstream.ninja/auth/twitch/refresh');
 					const isValidate = url.includes('id.twitch.tv/oauth2/validate');
+					const isChatSend = url.includes('api.twitch.tv/helix/chat/messages');
 					if (active && isRefresh) active.refreshRequests += 1;
 					if (active && isValidate) active.validateRequests += 1;
+					if (active && isChatSend) active.chatSendRequests += 1;
 					try {
 						const response = await originalFetch.apply(this, args);
 						if (active && isRefresh) {
@@ -466,10 +489,25 @@ async function installTracker() {
 							else active.refreshFailures += 1;
 						}
 						if (active && isValidate && (!response || !response.ok)) active.validateFailures += 1;
+						if (active && isChatSend) {
+							active.lastChatSendHttpStatus = response && Number.isFinite(response.status) ? response.status : null;
+							let responseData = {};
+							try { responseData = await response.clone().json(); } catch (_) { }
+							const sendResult = Array.isArray(responseData.data) ? responseData.data[0] : null;
+							active.lastChatSendResponse = {
+								isSent: sendResult?.is_sent === true,
+								messageId: sendResult?.message_id ? String(sendResult.message_id) : '',
+								messageIdPresent: !!sendResult?.message_id,
+								dropReason: sendResult?.drop_reason?.message || responseData.message || ''
+							};
+							if (response?.ok && sendResult?.is_sent && sendResult?.message_id) active.chatSendAccepted += 1;
+							else active.chatSendFailures += 1;
+						}
 						return response;
 					} catch (error) {
 						if (active && isRefresh) active.refreshFailures += 1;
 						if (active && isValidate) active.validateFailures += 1;
+						if (active && isChatSend) active.chatSendFailures += 1;
 						throw error;
 					}
 				};
@@ -480,7 +518,17 @@ async function installTracker() {
 			const textarea = document.getElementById('textarea');
 			if (textarea && typeof MutationObserver === 'function') {
 				tracker.domObserver = new MutationObserver(records => {
-					for (const record of records) tracker.domRowsAdded += record.addedNodes ? record.addedNodes.length : 0;
+					const active = window.__ssappTwitchSoakTracker;
+					if (!active) return;
+					for (const record of records) {
+						const addedNodes = record.addedNodes ? Array.from(record.addedNodes) : [];
+						active.domRowsAdded += addedNodes.length;
+						for (const node of addedNodes) {
+							if (active.testMessageText && String(node.textContent || '').includes(active.testMessageText)) {
+								active.testDomRowsAdded += 1;
+							}
+						}
+					}
 				});
 				tracker.domObserver.observe(textarea, { childList: true });
 			}
@@ -540,6 +588,10 @@ async function readViewState() {
 			const eventSocket = window.eventSocket || null;
 			const authElement = document.querySelector('.auth');
 			const socketElements = Array.from(document.querySelectorAll('.socket'));
+			const sendButton = document.getElementById('sendmessage');
+			const chatInput = document.getElementById('input-text');
+			const sendStatus = document.getElementById('send-status');
+			const testMessageText = tracker?.testMessageText || '';
 			return {
 				urlReady: /sources\\/websocket\\/twitch\\.html/i.test(location.href),
 				tokenPresent: !!accessToken,
@@ -555,6 +607,7 @@ async function readViewState() {
 				socketUiVisible: socketElements.some(element => !element.classList.contains('hidden')),
 				currentUser: (document.getElementById('current-user')?.textContent || '').trim(),
 				currentChannel: (document.getElementById('current-channel')?.textContent || '').trim(),
+				chatWriteScopePresent: sendButton?.dataset?.chatAuthorized === 'true',
 				chatReadyState: window.websocket && Number.isFinite(window.websocket.readyState)
 					? window.websocket.readyState
 					: null,
@@ -569,6 +622,19 @@ async function readViewState() {
 						&& eventSocket !== tracker.eventExerciseOriginal
 						&& eventSocket.readyState === WebSocket.OPEN
 				),
+				composer: {
+					buttonDisabled: !!sendButton?.disabled,
+					buttonText: (sendButton?.textContent || '').trim(),
+					inputReadOnly: !!chatInput?.readOnly,
+					inputValue: chatInput?.value || '',
+					statusText: (sendStatus?.textContent || '').trim(),
+					statusState: sendStatus?.dataset?.state || ''
+				},
+				testDomMatches: testMessageText
+					? Array.from(document.querySelectorAll('#textarea > div')).filter(
+						row => String(row.textContent || '').includes(testMessageText)
+					).length
+					: 0,
 				tracker: tracker ? {
 					id: tracker.id,
 					startedAt: tracker.startedAt,
@@ -589,7 +655,16 @@ async function readViewState() {
 					refreshSuccesses: tracker.refreshSuccesses,
 					refreshFailures: tracker.refreshFailures,
 					validateRequests: tracker.validateRequests,
-					validateFailures: tracker.validateFailures
+					validateFailures: tracker.validateFailures,
+					chatSendRequests: tracker.chatSendRequests,
+					chatSendAccepted: tracker.chatSendAccepted,
+					chatSendFailures: tracker.chatSendFailures,
+					lastChatSendHttpStatus: tracker.lastChatSendHttpStatus,
+					lastChatSendResponse: tracker.lastChatSendResponse ? { ...tracker.lastChatSendResponse } : null,
+					testMessageText: tracker.testMessageText,
+					testMessageMatches: tracker.testMessageMatches,
+					testMessageIds: [...tracker.testMessageIds],
+					testDomRowsAdded: tracker.testDomRowsAdded
 				} : null
 			};
 		})()
@@ -784,6 +859,150 @@ async function exerciseEventSub() {
 	return state ? 'passed' : 'failed';
 }
 
+async function exerciseChatSend() {
+	if (!exerciseChatSendEnabled) {
+		console.log('[twitch-soak] Public chat-send exercise skipped by request.');
+		writeReport('chat_send_exercise', { result: 'skipped' });
+		return { result: 'skipped' };
+	}
+
+	const readyState = await waitFor(async () => {
+		const candidate = await readViewState();
+		return candidate.chatReadyState === 1 ? candidate : null;
+	}, 'joined Twitch chat connection', 60000, 500);
+	const signedInUser = normalizeChannel(readyState.currentUser);
+	const connectedChannel = normalizeChannel(readyState.currentChannel) || activeChannel;
+	if (!signedInUser || signedInUser !== connectedChannel) {
+		throw createRunError(
+			'The public chat-send exercise is restricted to the signed-in account\'s own channel.',
+			'INCONCLUSIVE'
+		);
+	}
+	if (!readyState.chatWriteScopePresent) {
+		const result = {
+			result: 'inconclusive',
+			channel: connectedChannel,
+			reason: 'missing_user_write_chat_scope'
+		};
+		writeReport('chat_send_exercise', result);
+		throw createRunError(
+			'The isolated Twitch profile is missing user:write:chat; sign out and authorize it again before running the public send exercise.',
+			'INCONCLUSIVE'
+		);
+	}
+	if (readyState.composer.buttonDisabled) {
+		throw new Error(`The Twitch chat composer is unavailable: ${readyState.composer.statusText || 'unknown reason'}`);
+	}
+	const sendBaseline = {
+		requests: readyState.tracker?.chatSendRequests || 0,
+		accepted: readyState.tracker?.chatSendAccepted || 0,
+		failures: readyState.tracker?.chatSendFailures || 0
+	};
+
+	console.log(`[twitch-soak] Posting one public duplicate-check message to ${connectedChannel}: ${chatSendTestMessage}`);
+	writeReport('chat_send_exercise', {
+		result: 'started',
+		channel: connectedChannel,
+		message: chatSendTestMessage
+	});
+
+	const started = await execInSource(`
+		(() => {
+			const tracker = window.__ssappTwitchSoakTracker;
+			const input = document.getElementById('input-text');
+			const button = document.getElementById('sendmessage');
+			if (!tracker || !input || !button || button.disabled) return false;
+			tracker.testMessageText = ${JSON.stringify(chatSendTestMessage)};
+			tracker.testMessageMatches = 0;
+			tracker.testMessageIds = [];
+			tracker.testDomRowsAdded = 0;
+			input.value = tracker.testMessageText;
+			input.dispatchEvent(new Event('input', { bubbles: true }));
+			button.click();
+			return true;
+		})()
+	`, 'send Twitch duplicate-check message');
+	if (!started) throw new Error('The Twitch chat composer was not ready to send the duplicate-check message');
+
+	const sendOutcome = await waitFor(async () => {
+		const candidate = await readViewState();
+		const ids = candidate.tracker?.testMessageIds || [];
+		const sendFinishedWithWarning = candidate.composer.statusState === 'warning'
+			&& !candidate.composer.inputReadOnly
+			&& (
+				candidate.composer.statusText.includes('Delivery is unknown')
+					|| candidate.composer.statusText.includes('parts was accepted')
+					|| candidate.composer.statusText.includes('parts were accepted')
+			);
+		if (candidate.composer.statusState === 'error' || sendFinishedWithWarning) {
+			return { failed: true, state: candidate };
+		}
+		return (candidate.tracker?.chatSendAccepted || 0) > sendBaseline.accepted
+			&& candidate.tracker?.testMessageMatches >= 1
+			&& candidate.tracker?.testDomRowsAdded >= 1
+			&& ids.some(Boolean)
+			&& candidate.composer.inputValue === ''
+			? { failed: false, state: candidate }
+			: null;
+	}, 'Twitch IRC echo for the duplicate-check message', 60000, 250);
+	if (sendOutcome.failed) {
+		const failedState = sendOutcome.state;
+		const response = failedState.tracker?.lastChatSendResponse;
+		const reason = failedState.composer.statusText
+			|| response?.dropReason
+			|| `Twitch chat send failed (HTTP ${failedState.tracker?.lastChatSendHttpStatus || 'unknown'})`;
+		const result = {
+			result: 'failed',
+			channel: connectedChannel,
+			message: chatSendTestMessage,
+			reason,
+			httpStatus: failedState.tracker?.lastChatSendHttpStatus || null,
+			response: response || null
+		};
+		writeReport('chat_send_exercise', result);
+		throw new Error(`Twitch rejected the duplicate-check message: ${reason}`);
+	}
+
+	// Give a delayed duplicate enough time to arrive before asserting exact counts.
+	await sleep(5000);
+	const settled = await readViewState();
+	const messageIds = settled.tracker?.testMessageIds || [];
+	const nativeMessageIds = messageIds.filter(Boolean);
+	const acceptedMessageId = settled.tracker?.lastChatSendResponse?.messageId || '';
+	const result = {
+		result: 'passed',
+		channel: connectedChannel,
+		message: chatSendTestMessage,
+		forwardedMatches: settled.tracker?.testMessageMatches || 0,
+		domRowsAdded: settled.tracker?.testDomRowsAdded || 0,
+		currentDomMatches: settled.testDomMatches,
+		chatSendRequests: (settled.tracker?.chatSendRequests || 0) - sendBaseline.requests,
+		chatSendAccepted: (settled.tracker?.chatSendAccepted || 0) - sendBaseline.accepted,
+		chatSendFailures: (settled.tracker?.chatSendFailures || 0) - sendBaseline.failures,
+		acceptedMessageId,
+		nativeMessageIds
+	};
+	const failures = [];
+	if (result.forwardedMatches !== 1) failures.push(`forwarded payloads=${result.forwardedMatches}`);
+	if (result.domRowsAdded !== 1) failures.push(`chat rows added=${result.domRowsAdded}`);
+	if (result.chatSendAccepted !== 1) failures.push(`accepted Helix sends=${result.chatSendAccepted}`);
+	if (nativeMessageIds.length !== 1) failures.push(`native Twitch IDs=${nativeMessageIds.length}`);
+	if (!acceptedMessageId || nativeMessageIds[0] !== acceptedMessageId) {
+		failures.push('IRC message ID did not match the Helix acceptance ID');
+	}
+	if (!settled.composer || settled.composer.inputValue !== '') failures.push('composer draft was not cleared');
+	if (failures.length) {
+		result.result = 'failed';
+		result.failure = `Expected exactly one IRC echo (${failures.join(', ')})`;
+		writeReport('chat_send_exercise', result);
+		throw new Error(result.failure);
+	}
+
+	console.log(`[twitch-soak] IRC echo arrived exactly once with Twitch ID ${nativeMessageIds[0]}.`);
+	writeReport('chat_send_exercise', result);
+	return result;
+}
+
 const trackerTotals = {
 	forwardedMessages: 0,
 	chatMessages: 0,
@@ -857,6 +1076,10 @@ function updateOutage(health, name, open, now) {
 }
 
 async function runSoak(eventSubResult) {
+	await installTracker();
+	const baselineState = await readViewState();
+	ingestTracker(baselineState.tracker);
+	const chatMessageBaseline = trackerTotals.chatMessages;
 	const startedAt = Date.now();
 	const endsAt = startedAt + minutes * 60000;
 	const eventSubRequired = eventSubResult === 'passed';
@@ -937,7 +1160,7 @@ async function runSoak(eventSubResult) {
 				`[twitch-soak] ${formatDuration(now - startedAt)} ` +
 				`chat=${viewState.chatReadyState === 1 ? 'open' : 'down'} ` +
 				`eventsub=${viewState.eventReadyState === 1 ? 'open' : (eventSubRequired ? 'down' : 'n/a')} ` +
-				`messages=${trackerTotals.chatMessages} refreshes=${trackerTotals.refreshSuccesses}`
+				`messages=${trackerTotals.chatMessages - chatMessageBaseline} refreshes=${trackerTotals.refreshSuccesses}`
 			);
 			nextConsoleAt = now + 60000;
 		}
@@ -952,9 +1175,10 @@ async function runSoak(eventSubResult) {
 
 	let result = failure ? 'failed' : 'passed';
 	const inconclusiveReasons = [];
-	if (!failure && trackerTotals.chatMessages === 0) {
+	const chatMessagesDuringSoak = trackerTotals.chatMessages - chatMessageBaseline;
+	if (!failure && chatMessagesDuringSoak === 0) {
 		result = 'inconclusive';
-		inconclusiveReasons.push('No real Twitch chat message was observed; message delivery cannot be proven.');
+		inconclusiveReasons.push('No real Twitch chat message was observed during the soak interval; sustained delivery cannot be proven.');
 	}
 	if (!failure && eventSubResult === 'inconclusive') {
 		result = 'inconclusive';
@@ -966,6 +1190,7 @@ async function runSoak(eventSubResult) {
 		failure,
 		inconclusiveReasons,
 		durationMs: finishedAt - startedAt,
+		chatMessagesDuringSoak,
 		eventSubRequired,
 		health,
 		trackerTotals: { ...trackerTotals, eventTypes: { ...trackerTotals.eventTypes } }
@@ -1000,6 +1225,15 @@ async function run() {
 		printUsage();
 		throw createRunError('--channel must be a valid Twitch login.', 'USAGE');
 	}
+	if (exerciseChatSendEnabled && (
+		!chatSendTestMessage
+			|| Array.from(chatSendTestMessage).length > 500
+			|| /[\r\n]/.test(chatSendTestMessage)
+			|| chatSendTestMessage.startsWith('/')
+	)) {
+		printUsage();
+		throw createRunError('--send-test-message must be one plain chat line of at most 500 characters.', 'USAGE');
+	}
 	if (!fs.existsSync(path.join(socialStreamFsRoot, 'sources', 'websocket', 'twitch.js'))) {
 		throw new Error(`Social Stream source repo was not found at ${socialStreamFsRoot}`);
 	}
@@ -1016,7 +1250,8 @@ async function run() {
 		minutes,
 		profilePath,
 		forceRefresh,
-		exerciseEventSubReconnect
+		exerciseEventSubReconnect,
+		exerciseChatSend: exerciseChatSendEnabled
 	});
 
 	let finalSummary = null;
@@ -1027,6 +1262,7 @@ async function run() {
 		await ensureAuthenticated();
 		const refreshResult = await exerciseTokenRefresh();
 		const eventSubResult = await exerciseEventSub();
+		const chatSendResult = await exerciseChatSend();
 		const soak = await runSoak(eventSubResult);
 		finalSummary = {
 			result: soak.result,
@@ -1034,8 +1270,10 @@ async function run() {
 			requestedChannel: channel || null,
 			minutesRequested: minutes,
 			durationMs: soak.durationMs,
+			chatMessagesDuringSoak: soak.chatMessagesDuringSoak,
 			refreshExercise: refreshResult,
 			eventSubReconnectExercise: eventSubResult,
+			chatSendExercise: chatSendResult,
 			failure: soak.failure,
 			inconclusiveReasons: soak.inconclusiveReasons,
 			health: soak.health,
@@ -1048,7 +1286,7 @@ async function run() {
 		if (soak.failure) console.error(`[twitch-soak] ${soak.failure}`);
 		for (const reason of soak.inconclusiveReasons) console.warn(`[twitch-soak] ${reason}`);
 		console.log(`[twitch-soak] Longest outages: chat=${formatDuration(soak.health.longestChatOutageMs)}, EventSub=${formatDuration(soak.health.longestEventOutageMs)}.`);
-		console.log(`[twitch-soak] Chat messages observed: ${soak.trackerTotals.chatMessages}. Report: ${reportPath}`);
+		console.log(`[twitch-soak] Chat messages observed during soak: ${soak.chatMessagesDuringSoak}. Report: ${reportPath}`);
 		return soak.result === 'passed' ? 0 : (soak.result === 'inconclusive' ? 2 : 1);
 	} catch (error) {
 		const result = error.code === 'INCONCLUSIVE' ? 'inconclusive' : (error.code === 'INTERRUPTED' ? 'interrupted' : 'failed');

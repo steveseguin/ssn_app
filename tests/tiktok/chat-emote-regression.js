@@ -10,6 +10,18 @@ function countStickerTags(text) {
 }
 
 function run() {
+  {
+    const message = __test.composeTikTokChatMessage({ content: 'hello from v3' });
+    assert.strictEqual(message.chatmessage, 'hello from v3', 'v3 content should populate chat text');
+  }
+
+  {
+    const legacyMessage = __test.composeTikTokChatMessage({ comment: 'legacy text', content: 'v3 text' });
+    const v3FallbackMessage = __test.composeTikTokChatMessage({ comment: '', content: 'v3 text' });
+    assert.strictEqual(legacyMessage.chatmessage, 'legacy text', 'a populated legacy comment should keep precedence');
+    assert.strictEqual(v3FallbackMessage.chatmessage, 'v3 text', 'empty legacy text should fall back to v3 content');
+  }
+
   const normalized = __test.normalizeTikTokEmoteEntries({
     emotes: [
       {

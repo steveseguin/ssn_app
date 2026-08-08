@@ -6,7 +6,7 @@ const http = require('http');
 const https = require('https');
 const readline = require('readline');
 
-const MCP_SERVER_VERSION = '1.0.4';
+const MCP_SERVER_VERSION = '1.0.6';
 const MCP_PROTOCOL_VERSION = '2025-06-18';
 const DEFAULT_URL = 'http://127.0.0.1:17777';
 
@@ -18,12 +18,12 @@ const TOOL_DEFINITIONS = Object.freeze({
 		groupId: stringProperty('Optional group ID.'),
 		status: stringProperty('Optional source status.'),
 	}, 'getSources', { readOnlyHint: true }),
-	ssapp_add_source: tool('Add an inactive source. Use capabilities.platforms before choosing fields or modes.', {
+	ssapp_add_source: tool('Add an inactive source. Use capabilities.platforms before choosing fields or modes. For TikTok only, omitting connectionMode makes this MCP adapter use WebSocket Auto (`tiktok-websocket`).', {
 		target: stringProperty('Platform target from capabilities.platforms.'),
 		username: stringProperty('Platform username or channel name.'),
 		url: stringProperty('Optional HTTP(S) source URL.'),
 		videoId: stringProperty('Optional YouTube video ID.'),
-		connectionMode: stringProperty('Optional supported connection mode.'),
+		connectionMode: stringProperty('Optional supported connection mode. TikTok defaults to WebSocket Auto (`tiktok-websocket`) when omitted.'),
 		idempotencyKey: stringProperty('Optional stable retry key.'),
 	}, 'addSource', { idempotentHint: true }),
 	ssapp_update_source: tool('Update approved properties on an inactive source.', {
@@ -82,6 +82,18 @@ function sourceTool(description, action, annotations) {
 	return tool(description, { sourceId: stringProperty('Stable source ID.') }, action, annotations);
 }
 
+function normalizeToolArguments(name, args) {
+	const value = args && typeof args === 'object' && !Array.isArray(args) ? { ...args } : {};
+	if (
+		name === 'ssapp_add_source' &&
+		String(value.target || '').trim().toLowerCase() === 'tiktok' &&
+		!String(value.connectionMode || '').trim()
+	) {
+		value.connectionMode = 'tiktok-websocket';
+	}
+	return value;
+}
+
 function apiRequest(pathname, body) {
 	const baseUrl = new URL(String(process.env.SSAPP_CONTROL_URL || DEFAULT_URL));
 	const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
@@ -131,10 +143,9 @@ async function listTools() {
 	try { compatibility = await getCompatibility(); } catch (_) { }
 	const tools = [];
 	for (const [name, definition] of Object.entries(TOOL_DEFINITIONS)) {
-		if (!supportsTool(definition, compatibility) && !['ssapp_get_status', 'ssapp_get_capabilities'].includes(name)) continue;
 		tools.push({
 			name,
-			description: `${definition.description} Connected SSApp: ${compatibility.ssappVersion}; API: ${compatibility.apiVersion}.`,
+			description: `${definition.description} Availability is checked against SSApp when called. Connected SSApp: ${compatibility.ssappVersion}; API: ${compatibility.apiVersion}.`,
 			inputSchema: definition.inputSchema,
 			annotations: definition.annotations,
 		});
@@ -153,7 +164,10 @@ async function callTool(name, args) {
 		if (!supportsTool(definition, compatibility)) {
 			throw new Error(`${definition.action} is unavailable in SSApp ${compatibility.ssappVersion} / API ${compatibility.apiVersion}.`);
 		}
-		result = await apiRequest('/api/v1/command', { action: definition.action, value: args || {} });
+		result = await apiRequest('/api/v1/command', {
+			action: definition.action,
+			value: normalizeToolArguments(name, args),
+		});
 	}
 	const ssappVersion = result.ssappVersion || result.app && result.app.version || 'unknown';
 	const apiVersion = result.apiVersion || 'unknown';
@@ -182,7 +196,9 @@ async function handle(message) {
 				instructions: [
 					'This controls Social Stream Ninja on the same computer through its loopback API.',
 					'Start SSApp and enable File > Local AI / Automation before using these tools.',
+					'Tool discovery remains available while SSApp is offline; command availability is checked when each tool is called.',
 					'Call ssapp_get_capabilities first, then ssapp_get_status, and use stable source IDs from the results.',
+					'When ssapp_add_source omits connectionMode for TikTok, this MCP adapter uses WebSocket Auto; explicit modes are preserved.',
 					'Stop an active source before changing its URL, username, video ID, or connection mode.',
 					'Remove, reload, and shutdown operations require explicit user intent.',
 					'Every result includes the connected SSApp and control API versions.',

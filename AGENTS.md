@@ -282,7 +282,7 @@ ssapp/
 ## Key Dependencies
 
 - **Electron**: ^40.0.0-beta.7
-- **tiktok-live-connector**: ^2.1.0
+- **tiktok-live-connector**: 2.4.3
 - **@eulerstream/euler-websocket-sdk**: ^0.0.6
 - **ws**: ^8.18.1
 - **electron-store**: 8.2.0

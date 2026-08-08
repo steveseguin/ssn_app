@@ -1,12 +1,17 @@
 'use strict';
 
 const assert = require('assert');
+const { EventEmitter } = require('events');
 const {
-  createTikTokEnvironment
+  createTikTokEnvironment,
+  __test
 } = require('../../tiktok/connection-manager.js');
 
-class DummyConnectorConnection {
+const { resolveTikTokViewerCount } = __test;
+
+class DummyConnectorConnection extends EventEmitter {
   constructor() {
+    super();
     this.roomId = null;
   }
 }
@@ -24,6 +29,7 @@ function buildConnectorStub() {
 function createHarness({
   captureLikeTotals = false,
   legacyYouTubeLikeTotals = false,
+  viewerUpdates = false,
   likeTotalMinIntervalMs = 5000,
   likeTotalHeartbeatMs = 90000
 } = {}) {
@@ -57,7 +63,7 @@ function createHarness({
     getCachedSettings: () => cachedSettings,
     isCaptureEventsEnabled: () => true,
     isCaptureJoinedEventEnabled: () => true,
-    isViewerUpdateAllowed: () => false,
+    isViewerUpdateAllowed: () => viewerUpdates,
     isTextOnlyModeEnabled: () => false,
     connectionStates: new Map()
   });
@@ -67,6 +73,8 @@ function createHarness({
     likeTotalHeartbeatMs
   });
   manager.virtualTabId = 900001;
+  manager.connection = new DummyConnectorConnection();
+  manager.setupEventHandlers();
   websocketConnections[1] = manager;
 
   return { emitted, manager, postedMessages };
@@ -193,6 +201,40 @@ function runLikeTotalAssertions() {
   manager.resetLikeTotalUpdateState();
 }
 
+function runViewerPayloadAssertions() {
+  const { emitted, manager } = createHarness({ viewerUpdates: true });
+
+  manager.connection.emit('roomUser', { viewerCount: 42, total: '999' });
+  assert.strictEqual(manager.lastViewerCount, 42, 'the legacy field should keep precedence when both are valid');
+  assert.strictEqual(emitted[0].meta, 42, 'the legacy viewer count should be forwarded');
+
+  manager.connection.emit('roomUser', { total: '316', totalUser: '12106' });
+  assert.strictEqual(manager.lastViewerCount, 316, 'v3 total should update the current viewer count');
+  assert.strictEqual(emitted[1].meta, 316, 'the v3 viewer count should be forwarded');
+
+  manager.connection.emit('roomUser', { totalUser: '12107' });
+  assert.strictEqual(manager.lastViewerCount, 316, 'cumulative totalUser must not replace the current viewer count');
+  assert.strictEqual(emitted.length, 2, 'totalUser alone must not emit a viewer update');
+
+  assert.strictEqual(resolveTikTokViewerCount({ viewerCount: 42 }), 42, 'legacy viewer count should be preserved');
+  assert.strictEqual(resolveTikTokViewerCount({ total: '316' }), 316, 'v3 total should provide the current viewer count');
+  assert.strictEqual(
+    resolveTikTokViewerCount({ viewerCount: 42, total: '316' }),
+    42,
+    'a valid legacy viewer count should keep precedence'
+  );
+  assert.strictEqual(
+    resolveTikTokViewerCount({ viewerCount: undefined, total: '316' }),
+    316,
+    'a malformed legacy value should fall back to v3 total'
+  );
+  assert.strictEqual(
+    resolveTikTokViewerCount({ totalUser: '12106' }),
+    null,
+    'cumulative totalUser must not be used as the current viewer count'
+  );
+}
+
 function runLegacyLikeTotalGuardAssertions() {
   const { emitted, manager } = createHarness({ legacyYouTubeLikeTotals: true });
   assert.strictEqual(
@@ -275,6 +317,7 @@ function run() {
   runFollowShareDedupeAssertions();
   runLikePassthroughAssertions();
   runLikeTotalAssertions();
+  runViewerPayloadAssertions();
   runLegacyLikeTotalGuardAssertions();
   runSparseSharePayloadAssertions();
   runEulerShareReplayDedupeAssertions();

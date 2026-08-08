@@ -1525,8 +1525,42 @@ function buildTikTokEventDedupeKey(eventType, data = {}, message = null) {
 }
 
 /**
+ * Resolve chat text across the legacy connector payload and the v3 protobuf payload.
+ * Prefer a populated legacy value so existing normalized connectors keep their behavior.
+ */
+function resolveTikTokChatText(data = {}) {
+    const legacyComment = typeof data?.comment === 'string' ? data.comment : null;
+    if (legacyComment && legacyComment.trim()) return legacyComment;
+    if (typeof data?.content === 'string') return data.content;
+    return legacyComment || '';
+}
+
+/**
+ * Resolve the current viewer count across connector schema versions.
+ * `totalUser` is cumulative audience and must not be treated as the live count.
+ */
+function resolveTikTokViewerCount(data = {}) {
+    if (!data || typeof data !== 'object') return null;
+
+    const candidates = [];
+    if (Object.prototype.hasOwnProperty.call(data, 'viewerCount')) {
+        candidates.push(data.viewerCount);
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'total')) {
+        candidates.push(data.total);
+    }
+    if (!candidates.length) return null;
+
+    for (const value of candidates) {
+        const parsed = parseInt(value, 10);
+        if (Number.isFinite(parsed)) return parsed;
+    }
+    return 0;
+}
+
+/**
  * Chat-specific dedupe key.  Prefers the upstream msgId (unique per message),
- * falls back to user + createTime + comment text.  Never dedupes on user alone.
+ * falls back to user + createTime + normalized chat text.  Never dedupes on user alone.
  */
 function buildChatDedupeKey(data) {
     if (!data || typeof data !== 'object') return null;
@@ -1550,12 +1584,12 @@ function buildChatDedupeKey(data) {
         data?.common?.createTime,
         data?.createTime
     ]) || '';
-    const comment = typeof data?.comment === 'string' ? data.comment.trim().toLowerCase() : '';
+    const chatText = resolveTikTokChatText(data).trim().toLowerCase();
 
     // Require userId AND at least one distinguishing detail to avoid
     // collapsing different messages from the same user.
-    if (!userId || (!createTime && !comment)) return null;
-    return `chat|${userId}|${createTime}|${comment}`;
+    if (!userId || (!createTime && !chatText)) return null;
+    return `chat|${userId}|${createTime}|${chatText}`;
 }
 
 /**
@@ -2285,7 +2319,7 @@ function composeTikTokChatMessage(data = {}, options = {}) {
 	const explicitTextOnly = data && (data.textonly === true || data.textonlymode === true);
 	const textOnly = explicitTextOnly || isTextOnlyModeEnabled();
 
-	let chatmessage = typeof data?.comment === 'string' ? data.comment : '';
+	let chatmessage = resolveTikTokChatText(data);
 	const normalizedEmotes = normalizeTikTokEmoteEntries(data);
 	if (normalizedEmotes.length) {
 		chatmessage = renderTikTokChatWithEmotes(chatmessage, normalizedEmotes, textOnly);
@@ -7145,8 +7179,9 @@ class ConnectionManager {
             },
             roomUser: (data) => {
                 this.recordActivity();
-                if ("viewerCount" in data) {
-                    this.lastViewerCount = parseInt(data.viewerCount) || 0;
+                const viewerCount = resolveTikTokViewerCount(data);
+                if (viewerCount !== null) {
+                    this.lastViewerCount = viewerCount;
                     if (isViewerUpdateAllowed()) {
                         sendToBackground({
                             meta: this.lastViewerCount,
@@ -10676,6 +10711,8 @@ module.exports = {
 	__test: {
 		EulerWebsocketServerConnection,
 		isLikelySubscribeSignal,
+		resolveTikTokChatText,
+		resolveTikTokViewerCount,
 		composeTikTokChatMessage,
 		normalizeTikTokEmoteEntries,
 		renderTikTokChatWithEmotes,

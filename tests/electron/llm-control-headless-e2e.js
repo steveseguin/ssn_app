@@ -259,7 +259,7 @@ async function withTimeout(promise, timeoutMs, message) {
 	}
 }
 
-async function runMcpChecks(port) {
+function startMcpSession(port) {
 	const child = spawn(process.execPath, [path.join(repoRoot, 'resources', 'ssapp-mcp.js')], {
 		cwd: repoRoot,
 		env: {
@@ -294,28 +294,112 @@ async function runMcpChecks(port) {
 		}
 		throw new Error(`Timed out waiting for MCP response ${id}: ${stderr}`);
 	};
-	try {
-		const initialized = await call(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'ssapp-e2e', version: '1' } });
-		assert.strictEqual(initialized.result.serverInfo.name, 'social-stream-ninja');
-		const responseCountBeforeNotification = responses.size;
-		child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 999, reason: 'e2e' } })}\n`);
-		await new Promise(resolve => setTimeout(resolve, 200));
-		assert.strictEqual(responses.size, responseCountBeforeNotification, 'MCP adapter responded to a JSON-RPC notification.');
-		const listed = await call(2, 'tools/list');
-		assert.ok(listed.result.tools.some(tool => tool.name === 'ssapp_get_status'));
-		assert.ok(listed.result.tools.some(tool => tool.name === 'ssapp_add_source'));
-		assert.strictEqual(listed.result._meta.ssappVersion, expectedSsappVersion);
-		const status = await call(3, 'tools/call', { name: 'ssapp_get_status', arguments: {} });
-		assert.strictEqual(status.result.structuredContent.ssappVersion, expectedSsappVersion);
-		assert.strictEqual(status.result.structuredContent.apiVersion, expectedApiVersion);
-	} finally {
-		child.stdin.end();
+	const close = async () => {
+		if (!child.stdin.writableEnded) child.stdin.end();
 		await Promise.race([
 			new Promise(resolve => child.once('exit', resolve)),
 			new Promise(resolve => setTimeout(resolve, 2000)),
 		]);
 		if (child.exitCode === null) child.kill();
+	};
+	return { child, call, close, responses };
+}
+
+async function runMcpChecks(port) {
+	const session = startMcpSession(port);
+	try {
+		const initialized = await session.call(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'ssapp-e2e', version: '1' } });
+		assert.strictEqual(initialized.result.serverInfo.name, 'social-stream-ninja');
+		assert.strictEqual(initialized.result.serverInfo.version, '1.0.6');
+		const responseCountBeforeNotification = session.responses.size;
+		session.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 999, reason: 'e2e' } })}\n`);
+		await new Promise(resolve => setTimeout(resolve, 200));
+		assert.strictEqual(session.responses.size, responseCountBeforeNotification, 'MCP adapter responded to a JSON-RPC notification.');
+		const listed = await session.call(2, 'tools/list');
+		assert.ok(listed.result.tools.some(tool => tool.name === 'ssapp_get_status'));
+		const addSourceTool = listed.result.tools.find(tool => tool.name === 'ssapp_add_source');
+		assert.ok(addSourceTool);
+		assert.match(addSourceTool.description, /MCP adapter use WebSocket Auto/i);
+		assert.strictEqual(listed.result._meta.ssappVersion, expectedSsappVersion);
+		const status = await session.call(3, 'tools/call', { name: 'ssapp_get_status', arguments: {} });
+		assert.strictEqual(status.result.structuredContent.ssappVersion, expectedSsappVersion);
+		assert.strictEqual(status.result.structuredContent.apiVersion, expectedApiVersion);
+
+		const tikTokModeCases = [
+			{ suffix: 'default', expectedMode: 'tiktok-websocket' },
+			{ suffix: 'classic', connectionMode: 'classic', expectedMode: 'classic' },
+			{ suffix: 'websocket', connectionMode: 'tiktok-websocket', expectedMode: 'tiktok-websocket' },
+			{ suffix: 'legacy', connectionMode: 'tiktok-legacy', expectedMode: 'tiktok-legacy' },
+		];
+		let requestId = 4;
+		for (const modeCase of tikTokModeCases) {
+			const argumentsValue = {
+				target: 'tiktok',
+				username: `ssapp_mcp_tiktok_${modeCase.suffix}`,
+				idempotencyKey: `ssapp-mcp-tiktok-${modeCase.suffix}`,
+			};
+			if (modeCase.connectionMode) argumentsValue.connectionMode = modeCase.connectionMode;
+			const added = await session.call(requestId++, 'tools/call', {
+				name: 'ssapp_add_source',
+				arguments: argumentsValue,
+			});
+			assert.notStrictEqual(added.result.isError, true, JSON.stringify(added.result));
+			const source = added.result.structuredContent.result.payload.source;
+			assert.strictEqual(source.target, 'tiktok');
+			assert.strictEqual(source.connectionMode, modeCase.expectedMode);
+
+			const removed = await session.call(requestId++, 'tools/call', {
+				name: 'ssapp_remove_source',
+				arguments: { sourceId: source.id, confirm: true },
+			});
+			assert.notStrictEqual(removed.result.isError, true, JSON.stringify(removed.result));
+			assert.strictEqual(removed.result.structuredContent.result.payload.removed, true);
+		}
+	} finally {
+		await session.close();
 	}
+}
+
+async function startMcpBeforeApp(port) {
+	const session = startMcpSession(port);
+	try {
+		const initialized = await session.call(1, 'initialize', {
+			protocolVersion: '2025-06-18',
+			capabilities: {},
+			clientInfo: { name: 'ssapp-startup-order-e2e', version: '1' },
+		});
+		assert.strictEqual(initialized.result.serverInfo.version, '1.0.6');
+		assert.strictEqual(initialized.result.capabilities.tools.listChanged, false);
+
+		const listed = await session.call(2, 'tools/list');
+		assert.strictEqual(listed.result._meta.ssappVersion, 'unavailable');
+		assert.ok(listed.result.tools.some(tool => tool.name === 'ssapp_list_sources'));
+		assert.ok(listed.result.tools.some(tool => tool.name === 'ssapp_add_source'));
+
+		const unavailable = await session.call(3, 'tools/call', {
+			name: 'ssapp_list_sources',
+			arguments: {},
+		});
+		assert.strictEqual(unavailable.result.isError, true);
+		assert.match(unavailable.result.content[0].text, /ECONNREFUSED|connect/i);
+		return session;
+	} catch (error) {
+		await session.close();
+		throw error;
+	}
+}
+
+async function assertMcpReconnectsAfterAppStarts(session) {
+	const listed = await session.call(4, 'tools/list');
+	assert.strictEqual(listed.result._meta.ssappVersion, expectedSsappVersion);
+	const sources = await session.call(5, 'tools/call', {
+		name: 'ssapp_list_sources',
+		arguments: {},
+	});
+	assert.notStrictEqual(sources.result.isError, true, JSON.stringify(sources.result));
+	assert.strictEqual(sources.result.structuredContent.ssappVersion, expectedSsappVersion);
+	assert.strictEqual(sources.result.structuredContent.apiVersion, expectedApiVersion);
+	assert.ok(Array.isArray(sources.result.structuredContent.result.payload.sources));
 }
 
 async function run() {
@@ -326,13 +410,18 @@ async function run() {
 
 	let sourceId = '';
 	let appInstance;
+	let startupOrderMcp;
 	let sourceFixture;
 	try {
 		sourceFixture = await createSourceFixtureServer();
 		const firstPort = await getFreePort();
+		startupOrderMcp = await startMcpBeforeApp(firstPort);
 		appInstance = await startApp(firstPort);
 		assert.strictEqual(appInstance.status.app.headless, true);
 		assert.strictEqual(appInstance.status.app.mainWindowVisible, false);
+		await assertMcpReconnectsAfterAppStarts(startupOrderMcp);
+		await startupOrderMcp.close();
+		startupOrderMcp = null;
 
 		const capabilities = await requestJson(firstPort, '/api/v1/capabilities');
 		assert.strictEqual(capabilities.statusCode, 200, JSON.stringify(capabilities.data));
@@ -475,6 +564,7 @@ async function run() {
 	} catch (error) {
 		throw new Error(`${error.message}\n${appInstance ? appInstance.getOutput().slice(-5000) : ''}`);
 	} finally {
+		if (startupOrderMcp) await startupOrderMcp.close();
 		if (appInstance) await stopApp(appInstance.child);
 		if (sourceFixture && sourceFixture.server.listening) {
 			await new Promise(resolve => sourceFixture.server.close(resolve));

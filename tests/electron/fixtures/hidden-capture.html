@@ -13,10 +13,13 @@
 	<div id="fixture-root"></div>
 	<script>
 		(function () {
-			var platform = new URLSearchParams(location.search).get("platform") || "youtube";
+			var query = new URLSearchParams(location.search);
+			var platform = query.get("platform") || "youtube";
+			var manual = query.get("manual") === "1";
 			var root = document.getElementById("fixture-root");
 			var feed = null;
 			var received = 0;
+			var autoTimer = null;
 			window.__fixturePlatform = platform;
 			if (platform === "tiktok" && location.protocol === "file:") {
 				try {
@@ -96,19 +99,22 @@
 				return row;
 			}
 
-			function createTikTokRow(id) {
+			function createTikTokRow(id, messageText, omitIdentity, indexValue) {
 				var row = document.createElement("div");
 				var avatar = document.createElement("div");
 				var body = document.createElement("div");
 				var author = document.createElement("span");
 				var message = document.createElement("span");
-				row.id = "ssn-hidden-capture-" + id;
 				row.className = "ssn-chat-row";
 				row.dataset.e2e = "chat-message";
+				if (!omitIdentity) {
+					row.id = "ssn-hidden-capture-" + id;
+					row.dataset.index = String(indexValue === undefined ? id : indexValue);
+				}
 				author.dataset.e2e = "message-owner-name";
 				author.textContent = "SSN Hidden Capture Fixture";
 				message.className = "break-words align-middle";
-				message.textContent = "hidden-capture message " + id;
+				message.textContent = messageText || ("hidden-capture message " + id);
 				body.appendChild(author);
 				body.appendChild(message);
 				row.appendChild(avatar);
@@ -116,22 +122,81 @@
 				return row;
 			}
 
+			function createRow(value) {
+				var id = value && typeof value === "object" ? value.id : value;
+				var messageText = value && typeof value === "object" ? value.message : null;
+				var omitIdentity = !!(value && typeof value === "object" && value.omitIdentity);
+				var indexValue = value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, "index")
+					? value.index
+					: id;
+				return platform === "twitch"
+					? createTwitchRow(id)
+					: (platform === "kick"
+						? createKickRow(id)
+						: (platform === "tiktok" ? createTikTokRow(id, messageText, omitIdentity, indexValue) : createYouTubeRow(id)));
+			}
+
+			function startAuto() {
+				if (autoTimer) return false;
+				autoTimer = setInterval(function () {
+					received++;
+					requestAnimationFrame(function () {
+						feed.appendChild(createRow(received));
+						while (feed.childElementCount > 400) {
+							feed.removeChild(feed.firstElementChild);
+						}
+					});
+				}, 50);
+				return true;
+			}
+
+			function stopAuto() {
+				if (!autoTimer) return false;
+				clearInterval(autoTimer);
+				autoTimer = null;
+				return true;
+			}
+
+			window.__hiddenCaptureFixture = {
+				appendRows: function (values) {
+					(values || []).forEach(function (value) {
+						feed.appendChild(createRow(value));
+					});
+					return feed.childElementCount;
+				},
+				reuseLastRow: function (value) {
+					var indexValue = value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, "index")
+						? String(value.index)
+						: String(value && typeof value === "object" ? value.id : value);
+					var matches = Array.prototype.filter.call(feed.children, function (element) {
+						return element.dataset && element.dataset.index === indexValue;
+					});
+					var row = matches[matches.length - 1];
+					if (!row) return false;
+					var replacement = createRow(value);
+					row.id = replacement.id;
+					while (row.firstChild) row.removeChild(row.firstChild);
+					while (replacement.firstChild) row.appendChild(replacement.firstChild);
+					return true;
+				},
+				replaceFeed: function () {
+					var replacement = feed.cloneNode(false);
+					feed.replaceWith(replacement);
+					feed = replacement;
+					return true;
+				},
+				rowCount: function () {
+					return feed.childElementCount;
+				},
+				startAuto: startAuto,
+				stopAuto: stopAuto
+			};
+
 			// "Network" delivery keeps arriving on a timer; rendering the row is deferred to
 			// a frame callback, which is the part that stalls without frames.
-			setInterval(function () {
-				received++;
-				requestAnimationFrame(function () {
-					var row = platform === "twitch"
-						? createTwitchRow(received)
-						: (platform === "kick"
-							? createKickRow(received)
-							: (platform === "tiktok" ? createTikTokRow(received) : createYouTubeRow(received)));
-					feed.appendChild(row);
-					while (feed.childElementCount > 400) {
-						feed.removeChild(feed.firstElementChild);
-					}
-				});
-			}, 50);
+			if (!manual) {
+				startAuto();
+			}
 
 			window.__fixtureReceived = function () { return received; };
 		})();

@@ -720,6 +720,10 @@ const sourceGuideTipsContent = {
 	en: {
 		tiktok: `
 	<div class="tips-section">
+	  <h3>Important: Sign In to TikTok</h3>
+	  <p>For reliable chat capture, click <strong>🔑 Sign-in</strong> and sign in before activating the source. Without signing in, TikTok may provide only around 30% of messages.</p>
+	</div>
+	<div class="tips-section">
 	  <h3>What To Enter</h3>
 	  <p>Use the TikTok username, with or without <strong>@</strong>, or paste the live/profile URL. For example: <code>flaquita44552</code>, <code>@flaquita44552</code>, or <code>https://www.tiktok.com/@flaquita44552/live</code>.</p>
 	</div>

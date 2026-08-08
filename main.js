@@ -4149,6 +4149,7 @@ function normalizeUiLanguagePreference(lang) {
     if (lower === 'pt-br' || lower.startsWith('pt')) return 'pt-br';
     if (lower.startsWith('ar')) return 'ar';
     if (lower.startsWith('es')) return 'es';
+    if (lower.startsWith('fr')) return 'fr';
     if (lower.startsWith('de')) return 'de';
     if (lower.startsWith('cs')) return 'cs';
     if (lower.startsWith('th')) return 'th';
