@@ -358,6 +358,7 @@
                     data-twitch-bot-disconnect>
                     Disconnect automatic reply account
                 </div>
+                <div class="settings-menu-note error hidden" data-twitch-bot-status></div>
                 <div class="settings-menu-note">Uses this same source; it does not add another source.</div>
             </div>
             <div class="settings-menu-section">
@@ -5201,9 +5202,11 @@
 
             const accountItem = section.querySelector('[data-twitch-bot-account]');
             const disconnectItem = section.querySelector('[data-twitch-bot-disconnect]');
+            const statusNote = section.querySelector('[data-twitch-bot-status]');
             const login = normalizeTwitchBotAccountLogin(source.twitchBotAccountLogin);
             const connected = !!source.twitchBotAccountConnected;
             const connecting = !!source.twitchBotAccountConnecting && hasConnectionHandles(source);
+            const accountError = String(source.twitchBotAccountError || '').trim();
 
             if (accountItem) {
                 accountItem.classList.toggle('active', connected);
@@ -5221,6 +5224,10 @@
             if (disconnectItem) {
                 disconnectItem.classList.toggle('hidden', !connected);
             }
+            if (statusNote) {
+                statusNote.textContent = accountError;
+                statusNote.classList.toggle('hidden', !accountError);
+            }
         }
 
         function applyTwitchBotAccountStatus(sourceId, status = {}, options = {}) {
@@ -5229,11 +5236,27 @@
             const eventName = String(status.event || 'status');
             const connected = !!status.connected;
             const login = normalizeTwitchBotAccountLogin(status.login);
+            const mainHasChannelBotScope = typeof status.mainHasChannelBotScope === 'boolean'
+                ? status.mainHasChannelBotScope
+                : source.twitchMainHasChannelBotScope ?? null;
+            const mainBotAuthorizationReady = typeof status.mainBotAuthorizationReady === 'boolean'
+                ? status.mainBotAuthorizationReady
+                : source.twitchMainBotAuthorizationReady ?? null;
+            const mainAccountIsBroadcaster = typeof status.mainAccountIsBroadcaster === 'boolean'
+                ? status.mainAccountIsBroadcaster
+                : source.twitchMainAccountIsBroadcaster ?? null;
             stateManager.updateSource(sourceId, {
                 twitchBotAccountConnected: connected,
                 twitchBotAccountLogin: connected ? login : null,
                 twitchBotAccountConnecting: eventName === 'connecting' || !!status.connecting,
-                twitchBotAccountError: status.error || null
+                twitchBotAccountError: status.error || null,
+                twitchBotRequiresMainReauthorization: status.requiresMainReauthorization === true,
+                twitchMainHasChannelBotScope: mainHasChannelBotScope,
+                twitchMainBotAuthorizationReady: mainBotAuthorizationReady,
+                twitchMainAccountIsBroadcaster: mainAccountIsBroadcaster,
+                twitchMainAccountLogin: normalizeTwitchBotAccountLogin(status.mainAccountLogin)
+                    || source.twitchMainAccountLogin
+                    || null
             });
 
             const sourceElement = document.querySelector(`[data-source-id="${sourceId}"]`);
@@ -5300,16 +5323,27 @@
             return false;
         }
 
-        function openTwitchBotAccountSettings(menuItem) {
+        async function openTwitchBotAccountSettings(menuItem) {
             const entry = menuItem?.closest('.entry');
             const sourceId = entry?.dataset?.sourceId;
-            const source = sourceId ? stateManager.getSource(sourceId) : null;
+            let source = sourceId ? stateManager.getSource(sourceId) : null;
             if (!source) return;
+
+            if (typeof source.twitchMainBotAuthorizationReady !== 'boolean') {
+                await refreshTwitchBotAccountStatus(entry);
+                source = stateManager.getSource(sourceId) || source;
+            }
 
             const login = normalizeTwitchBotAccountLogin(source.twitchBotAccountLogin);
             const connected = !!source.twitchBotAccountConnected;
             const currentAccount = connected ? (login ? `@${login}` : 'Bot account') : 'Main account';
             const actionLabel = connected ? 'Change bot account' : 'Connect bot account';
+            const mainAuthorizationWarning = source.twitchMainBotAuthorizationReady === false
+                ? `<div id="twitch-bot-main-permission-warning" style="margin-top: 12px; padding: 10px 12px; border: 1px solid rgba(245, 158, 11, 0.55); border-radius: 6px; background: rgba(245, 158, 11, 0.12); color: #fde68a; line-height: 1.45; font-size: 12px;">
+                        <strong>One-time permission may be needed.</strong>
+                        You can connect the bot now. If it is not a moderator, reconnect this WebSocket source's main Twitch account using the channel owner before automatic replies can send.
+                    </div>`
+                : '';
             const content = `
                 <div style="min-width: min(460px, 80vw); max-width: 520px; padding: 4px;">
                     <h3 style="margin: 0 0 12px;">Automatic reply account</h3>
@@ -5322,6 +5356,7 @@
                         Your existing Bot reply-only and Account role setup remains separate and keeps working.
                         In Twitch Shared Chat, replies from this attached account stay in this channel.
                     </div>
+                    ${mainAuthorizationWarning}
                     <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
                         <button id="twitch-bot-account-cancel" class="button" style="background: #374151;">Cancel</button>
                         <button id="twitch-bot-account-connect" class="button">${actionLabel}</button>
@@ -5348,6 +5383,9 @@
                         message: { type: 'TWITCH_BOT_ACCOUNT_STATUS' }
                     });
                     ready = !!(status && typeof status === 'object');
+                    if (ready) {
+                        applyTwitchBotAccountStatus(sourceId, status);
+                    }
                 }
                 if (!ready) {
                     throw new Error('The Twitch WebSocket source is still loading. Try again in a moment.');
@@ -5360,7 +5398,15 @@
                     throw new Error('Unable to start Twitch bot sign-in.');
                 }
                 applyTwitchBotAccountStatus(sourceId, { connected: false, event: 'connecting', connecting: true });
-                Toast.info('Twitch reply account', 'Choose your bot account in the Twitch window that just opened.');
+                const source = stateManager.getSource(sourceId);
+                if (source?.twitchMainBotAuthorizationReady === false) {
+                    Toast.warning(
+                        'Twitch reply account',
+                        'Choose your bot account. If it is not a moderator, reconnect the main Twitch account using the channel owner.'
+                    );
+                } else {
+                    Toast.info('Twitch reply account', 'Choose your bot account in the Twitch window that just opened.');
+                }
             } catch (error) {
                 Toast.error('Twitch reply account', error?.message || 'Unable to connect the bot account.');
             }

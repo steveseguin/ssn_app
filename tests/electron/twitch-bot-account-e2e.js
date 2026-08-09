@@ -186,7 +186,7 @@ async function createAndCheckSourceUi() {
 
 	await waitFor(async () => execInMain(`Boolean(document.querySelector('[data-source-id="${sourceId}"]'))`), "Twitch source UI");
 
-	const result = await execInMain(`(() => {
+	const result = await execInMain(`(async () => {
 		const entry = document.querySelector('[data-source-id="${sourceId}"]');
 		const section = entry.querySelector('[data-twitch-websocket-sending]');
 		const replyOnly = entry.querySelector('[data-reply-only]');
@@ -196,8 +196,28 @@ async function createAndCheckSourceUi() {
 		updateSourceUIAfterModeChange(entry, 'websocket', false);
 		const websocketVisible = !section.classList.contains('hidden');
 		const accountItem = section.querySelector('[data-twitch-bot-account]');
-		openTwitchBotAccountSettings(accountItem);
+		applyTwitchBotAccountStatus(${JSON.stringify(sourceId)}, {
+			connected: false,
+			event: 'status',
+			mainHasChannelBotScope: false,
+			mainBotAuthorizationReady: false,
+			mainAccountIsBroadcaster: true,
+			mainAccountLogin: 'ssn_test_fixture'
+		});
+		await openTwitchBotAccountSettings(accountItem);
 		const modalText = document.getElementById('tiktok-auth-modal')?.textContent || '';
+		const oldLoginWarningVisible = !!document.getElementById('twitch-bot-main-permission-warning');
+		closeModal();
+		applyTwitchBotAccountStatus(${JSON.stringify(sourceId)}, {
+			connected: false,
+			event: 'status',
+			mainHasChannelBotScope: true,
+			mainBotAuthorizationReady: true,
+			mainAccountIsBroadcaster: true,
+			mainAccountLogin: 'ssn_test_fixture'
+		});
+		await openTwitchBotAccountSettings(accountItem);
+		const currentLoginWarningHidden = !document.getElementById('twitch-bot-main-permission-warning');
 		closeModal();
 		return {
 			standardHidden,
@@ -205,6 +225,8 @@ async function createAndCheckSourceUi() {
 			accountText: accountItem.textContent.trim(),
 			legacyControlsPresent: !!replyOnly && !!accountRole,
 			modalText,
+			oldLoginWarningVisible,
+			currentLoginWarningHidden,
 			sourceCount: stateManager.getSources().length
 		};
 	})()`);
@@ -215,6 +237,9 @@ async function createAndCheckSourceUi() {
 	assert.equal(result.legacyControlsPresent, true, "Existing reply-only/account-role controls were removed.");
 	assert.match(result.modalText, /does not create another source/i);
 	assert.match(result.modalText, /existing Bot reply-only and Account role setup remains separate/i);
+	assert.match(result.modalText, /one-time permission may be needed/i);
+	assert.equal(result.oldLoginWarningVisible, true, "An older main-account login did not show the targeted warning.");
+	assert.equal(result.currentLoginWarningHidden, true, "A current main-account login showed an unnecessary warning.");
 	assert.equal(result.sourceCount, 1, "Opening bot account settings created another source.");
 }
 
@@ -238,6 +263,9 @@ async function launchSourceAndCheckCommandBridge() {
 	)`), "Twitch source injection");
 
 	await execInSource(`(() => {
+		localStorage.setItem('twitchOAuthToken', 'e2e-main-fixture-token');
+		localStorage.setItem('twitchOAuthScope', 'chat:read user:write:chat');
+		localStorage.setItem('twitchOAuthClientId', 'ysbszgkt7uh5kn7qjed822dd89722n');
 		localStorage.setItem('twitchBotOAuthToken', 'e2e-fixture-token');
 		localStorage.setItem('twitchBotUserId', '222');
 		localStorage.setItem('twitchBotLogin', 'ssnfixturebot');
@@ -261,9 +289,70 @@ async function launchSourceAndCheckCommandBridge() {
 		};
 	})()`);
 	assert.equal(connected.status.connected, true);
+	assert.equal(connected.status.mainHasChannelBotScope, false);
+	assert.equal(connected.status.mainBotAuthorizationReady, false);
 	assert.equal(connected.label, "Automatic reply account: @ssnfixturebot");
 	assert.equal(connected.disconnectHidden, false);
 	assert.equal(connected.sourceCount, 1, "Connected status created another source.");
+
+	const twitchSourceText = fs.readFileSync(path.join(socialStreamRoot, "sources", "websocket", "twitch.js"), "utf8");
+	assert.match(twitchSourceText, /reconnect this WebSocket source's main Twitch account/i);
+	assert.match(twitchSourceText, /make \$\{botLabel\} a moderator/i);
+	const authorizationFailure = "Twitch blocked automatic replies from @ssnfixturebot. Reconnect this WebSocket source's main Twitch account using the channel owner, or make @ssnfixturebot a moderator in this channel.";
+	await execInSource(`(() => {
+		window.ssWssNotifyTwitch('bot_account', ${JSON.stringify(authorizationFailure)}, {
+			botAccount: {
+				connected: true,
+				login: 'ssnfixturebot',
+				userId: '222',
+				event: 'error',
+				error: ${JSON.stringify(authorizationFailure)},
+				requiresMainReauthorization: true,
+				mainHasChannelBotScope: false,
+				mainBotAuthorizationReady: false,
+				mainAccountIsBroadcaster: true,
+				mainAccountLogin: 'ssn_test_fixture'
+			}
+		});
+		return true;
+	})()`);
+
+	const visibleFailure = await waitFor(async () => execInMain(`(() => {
+		const source = stateManager.getSource(${JSON.stringify(sourceId)});
+		const entry = document.querySelector('[data-source-id="${sourceId}"]');
+		updateTwitchBotAccountMenu(entry, source);
+		const note = entry.querySelector('[data-twitch-bot-status]');
+		return source.twitchBotRequiresMainReauthorization && note && !note.classList.contains('hidden')
+			? note.textContent.trim()
+			: '';
+	})()`), "Twitch bot authorization failure in SSApp");
+	assert.match(visibleFailure, /channel owner/i);
+	assert.match(visibleFailure, /moderator/i);
+
+	await execInSource(`(() => {
+		window.ssWssNotifyTwitch('bot_account', '', {
+			botAccount: {
+				connected: true,
+				login: 'ssnfixturebot',
+				userId: '222',
+				event: 'status',
+				error: null,
+				requiresMainReauthorization: false,
+				mainHasChannelBotScope: true,
+				mainBotAuthorizationReady: true,
+				mainAccountIsBroadcaster: true,
+				mainAccountLogin: 'ssn_test_fixture'
+			}
+		});
+		return true;
+	})()`);
+	await waitFor(async () => execInMain(`(() => {
+		const source = stateManager.getSource(${JSON.stringify(sourceId)});
+		const entry = document.querySelector('[data-source-id="${sourceId}"]');
+		updateTwitchBotAccountMenu(entry, source);
+		return !source.twitchBotAccountError
+			&& entry.querySelector('[data-twitch-bot-status]').classList.contains('hidden');
+	})()`), "Twitch bot authorization warning to clear after a successful send");
 
 	const disconnected = await execInMain(`(async () => {
 		const { ipcRenderer } = require('electron');

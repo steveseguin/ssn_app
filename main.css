@@ -891,6 +891,10 @@ button {
   line-height: 1.35;
 }
 
+.settings-menu-note.error {
+  color: #fca5a5;
+}
+
 .settings-menu-item.danger {
   color: #f44336;
   border-top: 1px solid rgba(255, 255, 255, 0.05);
