@@ -265,7 +265,7 @@ function runKickLoopbackOAuthSession(payload = {}, parentWebContents = null) {
 .container{text-align:center}h1{color:#53fc18}</style></head>
 <body><div class="container"><h1>State Mismatch</h1><p>Possible CSRF attack detected. Please try again.</p></div>
 <script>setTimeout(()=>window.close(),3000);</script></body></html>`);
-                        fail(new Error('State mismatch - possible CSRF attack'));
+                        console.warn('[Kick OAuth] Rejected a callback with a mismatched state; keeping the active sign-in open.');
                         return;
                     }
 

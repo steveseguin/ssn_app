@@ -12663,7 +12663,7 @@
                                 if (entryElement) updateConnectionStatus(entryElement, 'retry', message || 'Ready. Configure in popup.');
                                 break;
                             case 'connected':
-                                stateManager.updateSource(source.id, { status: 'active' });
+                                stateManager.updateSource(source.id, { status: 'active', error: null });
                                 if (entryElement) updateConnectionStatus(entryElement, 'connected');
                                 break;
                             case 'warn':

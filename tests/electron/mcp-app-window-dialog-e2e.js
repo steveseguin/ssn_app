@@ -224,6 +224,38 @@ async function run() {
 		assert.ok((childScreenshot.content || []).some(item => item.type === 'image' && Buffer.from(item.data, 'base64').length > 1000));
 
 		await execute(`(() => {
+			const fixture = document.createElement('div');
+			fixture.id = 'mcp-reverse-order-fixture';
+			for (let index = 0; index < 225; index += 1) {
+				const button = document.createElement('button');
+				button.textContent = 'Reverse filler ' + index;
+				fixture.appendChild(button);
+			}
+			const lateButton = document.createElement('button');
+			lateButton.textContent = 'Late modal control';
+			lateButton.onclick = () => { window.__mcpLateControlClicked = true; };
+			fixture.appendChild(lateButton);
+			document.body.appendChild(fixture);
+			return true;
+		})()`);
+		const reverseInspection = payloadOf(await mcp.call('ssapp_inspect_app_window', {
+			windowId: main.windowId,
+			maxElements: 20,
+			maxTextChars: 1000,
+			elementOrder: 'reverse',
+		}));
+		const lateButton = (reverseInspection.elements || []).find(element => element.name === 'Late modal control');
+		assert.ok(lateButton?.ref, JSON.stringify(reverseInspection));
+		await mcp.call('ssapp_interact_app_window', {
+			windowId: main.windowId,
+			ref: lateButton.ref,
+			action: 'click',
+			confirm: true,
+		});
+		assert.strictEqual((await execute('window.__mcpLateControlClicked')).result, true);
+		await execute(`document.getElementById('mcp-reverse-order-fixture')?.remove(); true`);
+
+		await execute(`(() => {
 			const button = document.createElement('button');
 			button.textContent = 'Open MCP audit prompt';
 			button.onclick = () => { window.__mcpPromptAnswer = window.prompt('MCP blocking prompt audit', 'sample'); };

@@ -169,6 +169,7 @@ function withTimeout(promise, timeoutMs, message) {
 const SNAPSHOT_SCRIPT = `(${function snapshotPage(options) {
 	const maxElements = options.maxElements;
 	const maxTextChars = options.maxTextChars;
+	const elementOrder = options.elementOrder === 'reverse' ? 'reverse' : 'document';
 	const clean = (value, maximum = 300) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, maximum);
 	const isVisible = element => {
 		const style = getComputedStyle(element);
@@ -230,6 +231,7 @@ const SNAPSHOT_SCRIPT = `(${function snapshotPage(options) {
 	const candidates = Array.from(document.querySelectorAll(
 		'a[href],button,input,textarea,select,summary,[role],[tabindex],[contenteditable]:not([contenteditable="false"])'
 	));
+	if (elementOrder === 'reverse') candidates.reverse();
 	const elements = [];
 	for (const element of candidates) {
 		if (elements.length >= maxElements || !isVisible(element)) continue;
@@ -579,6 +581,7 @@ class SourceObservationService {
 		}
 		const maxElements = clampInteger(value.maxElements, 100, 1, MAX_ELEMENTS);
 		const maxTextChars = clampInteger(value.maxTextChars, 12000, 100, MAX_TEXT_CHARS);
+		const elementOrder = value.elementOrder === 'reverse' ? 'reverse' : 'document';
 		const frames = allFrames(view.webContents);
 		const frameResults = [];
 		const elements = [];
@@ -589,6 +592,7 @@ class SourceObservationService {
 				const snapshot = await frame.executeJavaScript(`${SNAPSHOT_SCRIPT}(${JSON.stringify({
 					maxElements: maxElements - elements.length,
 					maxTextChars: Math.max(100, Math.floor(maxTextChars / Math.max(1, frames.length))),
+					elementOrder,
 				})})`, true);
 				frameResults.push({
 					frameIndex,

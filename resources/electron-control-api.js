@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 
-const CONTROL_API_VERSION = '1.3.0';
+const CONTROL_API_VERSION = '1.3.1';
 const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_OPERATIONS = 200;
@@ -33,13 +33,13 @@ const COMMAND_DEFINITIONS = Object.freeze({
 	getRecentSourceEvents: definition('Read bounded captured source events after an optional cursor.', 'read-only', { sourceId: 'string?', afterId: 'integer?', limit: 'integer?', types: 'string[]?' }, false, '0.4.13'),
 	waitForSourceEvents: definition('Wait briefly for captured source events after a cursor.', 'read-only', { sourceId: 'string?', afterId: 'integer?', limit: 'integer?', types: 'string[]?', timeoutMs: 'integer?' }, false, '0.4.13'),
 	captureSourceScreenshot: definition('Capture the real Electron source window.', 'read-only', { sourceId: 'string', format: 'png|jpeg?', maxWidth: 'integer?' }, false, '0.4.13'),
-	inspectSourcePage: definition('Read a bounded semantic page snapshot and short-lived opaque element references.', 'read-only', { sourceId: 'string', maxElements: 'integer?', maxTextChars: 'integer?' }, false, '0.4.13'),
+	inspectSourcePage: definition('Read a bounded semantic page snapshot and short-lived opaque element references.', 'read-only', { sourceId: 'string', maxElements: 'integer?', maxTextChars: 'integer?', elementOrder: 'document|reverse?' }, false, '0.4.13'),
 	interactSourcePage: definition('Perform one confirmed, allowlisted action through an opaque page reference.', 'mutating', { sourceId: 'string', ref: 'string', action: 'click|focus|scroll|fill|pressKey', text: 'string?', key: 'string?', confirm: 'boolean' }, true, '0.4.13'),
 	reloadSourcePage: definition('Reload one active source browser page.', 'disruptive', { sourceId: 'string', confirm: 'boolean' }, true, '0.4.13'),
 	showSourceForHuman: definition('Reveal one source window for human sign-in or intervention.', 'disruptive', { sourceId: 'string', confirm: 'boolean' }, true, '0.4.13'),
 	listAppWindows: definition('List SSApp-owned windows, including the main and modal windows.', 'read-only', {}, false, '0.4.14'),
 	captureAppWindowScreenshot: definition('Capture an SSApp-owned Electron window.', 'read-only', { windowId: 'integer?', format: 'png|jpeg?', maxWidth: 'integer?' }, false, '0.4.14'),
-	inspectAppWindow: definition('Read a bounded semantic snapshot of an SSApp-owned window.', 'read-only', { windowId: 'integer?', maxElements: 'integer?', maxTextChars: 'integer?' }, false, '0.4.14'),
+	inspectAppWindow: definition('Read a bounded semantic snapshot of an SSApp-owned window.', 'read-only', { windowId: 'integer?', maxElements: 'integer?', maxTextChars: 'integer?', elementOrder: 'document|reverse?' }, false, '0.4.14'),
 	interactAppWindow: definition('Perform one confirmed, allowlisted action through an opaque app-window reference.', 'mutating', { windowId: 'integer?', ref: 'string', action: 'click|focus|scroll|fill|pressKey', text: 'string?', key: 'string?', confirm: 'boolean' }, true, '0.4.14'),
 	setAppWindowVisibility: definition('Show, focus, or hide an SSApp-owned window.', 'disruptive', { windowId: 'integer?', isVisible: 'boolean', focus: 'boolean?', confirm: 'boolean' }, true, '0.4.14'),
 	getPendingAppDialogs: definition('Read pending JavaScript and Electron dialogs without using system capture.', 'read-only', {}, false, '0.4.14'),

@@ -5,7 +5,7 @@
 const http = require('http');
 const readline = require('readline');
 
-const MCP_SERVER_VERSION = '1.2.0';
+const MCP_SERVER_VERSION = '1.2.1';
 const MCP_PROTOCOL_VERSION = '2025-06-18';
 const DEFAULT_URL = 'http://127.0.0.1:17777';
 const configuredRequestTimeoutMs = Number.parseInt(process.env.SSAPP_MCP_REQUEST_TIMEOUT_MS, 10);
@@ -150,6 +150,7 @@ const TOOL_DEFINITIONS = Object.freeze({
 		sourceId,
 		maxElements: integerProperty('Maximum semantic elements.', { minimum: 1, maximum: 200 }),
 		maxTextChars: integerProperty('Maximum visible text characters.', { minimum: 100, maximum: 20000 }),
+		elementOrder: enumProperty(['document', 'reverse'], 'Inspect from the start or end of document order. Reverse is useful for late-mounted modal controls.'),
 	}, 'inspectSourcePage', { readOnlyHint: true }, ['sourceId']),
 	ssapp_interact_source_page: tool('Interact with source page', 'Perform one confirmed, allowlisted action using a short-lived opaque reference from page inspection. Password and file inputs are blocked.', {
 		sourceId,
@@ -171,6 +172,7 @@ const TOOL_DEFINITIONS = Object.freeze({
 		windowId: integerProperty('Runtime window ID from ssapp_list_app_windows. Omit for the main window.', { minimum: 1 }),
 		maxElements: integerProperty('Maximum semantic elements.', { minimum: 1, maximum: 200 }),
 		maxTextChars: integerProperty('Maximum visible text characters.', { minimum: 100, maximum: 20000 }),
+		elementOrder: enumProperty(['document', 'reverse'], 'Inspect from the start or end of document order. Reverse is useful for late-mounted modal controls.'),
 	}, 'inspectAppWindow', { readOnlyHint: true }),
 	ssapp_interact_app_window: tool('Interact with SSApp window', 'Perform one confirmed, allowlisted action using an opaque reference from app-window inspection. Password and file inputs are blocked.', {
 		windowId: integerProperty('Runtime window ID from ssapp_list_app_windows. Omit for the main window.', { minimum: 1 }),
