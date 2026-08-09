@@ -1,0 +1,41 @@
+name = "socialstream-sso"
+main = "src/index.js"
+compatibility_date = "2026-08-09"
+workers_dev = true
+
+routes = [
+  { pattern = "sso.socialstream.ninja/*", zone_name = "socialstream.ninja" }
+]
+
+[vars]
+SSO_ORIGIN = "https://sso.socialstream.ninja"
+VELORA_CLIENT_ID = "velora_9c9ae006ec8bc256"
+VELORA_AUTH_URL = "https://velora.tv/oauth/authorize"
+VELORA_TOKEN_URL = "https://api.velora.tv/api/developer/oauth/token"
+VELORA_SCOPES = "user:read chat:read chat:write"
+TWITCH_CLIENT_ID = "ysbszgkt7uh5kn7qjed822dd89722n"
+TWITCH_AUTH_URL = "https://id.twitch.tv/oauth2/authorize"
+TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
+TWITCH_VALIDATE_URL = "https://id.twitch.tv/oauth2/validate"
+TWITCH_CHAT_MESSAGES_URL = "https://api.twitch.tv/helix/chat/messages"
+TWITCH_SCOPES = "chat:read chat:edit user:write:chat channel:bot bits:read moderator:read:followers moderator:read:chatters channel:read:subscriptions channel:read:hype_train channel:moderate moderator:manage:banned_users moderator:manage:chat_messages channel:manage:broadcast channel:read:ads channel:manage:ads channel:read:redemptions"
+YOUTUBE_CLIENT_ID = "689627108309-isbjas8fmbc7sucmbm7gkqjapk7btbsi.apps.googleusercontent.com"
+YOUTUBE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+YOUTUBE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+YOUTUBE_SCOPES = "https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.channel-memberships.creator https://www.googleapis.com/auth/youtube.force-ssl"
+FACEBOOK_CLIENT_ID = "544418900508414"
+FACEBOOK_API_VERSION = "v25.0"
+FACEBOOK_SCOPES = "pages_show_list pages_read_engagement pages_read_user_content"
+ALLOWED_RETURN_ORIGINS = "https://socialstream.ninja,https://beta.socialstream.ninja,https://cache.socialstream.ninja,https://cached.socialstream.ninja,http://127.0.0.1:8181,http://127.0.0.1:8080,http://localhost:8181,http://localhost:8080"
+
+[[kv_namespaces]]
+binding = "TWITCH_APP_TOKEN_CACHE"
+
+[secrets]
+required = [
+  "STATE_ENCRYPTION_SECRET",
+  "VELORA_CLIENT_SECRET",
+  "TWITCH_CLIENT_SECRET",
+  "YOUTUBE_CLIENT_SECRET",
+  "FACEBOOK_CLIENT_SECRET",
+]

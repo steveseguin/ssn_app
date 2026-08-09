@@ -348,6 +348,18 @@
                     🔐 Browser Session Settings
                 </div>
             </div>
+            <div class="settings-menu-section hidden" data-twitch-websocket-sending>
+                <div class="settings-menu-header">Twitch WebSocket sending</div>
+                <div class="settings-menu-item" onclick="openTwitchBotAccountSettings(this)"
+                    data-twitch-bot-account>
+                    Automatic reply account: Main account
+                </div>
+                <div class="settings-menu-item danger hidden" onclick="disconnectTwitchBotAccountFromSource(this)"
+                    data-twitch-bot-disconnect>
+                    Disconnect automatic reply account
+                </div>
+                <div class="settings-menu-note">Uses this same source; it does not add another source.</div>
+            </div>
             <div class="settings-menu-section">
                 <div class="settings-menu-header">Source Management</div>
                 <div class="settings-menu-item" data-move="up" onclick="moveSourceUp(this)">⬆️ Move up</div>
@@ -5171,6 +5183,211 @@
         }
 
 
+        function normalizeTwitchBotAccountLogin(value) {
+            return String(value || '').replace(/^@/, '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+        }
+
+        function updateTwitchBotAccountMenu(sourceElement, source = null) {
+            if (!sourceElement) return;
+            const sourceId = sourceElement.dataset.sourceId;
+            source = source || (sourceId ? stateManager.getSource(sourceId) : null);
+            const section = sourceElement.querySelector('[data-twitch-websocket-sending]');
+            if (!section) return;
+
+            const effectiveMode = source ? (getEffectiveConnectionMode(source) || source.connectionMode) : null;
+            const supported = !!(source && source.target === 'twitch' && effectiveMode === 'websocket');
+            section.classList.toggle('hidden', !supported);
+            if (!supported) return;
+
+            const accountItem = section.querySelector('[data-twitch-bot-account]');
+            const disconnectItem = section.querySelector('[data-twitch-bot-disconnect]');
+            const login = normalizeTwitchBotAccountLogin(source.twitchBotAccountLogin);
+            const connected = !!source.twitchBotAccountConnected;
+            const connecting = !!source.twitchBotAccountConnecting && hasConnectionHandles(source);
+
+            if (accountItem) {
+                accountItem.classList.toggle('active', connected);
+                accountItem.textContent = connecting
+                    ? 'Automatic reply account: Connecting...'
+                    : connected && login
+                        ? `Automatic reply account: @${login}`
+                        : connected
+                            ? 'Automatic reply account: Bot account'
+                            : 'Automatic reply account: Main account';
+                accountItem.title = connected
+                    ? 'Change the account used for chatbot and scheduled automatic replies.'
+                    : 'Connect a different Twitch account for chatbot and scheduled automatic replies.';
+            }
+            if (disconnectItem) {
+                disconnectItem.classList.toggle('hidden', !connected);
+            }
+        }
+
+        function applyTwitchBotAccountStatus(sourceId, status = {}, options = {}) {
+            const source = stateManager.getSource(sourceId);
+            if (!source || source.target !== 'twitch') return;
+            const eventName = String(status.event || 'status');
+            const connected = !!status.connected;
+            const login = normalizeTwitchBotAccountLogin(status.login);
+            stateManager.updateSource(sourceId, {
+                twitchBotAccountConnected: connected,
+                twitchBotAccountLogin: connected ? login : null,
+                twitchBotAccountConnecting: eventName === 'connecting' || !!status.connecting,
+                twitchBotAccountError: status.error || null
+            });
+
+            const sourceElement = document.querySelector(`[data-source-id="${sourceId}"]`);
+            if (sourceElement) {
+                updateTwitchBotAccountMenu(sourceElement, stateManager.getSource(sourceId));
+            }
+            if (!options.notify) return;
+            if (eventName === 'connected') {
+                Toast.success('Twitch reply account', login ? `Automatic replies will use @${login}.` : 'Bot account connected.');
+            } else if (eventName === 'disconnected') {
+                Toast.success('Twitch reply account', 'Automatic replies will use the main account.');
+            } else if (eventName === 'error' && status.error) {
+                Toast.error('Twitch reply account', status.error);
+            }
+        }
+
+        async function getTwitchBotAccountCommandTarget(sourceId, options = {}) {
+            let source = stateManager.getSource(sourceId);
+            if (!source || source.target !== 'twitch') {
+                throw new Error('This setting is only available for Twitch sources.');
+            }
+            const effectiveMode = getEffectiveConnectionMode(source) || source.connectionMode;
+            if (effectiveMode !== 'websocket') {
+                throw new Error('Switch this Twitch source to WebSocket mode first.');
+            }
+
+            let tabId = source.vid || source.wssId;
+            if (!tabId && options.activate !== false) {
+                const entry = document.querySelector(`[data-source-id="${sourceId}"]`);
+                const activateButton = entry?.querySelector('[data-activatehtml]');
+                if (!activateButton) {
+                    throw new Error('Unable to start this Twitch WebSocket source.');
+                }
+                Toast.info('Twitch WebSocket', 'Connecting this source before opening Twitch sign-in...');
+                tabId = await createWindow(activateButton);
+                source = stateManager.getSource(sourceId);
+                tabId = source?.vid || source?.wssId || tabId;
+            }
+            if (!tabId) {
+                throw new Error('Connect this Twitch WebSocket source first.');
+            }
+            return tabId;
+        }
+
+        async function refreshTwitchBotAccountStatus(sourceElement) {
+            const sourceId = sourceElement?.dataset?.sourceId;
+            if (!sourceId || !ipcRenderer) return false;
+            const source = stateManager.getSource(sourceId);
+            if (!source || source.target !== 'twitch') return false;
+            const effectiveMode = getEffectiveConnectionMode(source) || source.connectionMode;
+            if (effectiveMode !== 'websocket') return false;
+            const tabId = source.vid || source.wssId;
+            if (!tabId) return false;
+            try {
+                const status = await ipcRenderer.invoke('sendToTab-async', {
+                    tab: tabId,
+                    message: { type: 'TWITCH_BOT_ACCOUNT_STATUS' }
+                });
+                if (status && typeof status === 'object') {
+                    applyTwitchBotAccountStatus(sourceId, status);
+                    return true;
+                }
+            } catch (_) { }
+            return false;
+        }
+
+        function openTwitchBotAccountSettings(menuItem) {
+            const entry = menuItem?.closest('.entry');
+            const sourceId = entry?.dataset?.sourceId;
+            const source = sourceId ? stateManager.getSource(sourceId) : null;
+            if (!source) return;
+
+            const login = normalizeTwitchBotAccountLogin(source.twitchBotAccountLogin);
+            const connected = !!source.twitchBotAccountConnected;
+            const currentAccount = connected ? (login ? `@${login}` : 'Bot account') : 'Main account';
+            const actionLabel = connected ? 'Change bot account' : 'Connect bot account';
+            const content = `
+                <div style="min-width: min(460px, 80vw); max-width: 520px; padding: 4px;">
+                    <h3 style="margin: 0 0 12px;">Automatic reply account</h3>
+                    <div style="margin-bottom: 14px; color: #dbeafe;">Current: <strong>${currentAccount}</strong></div>
+                    <div style="color: #cbd5e1; line-height: 1.55; font-size: 13px;">
+                        This signs a second Twitch account into this existing WebSocket source. It does not create another source.
+                        Only chatbot and scheduled automatic replies use it; manual sends keep using the main account.
+                    </div>
+                    <div style="margin-top: 12px; color: #94a3b8; line-height: 1.45; font-size: 12px;">
+                        Your existing Bot reply-only and Account role setup remains separate and keeps working.
+                        In Twitch Shared Chat, replies from this attached account stay in this channel.
+                    </div>
+                    <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+                        <button id="twitch-bot-account-cancel" class="button" style="background: #374151;">Cancel</button>
+                        <button id="twitch-bot-account-connect" class="button">${actionLabel}</button>
+                    </div>
+                </div>`;
+            showModal(content);
+            document.getElementById('twitch-bot-account-cancel')?.addEventListener('click', closeModal);
+            document.getElementById('twitch-bot-account-connect')?.addEventListener('click', function() {
+                connectTwitchBotAccountForSource(sourceId);
+            });
+        }
+
+        async function connectTwitchBotAccountForSource(sourceId) {
+            closeModal();
+            try {
+                const tabId = await getTwitchBotAccountCommandTarget(sourceId);
+                let ready = false;
+                for (let attempt = 0; attempt < 2 && !ready; attempt += 1) {
+                    if (attempt > 0) {
+                        await new Promise(resolve => setTimeout(resolve, 750));
+                    }
+                    const status = await ipcRenderer.invoke('sendToTab-async', {
+                        tab: tabId,
+                        message: { type: 'TWITCH_BOT_ACCOUNT_STATUS' }
+                    });
+                    ready = !!(status && typeof status === 'object');
+                }
+                if (!ready) {
+                    throw new Error('The Twitch WebSocket source is still loading. Try again in a moment.');
+                }
+                const accepted = ipcRenderer.sendSync('sendToTab', {
+                    tab: tabId,
+                    message: { type: 'TWITCH_BOT_ACCOUNT_CONNECT' }
+                });
+                if (!accepted) {
+                    throw new Error('Unable to start Twitch bot sign-in.');
+                }
+                applyTwitchBotAccountStatus(sourceId, { connected: false, event: 'connecting', connecting: true });
+                Toast.info('Twitch reply account', 'Choose your bot account in the Twitch window that just opened.');
+            } catch (error) {
+                Toast.error('Twitch reply account', error?.message || 'Unable to connect the bot account.');
+            }
+        }
+
+        async function disconnectTwitchBotAccountFromSource(menuItem) {
+            const entry = menuItem?.closest('.entry');
+            const sourceId = entry?.dataset?.sourceId;
+            if (!sourceId) return;
+            if (!window.confirm('Disconnect this automatic reply account? Automatic replies will return to the main Twitch account.')) {
+                return;
+            }
+            try {
+                const tabId = await getTwitchBotAccountCommandTarget(sourceId);
+                const status = await ipcRenderer.invoke('sendToTab-async', {
+                    tab: tabId,
+                    message: { type: 'TWITCH_BOT_ACCOUNT_DISCONNECT' }
+                });
+                if (!status || typeof status !== 'object') {
+                    throw new Error('The Twitch WebSocket source did not respond.');
+                }
+                applyTwitchBotAccountStatus(sourceId, status);
+            } catch (error) {
+                Toast.error('Twitch reply account', error?.message || 'Unable to disconnect the bot account.');
+            }
+        }
+
         function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
             if (!sourceElement) return;
             const sourceId = sourceElement.dataset.sourceId;
@@ -5199,6 +5416,7 @@
             if (tiktokLegacyMenuItem) tiktokLegacyMenuItem.dataset.selected = "false";
             const srcForMode = source || stateManager.getSource(sourceId);
             const displayMode = getEffectiveConnectionMode(srcForMode) || mode;
+            updateTwitchBotAccountMenu(sourceElement, srcForMode);
 
             if (activateButton) {
                 // Ensure transient connecting flag is cleared if not truly connecting
@@ -6055,6 +6273,11 @@
                 settingsMenu.classList.toggle('active');
                 if (settingsMenu.classList.contains('active')) {
                     try { updateMoveMenuItemsForSource(sourceElement); } catch (e) { /* noop */ }
+                    try {
+                        const s = sourceId ? stateManager.getSource(sourceId) : null;
+                        updateTwitchBotAccountMenu(sourceElement, s);
+                        refreshTwitchBotAccountStatus(sourceElement);
+                    } catch (_) { }
                     // Update reply-only menu item visual state
                     try {
                         const s = sourceId ? stateManager.getSource(sourceId) : null;
@@ -12635,6 +12858,15 @@
 
                         const status = payload.status;
                         const message = payload.message || null;
+                        if (status === 'bot_account') {
+                            const botAccount = payload.botAccount && typeof payload.botAccount === 'object'
+                                ? payload.botAccount
+                                : {};
+                            applyTwitchBotAccountStatus(source.id, botAccount, {
+                                notify: ['connected', 'disconnected', 'error'].includes(String(botAccount.event || ''))
+                            });
+                            return;
+                        }
                         if (entryElement && status === 'error' && handleRecoverableYoutubeError(source, entryElement, payload, message)) {
                             return;
                         }

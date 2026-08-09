@@ -1,0 +1,5 @@
+STATE_ENCRYPTION_SECRET=replace-with-random-long-secret
+VELORA_CLIENT_SECRET=replace-with-velora-client-secret-if-required
+TWITCH_CLIENT_SECRET=replace-with-twitch-client-secret
+YOUTUBE_CLIENT_SECRET=replace-with-youtube-client-secret
+FACEBOOK_CLIENT_SECRET=replace-with-facebook-client-secret

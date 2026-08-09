@@ -62,5 +62,12 @@ cloudflare/.env
 cloudflare/.env.*
 cloudflare/wrangler.local.toml
 
-# Local Social Stream SSO Worker
-/sso-worker/
+# Social Stream SSO Worker local state and secrets
+/sso-worker/node_modules/
+/sso-worker/.wrangler/
+/sso-worker/.dev.vars
+/sso-worker/.env
+/sso-worker/.env.*
+!/sso-worker/package-lock.json
+!/sso-worker/src/
+!/sso-worker/src/index.js

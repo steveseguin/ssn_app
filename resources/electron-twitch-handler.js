@@ -24,9 +24,14 @@ function buildTwitchAuthUrl({ clientId, scopes, redirectUri, state }) {
         `&state=${encodeURIComponent(state || '')}`;
 }
 
-function buildHostedTwitchAuthUrl({ authBase, returnTo }) {
+function buildHostedTwitchAuthUrl({ authBase, returnTo, purpose }) {
     const base = String(authBase || DEFAULT_HOSTED_AUTH_BASE).replace(/\/+$/, '');
-    return `${base}/start?return_to=${encodeURIComponent(returnTo || '')}`;
+    const url = new URL(`${base}/start`);
+    url.searchParams.set('return_to', returnTo || '');
+    if (purpose) {
+        url.searchParams.set('purpose', purpose);
+    }
+    return url.toString();
 }
 
 function tryListenOnPort(server, port) {
@@ -141,7 +146,8 @@ function runTwitchLoopbackOAuthSession(payload = {}) {
                                 token_type: data.token_type || 'bearer',
                                 state: data.state || payload.state || null,
                                 scope: data.scope || null,
-                                client_id: data.client_id || null
+                                client_id: data.client_id || null,
+                                purpose: data.purpose || payload.purpose || null
                             });
                         } else if (data.error) {
                             fail(new Error(data.error_description || data.error));
@@ -213,6 +219,7 @@ function runTwitchLoopbackOAuthSession(payload = {}) {
                 state: params.get('state') || new URLSearchParams(window.location.search).get('state'),
                 scope: (hostedTokens && hostedTokens.scope) || params.get('scope'),
                 client_id: hostedTokens && hostedTokens.client_id,
+                purpose: (hostedResult && hostedResult.purpose) || params.get('purpose'),
                 error: (hostedError && (hostedError.error || hostedError.message)) || params.get('error'),
                 error_description: (hostedError && hostedError.message) || params.get('error_description')
             };
@@ -285,7 +292,8 @@ h1 { color: #eb0400; }</style></head>
                 const authUrl = useHostedAuth
                     ? buildHostedTwitchAuthUrl({
                         authBase: payload.authBase,
-                        returnTo
+                        returnTo,
+                        purpose: payload.purpose
                     })
                     : buildTwitchAuthUrl({
                         clientId: payload.clientId,
