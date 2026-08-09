@@ -24,6 +24,8 @@ let mainWindowId = null;
 let sourceId = null;
 let sourceViewKey = null;
 let output = "";
+let oauthServer = null;
+let oauthPort = null;
 
 function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -36,6 +38,54 @@ function getFreePort() {
 		server.listen(0, "127.0.0.1", () => {
 			const port = server.address().port;
 			server.close(() => resolve(port));
+		});
+	});
+}
+
+function startFakeOAuthServer() {
+	return new Promise((resolve, reject) => {
+		oauthServer = http.createServer((request, response) => {
+			const url = new URL(request.url || "/", "http://127.0.0.1");
+			if (url.pathname !== "/auth/twitch/start") {
+				response.writeHead(404, { "Content-Type": "text/plain" });
+				response.end("Not found");
+				return;
+			}
+
+			const returnTo = url.searchParams.get("return_to");
+			if (!returnTo) {
+				response.writeHead(400, { "Content-Type": "text/plain" });
+				response.end("Missing return_to");
+				return;
+			}
+
+			const returnUrl = new URL(returnTo);
+			const hash = new URLSearchParams(returnUrl.hash.slice(1));
+			hash.set("twitch_auth_result", Buffer.from(JSON.stringify({
+				type: "ssn-twitch-auth-success",
+				purpose: "bot",
+				tokens: {
+					access_token: "isolated-window-fixture-token",
+					refresh_token: "isolated-window-fixture-refresh",
+					expires_in: 3600,
+					token_type: "bearer",
+					scope: ["user:write:chat", "user:bot"],
+					client_id: "fixture-client",
+				},
+			})).toString("base64url"));
+			returnUrl.hash = hash.toString();
+
+			response.writeHead(200, {
+				"Content-Type": "text/html; charset=utf-8",
+				"Cache-Control": "no-store",
+			});
+			response.end(`<!doctype html><title>Fixture OAuth</title><p>Completing fixture authorization...</p>
+				<script>setTimeout(function () { window.location.href = ${JSON.stringify(returnUrl.toString())}; }, 2000);</script>`);
+		});
+		oauthServer.once("error", reject);
+		oauthServer.listen(0, "127.0.0.1", () => {
+			oauthPort = oauthServer.address().port;
+			resolve();
 		});
 	});
 }
@@ -167,6 +217,50 @@ async function waitForApp() {
 	)`), "SSApp renderer initialization");
 }
 
+async function checkIsolatedBotOAuthWindow() {
+	await execInMain(`(() => {
+		const { ipcRenderer } = require('electron');
+		window.__twitchBotAuthFixtureDone = false;
+		window.__twitchBotAuthFixtureResult = null;
+		window.__twitchBotAuthFixtureError = '';
+		ipcRenderer.invoke('twitch-oauth', {
+			authBase: ${JSON.stringify(`http://127.0.0.1:${oauthPort}/auth/twitch`)},
+			authMode: 'hosted',
+			purpose: 'bot',
+			state: 'isolated-window-fixture@bot',
+			timeoutMs: 15000
+		}).then(result => {
+			window.__twitchBotAuthFixtureResult = result;
+		}).catch(error => {
+			window.__twitchBotAuthFixtureError = error && error.message ? error.message : String(error);
+		}).finally(() => {
+			window.__twitchBotAuthFixtureDone = true;
+		});
+		return true;
+	})()`);
+
+	const authWindow = await waitFor(async () => {
+		return (await listWindows()).find(windowInfo =>
+			windowInfo.title === "Connect Twitch bot account"
+			&& String(windowInfo.url || "").startsWith(`http://127.0.0.1:${oauthPort}/auth/twitch/start`)
+		);
+	}, "isolated Twitch bot sign-in window");
+	assert.equal(authWindow.title, "Connect Twitch bot account");
+
+	const outcome = await waitFor(async () => {
+		return execInMain(`window.__twitchBotAuthFixtureDone ? {
+			result: window.__twitchBotAuthFixtureResult,
+			error: window.__twitchBotAuthFixtureError
+		} : null`);
+	}, "isolated Twitch bot authorization completion");
+	assert.equal(outcome.error, "");
+	assert.equal(outcome.result?.access_token, "isolated-window-fixture-token");
+	assert.equal(outcome.result?.purpose, "bot");
+	await waitFor(async () => {
+		return !(await listWindows()).some(windowInfo => windowInfo.title === "Connect Twitch bot account");
+	}, "isolated Twitch bot sign-in window to close");
+}
+
 async function createAndCheckSourceUi() {
 	sourceId = await execInMain(`(() => {
 		stateManager.clearAllSourcesAndGroups();
@@ -236,6 +330,7 @@ async function createAndCheckSourceUi() {
 	assert.equal(result.accountText, "Automatic reply account: Main account");
 	assert.equal(result.legacyControlsPresent, true, "Existing reply-only/account-role controls were removed.");
 	assert.match(result.modalText, /does not create another source/i);
+	assert.match(result.modalText, /separate Twitch sign-in window/i);
 	assert.match(result.modalText, /existing Bot reply-only and Account role setup remains separate/i);
 	assert.match(result.modalText, /one-time permission may be needed/i);
 	assert.equal(result.oldLoginWarningVisible, true, "An older main-account login did not show the targeted warning.");
@@ -391,6 +486,10 @@ async function launchSourceAndCheckCommandBridge() {
 }
 
 async function cleanup() {
+	if (oauthServer) {
+		await new Promise(resolve => oauthServer.close(resolve));
+		oauthServer = null;
+	}
 	try {
 		await requestJson("/api/v1/command", { action: "shutdownApp", value: { confirm: true } }, 5000);
 	} catch (_) { }
@@ -416,9 +515,11 @@ async function cleanup() {
 
 async function run() {
 	remotePort = await getFreePort();
+	await startFakeOAuthServer();
 	launchApp();
 	try {
 		await waitForApp();
+		await checkIsolatedBotOAuthWindow();
 		await createAndCheckSourceUi();
 		await launchSourceAndCheckCommandBridge();
 		console.log("PASS: Twitch WebSocket bot-account UI and source command bridge work in an isolated SSApp profile.");

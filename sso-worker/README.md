@@ -16,7 +16,7 @@ Cloudflare Worker source for `sso.socialstream.ninja`. Local Wrangler state and 
 - `POST /auth/twitch/refresh`
 - `POST /auth/twitch/chat/messages` (official bot send with source-only Shared Chat delivery)
 
-Use `purpose=bot` on the Twitch start endpoint to request the bot-only scopes (`user:write:chat` and `user:bot`) and force Twitch to show the account picker. Normal Twitch sign-in keeps the regular source scopes.
+Use `purpose=bot` on the Twitch start endpoint to request the bot-only scopes (`user:write:chat` and `user:bot`) and force Twitch to show the authorization prompt. SSApp opens this flow in an isolated sign-in window so it cannot silently reuse the main browser account. Normal Twitch sign-in keeps the regular source scopes.
 
 ## YouTube Endpoints
 

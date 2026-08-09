@@ -53,7 +53,7 @@ test("Twitch OAuth requests chat-send permission", async () => {
   assert.equal(authUrl.searchParams.has("force_verify"), false);
 });
 
-test("Twitch bot OAuth is separate, minimal, and forces account selection", async () => {
+test("Twitch bot OAuth is separate, minimal, and forces reauthorization", async () => {
   const response = await worker.fetch(
     new Request(
       "https://sso.socialstream.ninja/auth/twitch/start" +

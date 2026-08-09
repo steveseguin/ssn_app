@@ -1,5 +1,6 @@
-const { ipcMain, shell } = require('electron');
+const crypto = require('crypto');
 const http = require('http');
+const { BrowserWindow, ipcMain, shell } = require('electron');
 
 function escapeHtml(str) {
     if (typeof str !== 'string') return '';
@@ -11,6 +12,7 @@ const LOOPBACK_PORTS = [8181, 8080];
 const CALLBACK_PATH = '/sources/websocket/twitch.html';
 const DEFAULT_HOSTED_AUTH_BASE = 'https://sso.socialstream.ninja/auth/twitch';
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+const BOT_AUTH_WINDOW_TITLE = 'Connect Twitch bot account';
 
 let activeSession = null;
 
@@ -76,7 +78,9 @@ function runTwitchLoopbackOAuthSession(payload = {}) {
         let server = null;
         let session = null;
         let redirectUri = null;
-        const stateParam = payload.state || require('crypto').randomBytes(16).toString('hex');
+        let authWindow = null;
+        let authWindowCloseExpected = false;
+        const stateParam = payload.state || crypto.randomBytes(16).toString('hex');
         const useHostedAuth = payload.authMode === 'hosted' || (!payload.authMode && !!payload.authBase);
 
         const cleanup = () => {
@@ -88,6 +92,11 @@ function runTwitchLoopbackOAuthSession(payload = {}) {
                 try { server.close(); } catch (_) { }
                 server = null;
             }
+            if (authWindow && !authWindow.isDestroyed()) {
+                authWindowCloseExpected = true;
+                try { authWindow.destroy(); } catch (_) { }
+            }
+            authWindow = null;
             if (activeSession === session) {
                 activeSession = null;
             }
@@ -305,10 +314,53 @@ h1 { color: #eb0400; }</style></head>
                 payload.redirectUri = redirectUri;
 
                 try {
-                    await shell.openExternal(authUrl, { activate: true });
-                    console.log('[Twitch OAuth] Opening auth URL in default browser');
+                    if (payload.purpose === 'bot') {
+                        const authPartition = `twitch-bot-oauth-${crypto.randomBytes(8).toString('hex')}`;
+                        authWindow = new BrowserWindow({
+                            title: BOT_AUTH_WINDOW_TITLE,
+                            show: true,
+                            width: 680,
+                            height: 760,
+                            minWidth: 500,
+                            minHeight: 600,
+                            autoHideMenuBar: true,
+                            backgroundColor: '#0e0e10',
+                            webPreferences: {
+                                partition: authPartition,
+                                nodeIntegration: false,
+                                contextIsolation: true,
+                                sandbox: true
+                            }
+                        });
+                        authWindow.setMenuBarVisibility(false);
+                        authWindow.on('page-title-updated', (event) => {
+                            event.preventDefault();
+                            if (authWindow && !authWindow.isDestroyed()) {
+                                authWindow.setTitle(BOT_AUTH_WINDOW_TITLE);
+                            }
+                        });
+                        authWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+                        const openedWindow = authWindow;
+                        openedWindow.on('closed', () => {
+                            if (authWindow === openedWindow) {
+                                authWindow = null;
+                            }
+                            if (!authWindowCloseExpected && !settled) {
+                                fail(new Error('Twitch bot account sign-in was closed.'));
+                            }
+                        });
+                        await openedWindow.loadURL(authUrl);
+                        if (!openedWindow.isDestroyed()) {
+                            openedWindow.show();
+                            openedWindow.focus();
+                        }
+                        console.log('[Twitch OAuth] Opened bot sign-in in an isolated SSApp window');
+                    } else {
+                        await shell.openExternal(authUrl, { activate: true });
+                        console.log('[Twitch OAuth] Opening auth URL in default browser');
+                    }
                 } catch (shellError) {
-                    console.error('[Twitch OAuth] Failed to launch default browser:', shellError);
+                    console.error('[Twitch OAuth] Failed to launch authorization:', shellError);
                     fail(shellError);
                 }
             } catch (err) {
