@@ -68,6 +68,41 @@ test("Twitch bot OAuth is separate, minimal, and forces account selection", asyn
   assert.equal(authUrl.searchParams.get("force_verify"), "true");
 });
 
+test("Twitch OAuth callback works when the browser does not return the session cookie", async () => {
+  const env = createTestEnv();
+  const response = await worker.fetch(
+    new Request(
+      "https://sso.socialstream.ninja/auth/twitch/start" +
+        "?purpose=bot&return_to=http%3A%2F%2Flocalhost%3A8181%2Fsources%2Fwebsocket%2Ftwitch.html%3Fssapp%3D1"
+    ),
+    env
+  );
+
+  const authUrl = new URL(response.headers.get("location"));
+  const state = authUrl.searchParams.get("state");
+  assert.ok(state);
+  assert.match(state, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+
+  const callbackUrl = new URL("https://sso.socialstream.ninja/auth/twitch/callback");
+  callbackUrl.searchParams.set("state", state);
+  callbackUrl.searchParams.set("error", "access_denied");
+  callbackUrl.searchParams.set("error_description", "Cancelled in the callback test");
+
+  const callbackResponse = await worker.fetch(new Request(callbackUrl), env);
+  assert.equal(callbackResponse.status, 302);
+
+  const returnUrl = new URL(callbackResponse.headers.get("location"));
+  assert.equal(returnUrl.origin, "http://localhost:8181");
+  assert.equal(returnUrl.pathname, "/sources/websocket/twitch.html");
+  const errorPayload = JSON.parse(Buffer.from(
+    new URLSearchParams(returnUrl.hash.slice(1)).get("twitch_auth_error"),
+    "base64url"
+  ).toString("utf8"));
+  assert.equal(errorPayload.type, "ssn-twitch-auth-error");
+  assert.equal(errorPayload.purpose, "bot");
+  assert.equal(errorPayload.message, "Cancelled in the callback test");
+});
+
 test("Twitch bot sending uses the validated bot identity and source-only delivery", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];

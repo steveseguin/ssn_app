@@ -332,7 +332,7 @@ async function startTwitchAuth(request, env) {
   const redirectUri = getTwitchRedirectUri(request, env);
   const purpose = normalizeTwitchAuthPurpose(url.searchParams.get("purpose"));
   const nonce = randomBase64Url(16);
-  const cookieValue = await encryptState(
+  const stateValue = await encryptState(
     {
       provider: "twitch",
       returnTo: returnTo.toString(),
@@ -353,13 +353,13 @@ async function startTwitchAuth(request, env) {
     "scope",
     purpose === "bot" ? DEFAULT_TWITCH_BOT_SCOPES : env.TWITCH_SCOPES || DEFAULT_TWITCH_SCOPES
   );
-  authUrl.searchParams.set("state", nonce);
+  authUrl.searchParams.set("state", stateValue);
   if (purpose === "bot") {
     authUrl.searchParams.set("force_verify", "true");
   }
 
   return redirectResponse(authUrl, {
-    "Set-Cookie": buildOAuthCookie(cookieValue, "twitch"),
+    "Set-Cookie": buildOAuthCookie(stateValue, "twitch"),
   });
 }
 
@@ -370,18 +370,7 @@ async function handleTwitchCallback(request, env) {
     throw new HttpError(400, "Missing OAuth state.");
   }
 
-  const cookieValue = getCookie(request, TWITCH_OAUTH_COOKIE);
-  if (!cookieValue) {
-    throw new HttpError(400, "Missing OAuth session cookie.");
-  }
-
-  const state = await decryptState(cookieValue, env);
-  if (!state || state.provider !== "twitch") {
-    throw new HttpError(400, "Invalid OAuth state.");
-  }
-  if (state.nonce !== stateParam) {
-    throw new HttpError(400, "OAuth state mismatch.");
-  }
+  const state = await readTwitchOAuthState(request, stateParam, env);
   if (!Number.isFinite(state.expiresAt) || Date.now() > state.expiresAt) {
     throw new HttpError(400, "Expired OAuth state.");
   }
@@ -424,6 +413,32 @@ async function handleTwitchCallback(request, env) {
     purpose: state.purpose || "main",
     tokens,
   }, clearOAuthCookieHeaders("twitch"));
+}
+
+async function readTwitchOAuthState(request, stateParam, env) {
+  const embeddedState = await tryDecryptState(stateParam, env);
+  if (embeddedState) {
+    if (embeddedState.provider !== "twitch") {
+      throw new HttpError(400, "Invalid OAuth state.");
+    }
+    return embeddedState;
+  }
+
+  // Keep accepting OAuth requests started by the previous Worker version,
+  // where Twitch returned a nonce and the encrypted state lived in a cookie.
+  const cookieValue = getCookie(request, TWITCH_OAUTH_COOKIE);
+  if (!cookieValue) {
+    throw new HttpError(400, "Missing OAuth session cookie.");
+  }
+
+  const cookieState = await tryDecryptState(cookieValue, env);
+  if (!cookieState || cookieState.provider !== "twitch") {
+    throw new HttpError(400, "Invalid OAuth state.");
+  }
+  if (cookieState.nonce !== stateParam) {
+    throw new HttpError(400, "OAuth state mismatch.");
+  }
+  return cookieState;
 }
 
 async function handleTwitchRefresh(request, env) {
@@ -1298,6 +1313,14 @@ async function decryptState(value, env) {
   const key = await getStateKey(env);
   const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, encrypted);
   return parseJson(new TextDecoder().decode(plain));
+}
+
+async function tryDecryptState(value, env) {
+  try {
+    return await decryptState(value, env);
+  } catch (_) {
+    return null;
+  }
 }
 
 async function getStateKey(env) {
