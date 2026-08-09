@@ -837,6 +837,14 @@ function configureContextBridge(){
 			  sendDeviceList: (response) => {
 				ipcRenderer.send('deviceList', response);
 			  },
+
+			  respondAutomationDialog: (response) => {
+				ipcRenderer.send('ssapp-automation-dialog-response', response || {});
+			  },
+
+			  requestAutomationJavaScriptDialog: (details) => {
+				return ipcRenderer.sendSync('ssapp-automation-javascript-dialog-sync', details || {});
+			  },
 			  
 			 'updateVersion' : function (version) { // window.ninjafy.updateVersion(session.version);
 				 console.log("Version: "+version);
@@ -1029,6 +1037,14 @@ try {
 			
 			sendDeviceList: (response) => {
 				ipcRenderer.send('deviceList', response);
+			},
+
+			respondAutomationDialog: (response) => {
+				ipcRenderer.send('ssapp-automation-dialog-response', response || {});
+			},
+
+			requestAutomationJavaScriptDialog: (details) => {
+				return ipcRenderer.sendSync('ssapp-automation-javascript-dialog-sync', details || {});
 			},
 			
 			updateVersion: function (version) {

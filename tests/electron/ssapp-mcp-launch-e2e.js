@@ -83,7 +83,7 @@ async function run() {
 		})}\n`);
 		const initialized = await waitForResponse(responses, 1, child, stderr);
 		assert.strictEqual(initialized.result.serverInfo.name, 'social-stream-ninja');
-		assert.strictEqual(initialized.result.serverInfo.version, '1.1.0');
+		assert.strictEqual(initialized.result.serverInfo.version, '1.2.0');
 		assert.strictEqual(initialized.result.capabilities.tools.listChanged, false);
 		assert.match(initialized.result.instructions, /capabilities/i);
 		assert.match(initialized.result.instructions, /offline/i);
@@ -119,6 +119,14 @@ async function run() {
 				'ssapp_set_source_mute',
 				'ssapp_set_source_visibility',
 				'ssapp_show_source_for_human',
+				'ssapp_list_app_windows',
+				'ssapp_capture_app_window_screenshot',
+				'ssapp_inspect_app_window',
+				'ssapp_interact_app_window',
+				'ssapp_set_app_window_visibility',
+				'ssapp_get_pending_app_dialogs',
+				'ssapp_wait_for_app_dialog',
+				'ssapp_respond_to_app_dialog',
 				'ssapp_shutdown',
 				'ssapp_start_all_sources',
 				'ssapp_start_source',
@@ -163,6 +171,15 @@ async function run() {
 		assert.ok(!interactionTool.inputSchema.properties.action.enum.includes('key'));
 		assert.strictEqual(interactionTool.inputSchema.properties.confirm.const, true);
 		assert.strictEqual(interactionTool.annotations.openWorldHint, true);
+		const appScreenshotTool = listed.result.tools.find(tool => tool.name === 'ssapp_capture_app_window_screenshot');
+		assert.strictEqual(appScreenshotTool.annotations.readOnlyHint, true);
+		assert.match(appScreenshotTool.description, /without using operating-system screen capture/i);
+		const appInteractionTool = listed.result.tools.find(tool => tool.name === 'ssapp_interact_app_window');
+		assert.strictEqual(appInteractionTool.inputSchema.properties.confirm.const, true);
+		assert.strictEqual(appInteractionTool.annotations.openWorldHint, true);
+		const dialogTool = listed.result.tools.find(tool => tool.name === 'ssapp_respond_to_app_dialog');
+		assert.deepStrictEqual(dialogTool.inputSchema.required, ['dialogId', 'accept', 'confirm']);
+		assert.strictEqual(dialogTool.inputSchema.properties.paths.maxItems, 20);
 		for (const toolName of ['ssapp_start_source', 'ssapp_reload_source', 'ssapp_start_all_sources', 'ssapp_reload_all_sources']) {
 			assert.strictEqual(listed.result.tools.find(tool => tool.name === toolName).annotations.openWorldHint, true, `${toolName} should declare network interaction.`);
 		}

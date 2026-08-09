@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 
-const CONTROL_API_VERSION = '1.2.0';
+const CONTROL_API_VERSION = '1.3.0';
 const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_OPERATIONS = 200;
@@ -37,6 +37,14 @@ const COMMAND_DEFINITIONS = Object.freeze({
 	interactSourcePage: definition('Perform one confirmed, allowlisted action through an opaque page reference.', 'mutating', { sourceId: 'string', ref: 'string', action: 'click|focus|scroll|fill|pressKey', text: 'string?', key: 'string?', confirm: 'boolean' }, true, '0.4.13'),
 	reloadSourcePage: definition('Reload one active source browser page.', 'disruptive', { sourceId: 'string', confirm: 'boolean' }, true, '0.4.13'),
 	showSourceForHuman: definition('Reveal one source window for human sign-in or intervention.', 'disruptive', { sourceId: 'string', confirm: 'boolean' }, true, '0.4.13'),
+	listAppWindows: definition('List SSApp-owned windows, including the main and modal windows.', 'read-only', {}, false, '0.4.14'),
+	captureAppWindowScreenshot: definition('Capture an SSApp-owned Electron window.', 'read-only', { windowId: 'integer?', format: 'png|jpeg?', maxWidth: 'integer?' }, false, '0.4.14'),
+	inspectAppWindow: definition('Read a bounded semantic snapshot of an SSApp-owned window.', 'read-only', { windowId: 'integer?', maxElements: 'integer?', maxTextChars: 'integer?' }, false, '0.4.14'),
+	interactAppWindow: definition('Perform one confirmed, allowlisted action through an opaque app-window reference.', 'mutating', { windowId: 'integer?', ref: 'string', action: 'click|focus|scroll|fill|pressKey', text: 'string?', key: 'string?', confirm: 'boolean' }, true, '0.4.14'),
+	setAppWindowVisibility: definition('Show, focus, or hide an SSApp-owned window.', 'disruptive', { windowId: 'integer?', isVisible: 'boolean', focus: 'boolean?', confirm: 'boolean' }, true, '0.4.14'),
+	getPendingAppDialogs: definition('Read pending JavaScript and Electron dialogs without using system capture.', 'read-only', {}, false, '0.4.14'),
+	waitForAppDialog: definition('Wait briefly for a pending app dialog.', 'read-only', { afterId: 'integer?', timeoutMs: 'integer?' }, false, '0.4.14'),
+	respondToAppDialog: definition('Answer or cancel one pending app dialog.', 'mutating', { dialogId: 'string', accept: 'boolean', buttonIndex: 'integer?', promptText: 'string?', paths: 'string[]?', checkboxChecked: 'boolean?', confirm: 'boolean' }, true, '0.4.14'),
 	reloadApp: definition('Reload the SSApp renderer.', 'disruptive', { confirm: 'boolean' }, true),
 	shutdownApp: definition('Gracefully shut down SSApp.', 'disruptive', { confirm: 'boolean' }, true),
 });
@@ -84,9 +92,9 @@ function statusForError(error) {
 	if (code === 'SSAPP_UNAVAILABLE' || code === 'SSAPP_TIMEOUT' || code === 'SSAPP_NOT_READY') return 503;
 	if (
 		code === 'SOURCE_ACTIVE' || code === 'STATE_CONFLICT' || code === 'SOURCE_WINDOW_UNAVAILABLE' ||
-		code === 'STALE_PAGE_REF' || code === 'ELEMENT_DISABLED'
+		code === 'STALE_PAGE_REF' || code === 'ELEMENT_DISABLED' || code === 'APP_DIALOG_UNAVAILABLE'
 	) return 409;
-	if (code === 'SOURCE_NOT_FOUND' || code === 'OPERATION_NOT_FOUND') return 404;
+	if (code === 'SOURCE_NOT_FOUND' || code === 'OPERATION_NOT_FOUND' || code === 'APP_WINDOW_NOT_FOUND' || code === 'APP_DIALOG_NOT_FOUND') return 404;
 	if (code === 'REQUEST_TOO_LARGE') return 413;
 	return 400;
 }

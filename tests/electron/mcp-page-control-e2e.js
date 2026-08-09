@@ -31,6 +31,9 @@ const REQUIRED_TOOLS = [
 	'ssapp_wait_for_source_events', 'ssapp_capture_source_screenshot',
 	'ssapp_inspect_source_page', 'ssapp_interact_source_page', 'ssapp_reload_source_page',
 	'ssapp_show_source_for_human',
+	'ssapp_list_app_windows', 'ssapp_capture_app_window_screenshot', 'ssapp_inspect_app_window',
+	'ssapp_interact_app_window', 'ssapp_set_app_window_visibility', 'ssapp_get_pending_app_dialogs',
+	'ssapp_wait_for_app_dialog', 'ssapp_respond_to_app_dialog',
 ];
 
 function getFreePort() {
@@ -363,6 +366,8 @@ async function run() {
 			ssapp_capture_source_screenshot: ['sourceId'],
 			ssapp_inspect_source_page: ['sourceId'],
 			ssapp_interact_source_page: ['sourceId', 'ref', 'action', 'confirm'],
+			ssapp_interact_app_window: ['ref', 'action', 'confirm'],
+			ssapp_respond_to_app_dialog: ['dialogId', 'accept', 'confirm'],
 		};
 		for (const [name, fields] of Object.entries(requiredFields)) {
 			const schema = offlineToolList.find(tool => tool.name === name)?.inputSchema;

@@ -275,7 +275,8 @@ const INTERACTION_SCRIPT = `(${function interactWithPage(request) {
 	if (request.action === 'click') {
 		element.scrollIntoView({ block: 'center', inline: 'center' });
 		element.focus({ preventScroll: true });
-		element.click();
+		if (request.deferClick) setTimeout(() => element.click(), 0);
+		else element.click();
 	} else if (request.action === 'focus' || request.action === 'pressKey') {
 		element.focus({ preventScroll: request.action === 'pressKey' });
 	} else if (request.action === 'scroll') {
@@ -315,6 +316,8 @@ class SourceObservationService {
 		this.waiters = new Set();
 		this.refs = new Map();
 		this.trackedViews = new WeakSet();
+		this.trackLifecycle = options.trackLifecycle !== false;
+		this.deferClicks = options.deferClicks === true;
 	}
 
 	handles(action) {
@@ -326,6 +329,7 @@ class SourceObservationService {
 	}
 
 	trackView(view) {
+		if (!this.trackLifecycle) return;
 		if (!isUsableView(view) || this.trackedViews.has(view)) return;
 		this.trackedViews.add(view);
 		const webContentsId = view.webContents.id;
@@ -673,6 +677,7 @@ class SourceObservationService {
 				expected: record.expected,
 				action,
 				text,
+				deferClick: this.deferClicks,
 			})})`, true);
 		} catch (_) {
 			this.refs.delete(String(value.ref || ''));

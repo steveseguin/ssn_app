@@ -15,7 +15,7 @@ const { spawn } = require('child_process');
 const electronPath = require('electron');
 const repoRoot = path.resolve(__dirname, '..', '..');
 const expectedSsappVersion = require(path.join(repoRoot, 'package.json')).version;
-const expectedApiVersion = '1.2.0';
+const expectedApiVersion = '1.3.0';
 const sourceUrlSecret = 'CONTROL_API_SOURCE_SECRET';
 const socialStreamRoot = path.resolve(repoRoot, '..', 'social_stream');
 const socialStreamUrl = pathToFileURL(socialStreamRoot + path.sep).href;
@@ -310,7 +310,7 @@ async function runMcpChecks(port) {
 	try {
 		const initialized = await session.call(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'ssapp-e2e', version: '1' } });
 		assert.strictEqual(initialized.result.serverInfo.name, 'social-stream-ninja');
-		assert.strictEqual(initialized.result.serverInfo.version, '1.1.0');
+		assert.strictEqual(initialized.result.serverInfo.version, '1.2.0');
 		const responseCountBeforeNotification = session.responses.size;
 		session.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 999, reason: 'e2e' } })}\n`);
 		await new Promise(resolve => setTimeout(resolve, 200));
@@ -368,7 +368,7 @@ async function startMcpBeforeApp(port) {
 			capabilities: {},
 			clientInfo: { name: 'ssapp-startup-order-e2e', version: '1' },
 		});
-		assert.strictEqual(initialized.result.serverInfo.version, '1.1.0');
+		assert.strictEqual(initialized.result.serverInfo.version, '1.2.0');
 		assert.strictEqual(initialized.result.capabilities.tools.listChanged, false);
 
 		const listed = await session.call(2, 'tools/list');

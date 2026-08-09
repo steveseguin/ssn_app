@@ -200,6 +200,8 @@ const { setupMediaUploadHandler } = require('./resources/electron-media-upload-h
 const { setupElectronLocalMedia } = require('./resources/electron-local-media-server');
 const { createControlApiRouter } = require('./resources/electron-control-api');
 const { SourceObservationService } = require('./resources/source-observation-service');
+const { AppWindowControlService } = require('./resources/app-window-control-service');
+const { AppDialogService } = require('./resources/app-dialog-service');
 const { buildMcpLaunchConfig } = require('./resources/mcp-launch-config');
 const { KickWsClient } = require('./resources/kick-ws-client');
 
@@ -2073,6 +2075,37 @@ const sourceObservationService = controlApiEnabled ? new SourceObservationServic
     }
 }) : null;
 
+const appWindowControlService = controlApiEnabled ? new AppWindowControlService({
+    getWindows: () => BrowserWindow.getAllWindows(),
+    getMainWindow: () => mainWindow,
+    isHeadless: () => headlessControlEnabled,
+    getAppMetrics: () => app.getAppMetrics(),
+    publish: (type, data) => {
+        if (controlApiRouter) controlApiRouter.publish(type, data);
+    }
+}) : null;
+
+const appDialogService = controlApiEnabled ? new AppDialogService({
+    getMainWindow: () => mainWindow,
+    rememberApprovedPath: filePath => rememberDialogApprovedPath(filePath),
+    publish: (type, data) => {
+        if (controlApiRouter) controlApiRouter.publish(type, data);
+    }
+}) : null;
+
+if (appDialogService) {
+    appDialogService.install(dialog);
+    app.on('browser-window-created', (_event, window) => {
+        void appDialogService.trackWindow(window);
+    });
+    ipcMain.on('ssapp-automation-dialog-response', (event, value) => {
+        void appDialogService.handleRendererResponse(event, value);
+    });
+    ipcMain.on('ssapp-automation-javascript-dialog-sync', (event, value) => {
+        appDialogService.handleSyncRendererJavaScriptDialog(event, value);
+    });
+}
+
 function matchesLegacyRemoteControlToken(value) {
     const supplied = Buffer.from(String(value || ''), 'utf8');
     const expected = Buffer.from(legacyRemoteControlToken, 'utf8');
@@ -2085,6 +2118,7 @@ if (headlessControlEnabled) {
             try {
                 if (!window || window.isDestroyed()) return;
                 if (window.__ssappHumanHandoff === true) return;
+                if (window.__ssappInternalCapture === true) return;
                 window.setSkipTaskbar(true);
                 window.hide();
             } catch (_) { }
@@ -2329,11 +2363,18 @@ function setupRemoteControlServer() {
     }
 
     const executeControlCommand = async (command) => {
+        const action = command && typeof command.action === 'string' ? command.action : '';
+        const value = command && command.value && typeof command.value === 'object' ? command.value : {};
+        if (appDialogService && appDialogService.handles(action)) {
+            return appDialogService.execute(action, value);
+        }
+        if (appWindowControlService && appWindowControlService.handles(action)) {
+            if (appDialogService && action === 'interactAppWindow') appDialogService.arm();
+            return appWindowControlService.execute(action, value);
+        }
         if (!llmControlCommandHandler) {
             return { ok: false, error: { code: 'SSAPP_UNAVAILABLE', message: 'SSApp controller is not ready.' } };
         }
-        const action = command && typeof command.action === 'string' ? command.action : '';
-        const value = command && command.value && typeof command.value === 'object' ? command.value : {};
         if (action === 'showSourceForHuman') {
             const result = await llmControlCommandHandler({
                 action: 'setSourceVisibility',
@@ -2387,7 +2428,8 @@ function setupRemoteControlServer() {
                     headless: headlessControlEnabled,
                     mainWindowReady: !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents),
                     mainWindowVisible: !!(mainWindow && !mainWindow.isDestroyed() && mainWindowVisible),
-                    localMedia: localMediaService ? localMediaService.getStatus() : null
+                    localMedia: localMediaService ? localMediaService.getStatus() : null,
+                    pendingAppDialogs: appDialogService ? appDialogService.pendingResult().dialogs.length : 0
                 },
                 sources: sources && sources.ok ? sources.payload.sources : [],
                 error: sources && !sources.ok ? sources.error : undefined
@@ -9542,7 +9584,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 buttons: ["OK"],
                 message: arg.val,
             };
-            let response = dialog.showMessageBoxSync(options);
+            if (appDialogService?.isArmed()) void dialog.showMessageBox(options);
+            else dialog.showMessageBoxSync(options);
         } catch (e) {
             console.error(e);
         }
@@ -12360,7 +12403,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             const view = new BrowserWindow(windowOptions);
 
-            // Chrome's loading behavior
+			// Chrome's loading behavior
             view.once('ready-to-show', () => {
                 view.show();
             });
@@ -14477,18 +14520,21 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                     buttons: ["OK"],
                                     message: "An error occured parsing or injecting the required js script.",
                                 };
-                                dialog.showMessageBoxSync(options);
+                                if (appDialogService?.isArmed()) void dialog.showMessageBox(options);
+                                else dialog.showMessageBoxSync(options);
                                 console.error(e);
                             }
                         } catch (e) {
                             console.error('Failed to load Social Stream injector:', e);
                             queueInjectorToast('error', 'Classic Mode Failed', `Could not load Social Stream scripts (${e && e.message ? e.message : 'unknown error'}).`);
                             try {
-                                dialog.showMessageBoxSync({
+                                const options = {
                                     title: "Site not supported or injection script not found",
                                     buttons: ["OK"],
                                     message: `${selectedSourceFiles.join("\n")}\n\n${e && e.message ? e.message : "Unable to load Social Stream scripts"}\n\njoin the Discord for support: \nhttps://discord.socialstream.ninja`,
-                                });
+                                };
+                                if (appDialogService?.isArmed()) void dialog.showMessageBox(options);
+                                else dialog.showMessageBoxSync(options);
                             } catch (dialogError) {
                                 console.error('Failed to show injector error dialog:', dialogError);
                             }
@@ -15447,7 +15493,7 @@ contextMenu({
                     params: params
                 });
 
-                ipcMain.once("deviceList", (event, data) => {
+                ipcMain.once("deviceList", async (event, data) => {
                     //log(data);
                     var deviceList = data.deviceInfos;
 
@@ -15469,7 +15515,9 @@ contextMenu({
                         message: "Change audio output specifically for this media element",
                     };
 
-                    let response = dialog.showMessageBoxSync(options);
+                    const response = appDialogService?.isArmed()
+                        ? (await dialog.showMessageBox(options)).response
+                        : dialog.showMessageBoxSync(options);
                     if (response) {
                         browserWindow.webContents.send("postMessage", {
                             changeAudioOutputDevice: details[response],
@@ -15494,7 +15542,7 @@ contextMenu({
                     params: params
                 });
 
-                ipcMain.once("deviceList", (event, data) => {
+                ipcMain.once("deviceList", async (event, data) => {
                     log(data);
                     var deviceList = data.deviceInfos;
 
@@ -15516,7 +15564,9 @@ contextMenu({
                         message: "Change the audio output device",
                     };
 
-                    let response = dialog.showMessageBoxSync(options);
+                    const response = appDialogService?.isArmed()
+                        ? (await dialog.showMessageBox(options)).response
+                        : dialog.showMessageBoxSync(options);
                     if (response) {
                         browserWindow.webContents.send("postMessage", {
                             changeAudioOutputDevice: details[response]
@@ -15539,7 +15589,7 @@ contextMenu({
                     params: params
                 });
 
-                ipcMain.once("deviceList", (event, data) => {
+                ipcMain.once("deviceList", async (event, data) => {
                     log(data);
                     var deviceList = data.deviceInfos;
 
@@ -15568,7 +15618,9 @@ contextMenu({
                         options.message = "No audio input devices available here";
                     }
 
-                    let response = dialog.showMessageBoxSync(options);
+                    const response = appDialogService?.isArmed()
+                        ? (await dialog.showMessageBox(options)).response
+                        : dialog.showMessageBoxSync(options);
                     if (response) {
                         browserWindow.webContents.send("postMessage", {
                             changeAudioDevice: details[response]
@@ -15584,7 +15636,7 @@ contextMenu({
         // Only show it when right-clicking text
 
         visible: extensions.length,
-        click: () => {
+        click: async () => {
             var buttons = ["Cancel"];
 
             for (var i = 0; i < extensions.length; i++) {
@@ -15596,7 +15648,9 @@ contextMenu({
                 message: "Choose an extension to enable. You may need to reload the window to trigger once loaded.",
             };
 
-            let idx = dialog.showMessageBoxSync(options);
+            let idx = appDialogService?.isArmed()
+                ? (await dialog.showMessageBox(options)).response
+                : dialog.showMessageBoxSync(options);
             if (idx) {
                 idx -= 1;
                 //log(idx, extensions[idx].location);
@@ -16251,6 +16305,12 @@ app.on("before-quit", (event) => {
     }
     if (sourceObservationService) {
         sourceObservationService.close();
+    }
+    if (appWindowControlService) {
+        appWindowControlService.close();
+    }
+    if (appDialogService) {
+        appDialogService.close();
     }
 });
 
