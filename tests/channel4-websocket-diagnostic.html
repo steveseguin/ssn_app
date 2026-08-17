@@ -1,0 +1,2129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Social Stream Ninja Channel 4 Diagnostic</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        background: #0d1117;
+        color: #e6edf3;
+        --panel: #161b22;
+        --panel-2: #0d1117;
+        --border: #30363d;
+        --muted: #8b949e;
+        --blue: #58a6ff;
+        --green: #3fb950;
+        --yellow: #d29922;
+        --red: #f85149;
+        --purple: #bc8cff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: #0d1117;
+        color: #e6edf3;
+      }
+
+      main {
+        width: min(1120px, calc(100% - 28px));
+        margin: 28px auto 64px;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        margin-bottom: 8px;
+        font-size: clamp(25px, 4vw, 38px);
+        line-height: 1.15;
+      }
+
+      h2 {
+        font-size: 20px;
+      }
+
+      h3 {
+        font-size: 15px;
+      }
+
+      code,
+      pre,
+      textarea,
+      input[type="text"] {
+        font-family:
+          "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono",
+          monospace;
+      }
+
+      code {
+        padding: 2px 5px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        background: #0d1117;
+        color: #f0f6fc;
+        word-break: break-all;
+      }
+
+      .hero {
+        margin-bottom: 18px;
+      }
+
+      .hero p {
+        max-width: 850px;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .panel {
+        margin-top: 16px;
+        padding: 20px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--panel);
+        box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+      }
+
+      .notice {
+        padding: 12px 14px;
+        border-left: 4px solid var(--blue);
+        border-radius: 6px;
+        background: rgb(56 139 253 / 10%);
+        line-height: 1.5;
+      }
+
+      .notice.warning {
+        border-left-color: var(--yellow);
+        background: rgb(210 153 34 / 10%);
+      }
+
+      .instructions {
+        padding-left: 22px;
+        line-height: 1.6;
+      }
+
+      .instructions li + li {
+        margin-top: 5px;
+      }
+
+      .form-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: end;
+        margin-top: 18px;
+      }
+
+      label {
+        display: block;
+        font-weight: 650;
+      }
+
+      input[type="text"],
+      textarea {
+        width: 100%;
+        margin-top: 7px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        outline: none;
+        background: var(--panel-2);
+        color: #f0f6fc;
+      }
+
+      input[type="text"] {
+        min-height: 42px;
+        padding: 9px 11px;
+      }
+
+      input[type="text"]:focus,
+      textarea:focus {
+        border-color: var(--blue);
+        box-shadow: 0 0 0 3px rgb(56 139 253 / 18%);
+      }
+
+      .help {
+        display: block;
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 400;
+        line-height: 1.45;
+      }
+
+      .help.error {
+        color: #ff7b72;
+      }
+
+      .help.success {
+        color: #56d364;
+      }
+
+      .button-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+
+      button {
+        min-height: 38px;
+        padding: 8px 13px;
+        border: 1px solid rgb(240 246 252 / 10%);
+        border-radius: 6px;
+        background: #238636;
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button:hover:not(:disabled) {
+        filter: brightness(1.08);
+      }
+
+      button:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 2px;
+      }
+
+      button.secondary {
+        background: #21262d;
+        color: #f0f6fc;
+      }
+
+      button.danger {
+        background: #8e2521;
+      }
+
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      .status-banner {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-top: 16px;
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--panel-2);
+        font-weight: 700;
+      }
+
+      .status-dot {
+        width: 11px;
+        height: 11px;
+        border-radius: 999px;
+        background: var(--muted);
+        box-shadow: 0 0 0 4px rgb(139 148 158 / 10%);
+      }
+
+      .status-banner.connecting .status-dot {
+        background: var(--yellow);
+        box-shadow: 0 0 0 4px rgb(210 153 34 / 15%);
+      }
+
+      .status-banner.open .status-dot {
+        background: var(--green);
+        box-shadow: 0 0 0 4px rgb(63 185 80 / 15%);
+      }
+
+      .status-banner.failed .status-dot,
+      .status-banner.closed .status-dot {
+        background: var(--red);
+        box-shadow: 0 0 0 4px rgb(248 81 73 / 15%);
+      }
+
+      .metrics,
+      .test-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .metric,
+      .test-card {
+        min-width: 0;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--panel-2);
+      }
+
+      .metric span,
+      .test-card .eyebrow {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .metric strong {
+        display: block;
+        overflow: hidden;
+        font-size: 18px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .test-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .test-card strong {
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      .test-card p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .test-card.pass {
+        border-color: rgb(63 185 80 / 60%);
+      }
+
+      .test-card.fail {
+        border-color: rgb(248 81 73 / 70%);
+      }
+
+      .test-card.running {
+        border-color: rgb(210 153 34 / 70%);
+      }
+
+      .split-heading {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .split-heading h2 {
+        margin-bottom: 0;
+      }
+
+      .frames {
+        display: grid;
+        gap: 9px;
+        margin-top: 14px;
+      }
+
+      .empty-state {
+        padding: 26px 14px;
+        border: 1px dashed var(--border);
+        border-radius: 7px;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      .frame {
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--panel-2);
+        overflow: hidden;
+      }
+
+      .frame header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        align-items: center;
+        padding: 9px 11px;
+        border-bottom: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .badge {
+        display: inline-flex;
+        padding: 2px 7px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: #21262d;
+        color: #e6edf3;
+        font-weight: 700;
+      }
+
+      .badge.chat {
+        border-color: rgb(88 166 255 / 60%);
+        color: #79c0ff;
+      }
+
+      .badge.fake,
+      .badge.self-test {
+        border-color: rgb(63 185 80 / 65%);
+        color: #56d364;
+      }
+
+      .frame pre {
+        max-height: 280px;
+        margin: 0;
+        padding: 11px;
+        overflow: auto;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .check-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        margin: 13px 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .check-row label {
+        display: inline-flex;
+        gap: 7px;
+        align-items: center;
+        font-weight: 500;
+      }
+
+      textarea {
+        min-height: 330px;
+        padding: 11px;
+        resize: vertical;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      details {
+        margin-top: 12px;
+        border-top: 1px solid var(--border);
+        padding-top: 12px;
+      }
+
+      summary {
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .interpretation {
+        width: 100%;
+        margin-top: 13px;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      .interpretation th,
+      .interpretation td {
+        padding: 9px;
+        border: 1px solid var(--border);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      .interpretation th {
+        background: var(--panel-2);
+      }
+
+      footer {
+        margin-top: 16px;
+        color: var(--muted);
+        font-size: 12px;
+        text-align: center;
+      }
+
+      @media (max-width: 760px) {
+        .form-row,
+        .metrics,
+        .test-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .form-row button {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="hero">
+        <h1>Channel 4 WebSocket Diagnostic</h1>
+        <p>
+          A standalone listener and routing check for Social Stream Ninja. It
+          connects directly to
+          <code>wss://io.socialstream.ninja/join/[session]/4</code>, displays
+          every frame without filtering, and prepares a report that can be
+          copied to support.
+        </p>
+      </div>
+
+      <section class="panel" aria-labelledby="instructions-title">
+        <h2 id="instructions-title">Before starting</h2>
+        <ol class="instructions">
+          <li>
+            Run the Social Stream Ninja Desktop App and make sure its main
+            capture switch is on.
+          </li>
+          <li>
+            Under <strong>Global settings → Mechanics</strong>, enable
+            <strong>Enable remote API control of extension</strong> and
+            <strong
+              >Send chat messages to API server (for external listeners)</strong
+            >.
+          </li>
+          <li>
+            For this public-server test, Local Server must be off. The File menu
+            should say
+            <strong>Enable Local Server</strong>, and generated links must not
+            contain <code>localserver</code>.
+          </li>
+          <li>
+            Paste the Session ID—or a generated dock URL containing it—below,
+            then click Connect.
+          </li>
+          <li>
+            Click <strong>Arm app test</strong>, then immediately click
+            <strong>Trigger a fake test message</strong> inside the Desktop App.
+          </li>
+        </ol>
+        <div class="notice warning">
+          An open WebSocket only proves that this browser reached the server. It
+          does not prove that the Desktop App publisher joined the same session.
+          The independent routing self-test below separates those two cases.
+        </div>
+
+        <div class="form-row">
+          <label for="sessionInput">
+            Session ID or generated dock URL
+            <input
+              id="sessionInput"
+              type="text"
+              placeholder="Example: abc123 or https://socialstream.ninja/dock.html?session=abc123"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <span id="sessionHelp" class="help">
+              The Session ID is not saved. It is used only for WebSocket
+              connections to io.socialstream.ninja, and reports hide it unless
+              “Include full Session ID” is checked.
+            </span>
+          </label>
+          <button id="connectButton" type="button">Connect</button>
+        </div>
+
+        <div class="button-row">
+          <button id="disconnectButton" class="danger" type="button" disabled>
+            Disconnect
+          </button>
+          <button
+            id="armAppTestButton"
+            class="secondary"
+            type="button"
+            disabled
+          >
+            Arm app test (30 seconds)
+          </button>
+          <button
+            id="routingTestButton"
+            class="secondary"
+            type="button"
+            disabled
+          >
+            Run independent routing self-test
+          </button>
+        </div>
+
+        <div
+          id="connectionStatus"
+          class="status-banner idle"
+          role="status"
+          aria-live="polite"
+        >
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="connectionStatusText">Not connected</span>
+        </div>
+
+        <div class="metrics" aria-label="Connection metrics">
+          <div class="metric">
+            <span>WebSocket state</span>
+            <strong id="readyStateMetric">CLOSED</strong>
+          </div>
+          <div class="metric">
+            <span>Frames received</span>
+            <strong id="framesMetric">0</strong>
+          </div>
+          <div class="metric">
+            <span>Chat-like payloads</span>
+            <strong id="chatMetric">0</strong>
+          </div>
+          <div class="metric">
+            <span>Connection age</span>
+            <strong id="ageMetric">—</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="tests-title">
+        <h2 id="tests-title">Test results</h2>
+        <div class="test-grid">
+          <div id="appTestCard" class="test-card idle">
+            <span class="eyebrow">Desktop App fake-message test</span>
+            <strong id="appTestTitle">Not run</strong>
+            <p id="appTestDetail">
+              Arm this test, then click “Trigger a fake test message” in the
+              Desktop App.
+            </p>
+          </div>
+          <div id="routingTestCard" class="test-card idle">
+            <span class="eyebrow">Independent server routing test</span>
+            <strong id="routingTestTitle">Not run</strong>
+            <p id="routingTestDetail">
+              This opens a second socket and sends one labeled diagnostic
+              payload to channel 4.
+            </p>
+          </div>
+        </div>
+        <p class="help" style="margin-top: 12px">
+          The independent self-test may also appear as one clearly labeled
+          diagnostic message in an open dock. It does not send chat to YouTube,
+          Twitch, or Kick.
+        </p>
+      </section>
+
+      <section class="panel" aria-labelledby="frames-title">
+        <div class="split-heading">
+          <h2 id="frames-title">Received frames</h2>
+          <button id="clearFramesButton" class="secondary" type="button">
+            Clear displayed frames
+          </button>
+        </div>
+        <div id="frames" class="frames" aria-live="polite">
+          <div id="emptyFrames" class="empty-state">
+            No frames received yet. Connect, arm the app test, and trigger a
+            fake message.
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="report-title">
+        <div class="split-heading">
+          <h2 id="report-title">Copy/paste support report</h2>
+          <span
+            id="copyStatus"
+            class="help"
+            role="status"
+            aria-live="polite"
+          ></span>
+        </div>
+        <div class="check-row">
+          <label>
+            <input id="includeSessionCheckbox" type="checkbox" />
+            Include full Session ID (private sharing only)
+          </label>
+          <label>
+            <input id="includePayloadsCheckbox" type="checkbox" />
+            Include full payload samples (may contain usernames/chat)
+          </label>
+        </div>
+        <textarea
+          id="reportOutput"
+          readonly
+          aria-label="Diagnostic report"
+        ></textarea>
+        <div class="button-row">
+          <button id="copyReportButton" type="button">Copy report</button>
+          <button id="refreshReportButton" class="secondary" type="button">
+            Refresh report
+          </button>
+          <button id="downloadReportButton" class="secondary" type="button">
+            Download report
+          </button>
+        </div>
+
+        <details>
+          <summary>How to interpret the results</summary>
+          <table class="interpretation">
+            <thead>
+              <tr>
+                <th>Result</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>App test passes and routing test passes</td>
+                <td>The public channel-4 path is working end to end.</td>
+              </tr>
+              <tr>
+                <td>Routing passes, app test receives nothing</td>
+                <td>
+                  The listener and server route work. The Desktop App is not
+                  publishing to this session/channel. Fully quit and restart it
+                  after setting the Session ID, then retry.
+                </td>
+              </tr>
+              <tr>
+                <td>Socket opens, but routing test times out</td>
+                <td>
+                  The handshake succeeded, but a message could not cross channel
+                  4 for this session. Recheck the exact Session ID and send the
+                  report to support.
+                </td>
+              </tr>
+              <tr>
+                <td>Connection fails or closes with code 1006</td>
+                <td>
+                  A network, TLS, proxy, firewall, antivirus, or server
+                  connection problem is possible. Browsers usually hide the
+                  detailed reason, so include the report and browser console
+                  output.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </details>
+      </section>
+
+      <footer>
+        Version 1.0.0. This file has no third-party dependencies and does not
+        save the Session ID. It makes no network request until Connect or the
+        routing self-test is clicked.
+      </footer>
+    </main>
+
+    <script>
+      "use strict";
+
+      (function () {
+        const TOOL_NAME = "SSN Channel 4 WebSocket Diagnostic";
+        const TOOL_VERSION = "1.0.0";
+        const WEBSOCKET_ORIGIN = "wss://io.socialstream.ninja";
+        const CONNECTION_TIMEOUT_MS = 12000;
+        const APP_TEST_WINDOW_MS = 30000;
+        const ROUTING_TEST_TIMEOUT_MS = 12000;
+        const MAX_TIMELINE_EVENTS = 250;
+        const MAX_STORED_FRAMES = 50;
+        const MAX_DISPLAYED_FRAMES = 30;
+        const RESERVED_SESSION_IDS = new Set([
+          "undefined",
+          "null",
+          "false",
+          "true",
+          "nan",
+          "default",
+          "room",
+          "lobby",
+          "test",
+          "nothing",
+          "0",
+          "1",
+          "none",
+        ]);
+        const FAKE_TEST_NAMES = new Set([
+          "John Doe",
+          "Bob",
+          "Lucy",
+          "vdoninja",
+          "Steve",
+          "NewGuest",
+          "Sir Drinks-a-lot",
+          "User123",
+          "Nich Lass",
+        ]);
+
+        const elements = {
+          sessionInput: document.getElementById("sessionInput"),
+          sessionHelp: document.getElementById("sessionHelp"),
+          connectButton: document.getElementById("connectButton"),
+          disconnectButton: document.getElementById("disconnectButton"),
+          armAppTestButton: document.getElementById("armAppTestButton"),
+          routingTestButton: document.getElementById("routingTestButton"),
+          connectionStatus: document.getElementById("connectionStatus"),
+          connectionStatusText: document.getElementById("connectionStatusText"),
+          readyStateMetric: document.getElementById("readyStateMetric"),
+          framesMetric: document.getElementById("framesMetric"),
+          chatMetric: document.getElementById("chatMetric"),
+          ageMetric: document.getElementById("ageMetric"),
+          appTestCard: document.getElementById("appTestCard"),
+          appTestTitle: document.getElementById("appTestTitle"),
+          appTestDetail: document.getElementById("appTestDetail"),
+          routingTestCard: document.getElementById("routingTestCard"),
+          routingTestTitle: document.getElementById("routingTestTitle"),
+          routingTestDetail: document.getElementById("routingTestDetail"),
+          frames: document.getElementById("frames"),
+          emptyFrames: document.getElementById("emptyFrames"),
+          clearFramesButton: document.getElementById("clearFramesButton"),
+          includeSessionCheckbox: document.getElementById(
+            "includeSessionCheckbox",
+          ),
+          includePayloadsCheckbox: document.getElementById(
+            "includePayloadsCheckbox",
+          ),
+          reportOutput: document.getElementById("reportOutput"),
+          copyReportButton: document.getElementById("copyReportButton"),
+          refreshReportButton: document.getElementById("refreshReportButton"),
+          downloadReportButton: document.getElementById("downloadReportButton"),
+          copyStatus: document.getElementById("copyStatus"),
+        };
+
+        const state = {
+          socket: null,
+          senderSocket: null,
+          sessionId: "",
+          sessionSource: "",
+          sessionFingerprint: "unavailable",
+          targetUrl: "",
+          connectionAttemptedAt: 0,
+          openedAt: 0,
+          closedAt: 0,
+          lastFrameAt: 0,
+          connectionTimeout: null,
+          manualClose: false,
+          framesReceived: 0,
+          bytesReceived: 0,
+          jsonFrames: 0,
+          jsonParseFailures: 0,
+          chatPayloads: 0,
+          probableFakePayloads: 0,
+          errors: 0,
+          lastClose: null,
+          timeline: [],
+          frames: [],
+          appTest: {
+            status: "not-run",
+            startedAt: 0,
+            deadline: 0,
+            framesSeen: 0,
+            chatFramesSeen: 0,
+            probableFakeSeen: false,
+            probableFakeReason: "",
+            timer: null,
+          },
+          routingTest: {
+            status: "not-run",
+            token: "",
+            startedAt: 0,
+            sentAt: 0,
+            receivedAt: 0,
+            timer: null,
+          },
+        };
+
+        let reportRefreshTimer = null;
+        let ageTimer = null;
+
+        function isoTime(value) {
+          if (!value) return "—";
+          try {
+            return new Date(value).toISOString();
+          } catch (_) {
+            return "invalid-time";
+          }
+        }
+
+        function localTime(value) {
+          if (!value) return "—";
+          try {
+            return new Date(value).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+              fractionalSecondDigits: 3,
+            });
+          } catch (_) {
+            return new Date(value).toLocaleTimeString();
+          }
+        }
+
+        function elapsedText(milliseconds) {
+          if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
+          if (milliseconds < 1000) return `${milliseconds} ms`;
+          const seconds = Math.floor(milliseconds / 1000);
+          const minutes = Math.floor(seconds / 60);
+          const remainder = seconds % 60;
+          return minutes ? `${minutes}m ${remainder}s` : `${seconds}s`;
+        }
+
+        function readyStateName(socket) {
+          if (!socket) return "CLOSED";
+          return (
+            ["CONNECTING", "OPEN", "CLOSING", "CLOSED"][socket.readyState] ||
+            `UNKNOWN(${socket.readyState})`
+          );
+        }
+
+        function maskSession(sessionId) {
+          const value = String(sessionId || "");
+          if (!value) return "[not-set]";
+          if (value.length <= 4)
+            return `${value.slice(0, 1)}${"*".repeat(Math.max(1, value.length - 1))}`;
+          return `${value.slice(0, 2)}…${value.slice(-2)} (${value.length} chars)`;
+        }
+
+        function redactSession(text) {
+          let output = String(text == null ? "" : text);
+          if (state.sessionId) {
+            output = output
+              .split(state.sessionId)
+              .join(maskSession(state.sessionId));
+            try {
+              output = output
+                .split(encodeURIComponent(state.sessionId))
+                .join("[redacted-session]");
+            } catch (_) {}
+          }
+          return output;
+        }
+
+        async function fingerprintSession(sessionId) {
+          if (
+            !sessionId ||
+            !window.crypto ||
+            !window.crypto.subtle ||
+            typeof TextEncoder !== "function"
+          ) {
+            return "unavailable";
+          }
+          try {
+            const digest = await window.crypto.subtle.digest(
+              "SHA-256",
+              new TextEncoder().encode(sessionId),
+            );
+            return Array.from(new Uint8Array(digest))
+              .map((value) => value.toString(16).padStart(2, "0"))
+              .join("")
+              .slice(0, 16);
+          } catch (_) {
+            return "unavailable";
+          }
+        }
+
+        function extractSessionInput(input) {
+          let value = String(input || "").trim();
+          if (
+            (value.startsWith('"') && value.endsWith('"')) ||
+            (value.startsWith("'") && value.endsWith("'"))
+          ) {
+            value = value.slice(1, -1).trim();
+          }
+
+          if (!value) {
+            return {
+              ok: false,
+              error: "Enter the Session ID or paste a generated dock URL.",
+            };
+          }
+
+          let sessionId = value;
+          let source = "raw Session ID";
+          if (/^(?:https?|wss?):\/\//i.test(value)) {
+            let parsed;
+            try {
+              parsed = new URL(value);
+            } catch (_) {
+              return {
+                ok: false,
+                error:
+                  "That looks like a URL, but the browser could not parse it.",
+              };
+            }
+
+            const querySession = parsed.searchParams.get("session");
+            const pathParts = parsed.pathname.split("/").filter(Boolean);
+            if (querySession) {
+              sessionId = querySession;
+              source = "session parameter in pasted URL";
+            } else if (pathParts[0] === "join" && pathParts[1]) {
+              sessionId = pathParts[1];
+              source = "session path in pasted WebSocket URL";
+            } else {
+              return {
+                ok: false,
+                error:
+                  "The pasted URL does not contain a ?session= value or a /join/SESSION path.",
+              };
+            }
+          }
+
+          sessionId = String(sessionId || "").trim();
+          if (
+            /^\[?session(?:_id)?\]?$/i.test(sessionId) ||
+            /^your_session/i.test(sessionId)
+          ) {
+            return {
+              ok: false,
+              error:
+                "Replace the placeholder with the actual Session ID from the app.",
+            };
+          }
+          if (sessionId.length < 2 || sessionId.length > 80) {
+            return {
+              ok: false,
+              error: "Session IDs must contain between 2 and 80 characters.",
+            };
+          }
+          if (RESERVED_SESSION_IDS.has(sessionId.toLowerCase())) {
+            return {
+              ok: false,
+              error:
+                "That value is reserved and cannot be used as a Session ID.",
+            };
+          }
+          if (!/^[a-zA-Z0-9_]+$/.test(sessionId)) {
+            const normalized = sessionId.replace(/[^a-zA-Z0-9]/g, "_");
+            return {
+              ok: false,
+              error: `The app normalizes punctuation to underscores. Re-copy the generated link. Expected normalized form: ${normalized}`,
+            };
+          }
+
+          return { ok: true, sessionId, source };
+        }
+
+        function setSessionHelp(message, type) {
+          elements.sessionHelp.textContent = message;
+          elements.sessionHelp.className = `help${type ? ` ${type}` : ""}`;
+        }
+
+        function setConnectionStatus(kind, text) {
+          elements.connectionStatus.className = `status-banner ${kind}`;
+          elements.connectionStatusText.textContent = text;
+        }
+
+        function setTestCard(which, kind, title, detail) {
+          const card =
+            which === "app" ? elements.appTestCard : elements.routingTestCard;
+          const titleNode =
+            which === "app" ? elements.appTestTitle : elements.routingTestTitle;
+          const detailNode =
+            which === "app"
+              ? elements.appTestDetail
+              : elements.routingTestDetail;
+          card.className = `test-card ${kind}`;
+          titleNode.textContent = title;
+          detailNode.textContent = detail;
+        }
+
+        function addTimeline(kind, message, detail) {
+          const entry = {
+            time: Date.now(),
+            kind,
+            message: redactSession(message),
+          };
+          if (detail !== undefined && detail !== null && detail !== "") {
+            entry.detail = redactSession(
+              typeof detail === "string" ? detail : JSON.stringify(detail),
+            );
+          }
+          state.timeline.push(entry);
+          if (state.timeline.length > MAX_TIMELINE_EVENTS)
+            state.timeline.shift();
+          try {
+            const method = /(?:error|fail|timeout|offline)/i.test(kind)
+              ? "warn"
+              : "log";
+            console[method](
+              `[SSN Ch4 Diagnostic] [${kind}] ${entry.message}`,
+              entry.detail || "",
+            );
+          } catch (_) {}
+          scheduleReportRefresh();
+        }
+
+        function updateControls() {
+          const socketOpen =
+            !!state.socket && state.socket.readyState === WebSocket.OPEN;
+          const socketBusy =
+            !!state.socket &&
+            (state.socket.readyState === WebSocket.CONNECTING ||
+              state.socket.readyState === WebSocket.OPEN);
+          elements.connectButton.disabled = socketBusy;
+          elements.disconnectButton.disabled =
+            !state.socket || state.socket.readyState === WebSocket.CLOSED;
+          elements.armAppTestButton.disabled = !socketOpen;
+          elements.routingTestButton.disabled =
+            !socketOpen || state.routingTest.status === "running";
+          elements.readyStateMetric.textContent = readyStateName(state.socket);
+          elements.framesMetric.textContent = String(state.framesReceived);
+          elements.chatMetric.textContent = String(state.chatPayloads);
+        }
+
+        function updateAge() {
+          if (
+            state.openedAt &&
+            state.socket &&
+            state.socket.readyState === WebSocket.OPEN
+          ) {
+            elements.ageMetric.textContent = elapsedText(
+              Date.now() - state.openedAt,
+            );
+          } else if (state.openedAt && state.closedAt) {
+            elements.ageMetric.textContent = elapsedText(
+              state.closedAt - state.openedAt,
+            );
+          } else {
+            elements.ageMetric.textContent = "—";
+          }
+          updateControls();
+          updateAppTestCountdown();
+        }
+
+        function resetConnectionCounters() {
+          state.connectionAttemptedAt = 0;
+          state.openedAt = 0;
+          state.closedAt = 0;
+          state.lastFrameAt = 0;
+          state.framesReceived = 0;
+          state.bytesReceived = 0;
+          state.jsonFrames = 0;
+          state.jsonParseFailures = 0;
+          state.chatPayloads = 0;
+          state.probableFakePayloads = 0;
+          state.errors = 0;
+          state.lastClose = null;
+          state.frames = [];
+          clearDisplayedFrames();
+          resetAppTest();
+          resetRoutingTest();
+          updateControls();
+        }
+
+        function resetAppTest() {
+          if (state.appTest.timer) clearTimeout(state.appTest.timer);
+          state.appTest = {
+            status: "not-run",
+            startedAt: 0,
+            deadline: 0,
+            framesSeen: 0,
+            chatFramesSeen: 0,
+            probableFakeSeen: false,
+            probableFakeReason: "",
+            timer: null,
+          };
+          setTestCard(
+            "app",
+            "idle",
+            "Not run",
+            "Arm this test, then click “Trigger a fake test message” in the Desktop App.",
+          );
+        }
+
+        function resetRoutingTest() {
+          if (state.routingTest.timer) clearTimeout(state.routingTest.timer);
+          if (
+            state.senderSocket &&
+            state.senderSocket.readyState < WebSocket.CLOSING
+          ) {
+            try {
+              state.senderSocket.close(1000, "Diagnostic reset");
+            } catch (_) {}
+          }
+          state.senderSocket = null;
+          state.routingTest = {
+            status: "not-run",
+            token: "",
+            startedAt: 0,
+            sentAt: 0,
+            receivedAt: 0,
+            timer: null,
+          };
+          setTestCard(
+            "routing",
+            "idle",
+            "Not run",
+            "This opens a second socket and sends one labeled diagnostic payload to channel 4.",
+          );
+        }
+
+        function clearDisplayedFrames() {
+          elements.frames.replaceChildren();
+          const empty = document.createElement("div");
+          empty.id = "emptyFrames";
+          empty.className = "empty-state";
+          empty.textContent =
+            "No displayed frames. New channel-4 frames will appear here.";
+          elements.frames.appendChild(empty);
+          elements.emptyFrames = empty;
+        }
+
+        function unwrapPayload(payload) {
+          if (!payload || typeof payload !== "object") return payload;
+          if (payload.overlayNinja && typeof payload.overlayNinja === "object")
+            return payload.overlayNinja;
+          if (
+            payload.data &&
+            payload.data.overlayNinja &&
+            typeof payload.data.overlayNinja === "object"
+          ) {
+            return payload.data.overlayNinja;
+          }
+          return payload;
+        }
+
+        function isChatLike(payload) {
+          if (!payload || typeof payload !== "object") return false;
+          return (
+            "chatname" in payload ||
+            "chatmessage" in payload ||
+            "hasDonation" in payload ||
+            "membership" in payload
+          );
+        }
+
+        function probableFakeReason(payload) {
+          if (!payload || typeof payload !== "object") return "";
+          const name = String(payload.chatname || "");
+          const message = String(payload.chatmessage || "");
+          const normalizedMessage = message.toLowerCase();
+          if (normalizedMessage.includes("this is a test message"))
+            return "contains the built-in test-message text";
+          if (normalizedMessage.includes("is this a test question"))
+            return "contains the built-in test-question text";
+          if (
+            normalizedMessage.includes(
+              "the only way 2 do great work is to love what you do",
+            )
+          ) {
+            return "contains a built-in synthetic quote";
+          }
+          if (payload.event === "test") return "has event=test";
+          if (/^Steve_\d+$/.test(name))
+            return "uses a built-in randomized test name";
+          if (FAKE_TEST_NAMES.has(name))
+            return `uses the built-in test identity “${name}”`;
+          return "";
+        }
+
+        function routingTokenFrom(payload) {
+          if (!payload || typeof payload !== "object") return "";
+          if (payload.diagnostic && payload.diagnostic.token)
+            return String(payload.diagnostic.token);
+          if (payload.meta && payload.meta.ssnDiagnosticToken)
+            return String(payload.meta.ssnDiagnosticToken);
+          return "";
+        }
+
+        function summarizePayload(payload, raw, parsed) {
+          const unwrapped = unwrapPayload(payload);
+          const objectPayload =
+            unwrapped && typeof unwrapped === "object" ? unwrapped : null;
+          return {
+            parsed,
+            bytes:
+              typeof Blob === "function" ? new Blob([raw]).size : raw.length,
+            keys: objectPayload ? Object.keys(objectPayload).slice(0, 30) : [],
+            type:
+              objectPayload && objectPayload.type != null
+                ? String(objectPayload.type)
+                : "",
+            event:
+              objectPayload && objectPayload.event != null
+                ? String(objectPayload.event)
+                : "",
+            chatnamePresent: !!(objectPayload && "chatname" in objectPayload),
+            chatmessagePresent: !!(
+              objectPayload && "chatmessage" in objectPayload
+            ),
+            chatmessageLength:
+              objectPayload && objectPayload.chatmessage != null
+                ? String(objectPayload.chatmessage).length
+                : 0,
+            isChatLike: isChatLike(objectPayload),
+            probableFakeReason: probableFakeReason(objectPayload),
+            isRoutingSelfTest:
+              !!state.routingTest.token &&
+              routingTokenFrom(objectPayload) === state.routingTest.token,
+          };
+        }
+
+        function appendFrame(frame) {
+          if (elements.emptyFrames && elements.emptyFrames.isConnected) {
+            elements.emptyFrames.remove();
+          }
+
+          const article = document.createElement("article");
+          article.className = "frame";
+          const header = document.createElement("header");
+          const sequence = document.createElement("strong");
+          sequence.textContent = `#${frame.sequence}`;
+          header.appendChild(sequence);
+
+          const received = document.createElement("span");
+          received.textContent = localTime(frame.receivedAt);
+          header.appendChild(received);
+
+          const size = document.createElement("span");
+          size.textContent = `${frame.summary.bytes} bytes`;
+          header.appendChild(size);
+
+          if (frame.summary.isChatLike) {
+            const badge = document.createElement("span");
+            badge.className = "badge chat";
+            badge.textContent = "chat-like";
+            header.appendChild(badge);
+          }
+          if (frame.summary.probableFakeReason) {
+            const badge = document.createElement("span");
+            badge.className = "badge fake";
+            badge.textContent = "probable app test";
+            header.appendChild(badge);
+          }
+          if (frame.summary.isRoutingSelfTest) {
+            const badge = document.createElement("span");
+            badge.className = "badge self-test";
+            badge.textContent = "routing self-test";
+            header.appendChild(badge);
+          }
+          if (!frame.summary.parsed) {
+            const badge = document.createElement("span");
+            badge.className = "badge";
+            badge.textContent = "non-JSON";
+            header.appendChild(badge);
+          }
+
+          const pre = document.createElement("pre");
+          pre.textContent = frame.pretty;
+          article.append(header, pre);
+          elements.frames.prepend(article);
+
+          while (
+            elements.frames.querySelectorAll(".frame").length >
+            MAX_DISPLAYED_FRAMES
+          ) {
+            elements.frames.lastElementChild.remove();
+          }
+        }
+
+        function markRoutingTestPassed(frame) {
+          if (state.routingTest.status !== "running") return;
+          state.routingTest.status = "passed";
+          state.routingTest.receivedAt = frame.receivedAt;
+          if (state.routingTest.timer) clearTimeout(state.routingTest.timer);
+          state.routingTest.timer = null;
+          setTestCard(
+            "routing",
+            "pass",
+            "PASS — channel 4 routed the diagnostic payload",
+            `The listener received the second socket’s exact token after ${elapsedText(
+              state.routingTest.receivedAt - state.routingTest.sentAt,
+            )}. The public listener and server route work for this session.`,
+          );
+          addTimeline(
+            "routing-test-pass",
+            "Independent channel-4 routing self-test passed",
+            {
+              latencyMs:
+                state.routingTest.receivedAt - state.routingTest.sentAt,
+            },
+          );
+          if (
+            state.senderSocket &&
+            state.senderSocket.readyState === WebSocket.OPEN
+          ) {
+            try {
+              state.senderSocket.close(1000, "Routing test complete");
+            } catch (_) {}
+          }
+          updateControls();
+        }
+
+        function updateAppTestFromFrame(frame) {
+          if (state.appTest.status !== "armed") return;
+          if (
+            frame.receivedAt < state.appTest.startedAt ||
+            frame.receivedAt > state.appTest.deadline
+          )
+            return;
+          if (frame.summary.isRoutingSelfTest) return;
+
+          state.appTest.framesSeen += 1;
+          if (frame.summary.isChatLike) state.appTest.chatFramesSeen += 1;
+          if (frame.summary.probableFakeReason) {
+            state.appTest.probableFakeSeen = true;
+            state.appTest.probableFakeReason = frame.summary.probableFakeReason;
+            state.appTest.status = "passed";
+            if (state.appTest.timer) clearTimeout(state.appTest.timer);
+            state.appTest.timer = null;
+            setTestCard(
+              "app",
+              "pass",
+              "PASS — probable built-in fake message received",
+              `Received ${elapsedText(frame.receivedAt - state.appTest.startedAt)} after arming; ${frame.summary.probableFakeReason}.`,
+            );
+            addTimeline(
+              "app-test-pass",
+              "Probable built-in fake test message received",
+              {
+                delayMs: frame.receivedAt - state.appTest.startedAt,
+                reason: frame.summary.probableFakeReason,
+              },
+            );
+          } else {
+            setTestCard(
+              "app",
+              "running",
+              "Channel 4 traffic received; waiting for recognizable fake payload",
+              `${state.appTest.framesSeen} non-self-test frame(s) arrived during the window. The feed is active, but this frame did not match a known built-in fake signature.`,
+            );
+          }
+        }
+
+        async function normalizeFrameData(data) {
+          if (typeof data === "string") return data;
+          if (typeof Blob !== "undefined" && data instanceof Blob)
+            return data.text();
+          if (
+            typeof ArrayBuffer !== "undefined" &&
+            data instanceof ArrayBuffer
+          ) {
+            return new TextDecoder().decode(new Uint8Array(data));
+          }
+          return String(data);
+        }
+
+        async function handleSocketMessage(event) {
+          const receivedAt = Date.now();
+          let raw;
+          try {
+            raw = await normalizeFrameData(event.data);
+          } catch (error) {
+            raw = `[Unable to read frame: ${error && error.message ? error.message : String(error)}]`;
+          }
+
+          let payload = raw;
+          let parsed = false;
+          try {
+            payload = JSON.parse(raw);
+            parsed = true;
+            state.jsonFrames += 1;
+          } catch (_) {
+            state.jsonParseFailures += 1;
+          }
+
+          const summary = summarizePayload(payload, raw, parsed);
+          state.framesReceived += 1;
+          state.bytesReceived += summary.bytes;
+          state.lastFrameAt = receivedAt;
+          if (summary.isChatLike) state.chatPayloads += 1;
+          if (summary.probableFakeReason) state.probableFakePayloads += 1;
+
+          const frame = {
+            sequence: state.framesReceived,
+            receivedAt,
+            raw,
+            payload,
+            pretty: parsed ? JSON.stringify(payload, null, 2) : raw,
+            summary,
+          };
+          state.frames.push(frame);
+          if (state.frames.length > MAX_STORED_FRAMES) state.frames.shift();
+          appendFrame(frame);
+          addTimeline("frame", `Received frame #${frame.sequence}`, summary);
+
+          if (summary.isRoutingSelfTest) markRoutingTestPassed(frame);
+          updateAppTestFromFrame(frame);
+          updateControls();
+        }
+
+        function clearConnectionTimeout() {
+          if (state.connectionTimeout) clearTimeout(state.connectionTimeout);
+          state.connectionTimeout = null;
+        }
+
+        function closeCurrentSocket(reason) {
+          clearConnectionTimeout();
+          if (state.socket && state.socket.readyState < WebSocket.CLOSING) {
+            state.manualClose = true;
+            try {
+              state.socket.close(1000, reason || "User disconnected");
+            } catch (error) {
+              addTimeline(
+                "close-error",
+                "Could not close listener cleanly",
+                error && error.message,
+              );
+            }
+          }
+        }
+
+        async function connect() {
+          const parsed = extractSessionInput(elements.sessionInput.value);
+          if (!parsed.ok) {
+            setSessionHelp(parsed.error, "error");
+            elements.sessionInput.focus();
+            return;
+          }
+
+          closeCurrentSocket("Starting a new diagnostic connection");
+          resetConnectionCounters();
+          state.sessionId = parsed.sessionId;
+          state.sessionSource = parsed.source;
+          state.sessionFingerprint = "calculating";
+          state.targetUrl = `${WEBSOCKET_ORIGIN}/join/${state.sessionId}/4`;
+          state.manualClose = false;
+          state.connectionAttemptedAt = Date.now();
+          state.sessionFingerprint = await fingerprintSession(state.sessionId);
+          setSessionHelp(
+            `Valid ${parsed.source}; using ${maskSession(state.sessionId)}. Report fingerprint: ${state.sessionFingerprint}.`,
+            "success",
+          );
+          setConnectionStatus(
+            "connecting",
+            "Connecting to the public channel-4 listener…",
+          );
+          addTimeline("connect-attempt", "Opening public channel-4 listener", {
+            target: `${WEBSOCKET_ORIGIN}/join/${maskSession(state.sessionId)}/4`,
+            online: navigator.onLine,
+          });
+
+          let socket;
+          try {
+            socket = new WebSocket(state.targetUrl);
+          } catch (error) {
+            state.errors += 1;
+            setConnectionStatus(
+              "failed",
+              `Could not create WebSocket: ${error.message || error}`,
+            );
+            addTimeline(
+              "connect-constructor-error",
+              "WebSocket constructor failed",
+              error && error.message,
+            );
+            updateControls();
+            return;
+          }
+
+          state.socket = socket;
+          socket.binaryType = "arraybuffer";
+          updateControls();
+          state.connectionTimeout = setTimeout(() => {
+            if (
+              state.socket !== socket ||
+              socket.readyState !== WebSocket.CONNECTING
+            )
+              return;
+            state.errors += 1;
+            setConnectionStatus(
+              "failed",
+              `Connection did not open within ${CONNECTION_TIMEOUT_MS / 1000} seconds.`,
+            );
+            addTimeline("connect-timeout", "Listener connection timed out", {
+              timeoutMs: CONNECTION_TIMEOUT_MS,
+            });
+            try {
+              socket.close();
+            } catch (_) {}
+            updateControls();
+          }, CONNECTION_TIMEOUT_MS);
+
+          socket.addEventListener("open", () => {
+            if (state.socket !== socket) return;
+            clearConnectionTimeout();
+            state.openedAt = Date.now();
+            state.closedAt = 0;
+            setConnectionStatus(
+              "open",
+              "Connected and listening on channel 4. Now arm the app test and trigger a fake message.",
+            );
+            addTimeline("open", "Listener WebSocket opened", {
+              handshakeMs: state.openedAt - state.connectionAttemptedAt,
+              protocol: socket.protocol || "none",
+              extensions: socket.extensions || "none",
+            });
+            updateControls();
+          });
+
+          socket.addEventListener("message", (event) => {
+            if (state.socket !== socket) return;
+            handleSocketMessage(event).catch((error) => {
+              state.errors += 1;
+              addTimeline(
+                "frame-handler-error",
+                "Unexpected error while processing a received frame",
+                error && error.message,
+              );
+            });
+          });
+
+          socket.addEventListener("error", () => {
+            if (state.socket !== socket) return;
+            state.errors += 1;
+            setConnectionStatus(
+              "failed",
+              "WebSocket error. The browser hides most TLS/network details; check the close code and report.",
+            );
+            addTimeline(
+              "socket-error",
+              "Listener emitted a generic WebSocket error",
+              "Browser WebSocket APIs do not expose the underlying TLS, proxy, DNS, or HTTP error.",
+            );
+            updateControls();
+          });
+
+          socket.addEventListener("close", (event) => {
+            if (state.socket !== socket) return;
+            clearConnectionTimeout();
+            state.closedAt = Date.now();
+            state.lastClose = {
+              code: event.code,
+              reason: event.reason || "",
+              wasClean: event.wasClean,
+            };
+            const expected = state.manualClose || event.code === 1000;
+            setConnectionStatus(
+              expected ? "closed" : "failed",
+              `Disconnected — code ${event.code}${event.reason ? `: ${event.reason}` : ""}${
+                event.wasClean ? " (clean)" : " (unclean)"
+              }`,
+            );
+            addTimeline("close", "Listener WebSocket closed", state.lastClose);
+            if (state.appTest.status === "armed")
+              finishAppTest("connection-closed");
+            if (state.routingTest.status === "running")
+              failRoutingTest(
+                "The listener closed before the test payload returned.",
+              );
+            updateControls();
+          });
+        }
+
+        function armAppTest() {
+          if (!state.socket || state.socket.readyState !== WebSocket.OPEN)
+            return;
+          if (state.appTest.timer) clearTimeout(state.appTest.timer);
+          state.appTest.status = "armed";
+          state.appTest.startedAt = Date.now();
+          state.appTest.deadline = state.appTest.startedAt + APP_TEST_WINDOW_MS;
+          state.appTest.framesSeen = 0;
+          state.appTest.chatFramesSeen = 0;
+          state.appTest.probableFakeSeen = false;
+          state.appTest.probableFakeReason = "";
+          state.appTest.timer = setTimeout(
+            () => finishAppTest("timeout"),
+            APP_TEST_WINDOW_MS,
+          );
+          setTestCard(
+            "app",
+            "running",
+            "ARMED — trigger the fake message now",
+            "Click “Trigger a fake test message” in the Desktop App. Waiting up to 30 seconds.",
+          );
+          addTimeline("app-test-armed", "Desktop App fake-message test armed", {
+            windowMs: APP_TEST_WINDOW_MS,
+          });
+        }
+
+        function updateAppTestCountdown() {
+          if (state.appTest.status !== "armed") return;
+          const remaining = Math.max(0, state.appTest.deadline - Date.now());
+          if (!state.appTest.framesSeen) {
+            elements.appTestDetail.textContent = `Click “Trigger a fake test message” in the Desktop App. ${Math.ceil(
+              remaining / 1000,
+            )} second(s) remaining.`;
+          }
+        }
+
+        function finishAppTest(reason) {
+          if (state.appTest.status !== "armed") return;
+          if (state.appTest.timer) clearTimeout(state.appTest.timer);
+          state.appTest.timer = null;
+          if (state.appTest.probableFakeSeen) {
+            state.appTest.status = "passed";
+            return;
+          }
+          if (state.appTest.framesSeen > 0) {
+            state.appTest.status = "traffic-only";
+            setTestCard(
+              "app",
+              "pass",
+              "PASS — channel 4 traffic arrived",
+              `${state.appTest.framesSeen} frame(s), including ${state.appTest.chatFramesSeen} chat-like payload(s), arrived during the test window. None matched a known built-in fake signature; inspect the frames above.`,
+            );
+            addTimeline(
+              "app-test-traffic",
+              "Channel-4 traffic arrived during the app test window",
+              {
+                frames: state.appTest.framesSeen,
+                chatFrames: state.appTest.chatFramesSeen,
+              },
+            );
+            return;
+          }
+
+          state.appTest.status = "failed";
+          const detail =
+            reason === "connection-closed"
+              ? "The listener disconnected before any app message arrived."
+              : "No non-self-test channel-4 frame arrived during the 30-second window.";
+          setTestCard("app", "fail", "FAIL — no app message received", detail);
+          addTimeline("app-test-fail", "Desktop App fake-message test failed", {
+            reason,
+            frames: state.appTest.framesSeen,
+          });
+        }
+
+        function createRoutingToken() {
+          const random = new Uint32Array(2);
+          if (
+            window.crypto &&
+            typeof window.crypto.getRandomValues === "function"
+          ) {
+            window.crypto.getRandomValues(random);
+          } else {
+            random[0] = Math.floor(Math.random() * 0xffffffff);
+            random[1] = Math.floor(Math.random() * 0xffffffff);
+          }
+          return `ssn-ch4-${Date.now().toString(36)}-${Array.from(random)
+            .map((value) => value.toString(36))
+            .join("")}`;
+        }
+
+        function failRoutingTest(detail) {
+          if (state.routingTest.status !== "running") return;
+          state.routingTest.status = "failed";
+          if (state.routingTest.timer) clearTimeout(state.routingTest.timer);
+          state.routingTest.timer = null;
+          setTestCard(
+            "routing",
+            "fail",
+            "FAIL — routing self-test did not return",
+            detail,
+          );
+          addTimeline(
+            "routing-test-fail",
+            "Independent channel-4 routing self-test failed",
+            detail,
+          );
+          if (
+            state.senderSocket &&
+            state.senderSocket.readyState < WebSocket.CLOSING
+          ) {
+            try {
+              state.senderSocket.close(1000, "Routing test timeout");
+            } catch (_) {}
+          }
+          updateControls();
+        }
+
+        function runRoutingTest() {
+          if (
+            !state.socket ||
+            state.socket.readyState !== WebSocket.OPEN ||
+            !state.sessionId
+          )
+            return;
+          if (state.routingTest.status === "running") return;
+          resetRoutingTest();
+          state.routingTest.status = "running";
+          state.routingTest.token = createRoutingToken();
+          state.routingTest.startedAt = Date.now();
+          setTestCard(
+            "routing",
+            "running",
+            "RUNNING — sending one diagnostic payload",
+            "A separate sender is joining this session with output channel 4.",
+          );
+          addTimeline(
+            "routing-test-start",
+            "Starting independent channel-4 routing self-test",
+          );
+          updateControls();
+
+          const senderUrl = `${WEBSOCKET_ORIGIN}/join/${state.sessionId}/1/4`;
+          let sender;
+          try {
+            sender = new WebSocket(senderUrl);
+            state.senderSocket = sender;
+          } catch (error) {
+            failRoutingTest(
+              `Could not create the sender WebSocket: ${error.message || error}`,
+            );
+            return;
+          }
+
+          state.routingTest.timer = setTimeout(() => {
+            failRoutingTest(
+              `The exact self-test token was not received within ${ROUTING_TEST_TIMEOUT_MS / 1000} seconds.`,
+            );
+          }, ROUTING_TEST_TIMEOUT_MS);
+
+          sender.addEventListener("open", () => {
+            if (
+              state.senderSocket !== sender ||
+              state.routingTest.status !== "running"
+            )
+              return;
+            const now = Date.now();
+            const payload = {
+              type: "ssn-diagnostic",
+              event: "channel4_diagnostic",
+              chatname: "SSN Channel 4 Diagnostic",
+              chatmessage:
+                "Independent channel-4 routing self-test. This message was not sent to a social platform.",
+              diagnostic: {
+                tool: TOOL_NAME,
+                version: TOOL_VERSION,
+                token: state.routingTest.token,
+                createdAt: new Date(now).toISOString(),
+              },
+            };
+            try {
+              sender.send(JSON.stringify(payload));
+              state.routingTest.sentAt = Date.now();
+              addTimeline(
+                "routing-test-sent",
+                "Independent routing payload sent",
+                {
+                  senderHandshakeMs:
+                    state.routingTest.sentAt - state.routingTest.startedAt,
+                },
+              );
+            } catch (error) {
+              failRoutingTest(
+                `Sender opened but send() failed: ${error.message || error}`,
+              );
+            }
+          });
+
+          sender.addEventListener("error", () => {
+            if (
+              state.senderSocket !== sender ||
+              state.routingTest.status !== "running"
+            )
+              return;
+            state.errors += 1;
+            addTimeline(
+              "routing-sender-error",
+              "Routing-test sender emitted a generic WebSocket error",
+            );
+          });
+
+          sender.addEventListener("close", (event) => {
+            if (state.senderSocket !== sender) return;
+            addTimeline("routing-sender-close", "Routing-test sender closed", {
+              code: event.code,
+              reason: event.reason || "",
+              wasClean: event.wasClean,
+            });
+            state.senderSocket = null;
+            if (
+              state.routingTest.status === "running" &&
+              !state.routingTest.sentAt
+            ) {
+              failRoutingTest(
+                `The sender closed before sending (code ${event.code}).`,
+              );
+            }
+          });
+        }
+
+        function compactFrameForReport(frame) {
+          return {
+            sequence: frame.sequence,
+            receivedAt: isoTime(frame.receivedAt),
+            summary: frame.summary,
+          };
+        }
+
+        function buildReport() {
+          const includeSession = elements.includeSessionCheckbox.checked;
+          const includePayloads = elements.includePayloadsCheckbox.checked;
+          const sessionForReport = includeSession
+            ? state.sessionId || "[not-set]"
+            : maskSession(state.sessionId);
+          const targetForReport = state.sessionId
+            ? `${WEBSOCKET_ORIGIN}/join/${sessionForReport}/4`
+            : `${WEBSOCKET_ORIGIN}/join/[session]/4`;
+          const now = Date.now();
+          const lines = [
+            "=== Social Stream Ninja Channel 4 Diagnostic Report ===",
+            `Tool: ${TOOL_NAME} v${TOOL_VERSION}`,
+            `Report time (UTC): ${isoTime(now)}`,
+            `Report time (local): ${new Date(now).toString()}`,
+            "",
+            "--- Environment ---",
+            `User agent: ${navigator.userAgent}`,
+            `Language: ${navigator.language || "unknown"}`,
+            `Platform: ${navigator.platform || "unknown"}`,
+            `Page protocol: ${location.protocol}`,
+            `Browser online flag: ${navigator.onLine}`,
+            `Page visibility: ${document.visibilityState}`,
+            "",
+            "--- Session / target ---",
+            `Session: ${sessionForReport}`,
+            `Session length: ${state.sessionId ? state.sessionId.length : 0}`,
+            `Session source: ${state.sessionSource || "not set"}`,
+            `Session SHA-256 fingerprint (first 16 hex): ${state.sessionFingerprint}`,
+            `Listener URL: ${targetForReport}`,
+            "",
+            "--- Listener state ---",
+            `Ready state: ${readyStateName(state.socket)}`,
+            `Connection attempted: ${isoTime(state.connectionAttemptedAt)}`,
+            `Opened: ${isoTime(state.openedAt)}`,
+            `Closed: ${isoTime(state.closedAt)}`,
+            `Connection age/duration: ${
+              state.openedAt
+                ? elapsedText((state.closedAt || now) - state.openedAt)
+                : "not opened"
+            }`,
+            `Last frame: ${isoTime(state.lastFrameAt)}`,
+            `Frames received: ${state.framesReceived}`,
+            `Approximate bytes received: ${state.bytesReceived}`,
+            `JSON frames: ${state.jsonFrames}`,
+            `JSON parse failures: ${state.jsonParseFailures}`,
+            `Chat-like payloads: ${state.chatPayloads}`,
+            `Probable built-in fake payloads: ${state.probableFakePayloads}`,
+            `WebSocket error events: ${state.errors}`,
+            `Last close: ${state.lastClose ? JSON.stringify(state.lastClose) : "none"}`,
+            "",
+            "--- Test results ---",
+            `Desktop App test status: ${state.appTest.status}`,
+            `Desktop App test started: ${isoTime(state.appTest.startedAt)}`,
+            `Frames during app test: ${state.appTest.framesSeen}`,
+            `Chat-like frames during app test: ${state.appTest.chatFramesSeen}`,
+            `Probable built-in fake seen: ${state.appTest.probableFakeSeen}`,
+            `Probable fake reason: ${state.appTest.probableFakeReason || "none"}`,
+            `Independent routing test status: ${state.routingTest.status}`,
+            `Routing test started: ${isoTime(state.routingTest.startedAt)}`,
+            `Routing payload sent: ${isoTime(state.routingTest.sentAt)}`,
+            `Routing payload received: ${isoTime(state.routingTest.receivedAt)}`,
+            `Routing round-trip after send: ${
+              state.routingTest.sentAt && state.routingTest.receivedAt
+                ? elapsedText(
+                    state.routingTest.receivedAt - state.routingTest.sentAt,
+                  )
+                : "not measured"
+            }`,
+            "",
+            "--- Recent frame summaries ---",
+          ];
+
+          const recentFrames = state.frames.slice(-10);
+          if (!recentFrames.length) {
+            lines.push("No frames stored.");
+          } else {
+            recentFrames.forEach((frame) => {
+              lines.push(JSON.stringify(compactFrameForReport(frame)));
+            });
+          }
+
+          if (includePayloads) {
+            lines.push(
+              "",
+              "--- Full recent payload samples (user opted in) ---",
+            );
+            if (!recentFrames.length) {
+              lines.push("No payloads stored.");
+            } else {
+              recentFrames.forEach((frame) => {
+                lines.push(
+                  `Frame #${frame.sequence} at ${isoTime(frame.receivedAt)}`,
+                );
+                lines.push(
+                  includeSession ? frame.pretty : redactSession(frame.pretty),
+                );
+              });
+            }
+          }
+
+          lines.push("", "--- Event timeline ---");
+          if (!state.timeline.length) {
+            lines.push("No events recorded.");
+          } else {
+            state.timeline.forEach((entry) => {
+              lines.push(
+                `${isoTime(entry.time)} [${entry.kind}] ${entry.message}${entry.detail ? ` | ${entry.detail}` : ""}`,
+              );
+            });
+          }
+
+          lines.push(
+            "",
+            "Privacy note: The full Session ID and payload bodies are excluded unless their checkboxes were enabled.",
+          );
+          return lines.join("\n");
+        }
+
+        function refreshReport() {
+          elements.reportOutput.value = buildReport();
+        }
+
+        function scheduleReportRefresh() {
+          if (reportRefreshTimer) return;
+          reportRefreshTimer = setTimeout(() => {
+            reportRefreshTimer = null;
+            refreshReport();
+          }, 150);
+        }
+
+        async function copyReport() {
+          refreshReport();
+          const report = elements.reportOutput.value;
+          let copied = false;
+          try {
+            if (
+              navigator.clipboard &&
+              typeof navigator.clipboard.writeText === "function"
+            ) {
+              await navigator.clipboard.writeText(report);
+              copied = true;
+            }
+          } catch (_) {}
+
+          if (!copied) {
+            try {
+              elements.reportOutput.focus();
+              elements.reportOutput.select();
+              copied = document.execCommand("copy");
+            } catch (_) {}
+          }
+
+          elements.copyStatus.textContent = copied
+            ? "Report copied."
+            : "Automatic copy was blocked. The report is selected; press Ctrl+C.";
+          setTimeout(() => {
+            elements.copyStatus.textContent = "";
+          }, 5000);
+        }
+
+        function downloadReport() {
+          refreshReport();
+          const blob = new Blob([elements.reportOutput.value], {
+            type: "text/plain;charset=utf-8",
+          });
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = `ssn-channel4-diagnostic-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
+
+        elements.connectButton.addEventListener("click", connect);
+        elements.disconnectButton.addEventListener("click", () =>
+          closeCurrentSocket("User disconnected"),
+        );
+        elements.armAppTestButton.addEventListener("click", armAppTest);
+        elements.routingTestButton.addEventListener("click", runRoutingTest);
+        elements.clearFramesButton.addEventListener(
+          "click",
+          clearDisplayedFrames,
+        );
+        elements.copyReportButton.addEventListener("click", copyReport);
+        elements.refreshReportButton.addEventListener("click", refreshReport);
+        elements.downloadReportButton.addEventListener("click", downloadReport);
+        elements.includeSessionCheckbox.addEventListener(
+          "change",
+          refreshReport,
+        );
+        elements.includePayloadsCheckbox.addEventListener(
+          "change",
+          refreshReport,
+        );
+        elements.sessionInput.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") connect();
+        });
+        elements.sessionInput.addEventListener("input", () => {
+          setSessionHelp(
+            "The Session ID is not saved. It is used only for WebSocket connections to io.socialstream.ninja, and reports hide it unless “Include full Session ID” is checked.",
+            "",
+          );
+        });
+
+        window.addEventListener("online", () => {
+          addTimeline(
+            "browser-online",
+            "Browser reports that the network is online",
+          );
+        });
+        window.addEventListener("offline", () => {
+          addTimeline(
+            "browser-offline",
+            "Browser reports that the network is offline",
+          );
+        });
+        window.addEventListener("error", (event) => {
+          state.errors += 1;
+          addTimeline("page-error", "Unhandled page error", {
+            message: event.message || "unknown error",
+            filename: event.filename || "unknown file",
+            line: event.lineno || 0,
+            column: event.colno || 0,
+          });
+        });
+        window.addEventListener("unhandledrejection", (event) => {
+          state.errors += 1;
+          const reason = event.reason;
+          addTimeline(
+            "unhandled-rejection",
+            "Unhandled promise rejection",
+            reason && reason.stack
+              ? reason.stack
+              : reason && reason.message
+                ? reason.message
+                : String(reason),
+          );
+        });
+        document.addEventListener("visibilitychange", () => {
+          addTimeline(
+            "visibility",
+            `Page visibility changed to ${document.visibilityState}`,
+          );
+        });
+        window.addEventListener("beforeunload", () => {
+          closeCurrentSocket("Diagnostic page closing");
+          if (
+            state.senderSocket &&
+            state.senderSocket.readyState < WebSocket.CLOSING
+          ) {
+            try {
+              state.senderSocket.close(1000, "Diagnostic page closing");
+            } catch (_) {}
+          }
+        });
+
+        if (typeof WebSocket !== "function") {
+          elements.connectButton.disabled = true;
+          setConnectionStatus(
+            "failed",
+            "This browser does not provide the WebSocket API.",
+          );
+          addTimeline("feature-error", "Browser WebSocket API is unavailable");
+        }
+
+        ageTimer = setInterval(updateAge, 1000);
+        addTimeline("tool-start", `${TOOL_NAME} v${TOOL_VERSION} loaded`, {
+          pageProtocol: location.protocol,
+          online: navigator.onLine,
+        });
+        updateControls();
+        refreshReport();
+      })();
+    </script>
+  </body>
+</html>

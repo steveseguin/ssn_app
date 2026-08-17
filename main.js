@@ -7280,7 +7280,7 @@ async function configureLocalWebSocketLanAccess(enabled) {
 
 // Track sessions we've already configured to avoid stacking listeners
 const cspConfiguredSessions = new WeakSet();
-const clientHintsConfiguredSessions = new WeakSet();
+const clientHintsConfiguredSessions = new WeakMap();
 const cookiesListenerConfiguredSessions = new WeakSet();
 const activatedWindowSessionHooks = new WeakMap();
 
@@ -7293,8 +7293,7 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
 
     const hooks = {
         passkeyBlockWebContentsIds: new Set(),
-        headerOverrideByWebContentsId: new Map(),
-        stripElectronGlobally: false
+        headerOverrideByWebContentsId: new Map()
     };
 
     try {
@@ -7320,7 +7319,7 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
     try {
         ses.webRequest.onBeforeSendHeaders({ urls: ['*://*/*', 'ws://*/*', 'wss://*/*'] }, (details, callback) => {
             const requestHeaders = details && details.requestHeaders ? details.requestHeaders : {};
-            let shouldStripElectron = hooks.stripElectronGlobally;
+            let shouldStripElectron = false;
             try {
                 const webContentsId = typeof details?.webContentsId === 'number' ? details.webContentsId : null;
                 if (webContentsId !== null) {
@@ -7351,11 +7350,49 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
     return hooks;
 }
 
-function enableSessionElectronHeaderStripping(ses) {
-    const hooks = getOrCreateActivatedWindowSessionHooks(ses);
-    if (hooks) {
-        hooks.stripElectronGlobally = true;
+function registerClientHintFiltering(ses, webContentsId, shouldFilter = () => true) {
+    if (!ses || typeof webContentsId !== 'number') {
+        return () => { };
     }
+
+    let hooks = clientHintsConfiguredSessions.get(ses);
+    if (!hooks) {
+        hooks = {
+            filtersByWebContentsId: new Map()
+        };
+
+        try {
+            ses.webRequest.onHeadersReceived({ urls: ['*://*/*'] }, (details, callback) => {
+                const responseHeaders = details && details.responseHeaders
+                    ? details.responseHeaders
+                    : {};
+
+                const filter = hooks.filtersByWebContentsId.get(details?.webContentsId);
+                if (!filter || !filter(details)) {
+                    callback({ responseHeaders });
+                    return;
+                }
+
+                const filteredHeaders = { ...responseHeaders };
+                delete filteredHeaders['Accept-CH'];
+                delete filteredHeaders['accept-ch'];
+                callback({ responseHeaders: filteredHeaders });
+            });
+            clientHintsConfiguredSessions.set(ses, hooks);
+        } catch (error) {
+            console.warn('Failed to configure client hint filtering for sign-in windows:', error);
+            return () => { };
+        }
+    }
+
+    hooks.filtersByWebContentsId.set(webContentsId, shouldFilter);
+
+    let released = false;
+    return () => {
+        if (released) return;
+        released = true;
+        hooks.filtersByWebContentsId.delete(webContentsId);
+    };
 }
 
 function deriveOriginFromReferer(referer) {
@@ -12289,7 +12326,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     preloadScript = 'preload.js';
                 }
             } else {
-                // Default behavior: 
+                // Default behavior:
                 // - Trusted domains get full preload
                 // - Kasada domains get enhanced preload
                 // - Others get mock preload
@@ -12302,18 +12339,25 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 }
             }
 
-            const hasSignInPreload = Boolean(preloadScript);
-            console.log(`Using preload: ${preloadScript || 'none'} for domain: ${domain}`);
+            const isKickAdaptiveSignIn = platform === 'kick' && preloadScript === 'preload-mock.js';
+            const effectivePreloadScript = isKickAdaptiveSignIn ? 'preload-kick.js' : preloadScript;
+            const usesKasadaPreferences = effectivePreloadScript === 'preload-kasada.js' || isKickAdaptiveSignIn;
+
+            const hasSignInPreload = Boolean(effectivePreloadScript);
+            const preloadDescription = isKickAdaptiveSignIn
+                ? `${effectivePreloadScript} (Kasada on Kick, Mock on Google)`
+                : (preloadScript || 'none');
+            console.log(`Using preload: ${preloadDescription} for domain: ${domain}`);
             if (!hasSignInPreload) {
                 log('Sign-in preload disabled via config; using clean sign-in window (no CSP or DOM injection overrides).');
             }
 
             // Build webPreferences object - MATCH WORKING CODE EXACTLY
             const webPreferences = {
-                preload: preloadScript ? path.join(__dirname, preloadScript) : undefined,
+                preload: effectivePreloadScript ? path.join(__dirname, effectivePreloadScript) : undefined,
 
                 // Critical Chrome-matching settings from working code
-                contextIsolation: (preloadScript === 'preload-kasada.js') ? false : true,
+                contextIsolation: usesKasadaPreferences ? false : true,
                 nodeIntegration: false,
                 // DON'T set nodeIntegrationInSubFrames - working code doesn't have it
                 sandbox: false, // FALSE to avoid automation detection
@@ -12339,7 +12383,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             webPreferences.session = persistentSession;
 
             // Pass Chrome-specific arguments for kasada preload - match working code exactly
-            if (preloadScript === 'preload-kasada.js') {
+            if (usesKasadaPreferences) {
                 webPreferences.additionalArguments = [
                     '--enable-blink-features=CSSColorSchemeUARendering',
                     '--enable-features=WebUIDarkMode',
@@ -12359,7 +12403,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             };
 
             // Only add extra options if NOT using kasada
-            if (preloadScript !== 'preload-kasada.js') {
+            if (!usesKasadaPreferences) {
                 windowOptions = {
                     ...windowOptions,
                     minWidth: 400,
@@ -12410,7 +12454,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Enhanced protection when Kasada preload is used
             // This applies to any domain where the user has specified kasada preload in config
-            if (preloadScript === 'preload-kasada.js') {
+            if (usesKasadaPreferences) {
                 log(`Using minimal config for kasada (matching working code)...`);
                 // Additional session configuration for Kasada
                 persistentSession.setPermissionRequestHandler((webContents, permission, callback) => {
@@ -12426,7 +12470,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Set Content-Security-Policy once per session to avoid listener accumulation
             // (skip when preload is disabled, for Kasada preload, or when disabled via config)
-            if (enforceSignInCSP && hasSignInPreload && preloadScript !== 'preload-kasada.js') {
+            if (enforceSignInCSP && hasSignInPreload && !usesKasadaPreferences) {
                 const ses = view.webContents.session;
                 if (ses && !cspConfiguredSessions.has(ses)) {
                     ses.webRequest.onHeadersReceived((details, callback) => {
@@ -12463,41 +12507,17 @@ async function createWindow(args, reuse = false, mainApp = false) {
             browserViews[view.tabID] = view;
             if (sourceObservationService) sourceObservationService.trackView(view);
             const releaseSignInWindowSessionHooks = registerActivatedWindowSessionHooks(view, args);
+            let releaseSignInClientHintFiltering = () => { };
 
 
-            // Skip header manipulation for kasada preload - let it work like the working code
+            // Strip Accept-CH for the adaptive window just like the known-working Mock setup.
             if (args.config && args.config.userAgent && args.config.mockUserAgentData && preloadScript !== 'preload-kasada.js') {
                 const session = view.webContents.session;
-                // Guard: avoid stacking client hints handlers on the same session.
-                // Use shared session hooks so this does not clobber activate-window listeners.
-                if (session && !clientHintsConfiguredSessions.has(session)) {
-
-                    // Don't set user agent here - let it be set once at session creation
-                    // session.setUserAgent(args.config.userAgent);
-
-                    if (!enforceSignInCSP && !cspConfiguredSessions.has(session)) {
-                        // If CSP override is disabled, we still need to remove Accept-CH headers.
-                        session.webRequest.onHeadersReceived({
-                            urls: ['*://*/*']
-                        },
-                            (details, callback) => {
-                                const responseHeaders = details && details.responseHeaders
-                                    ? details.responseHeaders
-                                    : {};
-
-                                delete responseHeaders['Accept-CH'];
-                                delete responseHeaders['accept-ch'];
-
-                                callback({
-                                    responseHeaders
-                                });
-                            }
-                        );
-                    }
-
-                    // Strip Electron header through shared onBeforeSendHeaders hook.
-                    enableSessionElectronHeaderStripping(session);
-                    clientHintsConfiguredSessions.add(session);
+                if (session && !enforceSignInCSP && !cspConfiguredSessions.has(session)) {
+                    releaseSignInClientHintFiltering = registerClientHintFiltering(
+                        session,
+                        view.webContents.id
+                    );
                 }
             }
 
@@ -12585,8 +12605,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     }
                 });
 
-
-
                 // Inject chrome.runtime mock for sign-in windows that need it
                 view.webContents.on('dom-ready', () => {
                     log('Sign-in window DOM ready, checking if chrome.runtime mock needed');
@@ -12597,9 +12615,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         return;
                     }
 
-                    // Skip ALL injection for kasada preload - let it work like the working code
-                    if (preloadScript === 'preload-kasada.js') {
-                        log('Skipping all DOM injections for kasada preload');
+                    if (usesKasadaPreferences) {
+                        log('Skipping all DOM injections for Kasada-compatible sign-in window');
                         return;
                     }
 
@@ -12836,7 +12853,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 log(`Delaying URL load by ${loadDelay}ms...`);
                 setTimeout(() => {
                     log(`Loading sign-in URL: ${args.url}`);
-                    if (preloadScript === 'preload-kasada.js') {
+                    if (usesKasadaPreferences) {
                         // Use config user agent if provided, otherwise use platform-specific fallback
                         let userAgent;
                         if (args.config?.userAgent) {
@@ -12927,6 +12944,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     log("Sign-in window closed, destroyed: " + isBrowserViewDestroyed(view));
                     try {
                         releaseSignInWindowSessionHooks();
+                    } catch (_) { }
+                    try {
+                        releaseSignInClientHintFiltering();
                     } catch (_) { }
 
                     // Clean up if possible

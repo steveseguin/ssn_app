@@ -123,6 +123,7 @@
       "preload.js",
       "preload-mock.js",
       "preload-kasada.js",
+      "preload-kick.js",
       "assets/**",
       "resources/**",
       "tiktok/**",
