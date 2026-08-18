@@ -4,6 +4,10 @@
 
 // Based on research about Kasada detection vectors
 
+// Adaptive Kasada sign-in windows need these browser mocks on Google, but the
+// remote page does not need Social Stream's general-purpose IPC bridges.
+const RESTRICT_PAGE_IPC = process.__ssappRestrictMockPageIpc === true;
+
 // Reduce console noise - only log important info
 const PRELOAD_DEBUG = false; // Set to true for debugging
 if (PRELOAD_DEBUG) {
@@ -68,32 +72,34 @@ setTimeout(() => {
 }, 1000);
 
 // Lightweight bridge: forward expected message shapes to ipcMain('postMessage')
-try {
-  window.addEventListener('message', (event) => {
-    const data = event && event.data;
-    if (!data || typeof data !== 'object') return;
-    // Only forward whitelisted shapes to avoid noise
-    if (
-      data.wssStatus ||
-      data.getSettings ||
-      data.message ||
-      data.delete ||
-      data.cmd ||
-      data.type === 'toBackground' ||
-      (typeof data.__tabID__ !== 'undefined')
-    ) {
-      try {
-        // Prefer contextBridge-exposed ipc if available
-        if (window.electron && window.electron.ipcRenderer) {
-          window.electron.ipcRenderer.send('postMessage', data);
-        } else {
-          // Fallback to direct require to avoid depending on variable scope
-          require('electron').ipcRenderer.send('postMessage', data);
-        }
-      } catch (_) {}
-    }
-  });
-} catch (_) {}
+if (!RESTRICT_PAGE_IPC) {
+  try {
+    window.addEventListener('message', (event) => {
+      const data = event && event.data;
+      if (!data || typeof data !== 'object') return;
+      // Only forward whitelisted shapes to avoid noise
+      if (
+        data.wssStatus ||
+        data.getSettings ||
+        data.message ||
+        data.delete ||
+        data.cmd ||
+        data.type === 'toBackground' ||
+        (typeof data.__tabID__ !== 'undefined')
+      ) {
+        try {
+          // Prefer contextBridge-exposed ipc if available
+          if (window.electron && window.electron.ipcRenderer) {
+            window.electron.ipcRenderer.send('postMessage', data);
+          } else {
+            // Fallback to direct require to avoid depending on variable scope
+            require('electron').ipcRenderer.send('postMessage', data);
+          }
+        } catch (_) {}
+      }
+    });
+  } catch (_) {}
+}
 
 // NOTE: sendToTab listener moved to after require('electron') at line ~670
 
@@ -687,21 +693,23 @@ function dispatchSendToTabMessage(message, requestId) {
   }
 }
 
-ipcRenderer.on('sendToTab-request', (event, data) => {
-  try {
-    dispatchSendToTabMessage(data && data.message, data && data.requestId);
-  } catch (_) {
-    if (data && data.requestId) {
-      ipcRenderer.send(`sendToTab-response-${data.requestId}`, false);
+if (!RESTRICT_PAGE_IPC) {
+  ipcRenderer.on('sendToTab-request', (event, data) => {
+    try {
+      dispatchSendToTabMessage(data && data.message, data && data.requestId);
+    } catch (_) {
+      if (data && data.requestId) {
+        ipcRenderer.send(`sendToTab-response-${data.requestId}`, false);
+      }
     }
-  }
-});
+  });
 
-// Forward main-process sendToTab to the page without exposing APIs
-// This must be after require('electron') so ipcRenderer is defined
-ipcRenderer.on('sendToTab', (event, message) => {
-  dispatchSendToTabMessage(message);
-});
+  // Forward main-process sendToTab to the page without exposing APIs
+  // This must be after require('electron') so ipcRenderer is defined
+  ipcRenderer.on('sendToTab', (event, message) => {
+    dispatchSendToTabMessage(message);
+  });
+}
 
 // Check if contextIsolation is enabled
 const contextIsolated = process.contextIsolated;
@@ -731,7 +739,9 @@ function sendBackgroundCommandIfNeeded(data, callback) {
   return true;
 }
 
-if (contextIsolated) {
+if (RESTRICT_PAGE_IPC) {
+  console.log('[Preload] Page-facing IPC disabled for restricted sign-in page');
+} else if (contextIsolated) {
   // When contextIsolation is true, use contextBridge
   console.log('[Preload] Using contextBridge to expose IPC');
   // Use a different name to avoid detection

@@ -7351,14 +7351,16 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
 }
 
 function registerClientHintFiltering(ses, webContentsId, shouldFilter = () => true) {
-    if (!ses || typeof webContentsId !== 'number') {
+    const isSessionWide = webContentsId === null;
+    if (!ses || (!isSessionWide && typeof webContentsId !== 'number')) {
         return () => { };
     }
 
     let hooks = clientHintsConfiguredSessions.get(ses);
     if (!hooks) {
         hooks = {
-            filtersByWebContentsId: new Map()
+            filtersByWebContentsId: new Map(),
+            sessionFilters: new Set()
         };
 
         try {
@@ -7367,8 +7369,16 @@ function registerClientHintFiltering(ses, webContentsId, shouldFilter = () => tr
                     ? details.responseHeaders
                     : {};
 
-                const filter = hooks.filtersByWebContentsId.get(details?.webContentsId);
-                if (!filter || !filter(details)) {
+                const webContentsFilter = hooks.filtersByWebContentsId.get(details?.webContentsId);
+                const matchesWebContentsFilter = Boolean(webContentsFilter && webContentsFilter(details));
+                let matchesSessionFilter = false;
+                for (const filter of hooks.sessionFilters) {
+                    if (filter(details)) {
+                        matchesSessionFilter = true;
+                        break;
+                    }
+                }
+                if (!matchesWebContentsFilter && !matchesSessionFilter) {
                     callback({ responseHeaders });
                     return;
                 }
@@ -7385,13 +7395,21 @@ function registerClientHintFiltering(ses, webContentsId, shouldFilter = () => tr
         }
     }
 
-    hooks.filtersByWebContentsId.set(webContentsId, shouldFilter);
+    if (isSessionWide) {
+        hooks.sessionFilters.add(shouldFilter);
+    } else {
+        hooks.filtersByWebContentsId.set(webContentsId, shouldFilter);
+    }
 
     let released = false;
     return () => {
         if (released) return;
         released = true;
-        hooks.filtersByWebContentsId.delete(webContentsId);
+        if (isSessionWide) {
+            hooks.sessionFilters.delete(shouldFilter);
+        } else {
+            hooks.filtersByWebContentsId.delete(webContentsId);
+        }
     };
 }
 
@@ -12300,6 +12318,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             // Determine preload script based on configuration
             let preloadScript = null;
             const isFacebookSignIn = platform === 'facebook' || domain === 'facebook.com';
+            const isTwitchSignIn = platform === 'twitch' || domain === 'twitch.tv';
 
             // Domains known to use Kasada protection
             const kasadaDomains = ['twitch.tv', 'kick.com'];
@@ -12466,7 +12485,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             view.setMenuBarVisibility(true);
 
-            const enforceSignInCSP = isFacebookSignIn ? false : shouldEnforceSignInCSP(args);
+            const enforceSignInCSP = isFacebookSignIn || isTwitchSignIn || isKickAdaptiveSignIn
+                ? false
+                : shouldEnforceSignInCSP(args);
 
             // Set Content-Security-Policy once per session to avoid listener accumulation
             // (skip when preload is disabled, for Kasada preload, or when disabled via config)
@@ -12510,13 +12531,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
             let releaseSignInClientHintFiltering = () => { };
 
 
-            // Strip Accept-CH for the adaptive window just like the known-working Mock setup.
+            // Strip Accept-CH just like the known-working Mock setup. Twitch needs
+            // session-wide filtering because Google authentication opens in a child
+            // webContents that shares the Twitch session.
             if (args.config && args.config.userAgent && args.config.mockUserAgentData && preloadScript !== 'preload-kasada.js') {
                 const session = view.webContents.session;
                 if (session && !enforceSignInCSP && !cspConfiguredSessions.has(session)) {
                     releaseSignInClientHintFiltering = registerClientHintFiltering(
                         session,
-                        view.webContents.id
+                        isTwitchSignIn ? null : view.webContents.id
                     );
                 }
             }
