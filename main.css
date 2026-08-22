@@ -17,6 +17,9 @@
   --accent-red:       #ef4444;
   --accent-amber:     #f59e0b;
 
+  /* Keyboard focus */
+  --focus-ring: #fbbf24;
+
   /* Text hierarchy */
   --text-primary:   #eef2f7;
   --text-secondary: #94a3b8;
@@ -49,6 +52,29 @@ html {
   overflow: hidden;
   color: white;
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  color-scheme: dark;
+}
+
+:where(button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 3px solid var(--focus-ring) !important;
+  outline-offset: 2px !important;
+}
+
+@media (forced-colors: active) {
+  :where(button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline-color: Highlight !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 a {
   color: lightblue;
@@ -862,6 +888,9 @@ button {
   background: transparent;
   transition: background-color 0.2s;
   position: relative;
+  border: 0;
+  text-align: left;
+  font-family: inherit;
 }
 
 .settings-menu-item.disabled {
@@ -874,9 +903,25 @@ button {
   background: rgba(74, 141, 199, 0.1);
 }
 
+.settings-menu-item:focus-visible {
+  background: rgba(59, 130, 246, 0.22);
+}
+
+.settings-menu-item:focus {
+  outline: 3px solid var(--focus-ring) !important;
+  outline-offset: -3px !important;
+  background: rgba(59, 130, 246, 0.22);
+}
+
 .settings-menu-item.active {
   background: rgba(74, 141, 199, 0.2);
-  color: #4a8dc7;
+  color: #bfdbfe;
+}
+
+.ssapp-visible-focus {
+  outline: 3px solid var(--focus-ring) !important;
+  outline-offset: 2px !important;
+  box-shadow: inset 0 0 0 2px var(--focus-ring) !important;
 }
 
 .settings-menu-item i {
@@ -1139,6 +1184,188 @@ button.group-control {
 .modal-content button[data-type="cancel"]:hover {
   background: rgba(255,255,255,0.15);
   color: var(--text-primary);
+}
+
+.ssapp-modal-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 20px;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.82);
+  z-index: 10000;
+}
+
+.signin-method-dialog {
+  --signin-dialog-bg: var(--bg-surface);
+  --signin-dialog-text: var(--text-primary);
+  --signin-dialog-muted: #cbd5e1;
+  --signin-dialog-border: var(--border-default);
+  --signin-primary-bg: #1d4ed8;
+  --signin-primary-hover: #1e40af;
+  --signin-primary-text: #ffffff;
+  --signin-secondary-bg: #263a51;
+  --signin-secondary-hover: #314b68;
+  --signin-secondary-text: #f8fafc;
+  --signin-cancel-bg: #19293a;
+  --signin-note-bg: #3a311c;
+  --signin-note-border: #8a6b1f;
+  --signin-note-text: #fde68a;
+  box-sizing: border-box;
+  width: min(100%, 520px);
+  max-height: calc(100vh - 40px);
+  margin: auto;
+  overflow: auto;
+  background: var(--signin-dialog-bg);
+  border-color: var(--signin-dialog-border);
+  color: var(--signin-dialog-text);
+}
+
+.signin-method-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.signin-method-context {
+  margin: 0 0 16px;
+  color: var(--signin-dialog-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.modal-content button.source-choice.signin-method-option {
+  min-height: 0;
+  padding: 13px 14px;
+  background: var(--signin-secondary-bg);
+  border-color: var(--signin-dialog-border);
+  color: var(--signin-secondary-text);
+  transition: none;
+}
+
+.modal-content button.source-choice.signin-method-option:hover {
+  background: var(--signin-secondary-hover);
+  border-color: var(--border-accent);
+}
+
+.modal-content button.source-choice.signin-method-option:focus {
+  outline: 3px solid var(--focus-ring) !important;
+  outline-offset: 2px !important;
+}
+
+.modal-content button.source-choice.signin-method-option-primary {
+  background: var(--signin-primary-bg);
+  border-color: #60a5fa;
+  color: var(--signin-primary-text);
+}
+
+.modal-content button.source-choice.signin-method-option-primary:hover {
+  background: var(--signin-primary-hover);
+  border-color: #93c5fd;
+}
+
+.signin-method-option-icon {
+  display: inline-flex;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.signin-method-option-text {
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.signin-method-option-title,
+.signin-method-option-description {
+  display: block;
+  color: inherit;
+}
+
+.signin-method-option-title {
+  margin-bottom: 2px;
+  font-size: 14px;
+}
+
+.signin-method-option-description {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.modal-content button.signin-method-option .signin-method-option-text,
+.modal-content button.signin-method-option .signin-method-option-title,
+.modal-content button.signin-method-option .signin-method-option-description {
+  color: inherit !important;
+}
+
+.signin-method-note {
+  margin: 14px 0 0;
+  padding: 11px 12px;
+  border: 1px solid var(--signin-note-border);
+  border-radius: var(--radius-md);
+  background: var(--signin-note-bg);
+  color: var(--signin-note-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.signin-method-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.modal-content .signin-method-actions button[data-type="cancel"] {
+  margin: 0;
+  background: var(--signin-cancel-bg);
+  color: var(--signin-dialog-text);
+  transition: none;
+}
+
+.modal-content .signin-method-actions button[data-type="cancel"]:hover {
+  background: var(--signin-secondary-bg);
+  color: var(--signin-secondary-text);
+}
+
+/* Component-level light palette for theme validation and future shell theming. */
+:root[data-ssapp-theme="light"] {
+  --focus-ring: #0b57d0;
+  color-scheme: light;
+}
+
+:root[data-ssapp-theme="light"] .signin-method-dialog {
+  --signin-dialog-bg: #ffffff;
+  --signin-dialog-text: #172033;
+  --signin-dialog-muted: #405169;
+  --signin-dialog-border: #a9b5c5;
+  --signin-primary-bg: #1d4ed8;
+  --signin-primary-hover: #1e40af;
+  --signin-primary-text: #ffffff;
+  --signin-secondary-bg: #edf2f7;
+  --signin-secondary-hover: #dce5ef;
+  --signin-secondary-text: #172033;
+  --signin-cancel-bg: #f8fafc;
+  --signin-note-bg: #fff7d6;
+  --signin-note-border: #b77900;
+  --signin-note-text: #5c3b00;
+}
+
+@media (max-width: 600px) {
+  .ssapp-modal-overlay {
+    padding: 12px;
+  }
+
+  .signin-method-dialog {
+    max-height: calc(100vh - 24px);
+    padding: 18px;
+  }
 }
 
 .yt-stream-modal {

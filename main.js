@@ -195,6 +195,7 @@ const { setupTwitchOAuthHandler } = require('./resources/electron-twitch-handler
 const { setupFacebookOAuthHandler } = require('./resources/electron-facebook-handler');
 const { setupVeloraOAuthHandler } = require('./resources/electron-velora-handler');
 const { setupKickOAuthHandler } = require('./resources/electron-kick-handler');
+const { setupExternalBrowserSigninHandler } = require('./resources/electron-rumble-handler');
 const { setupVpzoneOAuthHandler } = require('./resources/electron-vpzone-handler');
 const { setupMediaUploadHandler } = require('./resources/electron-media-upload-handler');
 const { setupElectronLocalMedia } = require('./resources/electron-local-media-server');
@@ -1954,6 +1955,10 @@ setupTwitchOAuthHandler();
 setupFacebookOAuthHandler();
 setupVeloraOAuthHandler();
 setupKickOAuthHandler();
+setupExternalBrowserSigninHandler({
+    getMainWindow: () => mainWindow,
+    trackPartition: partition => createdPartitions.add(partition)
+});
 setupVpzoneOAuthHandler();
 setupMediaUploadHandler();
 

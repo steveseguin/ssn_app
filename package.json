@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.4.15",
+  "version": "0.4.16",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "desktopName": "socialstreamninja.desktop",
@@ -22,6 +22,10 @@
     "test:hidden-capture:soak": "node tests/electron/hidden-capture-soak.js",
     "test:twitch-bot-account:e2e": "node tests/electron/twitch-bot-account-e2e.js",
     "test:twitch-signin-compat": "node tests/electron/twitch-signin-compat-e2e.js",
+    "test:rumble-chrome-signin": "node tests/electron/rumble-chrome-signin-regression.js",
+    "test:rumble-chrome-signin:browser": "node tests/electron/rumble-chrome-signin-regression.js --live-browser",
+    "test:rumble-chrome-signin:e2e": "node tests/electron/rumble-chrome-signin-ui-e2e.js",
+    "test:rumble-chrome-signin:persistence": "node tests/electron/rumble-chrome-session-persistence-e2e.js",
     "test:twitch-websocket:soak": "node tests/electron/twitch-websocket-soak.js",
     "test:source-navigation-safety": "node tests/electron/source-navigation-safety-e2e.js",
     "test:kick-adaptive-preload": "node tests/electron/kick-adaptive-preload-e2e.js",

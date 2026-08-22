@@ -347,6 +347,9 @@
                 <div class="settings-menu-item" onclick="openSessionSettings(this)">
                     🔐 Browser Session Settings
                 </div>
+                <div class="settings-menu-item hidden" onclick="signinViaChrome(this)" data-signin-chrome>
+                    🌐 Sign in via Chrome (experimental)
+                </div>
             </div>
             <div class="settings-menu-section hidden" data-twitch-websocket-sending>
                 <div class="settings-menu-header">Twitch WebSocket sending</div>
@@ -1715,6 +1718,34 @@
             }
         }
 
+        const externalBrowserSigninLabels = Object.freeze({
+            rumble: 'Rumble',
+            tiktok: 'TikTok'
+        });
+
+        function isExternalBrowserSigninEligible(source, effectiveMode = null) {
+            if (!ipcRenderer || !source || !externalBrowserSigninLabels[source.target]) return false;
+            const resolvedMode = effectiveMode || getEffectiveConnectionMode(source);
+            return resolvedMode !== 'websocket' &&
+                resolvedMode !== 'tiktok-websocket' &&
+                resolvedMode !== 'tiktok-legacy';
+        }
+
+        function updateExternalBrowserSigninButton(element, source, effectiveMode) {
+            const chromeSigninMenuItem = element?.querySelector?.('[data-signin-chrome]');
+            if (!chromeSigninMenuItem) return;
+            const platformLabel = externalBrowserSigninLabels[source?.target];
+            const shouldShow = isExternalBrowserSigninEligible(source, effectiveMode);
+            chromeSigninMenuItem.classList.toggle('hidden', !shouldShow);
+            if (platformLabel) {
+                const sessionLabel = getSessionDisplayNameForSource(source);
+                chromeSigninMenuItem.setAttribute('aria-label', `Sign into ${platformLabel} via Chrome for ${sessionLabel}`);
+                chromeSigninMenuItem.title = `Experimental: sign into ${platformLabel} in Chrome and import the ${sessionLabel} browser session`;
+            } else {
+                chromeSigninMenuItem.removeAttribute('aria-label');
+            }
+        }
+
         function getEffectiveConnectionMode(source) {
             if (!source) return null;
             if (source.rumbleApiTracker) return 'websocket';
@@ -1878,6 +1909,7 @@
                     }
                 }
             }
+            updateExternalBrowserSigninButton(element, source, effectiveMode);
 
             const visibilityControl = element.querySelector('[data-togglehtml]');
             if (visibilityControl) {
@@ -4147,12 +4179,12 @@
                     modeSelector.innerHTML = `
                 <div class="mode-selector-label">Default Mode:</div>
                 <div class="mode-options">
-                    <div class="mode-option" 
+                    <div class="mode-option" role="button" tabindex="0" aria-pressed="false"
                          data-mode="classic" 
                          onclick="setGroupConnectionMode(this.closest('.entry'), 'classic'); updateModeSelector(this)">
                         📄 Standard
                     </div>
-                    <div class="mode-option" 
+                    <div class="mode-option" role="button" tabindex="0" aria-pressed="false"
                          data-mode="websocket" 
                          onclick="setGroupConnectionMode(this.closest('.entry'), 'websocket'); updateModeSelector(this)">
                         🌐 WebSocket
@@ -4171,6 +4203,7 @@
                         if (opt.dataset.mode === currentMode) {
                             opt.classList.add('active');
                         }
+                        enhanceButtonLikeControl(opt, { pressed: opt.classList.contains('active') });
                     });
                 }
             }
@@ -4195,19 +4228,19 @@
             const settingsBtn = groupHeaderElement.querySelector('.settings-btn');
             const settingsMenu = groupHeaderElement.querySelector('.settings-menu');
             if (settingsBtn && settingsMenu) {
+                enhanceSettingsMenu(settingsBtn, settingsMenu, `Additional settings for ${target || 'source'} group`);
                 settingsBtn.onclick = (e) => {
                     e.stopPropagation();
-                    document.querySelectorAll('.settings-menu.active').forEach(menu => {
-                        if (menu !== settingsMenu) menu.classList.remove('active');
-                    });
-                    settingsMenu.classList.toggle('active');
-                    if (settingsMenu.classList.contains('active')) {
+                    closeOtherSettingsMenus(settingsMenu);
+                    const shouldOpen = !settingsMenu.classList.contains('active');
+                    setSettingsMenuOpen(settingsBtn, settingsMenu, shouldOpen, { focusFirst: shouldOpen });
+                    if (shouldOpen) {
                         try { updateMoveMenuItemsForGroup(groupHeaderElement); } catch (e) { /* noop */ }
                     }
                 };
                 document.addEventListener('click', (e) => {
-                    if (!settingsMenu.classList.contains('hidden') && !settingsMenu.contains(e.target) && !settingsBtn.contains(e.target)) {
-                        settingsMenu.classList.remove('active');
+                    if (settingsMenu.classList.contains('active') && !settingsMenu.contains(e.target) && !settingsBtn.contains(e.target)) {
+                        setSettingsMenuOpen(settingsBtn, settingsMenu, false);
                     }
                 });
             }
@@ -4262,8 +4295,10 @@
             const modeOptions = clickedOption.parentElement;
             modeOptions.querySelectorAll('.mode-option').forEach(opt => {
                 opt.classList.remove('active');
+                opt.setAttribute('aria-pressed', 'false');
             });
             clickedOption.classList.add('active');
+            clickedOption.setAttribute('aria-pressed', 'true');
         }
 
         function setGroupConnectionMode(groupElement, mode) {
@@ -5546,10 +5581,14 @@
                 // Don't hide the mode selector based on menu item visibility
             }
 
+            controlPanel?.querySelectorAll('.mode-option').forEach(option => {
+                enhanceButtonLikeControl(option, { pressed: option.classList.contains('active') });
+            });
+
             // Update sign-in button visibility and behavior based on connection mode
+            const signinMode = source ? (getEffectiveConnectionMode(source) || mode) : mode;
             const signinButton = sourceElement.querySelector("[data-signin]");
             if (signinButton) {
-                const signinMode = source ? (getEffectiveConnectionMode(source) || mode) : mode;
                 const isWebsocketMode = signinMode === 'websocket' || signinMode === 'tiktok-websocket' || signinMode === 'tiktok-legacy';
 
                 if (target === 'tiktok' && signinMode === 'tiktok-websocket') {
@@ -5609,6 +5648,7 @@
                     applySigninPolicy(signinButton, source);
                 }
             }
+            updateExternalBrowserSigninButton(sourceElement, source, signinMode);
 
             const fallbackMenuItem = settingsMenu?.querySelector('.settings-menu-item[data-tiktok-fallback]');
             if (fallbackMenuItem) {
@@ -6116,6 +6156,116 @@
             } catch (_) { }
         }
 
+        let settingsMenuIdSequence = 0;
+
+        function setVisibleFocusElement(element) {
+            document.querySelectorAll('.ssapp-visible-focus').forEach(focusedElement => {
+                focusedElement.classList.remove('ssapp-visible-focus');
+            });
+            if (element?.matches?.('button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])')) {
+                element.classList.add('ssapp-visible-focus');
+            }
+        }
+
+        function ensureVisibleFocusTracking() {
+            if (document.documentElement.dataset.visibleFocusTrackingReady === 'true') return;
+            document.documentElement.dataset.visibleFocusTrackingReady = 'true';
+            document.addEventListener('focusin', event => {
+                const focusTarget = event.target?.closest?.(
+                    'button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+                );
+                setVisibleFocusElement(focusTarget);
+            });
+        }
+
+        ensureVisibleFocusTracking();
+
+        function enhanceButtonLikeControl(element, options = {}) {
+            if (!element) return;
+            if (element.tagName !== 'BUTTON') {
+                element.setAttribute('role', 'button');
+                if (!element.hasAttribute('tabindex')) element.tabIndex = 0;
+            }
+            if (typeof options.pressed === 'boolean') {
+                element.setAttribute('aria-pressed', options.pressed ? 'true' : 'false');
+            }
+            if (element.dataset.keyboardButtonReady === 'true') return;
+            element.dataset.keyboardButtonReady = 'true';
+            element.addEventListener('keydown', event => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                if (element.getAttribute('aria-disabled') === 'true' || element.dataset.disabled === 'true') return;
+                element.click();
+            });
+        }
+
+        function setButtonLikeControlDisabled(element, disabled) {
+            if (!element) return;
+            const isDisabled = !!disabled;
+            enhanceButtonLikeControl(element);
+            element.classList.toggle('disabled', isDisabled);
+            element.dataset.disabled = isDisabled ? 'true' : 'false';
+            element.setAttribute('aria-disabled', isDisabled ? 'true' : 'false');
+            if (element.tagName === 'BUTTON') element.disabled = isDisabled;
+            else element.tabIndex = isDisabled ? -1 : 0;
+        }
+
+        function setSettingsMenuItemDisabled(item, disabled) {
+            setButtonLikeControlDisabled(item, disabled);
+        }
+
+        function setSettingsMenuOpen(settingsBtn, settingsMenu, open, options = {}) {
+            if (!settingsBtn || !settingsMenu) return;
+            settingsMenu.classList.toggle('active', !!open);
+            settingsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+            if (open && options.focusFirst) {
+                queueMicrotask(() => {
+                    const firstItem = Array.from(settingsMenu.querySelectorAll('.settings-menu-item'))
+                        .find(item => !item.classList.contains('hidden') && item.getAttribute('aria-disabled') !== 'true');
+                    firstItem?.focus();
+                    setVisibleFocusElement(firstItem);
+                });
+            } else if (!open && options.restoreFocus && settingsBtn.isConnected) {
+                settingsBtn.focus();
+            }
+        }
+
+        function closeOtherSettingsMenus(exceptMenu = null) {
+            document.querySelectorAll('.settings-menu.active').forEach(menu => {
+                if (menu === exceptMenu) return;
+                setSettingsMenuOpen(menu._ssappSettingsTrigger, menu, false);
+            });
+        }
+
+        function enhanceSettingsMenu(settingsBtn, settingsMenu, label) {
+            if (!settingsBtn || !settingsMenu) return;
+            if (!settingsMenu.id) settingsMenu.id = `ssapp-settings-menu-${++settingsMenuIdSequence}`;
+            settingsMenu._ssappSettingsTrigger = settingsBtn;
+            settingsBtn.type = 'button';
+            settingsBtn.setAttribute('aria-controls', settingsMenu.id);
+            settingsBtn.setAttribute('aria-expanded', settingsMenu.classList.contains('active') ? 'true' : 'false');
+            if (label) settingsBtn.setAttribute('aria-label', label);
+            settingsMenu.querySelectorAll('.settings-menu-item').forEach(item => enhanceButtonLikeControl(item));
+            if (settingsMenu.dataset.keyboardDisclosureReady === 'true') return;
+            settingsMenu.dataset.keyboardDisclosureReady = 'true';
+            settingsMenu.addEventListener('keydown', event => {
+                if (event.key !== 'Escape') return;
+                event.preventDefault();
+                event.stopPropagation();
+                setSettingsMenuOpen(settingsBtn, settingsMenu, false, { restoreFocus: true });
+            });
+            settingsBtn.addEventListener('keydown', event => {
+                if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    if (!settingsMenu.classList.contains('active')) settingsBtn.click();
+                    else setSettingsMenuOpen(settingsBtn, settingsMenu, true, { focusFirst: true });
+                } else if (event.key === 'Escape' && settingsMenu.classList.contains('active')) {
+                    event.preventDefault();
+                    setSettingsMenuOpen(settingsBtn, settingsMenu, false, { restoreFocus: true });
+                }
+            });
+        }
+
         function setupSourceControls(sourceElement) {
             if (!sourceElement) return;
             const sourceId = sourceElement.dataset.sourceId;
@@ -6253,12 +6403,12 @@
                         modeSelector.innerHTML = `
                     <div class="mode-selector-label">Connection Mode:</div>
                     <div class="mode-options">
-                        <div class="mode-option" 
+                        <div class="mode-option" role="button" tabindex="0" aria-pressed="false"
                              data-mode="classic" 
                              onclick="setSourceConnectionMode(this.closest('.entry'), 'classic', this); updateModeSelector(this)">
                             📄 Standard
                         </div>
-                        <div class="mode-option" 
+                        <div class="mode-option" role="button" tabindex="0" aria-pressed="false"
                              data-mode="websocket" 
                              onclick="setSourceConnectionMode(this.closest('.entry'), 'websocket', this); updateModeSelector(this)">
                             🌐 WebSocket
@@ -6278,6 +6428,7 @@
                             if (opt.dataset.mode === currentMode) {
                                 opt.classList.add('active');
                             }
+                            enhanceButtonLikeControl(opt, { pressed: opt.classList.contains('active') });
                         });
                     }
                 } else {
@@ -6314,13 +6465,17 @@
                 }
             }
 
+            const sourceSettingsLabel = target
+                ? `Additional settings for ${externalBrowserSigninLabels[target] || target}`
+                : 'Additional source settings';
+            enhanceSettingsMenu(settingsBtn, settingsMenu, sourceSettingsLabel);
+
             settingsBtn.onclick = (e) => {
                 e.stopPropagation();
-                document.querySelectorAll('.settings-menu.active').forEach(menu => {
-                    if (menu !== settingsMenu) menu.classList.remove('active');
-                });
-                settingsMenu.classList.toggle('active');
-                if (settingsMenu.classList.contains('active')) {
+                closeOtherSettingsMenus(settingsMenu);
+                const shouldOpen = !settingsMenu.classList.contains('active');
+                setSettingsMenuOpen(settingsBtn, settingsMenu, shouldOpen, { focusFirst: shouldOpen });
+                if (shouldOpen) {
                     try { updateMoveMenuItemsForSource(sourceElement); } catch (e) { /* noop */ }
                     try {
                         const s = sourceId ? stateManager.getSource(sourceId) : null;
@@ -6378,12 +6533,14 @@
 
                     if (isActive) {
                         if (isSelected) {
+                            setSettingsMenuItemDisabled(item, false);
                             item.style.opacity = '1';
                             item.style.pointerEvents = 'auto';
                             item.title = 'Click to stop current connection';
                             const icon = item.querySelector('i');
                             if (icon) icon.textContent = '⏹️';
                         } else {
+                            setSettingsMenuItemDisabled(item, true);
                             item.style.opacity = '0.5';
                             item.style.pointerEvents = 'none';
                             item.title = 'Stop current connection to change/activate another mode.';
@@ -6395,6 +6552,7 @@
                             }
                         }
                     } else {
+                        setSettingsMenuItemDisabled(item, false);
                         item.style.opacity = '1';
                         item.style.pointerEvents = 'auto';
                         const icon = item.querySelector('i');
@@ -6422,6 +6580,7 @@
                             item.title = '';
                         }
                         if (!isActive && forcedClassic && (itemMode === 'tiktok-websocket' || itemMode === 'tiktok-legacy')) {
+                            setSettingsMenuItemDisabled(item, true);
                             item.style.opacity = '0.5';
                             item.style.pointerEvents = 'none';
                         }
@@ -6431,7 +6590,7 @@
             document.addEventListener('click', (e) => {
                 if (!settingsMenu.classList.contains('active')) return;
                 if (!settingsMenu.contains(e.target) && !settingsBtn.contains(e.target)) {
-                    settingsMenu.classList.remove('active');
+                    setSettingsMenuOpen(settingsBtn, settingsMenu, false);
                 }
             });
 
@@ -7026,8 +7185,8 @@
             const moveUp = sourceElement.querySelector('.settings-menu-item[data-move="up"]');
             const moveDown = sourceElement.querySelector('.settings-menu-item[data-move="down"]');
             if (!moveUp || !moveDown) return;
-            moveUp.classList.remove('disabled');
-            moveDown.classList.remove('disabled');
+            setSettingsMenuItemDisabled(moveUp, false);
+            setSettingsMenuItemDisabled(moveDown, false);
 
             const sourceId = sourceElement.dataset.sourceId;
             const source = stateManager.getSource(sourceId);
@@ -7047,14 +7206,16 @@
                 if (idx <= 0) moveUp.classList.add('disabled');
                 if (idx === -1 || idx >= keys.length - 1) moveDown.classList.add('disabled');
             }
+            setSettingsMenuItemDisabled(moveUp, moveUp.classList.contains('disabled'));
+            setSettingsMenuItemDisabled(moveDown, moveDown.classList.contains('disabled'));
         }
 
         function updateMoveMenuItemsForGroup(groupHeaderElement) {
             const moveUp = groupHeaderElement.querySelector('.settings-menu-item[data-group-move="up"]');
             const moveDown = groupHeaderElement.querySelector('.settings-menu-item[data-group-move="down"]');
             if (!moveUp || !moveDown) return;
-            moveUp.classList.remove('disabled');
-            moveDown.classList.remove('disabled');
+            setSettingsMenuItemDisabled(moveUp, false);
+            setSettingsMenuItemDisabled(moveDown, false);
 
             const groupId = groupHeaderElement.dataset.groupId;
             const keys = getRootOrder().length ? getRootOrder() : buildTopLevelKeysFromDom();
@@ -7062,6 +7223,8 @@
             const idx = keys.indexOf(key);
             if (idx <= 0) moveUp.classList.add('disabled');
             if (idx === -1 || idx >= keys.length - 1) moveDown.classList.add('disabled');
+            setSettingsMenuItemDisabled(moveUp, moveUp.classList.contains('disabled'));
+            setSettingsMenuItemDisabled(moveDown, moveDown.classList.contains('disabled'));
         }
 
         function moveSourceInGroup(sourceId, direction) { // direction: -1 or +1
@@ -9769,43 +9932,137 @@
             }
         }
 
-        // Simple modal functions for TikTok auth
+        function getModalFocusableElements(modal) {
+            if (!modal) return [];
+            const selector = [
+                'a[href]',
+                'button:not([disabled])',
+                'input:not([disabled])',
+                'select:not([disabled])',
+                'textarea:not([disabled])',
+                '[tabindex]:not([tabindex="-1"])'
+            ].join(',');
+            return Array.from(modal.querySelectorAll(selector)).filter(element => {
+                if (element.closest('.hidden') || element.getAttribute('aria-hidden') === 'true') return false;
+                const style = window.getComputedStyle(element);
+                return style.display !== 'none' && style.visibility !== 'hidden';
+            });
+        }
+
+        function getModalFocusRestoreSelector(element) {
+            if (!element || element.nodeType !== Node.ELEMENT_NODE) return '';
+            if (element.id && window.CSS?.escape) return `#${CSS.escape(element.id)}`;
+            const owner = element.closest('[data-source-id], [data-group-id]');
+            if (!owner) return '';
+            const ownerAttribute = owner.hasAttribute('data-source-id') ? 'data-source-id' : 'data-group-id';
+            const ownerValue = String(owner.getAttribute(ownerAttribute) || '')
+                .replace(/\\/g, '\\\\')
+                .replace(/"/g, '\\"');
+            const dataMarker = [
+                'data-signin', 'data-signin-chrome', 'data-activatehtml', 'data-showtips',
+                'data-reloadhtml', 'data-togglehtml', 'data-togglemute', 'data-stophtml'
+            ].find(attribute => element.hasAttribute(attribute));
+            if (dataMarker) return `[${ownerAttribute}="${ownerValue}"] [${dataMarker}]`;
+            if (element.classList.contains('settings-btn')) return `[${ownerAttribute}="${ownerValue}"] .settings-btn`;
+            return '';
+        }
+
+        // Shared modal behavior for auth, help, and configuration dialogs.
         function showModal(content) {
-            // Remove any existing modal
-            closeModal();
+            const existingModalState = document.getElementById('tiktok-auth-modal')?._ssappModalState || null;
+            const previousFocus = existingModalState?.previousFocus?.isConnected
+                ? existingModalState.previousFocus
+                : document.activeElement;
+            const focusRestoreSelector = existingModalState?.focusRestoreSelector || getModalFocusRestoreSelector(previousFocus);
+            closeModal({ restoreFocus: false });
 
             const modal = document.createElement('div');
             modal.id = 'tiktok-auth-modal';
-            modal.style.cssText = `
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background: rgba(0, 0, 0, 0.8);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 10000;
-        padding: 20px;
-        box-sizing: border-box;
-    `;
+            modal.className = 'ssapp-modal-overlay';
             modal.innerHTML = content;
 
-            // Close on background click
-            modal.addEventListener('click', function (e) {
-                if (e.target === modal) {
-                    closeModal();
+            const dialog = modal.querySelector('[role="dialog"]') || modal.firstElementChild || modal;
+            if (!dialog.hasAttribute('role')) dialog.setAttribute('role', 'dialog');
+            dialog.setAttribute('aria-modal', 'true');
+            if (!dialog.hasAttribute('aria-label') && !dialog.hasAttribute('aria-labelledby')) {
+                const heading = dialog.querySelector('h1, h2, h3, h4, h5, h6');
+                if (heading) {
+                    if (!heading.id) heading.id = `ssapp-modal-title-${Date.now()}`;
+                    dialog.setAttribute('aria-labelledby', heading.id);
+                } else {
+                    dialog.setAttribute('aria-label', 'SSApp dialog');
                 }
+            }
+
+            const backgroundState = Array.from(document.body.children)
+                .filter(element => element !== modal && element.tagName !== 'SCRIPT' && element.tagName !== 'STYLE')
+                .map(element => ({
+                    element,
+                    inert: !!element.inert,
+                    hadAriaHidden: element.hasAttribute('aria-hidden'),
+                    ariaHidden: element.getAttribute('aria-hidden')
+                }));
+            backgroundState.forEach(({ element }) => {
+                element.inert = true;
+                element.setAttribute('aria-hidden', 'true');
+            });
+
+            modal._ssappModalState = { previousFocus, focusRestoreSelector, backgroundState, dialog };
+            modal.addEventListener('keydown', event => {
+                if (event.key === 'Escape') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    closeModal();
+                    return;
+                }
+                if (event.key !== 'Tab') return;
+                const focusable = getModalFocusableElements(modal);
+                if (!focusable.length) {
+                    event.preventDefault();
+                    if (!dialog.hasAttribute('tabindex')) dialog.setAttribute('tabindex', '-1');
+                    dialog.focus();
+                    return;
+                }
+                event.preventDefault();
+                const activeIndex = focusable.indexOf(document.activeElement);
+                const nextIndex = event.shiftKey
+                    ? (activeIndex <= 0 ? focusable.length - 1 : activeIndex - 1)
+                    : (activeIndex < 0 || activeIndex >= focusable.length - 1 ? 0 : activeIndex + 1);
+                focusable[nextIndex].focus();
+                setVisibleFocusElement(focusable[nextIndex]);
+            });
+
+            modal.addEventListener('click', event => {
+                if (event.target === modal) closeModal();
             });
 
             document.body.appendChild(modal);
+            queueMicrotask(() => {
+                if (!modal.isConnected || modal.contains(document.activeElement)) return;
+                const focusTarget = getModalFocusableElements(modal)[0] || dialog;
+                if (focusTarget === dialog && !dialog.hasAttribute('tabindex')) dialog.setAttribute('tabindex', '-1');
+                focusTarget.focus();
+                setVisibleFocusElement(focusTarget);
+            });
+            return modal;
         }
 
-        function closeModal() {
+        function closeModal(options = {}) {
             const modal = document.getElementById('tiktok-auth-modal');
-            if (modal) {
-                modal.remove();
+            if (!modal) return;
+            const state = modal._ssappModalState || {};
+            modal.remove();
+            (state.backgroundState || []).forEach(({ element, inert, hadAriaHidden, ariaHidden }) => {
+                if (!element?.isConnected) return;
+                element.inert = inert;
+                if (hadAriaHidden) element.setAttribute('aria-hidden', ariaHidden);
+                else element.removeAttribute('aria-hidden');
+            });
+            if (options.restoreFocus !== false) {
+                const focusTarget = state.previousFocus?.isConnected
+                    ? state.previousFocus
+                    : (state.focusRestoreSelector ? document.querySelector(state.focusRestoreSelector) : null);
+                if (focusTarget && typeof focusTarget.focus === 'function') focusTarget.focus();
             }
         }
 
@@ -10919,8 +11176,64 @@
             }
         }
 
+        function showSigninMethodChoice(ele, source, tabid = false) {
+            const platformLabel = externalBrowserSigninLabels[source?.target];
+            if (!platformLabel) return false;
 
-        async function signin(ele, tabid = false) {
+            const content = `
+                <div class="modal-content signin-method-dialog" role="dialog" aria-modal="true"
+                    aria-labelledby="signin-method-title" aria-describedby="signin-method-context signin-method-note">
+                    <h2 id="signin-method-title">Choose a sign-in method</h2>
+                    <p id="signin-method-context" class="signin-method-context" data-signin-choice-context></p>
+                    <div class="source-choice-list">
+                        <button type="button" class="source-choice signin-method-option signin-method-option-primary"
+                            data-signin-choice="chrome">
+                            <span class="signin-method-option-icon" aria-hidden="true">🌐</span>
+                            <span class="signin-method-option-text">
+                                <strong class="signin-method-option-title">Use Chrome</strong>
+                                <span class="signin-method-option-description">Experimental; recommended when Google rejects the SSApp sign-in window.</span>
+                            </span>
+                        </button>
+                        <button type="button" class="source-choice signin-method-option" data-signin-choice="ssapp">
+                            <span class="signin-method-option-icon" aria-hidden="true">🔑</span>
+                            <span class="signin-method-option-text">
+                                <strong class="signin-method-option-title">Use the SSApp sign-in window</strong>
+                                <span class="signin-method-option-description">The usual sign-in method for this source.</span>
+                            </span>
+                        </button>
+                    </div>
+                    <p id="signin-method-note" class="signin-method-note" data-signin-window-note>
+                        After signing in through the SSApp window, close that sign-in window. If you use Chrome, leave Chrome open until SSApp finishes importing; the temporary Chrome window closes automatically.
+                    </p>
+                    <div class="signin-method-actions">
+                        <button type="button" data-type="cancel" data-signin-choice="cancel">Cancel</button>
+                    </div>
+                </div>
+            `;
+            showModal(content);
+            const modal = document.getElementById('tiktok-auth-modal');
+            if (!modal) return false;
+
+            const sessionLabel = getSessionDisplayNameForSource(source);
+            const context = modal.querySelector('[data-signin-choice-context]');
+            if (context) context.textContent = `${platformLabel} · Browser session: ${sessionLabel}`;
+
+            const runChoice = choice => {
+                closeModal();
+                if (choice === 'chrome') {
+                    Promise.resolve(signinViaChrome(ele)).catch(error => console.error('Chrome sign-in choice failed:', error));
+                } else if (choice === 'ssapp') {
+                    Promise.resolve(signin(ele, tabid, { skipMethodChoice: true })).catch(error => console.error('SSApp sign-in choice failed:', error));
+                }
+            };
+            modal.querySelector('[data-signin-choice="chrome"]')?.addEventListener('click', () => runChoice('chrome'));
+            modal.querySelector('[data-signin-choice="ssapp"]')?.addEventListener('click', () => runChoice('ssapp'));
+            modal.querySelector('[data-signin-choice="cancel"]')?.addEventListener('click', () => runChoice('cancel'));
+            modal.querySelector('[data-signin-choice="chrome"]')?.focus();
+            return true;
+        }
+
+        async function signin(ele, tabid = false, options = {}) {
             // Debug logs removed - they show the parent window's UA, not the sign-in window's
 
             if (!ipcRenderer) { console.error('IPC not available for signin'); return; }
@@ -10935,6 +11248,10 @@
             console.log(`[SIGNIN DEBUG] Source ID: ${sourceId}, Source:`, source);
             if (!source && !group && !entry.dataset.target) {
                 console.error('Cannot signin: no source data or target on element.'); return;
+            }
+            if (!options.skipMethodChoice && source && isExternalBrowserSigninEligible(source)) {
+                showSigninMethodChoice(ele, source, tabid);
+                return false;
             }
             const rawTargetPlatform = source ? source.target : (group ? group.target : entry.dataset.target);
             const effectivePlatform = rawTargetPlatform === 'youtubeshorts' ? 'youtube' : rawTargetPlatform;
@@ -11033,6 +11350,7 @@
                 });
                 console.log("Sign-in window created with ID:", response);
                 if (response && ipcRenderer) {
+                    Toast.info("Sign-in window opened", "After you finish signing in, close the sign-in window to return to SSApp.");
                     ipcRenderer.once(`window-closed-${response}`, () => {
                         Toast.info("Sign-in window closed.", "Checking if source needs refresh...");
 
@@ -11045,6 +11363,64 @@
                 console.error('Signin failed:', err);
                 Toast.error("Sign-in Error", `Could not open sign-in window: ${err.message}`);
                 return false;
+            }
+        }
+
+        async function signinViaChrome(ele) {
+            if (!ipcRenderer) {
+                Toast.error('Chrome Sign-In', 'This app build cannot open the Chrome sign-in helper.');
+                return false;
+            }
+
+            const entry = ele.closest('.entry');
+            const sourceId = entry?.dataset?.sourceId;
+            const source = sourceId ? stateManager.getSource(sourceId) : null;
+            const platformLabel = externalBrowserSigninLabels[source?.target];
+            if (!source || !platformLabel) {
+                Toast.error('Chrome Sign-In', 'Chrome sign-in is not available for this source.');
+                return false;
+            }
+
+            const originalLabel = ele.innerHTML;
+            const requestedCustomSession = source.customSession || 'AUTO';
+            const requestedSessionLabel = getSessionDisplayNameForSource(source);
+            ele.disabled = true;
+            ele.innerHTML = 'Opening Chrome...';
+            try {
+                Toast.info(`${platformLabel} Sign-In`, `Finish signing into ${platformLabel} in Chrome. Leave Chrome open until SSApp finishes importing.`);
+                const result = await ipcRenderer.invoke('external-browser-signin', {
+                    platform: source.target,
+                    sourceId: source.id,
+                    customSession: requestedCustomSession
+                });
+                if (result?.cancelled) {
+                    Toast.info(`${platformLabel} Sign-In`, 'Chrome sign-in was cancelled. Your SSApp session was not changed.');
+                    return false;
+                }
+                if (!result?.success) {
+                    throw new Error(`Chrome did not return a ${platformLabel} sign-in session.`);
+                }
+
+                const currentSource = stateManager.getSource(source.id);
+                const sourceStillUsesRequestedSession = !!currentSource &&
+                    currentSource.target === source.target &&
+                    (currentSource.customSession || 'AUTO') === requestedCustomSession;
+                const verificationNote = result.verified === false ? ' The import was not automatically verified.' : '';
+                const sessionChangedNote = sourceStillUsesRequestedSession
+                    ? ''
+                    : ' This source was removed or changed to another browser session while Chrome was open, so it was not reloaded.';
+                Toast.success(`${platformLabel} Sign-In`, `Imported the Chrome sign-in into the ${requestedSessionLabel} session.${verificationNote}${sessionChangedNote}`);
+                if (sourceStillUsesRequestedSession && currentSource.vid) {
+                    refreshWindow(ele);
+                }
+                return true;
+            } catch (error) {
+                console.error(`${platformLabel} Chrome sign-in failed:`, error);
+                Toast.error(`${platformLabel} Sign-In`, error?.message || 'Could not import the Chrome sign-in.');
+                return false;
+            } finally {
+                ele.disabled = false;
+                ele.innerHTML = originalLabel;
             }
         }
 
@@ -11466,12 +11842,7 @@
             }
 
             if (wsOption) {
-                wsOption.classList.toggle('disabled', forcedValue);
-                if (forcedValue) {
-                    wsOption.dataset.disabled = 'true';
-                } else {
-                    delete wsOption.dataset.disabled;
-                }
+                setButtonLikeControlDisabled(wsOption, forcedValue);
                 wsOption.style.opacity = forcedValue ? '0.6' : '';
                 if (!forcedValue) {
                     wsOption.title = 'Use the TikTok WebSocket connector when the signer is healthy.';
@@ -11480,20 +11851,14 @@
                 }
             }
             if (legacyOption) {
-                legacyOption.classList.toggle('disabled', forcedValue);
-                legacyOption.dataset.disabled = forcedValue ? 'true' : 'false';
+                setButtonLikeControlDisabled(legacyOption, forcedValue);
                 legacyOption.style.opacity = forcedValue ? '0.6' : '';
                 legacyOption.title = forcedValue
                     ? lockMessage
                     : 'Use HTTP polling without signing.';
             }
             if (wsMenuItem) {
-                wsMenuItem.classList.toggle('disabled', forcedValue);
-                if (forcedValue) {
-                    wsMenuItem.dataset.disabled = 'true';
-                } else {
-                    delete wsMenuItem.dataset.disabled;
-                }
+                setSettingsMenuItemDisabled(wsMenuItem, forcedValue);
                 wsMenuItem.style.opacity = forcedValue ? '0.6' : '';
                 if (!wsMenuItem.dataset.originalTitle) {
                     wsMenuItem.dataset.originalTitle = wsMenuItem.title || 'Connect to the TikTok API directly using WebSockets';
@@ -11503,8 +11868,7 @@
                     : (wsMenuItem.dataset.originalTitle || 'Connect to the TikTok API directly using WebSockets');
             }
             if (legacyMenuItem) {
-                legacyMenuItem.classList.toggle('disabled', forcedValue);
-                legacyMenuItem.dataset.disabled = forcedValue ? 'true' : 'false';
+                setSettingsMenuItemDisabled(legacyMenuItem, forcedValue);
                 legacyMenuItem.style.opacity = forcedValue ? '0.6' : '';
                 if (!legacyMenuItem.dataset.originalTitle) {
                     legacyMenuItem.dataset.originalTitle = legacyMenuItem.title || 'Use HTTP polling without signing.';
@@ -11860,6 +12224,7 @@
                                 if (opt.dataset.mode === mode) {
                                     opt.classList.add('active');
                                 }
+                                enhanceButtonLikeControl(opt, { pressed: opt.classList.contains('active') });
                             });
                         }
                     }
@@ -17386,7 +17751,7 @@
             // Close the settings menu
             const settingsMenu = button.closest('.settings-menu');
             if (settingsMenu) {
-                settingsMenu.classList.remove('active');
+                setSettingsMenuOpen(settingsMenu._ssappSettingsTrigger, settingsMenu, false);
             }
 
             // Load saved user agents
@@ -17620,7 +17985,7 @@
             // Close settings menu
             const settingsMenu = button.closest('.settings-menu');
             if (settingsMenu) {
-                settingsMenu.classList.remove('active');
+                setSettingsMenuOpen(settingsMenu._ssappSettingsTrigger, settingsMenu, false);
             }
 
             // Store the current session value
