@@ -143,11 +143,18 @@ async function run() {
 				}
 				let featuredUrl = '';
 				let dockUrl = '';
+				let chatbotGuideLinks = [];
 				while (Date.now() - started <= 30000) {
 					try {
 						featuredUrl = frame && frame.contentDocument && frame.contentDocument.getElementById('overlaylink')?.href || '';
 						dockUrl = frame && frame.contentDocument && frame.contentDocument.getElementById('docklink')?.href || '';
-						if (featuredUrl && dockUrl) break;
+						chatbotGuideLinks = Array.from(frame?.contentDocument?.querySelectorAll('[data-chatbot-guide-link]') || []).map(link => ({
+							context: link.getAttribute('data-chatbot-guide-link'),
+							href: link.href,
+							target: link.target,
+							rel: link.rel,
+						}));
+						if (featuredUrl && dockUrl && chatbotGuideLinks.length === 2) break;
 					} catch (_) { }
 					await new Promise(resolve => setTimeout(resolve, 100));
 				}
@@ -158,6 +165,7 @@ async function run() {
 					origin: frame && frame.dataset.ssappOrigin,
 					featuredUrl,
 					dockUrl,
+					chatbotGuideLinks,
 				};
 			})()`,
 		});
@@ -174,6 +182,18 @@ async function run() {
 		assert.ok(new URL(result.result.featuredUrl).pathname.endsWith('/featured.html'), result.result.featuredUrl);
 		assert.strictEqual(new URL(result.result.dockUrl).origin, 'https://socialstream.ninja', result.result.dockUrl);
 		assert.ok(new URL(result.result.dockUrl).pathname.endsWith('/dock.html'), result.result.dockUrl);
+		assert.deepStrictEqual(
+			result.result.chatbotGuideLinks.map(link => link.context).sort(),
+			['primary', 'provider'],
+			JSON.stringify(result.result.chatbotGuideLinks)
+		);
+		for (const link of result.result.chatbotGuideLinks) {
+			const guideUrl = new URL(link.href);
+			assert.strictEqual(guideUrl.origin, 'https://socialstream.ninja', JSON.stringify(link));
+			assert.strictEqual(guideUrl.pathname, '/docs/chatbot-basics-guide.html', JSON.stringify(link));
+			assert.strictEqual(link.target, '_blank', JSON.stringify(link));
+			assert.ok(link.rel.split(/\s+/).includes('noopener'), JSON.stringify(link));
+		}
 		console.log('Popup fallback link Electron end-to-end checks passed.');
 	} catch (error) {
 		throw new Error(`${error.message}\n${output.slice(-5000)}`);

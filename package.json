@@ -43,6 +43,8 @@
     "test:eventflow-user-memory:e2e": "node tests/electron/eventflow-user-memory-e2e.js",
     "test:individual-likes:e2e": "node tests/electron/individual-like-routing-e2e.js",
     "test:popup-fallback-links:e2e": "node tests/electron/popup-fallback-links-e2e.js",
+    "test:llm-diagnostics": "node tests/electron/llm-request-diagnostics-regression.js",
+    "test:llm-diagnostics:e2e": "node tests/electron/llm-provider-diagnostics-e2e.js",
     "test:llm-control:e2e": "node tests/electron/llm-control-headless-e2e.js",
     "test:review-fixes": "node tests/electron/review-fixes-regression.js",
     "test:mcp-control:e2e": "node tests/electron/ssapp-mcp-e2e.js",

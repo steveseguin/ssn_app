@@ -261,6 +261,7 @@ if (!isLoopbackHost(localWebSocketConfig.host)) {
 let localMediaService = null;
 const reporter = require('./error-reporter');
 reporter.init(store);
+const llmRequestDiagnostics = require('./resources/llm-request-diagnostics');
 const POPUP_UNCLICKABLE_ALL_KEY = 'popupUnclickableAll';
 const CUSTOM_JS_FILE_STORE_KEY = 'customJsFile';
 const CUSTOM_JS_MAX_BYTES = 1024 * 1024;
@@ -11453,6 +11454,24 @@ async function createWindow(args, reuse = false, mainApp = false) {
         };
     }
 
+    function prepareTrackedNodeFetch(args = {}) {
+        const diagnostic = llmRequestDiagnostics.begin(args);
+        const headers = { ...(args.headers || {}) };
+        if (diagnostic) {
+            const hasClientRequestId = Object.keys(headers).some(key => key.toLowerCase() === 'x-client-request-id');
+            if (!hasClientRequestId) headers['X-Client-Request-Id'] = diagnostic.entry.clientRequestId;
+        }
+        return { diagnostic, headers };
+    }
+
+    function buildNodeFetchResponse(response, data) {
+        return {
+            status: response.status,
+            data,
+            headers: llmRequestDiagnostics.getSafeResponseHeaders(response.headers)
+        };
+    }
+
     function getJsonErrorMessage(json, fallback) {
         if (json && json.error_description) return String(json.error_description);
         if (json && typeof json.error === "string") return json.error;
@@ -11796,24 +11815,30 @@ async function createWindow(args, reuse = false, mainApp = false) {
     // Keep the synchronous version for backward compatibility
     ipcMain.on("nodefetch", function (eventRet, args) {
         log("NODE FETCHING! (sync)");
+        const tracked = prepareTrackedNodeFetch(args);
         fetch(args.url, {
             method: args.method || "GET",
-            headers: args.headers,
+            headers: tracked.headers,
             body: args.method === 'POST' ? JSON.stringify(args.body) : undefined,
             timeout: args.timeout || 30000
         })
             .then((response) => {
                 log(response);
-                return response.text().then(text => ({
-                    status: response.status,
-                    data: text
-                }));
+                return response.text().then(text => {
+                    llmRequestDiagnostics.complete(tracked.diagnostic, {
+                        status: response.status,
+                        headers: response.headers,
+                        body: text
+                    });
+                    return buildNodeFetchResponse(response, text);
+                });
             })
             .then((result) => {
                 eventRet.returnValue = result;
             })
             .catch((error) => {
                 console.error("Fetch error:", error);
+                llmRequestDiagnostics.fail(tracked.diagnostic, error);
                 eventRet.returnValue = normalizeNodeFetchError(error);
             });
     });
@@ -11821,21 +11846,25 @@ async function createWindow(args, reuse = false, mainApp = false) {
     // Add async version
     ipcMain.handle("nodefetch", async function (event, args) {
         log("NODE FETCHING! (async)");
+        const tracked = prepareTrackedNodeFetch(args);
         try {
             const response = await fetch(args.url, {
                 method: args.method || "GET",
-                headers: args.headers,
+                headers: tracked.headers,
                 body: args.method === 'POST' ? JSON.stringify(args.body) : undefined,
                 timeout: args.timeout || 30000
             });
 
             const text = await response.text();
-            return {
+            llmRequestDiagnostics.complete(tracked.diagnostic, {
                 status: response.status,
-                data: text
-            };
+                headers: response.headers,
+                body: text
+            });
+            return buildNodeFetchResponse(response, text);
         } catch (error) {
             console.error("Fetch error:", error);
+            llmRequestDiagnostics.fail(tracked.diagnostic, error);
             return normalizeNodeFetchError(error);
         }
     });
@@ -11879,9 +11908,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
         const {
             channelId,
             url,
-            body,
-            headers
+            body
         } = args;
+        const tracked = prepareTrackedNodeFetch({ ...args, method: 'POST' });
         const abortController = new AbortController();
         const abortChannel = `${channelId}-abort`;
         const closeChannel = `${channelId}-close`;
@@ -11897,17 +11926,27 @@ async function createWindow(args, reuse = false, mainApp = false) {
         try {
             const response = await undiciFetch(url, {
                 method: "POST",
-                headers: headers,
+                headers: tracked.headers,
                 body: (typeof body === 'object') ? JSON.stringify(body) : body,
                 signal: abortController.signal
             });
 
 
             if (!response.ok) {
-                // log("FAILLLLLLLLL "+response.status);
+                const errorBody = await response.text();
+                let errorData = null;
+                try { errorData = JSON.parse(errorBody); } catch (_) { }
+                llmRequestDiagnostics.complete(tracked.diagnostic, {
+                    status: response.status,
+                    headers: response.headers,
+                    body: errorBody
+                });
                 event.reply(channelId, {
-                    error: response.status,
-                    message: `HTTP error! status: ${response.status}`
+                    error: true,
+                    status: response.status,
+                    code: errorData?.error?.code || errorData?.error?.type || errorData?.code || null,
+                    message: errorData?.error?.message || errorData?.message || `HTTP error! status: ${response.status}`,
+                    headers: llmRequestDiagnostics.getSafeResponseHeaders(response.headers)
                 });
                 return;
             }
@@ -11922,6 +11961,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     value
                 } = await reader.read();
                 if (done) {
+                    llmRequestDiagnostics.complete(tracked.diagnostic, {
+                        status: response.status,
+                        headers: response.headers
+                    });
                     event.reply(channelId, null); // Signal end of stream
                     break;
                 }
@@ -11932,6 +11975,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
 
         } catch (error) {
+            llmRequestDiagnostics.fail(tracked.diagnostic, error);
             if (error?.name !== 'AbortError') {
                 console.error('Fetch error:', error);
             }
@@ -19000,7 +19044,8 @@ async function sendErrorReportingEnabledSnapshot() {
             {
                 trigger: 'enable_error_reporting',
                 platform: process.platform,
-                tiktokDiagnostics: getTikTokDiagnosticReportContext()
+                tiktokDiagnostics: getTikTokDiagnosticReportContext(),
+                llmDiagnostics: llmRequestDiagnostics.getRecent()
             }
         );
         return true;
@@ -19020,8 +19065,8 @@ async function promptAndSendManualIssueReport() {
             title: 'Report Issue',
             message: 'Error reporting needs to be enabled to send a diagnostic report.',
             detail:
-                'This sends your app version, a random install ID, your current app settings, and the issue description you enter next.\n\n' +
-                'OAuth tokens, session data, and backup credentials are not sent.'
+                'This sends your app version, a random install ID, your current app settings, the issue description you enter next, and privacy-safe metadata for recent AI requests.\n\n' +
+                'API keys, prompts, OAuth tokens, session data, and backup credentials are not sent.'
         });
         if (response !== 0) {
             return;
@@ -19062,7 +19107,8 @@ async function promptAndSendManualIssueReport() {
                 trigger: 'manual_issue_report',
                 description: cleanedDescription,
                 platform: process.platform,
-                tiktokDiagnostics: getTikTokDiagnosticReportContext()
+                tiktokDiagnostics: getTikTokDiagnosticReportContext(),
+                llmDiagnostics: llmRequestDiagnostics.getRecent()
             }
         );
         await showReporterMessageBox({
