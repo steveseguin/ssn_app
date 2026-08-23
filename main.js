@@ -12371,7 +12371,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
             let preloadScript = null;
             const isFacebookSignIn = platform === 'facebook' || domain === 'facebook.com';
             const isTwitchSignIn = platform === 'twitch' || domain === 'twitch.tv';
-            const needsGoogleOAuthCompatibility = isTwitchSignIn
+            const hasBuiltInGoogleOAuthCompatibility = ['twitch', 'tiktok', 'x'].includes(platform);
+            const needsGoogleOAuthCompatibility = hasBuiltInGoogleOAuthCompatibility
                 || args?.config?.googleOAuthCompatibility === true
                 || args?.config?.signin?.googleOAuthCompatibility === true;
 
