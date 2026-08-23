@@ -230,22 +230,16 @@ async function run() {
 				};
 			})()`
 		);
-		assert.strictEqual(popupState.acceptCH, null, "Accept-CH must be stripped inside Twitch OAuth popups");
+		assert.strictEqual(
+			popupState.acceptCH,
+			"Sec-CH-UA-Full-Version-List, Sec-CH-UA-Platform-Version",
+			"OAuth popups must retain their own Accept-CH negotiation"
+		);
 		assert.strictEqual(popupState.hasNodeProcess, false);
 		assert.strictEqual(popupState.hasNodeRequire, false);
 
 		const probeHeaders = fixture.getProbeHeaders();
 		assert.ok(probeHeaders, "the popup should request the client-hint probe");
-		assert.strictEqual(
-			probeHeaders["sec-ch-ua-full-version-list"],
-			undefined,
-			"the OAuth popup must not send Chromium's high-entropy version list"
-		);
-		assert.strictEqual(
-			probeHeaders["sec-ch-ua-platform-version"],
-			undefined,
-			"the OAuth popup must not send Chromium's real platform version"
-		);
 
 		console.log("Twitch sign-in compatibility end-to-end checks passed.");
 	} catch (error) {

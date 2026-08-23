@@ -11,8 +11,10 @@ function run() {
 
 	const apiKey = 'sk-proj-ssapp-diagnostic-secret-that-must-not-leak';
 	const prompt = 'private prompt that must not be captured';
+	const pathSecret = 'sk-proj-path-secret-that-must-not-leak';
+	const userInfoSecret = 'userinfo-secret-that-must-not-leak';
 	const handle = diagnostics.begin({
-		url: 'https://api.openai.com/v1/chat/completions?private=query-value',
+		url: `https://diagnostic-user:${userInfoSecret}@llm.example/${pathSecret}/v1/chat/completions?private=query-value#fragment-secret`,
 		method: 'POST',
 		headers: { Authorization: `Bearer ${apiKey}` },
 		body: {
@@ -47,7 +49,7 @@ function run() {
 	assert.strictEqual(recent.length, 1);
 	assert.strictEqual(recent[0].provider, 'chatgpt');
 	assert.strictEqual(recent[0].model, 'gpt-5.4-mini');
-	assert.strictEqual(recent[0].endpoint, 'https://api.openai.com/v1/chat/completions');
+	assert.strictEqual(recent[0].endpoint, 'https://llm.example');
 	assert.strictEqual(recent[0].credential.type, 'project-api-key');
 	assert.strictEqual(recent[0].credential.fingerprint.length, 12);
 	assert.strictEqual(recent[0].status, 401);
@@ -65,8 +67,24 @@ function run() {
 	const serialized = JSON.stringify(recent);
 	assert.strictEqual(serialized.includes(apiKey), false);
 	assert.strictEqual(serialized.includes(prompt), false);
+	assert.strictEqual(serialized.includes(pathSecret), false);
+	assert.strictEqual(serialized.includes(userInfoSecret), false);
 	assert.strictEqual(serialized.includes('query-value'), false);
+	assert.strictEqual(serialized.includes('fragment-secret'), false);
 	assert.strictEqual(serialized.includes('private-cookie'), false);
+
+	const cancelled = diagnostics.begin({
+		url: 'https://llm.example/v1/chat/completions',
+		method: 'POST',
+		body: { model: 'cancelled-model', stream: true },
+		diagnostics: { kind: 'llm', provider: 'custom' },
+	});
+	diagnostics.cancel(cancelled);
+	assert.strictEqual(
+		diagnostics.getRecent().some(entry => entry.model === 'cancelled-model'),
+		false,
+		'user-cancelled streams must not consume a recent diagnostic slot'
+	);
 
 	for (let index = 0; index < 12; index += 1) {
 		diagnostics.begin({

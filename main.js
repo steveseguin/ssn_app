@@ -7356,9 +7356,8 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
     return hooks;
 }
 
-function registerClientHintFiltering(ses, webContentsId, shouldFilter = () => true) {
-    const isSessionWide = webContentsId === null;
-    if (!ses || (!isSessionWide && typeof webContentsId !== 'number')) {
+function registerClientHintFiltering(ses, webContentsId, shouldFilter = () => true, options = {}) {
+    if (!ses || typeof webContentsId !== 'number') {
         return () => { };
     }
 
@@ -7366,7 +7365,7 @@ function registerClientHintFiltering(ses, webContentsId, shouldFilter = () => tr
     if (!hooks) {
         hooks = {
             filtersByWebContentsId: new Map(),
-            sessionFilters: new Set()
+            googleOAuthCompatibilityLeases: 0
         };
 
         try {
@@ -7375,16 +7374,11 @@ function registerClientHintFiltering(ses, webContentsId, shouldFilter = () => tr
                     ? details.responseHeaders
                     : {};
 
-                const webContentsFilter = hooks.filtersByWebContentsId.get(details?.webContentsId);
-                const matchesWebContentsFilter = Boolean(webContentsFilter && webContentsFilter(details));
-                let matchesSessionFilter = false;
-                for (const filter of hooks.sessionFilters) {
-                    if (filter(details)) {
-                        matchesSessionFilter = true;
-                        break;
-                    }
-                }
-                if (!matchesWebContentsFilter && !matchesSessionFilter) {
+                const filter = hooks.filtersByWebContentsId.get(details?.webContentsId);
+                const isGoogleOAuthRequest = hooks.googleOAuthCompatibilityLeases > 0
+                    && typeof details?.url === 'string'
+                    && details.url.startsWith('https://accounts.google.com/');
+                if ((!filter || !filter(details)) && !isGoogleOAuthRequest) {
                     callback({ responseHeaders });
                     return;
                 }
@@ -7392,6 +7386,15 @@ function registerClientHintFiltering(ses, webContentsId, shouldFilter = () => tr
                 const filteredHeaders = { ...responseHeaders };
                 delete filteredHeaders['Accept-CH'];
                 delete filteredHeaders['accept-ch'];
+                if (isGoogleOAuthRequest) {
+                    // This is the exact response policy used by the last build that
+                    // completed Twitch -> Google sign-in. Keep it scoped to Google's
+                    // OAuth documents so Twitch's Kasada scripts and workers remain
+                    // unrestricted for direct username/password sign-in.
+                    filteredHeaders['Content-Security-Policy'] = [
+                        "default-src 'self' https: wss: data: blob:; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:;"
+                    ];
+                }
                 callback({ responseHeaders: filteredHeaders });
             });
             clientHintsConfiguredSessions.set(ses, hooks);
@@ -7401,20 +7404,18 @@ function registerClientHintFiltering(ses, webContentsId, shouldFilter = () => tr
         }
     }
 
-    if (isSessionWide) {
-        hooks.sessionFilters.add(shouldFilter);
-    } else {
-        hooks.filtersByWebContentsId.set(webContentsId, shouldFilter);
+    hooks.filtersByWebContentsId.set(webContentsId, shouldFilter);
+    if (options.googleOAuthCompatibility) {
+        hooks.googleOAuthCompatibilityLeases += 1;
     }
 
     let released = false;
     return () => {
         if (released) return;
         released = true;
-        if (isSessionWide) {
-            hooks.sessionFilters.delete(shouldFilter);
-        } else {
-            hooks.filtersByWebContentsId.delete(webContentsId);
+        hooks.filtersByWebContentsId.delete(webContentsId);
+        if (options.googleOAuthCompatibility) {
+            hooks.googleOAuthCompatibilityLeases = Math.max(0, hooks.googleOAuthCompatibilityLeases - 1);
         }
     };
 }
@@ -11980,8 +11981,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
 
         } catch (error) {
-            llmRequestDiagnostics.fail(tracked.diagnostic, error);
-            if (error?.name !== 'AbortError') {
+            if (error?.name === 'AbortError') {
+                llmRequestDiagnostics.cancel(tracked.diagnostic);
+            } else {
+                llmRequestDiagnostics.fail(tracked.diagnostic, error);
                 console.error('Fetch error:', error);
             }
             event.reply(channelId, null);
@@ -12580,15 +12583,17 @@ async function createWindow(args, reuse = false, mainApp = false) {
             let releaseSignInClientHintFiltering = () => { };
 
 
-            // Strip Accept-CH just like the known-working Mock setup. Twitch needs
-            // session-wide filtering because Google authentication opens in a child
-            // webContents that shares the Twitch session.
+            // Default filtering is limited to the top-level sign-in page. Generic
+            // OAuth popups retain their own response policy; Twitch's Google route
+            // receives the explicitly scoped compatibility policy above.
             if (args.config && args.config.userAgent && args.config.mockUserAgentData && preloadScript !== 'preload-kasada.js') {
                 const session = view.webContents.session;
                 if (session && !enforceSignInCSP && !cspConfiguredSessions.has(session)) {
                     releaseSignInClientHintFiltering = registerClientHintFiltering(
                         session,
-                        isTwitchSignIn ? null : view.webContents.id
+                        view.webContents.id,
+                        () => true,
+                        { googleOAuthCompatibility: isTwitchSignIn }
                     );
                 }
             }

@@ -40,7 +40,11 @@ function getSafeResponseHeaders(headers) {
 function getSafeEndpoint(rawUrl) {
 	try {
 		const parsed = new URL(String(rawUrl || ''));
-		return `${parsed.origin}${parsed.pathname}`.slice(0, 500);
+		if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '[unsupported-url]';
+		// Paths on self-hosted and proxy endpoints can contain API keys, tenant
+		// tokens, or signed routing data. The origin is enough to identify the
+		// service without risking disclosure of those credentials.
+		return parsed.origin.slice(0, 500);
 	} catch (_) {
 		return '[invalid-url]';
 	}
@@ -144,6 +148,13 @@ function fail(handle, error) {
 	};
 }
 
+function cancel(handle) {
+	if (!handle || !handle.entry) return;
+	const entryIndex = recentRequests.indexOf(handle.entry);
+	if (entryIndex >= 0) recentRequests.splice(entryIndex, 1);
+	handle.entry = null;
+}
+
 function getRecent() {
 	return JSON.parse(JSON.stringify(recentRequests));
 }
@@ -154,6 +165,7 @@ function resetForTesting() {
 
 module.exports = {
 	begin,
+	cancel,
 	complete,
 	fail,
 	getRecent,
