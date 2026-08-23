@@ -12371,6 +12371,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             let preloadScript = null;
             const isFacebookSignIn = platform === 'facebook' || domain === 'facebook.com';
             const isTwitchSignIn = platform === 'twitch' || domain === 'twitch.tv';
+            const needsGoogleOAuthCompatibility = isTwitchSignIn
+                || args?.config?.googleOAuthCompatibility === true
+                || args?.config?.signin?.googleOAuthCompatibility === true;
 
             // Domains known to use Kasada protection
             const kasadaDomains = ['twitch.tv', 'kick.com'];
@@ -12583,9 +12586,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             let releaseSignInClientHintFiltering = () => { };
 
 
-            // Default filtering is limited to the top-level sign-in page. Generic
-            // OAuth popups retain their own response policy; Twitch's Google route
-            // receives the explicitly scoped compatibility policy above.
+            // Default filtering is limited to the top-level sign-in page. Google
+            // OAuth documents for sources that reject Electron receive the same
+            // narrowly scoped response policy as the verified Twitch flow.
             if (args.config && args.config.userAgent && args.config.mockUserAgentData && preloadScript !== 'preload-kasada.js') {
                 const session = view.webContents.session;
                 if (session && !enforceSignInCSP && !cspConfiguredSessions.has(session)) {
@@ -12593,7 +12596,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         session,
                         view.webContents.id,
                         () => true,
-                        { googleOAuthCompatibility: isTwitchSignIn }
+                        { googleOAuthCompatibility: needsGoogleOAuthCompatibility }
                     );
                 }
             }
