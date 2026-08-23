@@ -353,7 +353,15 @@ async function pressPreset(streamDeck, relay, command, value, expectedFeedback =
 		`${command} title render`
 	);
 	const relayStart = relay.messages.length;
+	const streamDeckStart = streamDeck.messages.length;
 	streamDeck.send(actionEvent('keyDown', context, settings));
+	if (command === 'creditsReset') {
+		await waitFor(
+			() => streamDeck.messages.slice(streamDeckStart).find(message => message.event === 'setTitle' && message.context === context),
+			'creditsReset confirmation prompt'
+		);
+		streamDeck.send(actionEvent('keyDown', context, settings));
+	}
 	await streamDeck.waitForMessage(
 		message => message.event === expectedFeedback && message.context === context,
 		`${command} ${expectedFeedback}`,
