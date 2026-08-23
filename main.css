@@ -52,6 +52,9 @@ html {
   overflow: hidden;
   color: white;
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+:where(button, input, select, textarea) {
   color-scheme: dark;
 }
 
@@ -445,6 +448,7 @@ body {
 }
 
 #welcomeFrame {
+  background: transparent;
   scrollbar-width: thin;
   scrollbar-color: #ffffff40 #00000080;
 }
@@ -1214,6 +1218,7 @@ button.group-control {
   --signin-note-bg: #3a311c;
   --signin-note-border: #8a6b1f;
   --signin-note-text: #fde68a;
+  color-scheme: dark;
   box-sizing: border-box;
   width: min(100%, 520px);
   max-height: calc(100vh - 40px);
@@ -1337,7 +1342,6 @@ button.group-control {
 /* Component-level light palette for theme validation and future shell theming. */
 :root[data-ssapp-theme="light"] {
   --focus-ring: #0b57d0;
-  color-scheme: light;
 }
 
 :root[data-ssapp-theme="light"] .signin-method-dialog {
@@ -1355,6 +1359,7 @@ button.group-control {
   --signin-note-bg: #fff7d6;
   --signin-note-border: #b77900;
   --signin-note-text: #5c3b00;
+  color-scheme: light;
 }
 
 @media (max-width: 600px) {

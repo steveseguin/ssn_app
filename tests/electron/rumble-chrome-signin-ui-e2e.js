@@ -9,6 +9,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
+const sharp = require('sharp');
 const { linuxLaunchArgs } = require('./helpers/electron-launch');
 
 const electronPath = require('electron');
@@ -77,6 +78,25 @@ function payloadOf(toolResult) {
 
 function delay(milliseconds) {
 	return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+async function decodeScreenshot(buffer) {
+	const { data, info } = await sharp(buffer)
+		.ensureAlpha()
+		.raw()
+		.toBuffer({ resolveWithObject: true });
+	return { data, width: info.width, height: info.height, channels: info.channels };
+}
+
+function screenshotPixel(image, point, viewport) {
+	const x = Math.max(0, Math.min(image.width - 1, Math.round(point.x * image.width / viewport.width)));
+	const y = Math.max(0, Math.min(image.height - 1, Math.round(point.y * image.height / viewport.height)));
+	const offset = ((y * image.width) + x) * image.channels;
+	return Array.from(image.data.subarray(offset, offset + 3));
+}
+
+function maximumColorDifference(first, second) {
+	return Math.max(...first.map((channel, index) => Math.abs(channel - second[index])));
 }
 
 async function getFreePort() {
@@ -197,7 +217,7 @@ async function run() {
 			key,
 			confirm: true
 		});
-		const saveScreenshot = async suffix => {
+		const captureScreenshot = async suffix => {
 			if (screenshotDirectory) fs.mkdirSync(screenshotDirectory, { recursive: true });
 			let screenshot;
 			let lastError;
@@ -217,12 +237,87 @@ async function run() {
 			if (!screenshot) throw lastError || new Error('MCP screenshot failed');
 			const image = (screenshot.content || []).find(item => item.type === 'image' && item.mimeType === 'image/png');
 			assert.ok(image?.data, 'MCP did not return a PNG screenshot');
-			if (!screenshotDirectory) return null;
-			const screenshotPath = path.join(screenshotDirectory, `${screenshotPrefix}-${suffix}.png`);
-			fs.writeFileSync(screenshotPath, Buffer.from(image.data, 'base64'));
-			console.log(`Saved sign-in chooser screenshot: ${screenshotPath}`);
-			return screenshotPath;
+			const buffer = Buffer.from(image.data, 'base64');
+			if (screenshotDirectory) {
+				const screenshotPath = path.join(screenshotDirectory, `${screenshotPrefix}-${suffix}.png`);
+				fs.writeFileSync(screenshotPath, buffer);
+				console.log(`Saved SSApp theme screenshot: ${screenshotPath}`);
+			}
+			return buffer;
 		};
+		const saveScreenshot = captureScreenshot;
+		const assertWelcomeFrameTransparency = async theme => {
+			await execute(theme === 'light'
+				? `document.documentElement.dataset.ssappTheme = 'light'; true`
+				: `delete document.documentElement.dataset.ssappTheme; true`);
+			const state = await waitFor(async () => await execute(`(() => {
+				const frame = document.getElementById('welcomeFrame');
+				const frameDocument = frame?.contentDocument;
+				if (!frame || !frameDocument?.body) return null;
+				const rect = frame.getBoundingClientRect();
+				const container = frameDocument.querySelector('.container');
+				const containerRect = container?.getBoundingClientRect();
+				if (rect.width < 100 || rect.height < 100 || !containerRect) return null;
+				return {
+					viewport: { width: innerWidth, height: innerHeight },
+					frameRect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+					containerRect: { left: containerRect.left, top: containerRect.top, right: containerRect.right, bottom: containerRect.bottom },
+					containerText: container.textContent || '',
+					rootColorScheme: getComputedStyle(document.documentElement).colorScheme,
+					frameColorScheme: getComputedStyle(frame).colorScheme,
+					guideHtmlBackground: getComputedStyle(frameDocument.documentElement).background,
+					guideBodyBackground: getComputedStyle(frameDocument.body).background,
+					guideHtmlBackgroundImage: getComputedStyle(frameDocument.documentElement).backgroundImage,
+					guideBodyBackgroundImage: getComputedStyle(frameDocument.body).backgroundImage
+				};
+			})()`), `welcome frame in ${theme} theme`);
+			assert.strictEqual(state.rootColorScheme, 'normal', `${theme} theme leaked its native color scheme into embedded pages`);
+			assert.strictEqual(state.frameColorScheme, 'normal', `${theme} theme leaked its native color scheme into the welcome iframe`);
+			assert.match(state.containerText, /Welcome to Social Stream Ninja/, `${theme} guide content did not load`);
+			assert.strictEqual(state.guideHtmlBackgroundImage, 'none', `${theme} guide html retained a background image`);
+			assert.strictEqual(state.guideBodyBackgroundImage, 'none', `${theme} guide body retained a background image`);
+
+			const visible = await captureScreenshot(`welcome-${theme}`);
+			await execute(`document.getElementById('welcomeFrame').style.visibility = 'hidden'; true`);
+			let hidden;
+			try {
+				await delay(100);
+				hidden = await captureScreenshot(`welcome-${theme}-frame-hidden`);
+			} finally {
+				await execute(`document.getElementById('welcomeFrame').style.visibility = ''; true`);
+			}
+			const [visibleImage, hiddenImage] = await Promise.all([
+				decodeScreenshot(visible),
+				decodeScreenshot(hidden)
+			]);
+			const samplePoints = [
+				{ x: state.frameRect.left + 8, y: state.frameRect.top + 8 },
+				{ x: state.frameRect.left + 18, y: state.frameRect.top + 8 },
+				{ x: state.frameRect.right - 18, y: state.frameRect.top + 8 }
+			];
+			const differences = samplePoints.map(point => maximumColorDifference(
+				screenshotPixel(visibleImage, point, state.viewport),
+				screenshotPixel(hiddenImage, point, state.viewport)
+			));
+			const maximumDifference = Math.max(...differences);
+			assert.ok(maximumDifference <= 2, `${theme} welcome iframe painted an opaque canvas (pixel difference ${maximumDifference})`);
+			const contentPoint = {
+				x: state.frameRect.left + state.containerRect.left + 10,
+				y: state.frameRect.top + state.containerRect.top + 10
+			};
+			const contentDifference = maximumColorDifference(
+				screenshotPixel(visibleImage, contentPoint, state.viewport),
+				screenshotPixel(hiddenImage, contentPoint, state.viewport)
+			);
+			assert.ok(contentDifference >= 5, `${theme} welcome guide content was not visibly painted`);
+			return { maximumDifference, contentDifference, rootColorScheme: state.rootColorScheme };
+		};
+
+		const welcomeThemeResults = {
+			dark: await assertWelcomeFrameTransparency('dark'),
+			light: await assertWelcomeFrameTransparency('light')
+		};
+		await execute(`delete document.documentElement.dataset.ssappTheme; true`);
 
 		const preview = await execute(`(async () => {
 			if (!window.stateManager || typeof createSourceElement !== 'function') return false;
@@ -292,7 +387,8 @@ async function run() {
 					boxShadow: focusedStyle?.boxShadow || ''
 				},
 				fitsViewport: !!rect && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight,
-				horizontalOverflow: document.documentElement.scrollWidth > innerWidth
+				horizontalOverflow: document.documentElement.scrollWidth > innerWidth,
+				colorScheme: getComputedStyle(dialog).colorScheme
 			};
 		})()`);
 
@@ -304,6 +400,7 @@ async function run() {
 		assert.match(darkState.describedBy, /signin-method-note/);
 		assert.strictEqual(darkState.focusedChoice, 'chrome', 'initial focus should enter the chooser');
 		assert.strictEqual(darkState.backgroundInert, true, 'the app behind the chooser should be inert');
+		assert.strictEqual(darkState.colorScheme, 'dark', 'dark chooser should use dark native controls');
 		assert.ok(darkState.contrast.chrome >= 4.5, `Chrome option contrast was ${darkState.contrast.chrome}`);
 		assert.ok(darkState.contrast.ssapp >= 4.5, `SSApp option contrast was ${darkState.contrast.ssapp}`);
 		assert.ok(darkState.contrast.cancel >= 4.5, `Cancel contrast was ${darkState.contrast.cancel}`);
@@ -329,6 +426,7 @@ async function run() {
 		await delay(250);
 		await saveScreenshot('light');
 		const lightState = await getAccessibilityState();
+		assert.strictEqual(lightState.colorScheme, 'light', 'light chooser should use light native controls');
 		assert.ok(lightState.contrast.chrome >= 4.5, `Light Chrome option contrast was ${lightState.contrast.chrome}`);
 		assert.ok(lightState.contrast.ssapp >= 4.5, `Light SSApp option contrast was ${lightState.contrast.ssapp}: ${JSON.stringify(lightState.colors.ssapp)}`);
 		assert.ok(lightState.contrast.cancel >= 4.5, `Light Cancel contrast was ${lightState.contrast.cancel}: ${JSON.stringify(lightState.colors.cancel)}`);
@@ -610,7 +708,7 @@ async function run() {
 				customSession: 'chrome-trial-profile'
 			}
 		]);
-		console.log('Rumble Chrome sign-in UI end-to-end checks passed.');
+		console.log(`Rumble Chrome sign-in UI end-to-end checks passed. Welcome transparency: ${JSON.stringify(welcomeThemeResults)}`);
 	} catch (error) {
 		console.error(error && error.stack ? error.stack : error);
 		console.error('Recent SSApp stdout:\n', stdout);

@@ -12589,13 +12589,18 @@ async function createWindow(args, reuse = false, mainApp = false) {
             // Default filtering is limited to the top-level sign-in page. Google
             // OAuth documents for sources that reject Electron receive the same
             // narrowly scoped response policy as the verified Twitch flow.
-            if (args.config && args.config.userAgent && args.config.mockUserAgentData && preloadScript !== 'preload-kasada.js') {
+            const shouldFilterSignInClientHints = Boolean(
+                args?.config?.userAgent
+                && args?.config?.mockUserAgentData
+                && preloadScript !== 'preload-kasada.js'
+            );
+            if (shouldFilterSignInClientHints || needsGoogleOAuthCompatibility) {
                 const session = view.webContents.session;
                 if (session && !enforceSignInCSP && !cspConfiguredSessions.has(session)) {
                     releaseSignInClientHintFiltering = registerClientHintFiltering(
                         session,
                         view.webContents.id,
-                        () => true,
+                        () => shouldFilterSignInClientHints,
                         { googleOAuthCompatibility: needsGoogleOAuthCompatibility }
                     );
                 }
