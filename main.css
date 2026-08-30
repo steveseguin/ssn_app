@@ -2145,7 +2145,6 @@ to {
 
 .entry:has(i.la-stop:not(.hidden)) .mode-selector,
 .entry:has([data-stophtml]:not(.hidden)) .mode-selector {
-  pointer-events: none !important;
   position: relative !important;
 }
 
@@ -3504,4 +3503,129 @@ input:checked + .slider:before {
   margin: 0 0 10px 10px;
   color: #e88;
   font-size: 0.85em;
+}
+
+/* Native Discord source setup */
+.discord-source-modal {
+  max-height: min(86vh, 820px);
+  overflow-y: auto;
+}
+
+.discord-source-intro {
+  margin: 4px 0 14px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.discord-setup-card {
+  padding: 14px;
+  margin-top: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.discord-setup-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.discord-setup-card-heading strong {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text-primary);
+}
+
+.discord-setup-steps {
+  margin: 12px 0;
+  padding-left: 22px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.discord-field-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(250px, 1.2fr);
+  gap: 12px;
+}
+
+.discord-field-grid label > span,
+.discord-token-field > span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.discord-field-grid select,
+.discord-field-grid input {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--text-primary);
+}
+
+.discord-field-grid select:disabled,
+.discord-field-grid input:disabled {
+  opacity: 0.55;
+}
+
+.discord-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.discord-setup-card > .discord-inline-actions {
+  margin-top: 10px;
+}
+
+.discord-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.discord-checkbox-row input {
+  width: 16px;
+  height: 16px;
+}
+
+.discord-setup-status {
+  min-height: 20px;
+  margin-top: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.discord-setup-status.success { color: var(--accent-green); }
+.discord-setup-status.error { color: var(--accent-red); }
+.discord-setup-status.info,
+.discord-setup-status.loading { color: var(--accent); }
+
+.modal-content button.danger {
+  color: var(--accent-red) !important;
+}
+
+@media (max-width: 760px) {
+  .discord-field-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .discord-setup-card-heading {
+    flex-direction: column;
+  }
 }

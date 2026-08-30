@@ -136,6 +136,8 @@
                             src="https://cache.socialstream.ninja/sources/images/twitch.png" class="icon" />Twitch</button></span>
                 <span><button onclick="newSourcePrompt('kick');" data-source-type="kick"><img
                             src="https://cache.socialstream.ninja/sources/images/kick.png" class="icon" />Kick</button></span>
+                <span><button onclick="showDiscordAddSourcePrompt();" data-source-type="discord"><img
+                            src="https://cache.socialstream.ninja/sources/images/discord.png" class="icon" />Discord</button></span>
                 <span><button onclick="newSourcePrompt('vpzone');" data-source-type="vpzone"><img
                             src="https://cache.socialstream.ninja/sources/images/vpzone.png" class="icon" />VPZONE</button></span>
                 <span><button onclick="newSourcePrompt('velora');" data-source-type="velora"><img
@@ -460,6 +462,114 @@
         </div>
     </div>
 
+    <div class="modal hidden" id="discordAddSourceModal" role="dialog" aria-modal="true"
+        aria-labelledby="discordAddSourceTitle">
+        <div class="modal-content modal-lg discord-source-modal">
+            <h2 id="discordAddSourceTitle">Add a Discord source</h2>
+
+            <div id="discordModeChoice" class="source-choice-list">
+                <button class="source-choice" id="discordNativeModeButton" type="button">
+                    <span class="source-choice-icon-wrap">
+                        <img src="https://cache.socialstream.ninja/sources/images/discord.png" alt="" class="source-choice-icon" />
+                    </span>
+                    <span class="source-choice-copy">
+                        <span class="source-choice-heading">
+                            <span class="source-choice-title">Connect a Discord bot</span>
+                            <span class="source-choice-badge">Recommended</span>
+                        </span>
+                        <span class="source-choice-description">Capture and send channel messages directly while SSApp is running. The Discord app and website can stay closed.</span>
+                    </span>
+                </button>
+                <button class="source-choice" id="discordWebModeButton" type="button">
+                    <span class="source-choice-icon-wrap">
+                        <img src="https://cache.socialstream.ninja/sources/images/discord.png" alt="" class="source-choice-icon" />
+                    </span>
+                    <span class="source-choice-copy">
+                        <span class="source-choice-heading">
+                            <span class="source-choice-title">Use Discord Web capture</span>
+                            <span class="source-choice-badge">Fallback</span>
+                        </span>
+                        <span class="source-choice-description">Use a normal Discord channel URL and browser session. Choose this when you cannot install a bot in the server.</span>
+                    </span>
+                </button>
+            </div>
+
+            <div id="discordNativeSetup" class="hidden">
+                <p class="discord-source-intro">SSApp stores the bot token using your operating system's encrypted credential storage. It is never added to your source list or sent to Social Stream Ninja.</p>
+
+                <div class="discord-setup-card">
+                    <div class="discord-setup-card-heading">
+                        <div>
+                            <strong>1. Add or select your bot</strong>
+                            <span class="field-hint">You need permission to install the bot in each Discord server.</span>
+                        </div>
+                        <button id="discordOpenDeveloperPortalButton" type="button" class="btn-secondary">Open Developer Portal</button>
+                    </div>
+                    <ol class="discord-setup-steps">
+                        <li>Create an application, open its <strong>Bot</strong> page, and create/reset the token.</li>
+                        <li>Turn on <strong>Message Content Intent</strong> under Privileged Gateway Intents.</li>
+                        <li>Paste the bot token below. Do not paste a client secret or public key.</li>
+                    </ol>
+                    <div class="discord-field-grid">
+                        <label>
+                            <span>Saved bot</span>
+                            <select id="discordBotSelect"></select>
+                        </label>
+                        <label class="discord-token-field">
+                            <span>Bot token</span>
+                            <input id="discordBotTokenInput" type="password" autocomplete="off" spellcheck="false"
+                                placeholder="Paste a new token to add or replace this bot" />
+                        </label>
+                    </div>
+                    <div class="discord-inline-actions">
+                        <button id="discordSaveBotButton" type="button">Save and verify bot</button>
+                        <button id="discordRemoveBotButton" type="button" class="btn-secondary danger hidden">Forget saved bot</button>
+                    </div>
+                </div>
+
+                <div class="discord-setup-card">
+                    <div class="discord-setup-card-heading">
+                        <div>
+                            <strong>2. Install the bot and choose a channel</strong>
+                            <span class="field-hint">Only servers and text channels visible to the bot are listed.</span>
+                        </div>
+                        <div class="discord-inline-actions">
+                            <button id="discordInstallBotButton" type="button" class="btn-secondary" disabled>Install bot in a server</button>
+                            <button id="discordRefreshChannelsButton" type="button" class="btn-secondary" disabled>Refresh</button>
+                        </div>
+                    </div>
+                    <div class="discord-field-grid">
+                        <label>
+                            <span>Server</span>
+                            <select id="discordGuildSelect" disabled>
+                                <option value="">Select a saved bot first</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>Channel</span>
+                            <select id="discordChannelSelect" disabled>
+                                <option value="">Select a server first</option>
+                            </select>
+                        </label>
+                    </div>
+                    <label class="discord-checkbox-row">
+                        <input id="discordIncludeWebhooksInput" type="checkbox" />
+                        <span>Include messages posted by other bots and webhooks</span>
+                    </label>
+                    <p class="field-hint">Messages sent by this bot are always ignored to prevent relay loops. Outbound @mentions are disabled for safety.</p>
+                </div>
+
+                <div id="discordSetupStatus" class="discord-setup-status" aria-live="polite"></div>
+            </div>
+
+            <div class="modal-footer">
+                <button id="discordBackButton" type="button" class="btn-secondary hidden">Back</button>
+                <button id="discordCancelButton" type="button" class="btn-secondary">Cancel</button>
+                <button id="discordAddSourceButton" type="button" class="hidden" disabled>Add source</button>
+            </div>
+        </div>
+    </div>
+
     <div class="modal hidden" id="youtubeAddModeModal">
         <div class="modal-content modal-md youtube-owner-modal">
             <h2>Add a YouTube source</h2>
@@ -642,6 +752,7 @@
     <script type="text/javascript" src="manifest.js"></script>
     <script type="text/javascript" src="thumbnail.js"></script>
     <script type="text/javascript" src="youtube.js"></script>
+    <script type="text/javascript" src="discord.js"></script>
     <!-- Temporarily disabled performance monitor to fix loading issue -->
     <!-- <script type="text/javascript" src="performance-monitor.js"></script> -->
     <script>
@@ -2123,6 +2234,9 @@
                     youtubeTypeToggle.classList.add('hidden');
                 }
             }
+            if (source.discordNative && typeof window.applyDiscordNativeSourceUI === 'function') {
+                window.applyDiscordNativeSourceUI(element, source);
+            }
         }
 
         function updateGroupUI(element, group) {
@@ -2220,6 +2334,9 @@
 
             updateSourceUI(ele, source);
             setupSourceControls(ele);
+            if (source.discordNative && typeof window.setupDiscordSourceControls === 'function') {
+                window.setupDiscordSourceControls(ele, source);
+            }
 
             // Force mode selector to be visible for sources that support it
             const modeSelector = ele.querySelector('.mode-selector');
@@ -4181,12 +4298,12 @@
                 <div class="mode-options">
                     <div class="mode-option" role="button" tabindex="0" aria-pressed="false"
                          data-mode="classic" 
-                         onclick="setGroupConnectionMode(this.closest('.entry'), 'classic'); updateModeSelector(this)">
+                         onclick="handleGroupModeOptionClick(this, 'classic')">
                         📄 Standard
                     </div>
                     <div class="mode-option" role="button" tabindex="0" aria-pressed="false"
                          data-mode="websocket" 
-                         onclick="setGroupConnectionMode(this.closest('.entry'), 'websocket'); updateModeSelector(this)">
+                         onclick="handleGroupModeOptionClick(this, 'websocket')">
                         🌐 WebSocket
                     </div>
                 </div>
@@ -4299,6 +4416,45 @@
             });
             clickedOption.classList.add('active');
             clickedOption.setAttribute('aria-pressed', 'true');
+        }
+
+        async function handleSourceModeOptionClick(clickedOption, mode) {
+            const sourceElement = clickedOption?.closest('.entry');
+            const sourceId = sourceElement?.dataset.sourceId;
+            const source = sourceId ? stateManager.getSource(sourceId) : null;
+            if (!sourceElement || !source) return false;
+
+            if (hasConnectionHandles(source)) {
+                Toast.warning(
+                    'This source is active. Stop it before changing between Standard and WebSocket mode.',
+                    'Stop source first'
+                );
+                return false;
+            }
+
+            await setSourceConnectionMode(sourceElement, mode, clickedOption);
+            updateModeSelector(clickedOption);
+            return true;
+        }
+
+        function handleGroupModeOptionClick(clickedOption, mode) {
+            const groupElement = clickedOption?.closest('[data-is-group-header="true"]');
+            const groupId = groupElement?.dataset.groupId;
+            const group = groupId ? stateManager.getGroup(groupId) : null;
+            if (!groupElement || !group) return false;
+
+            const hasActiveSource = stateManager.getSourcesByGroup(groupId).some(source => hasConnectionHandles(source));
+            if (hasActiveSource) {
+                Toast.warning(
+                    'One or more sources in this group are active. Click "Stop all", then choose Standard or WebSocket mode.',
+                    'Stop sources first'
+                );
+                return false;
+            }
+
+            setGroupConnectionMode(groupElement, mode);
+            updateModeSelector(clickedOption);
+            return true;
         }
 
         function setGroupConnectionMode(groupElement, mode) {
@@ -5702,10 +5858,8 @@
             const modeSelector = controlPanel?.querySelector('.mode-selector');
             if (modeSelector) {
                 if (isActive) {
-                    modeSelector.style.pointerEvents = 'none';
                     modeSelector.title = 'Stop source to change mode';
                 } else {
-                    modeSelector.style.pointerEvents = '';
                     modeSelector.title = '';
                 }
             }
@@ -6405,12 +6559,12 @@
                     <div class="mode-options">
                         <div class="mode-option" role="button" tabindex="0" aria-pressed="false"
                              data-mode="classic" 
-                             onclick="setSourceConnectionMode(this.closest('.entry'), 'classic', this); updateModeSelector(this)">
+                             onclick="handleSourceModeOptionClick(this, 'classic')">
                             📄 Standard
                         </div>
                         <div class="mode-option" role="button" tabindex="0" aria-pressed="false"
                              data-mode="websocket" 
-                             onclick="setSourceConnectionMode(this.closest('.entry'), 'websocket', this); updateModeSelector(this)">
+                             onclick="handleSourceModeOptionClick(this, 'websocket')">
                             🌐 WebSocket
                         </div>
                     </div>
@@ -9037,6 +9191,11 @@
                 if (resolvedTarget === 'tiktok' && (normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')) {
                     pendingTikTokToken = beginPendingTikTokActivation(sourceId);
                     windowId = await createTikTokWSSFromSource(source, normalizedMode === 'tiktok-legacy' ? 'legacy' : 'websocket');
+                } else if (resolvedTarget === 'discord' && source.discordNative) {
+                    if (typeof window.createDiscordNativeSource !== 'function') {
+                        throw new Error('The native Discord connector is unavailable. Restart SSApp and try again.');
+                    }
+                    windowId = await window.createDiscordNativeSource(source);
                 } else if (normalizedMode === 'websocket') {
                     if (resolvedTarget && resolvedTarget.startsWith('youtube')) {
                         windowId = await createYoutubeWebSocketWindowFromSource(source, tabid);
@@ -9097,12 +9256,17 @@
                     const nonTikTokWssReportedError = resolvedTarget !== 'tiktok'
                         && normalizedMode === 'websocket'
                         && sourceAfterCreate?.status === 'error';
+                    const alreadyConnectedDiscord = resolvedTarget === 'discord'
+                        && source.discordNative
+                        && sourceAfterCreate?.status === 'active';
                     let statusValue;
                     if (nonTikTokWssReportedError) {
                         statusValue = 'error';
                     } else if (tiktokReportedError) {
                         statusValue = 'error';
                     } else if (alreadyConnectedTikTok) {
+                        statusValue = 'active';
+                    } else if (alreadyConnectedDiscord) {
                         statusValue = 'active';
                     } else if (normalizedMode === 'websocket' || normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy') {
                         statusValue = 'activating';
@@ -12301,7 +12465,7 @@
                     const isManual = !source.isAutoDiscovered;
                     const target = source.target;
                     const connMode = source.connectionMode;
-                    const allowTip = isManual && element && !element.dataset.tipShown && ((target !== 'tiktok') || (connMode === 'classic'));
+                    const allowTip = isManual && !source.discordNative && element && !element.dataset.tipShown && ((target !== 'tiktok') || (connMode === 'classic'));
                     if (allowTip) {
                         updateConnectionStatus(element, 'info', 'Tip: Sign in on the site if needed, then press ▶️ Activate and make sure the chat is visible.');
                         element.dataset.tipShown = '1';

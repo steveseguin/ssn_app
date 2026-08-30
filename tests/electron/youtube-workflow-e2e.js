@@ -346,6 +346,28 @@ const rendererWorkflow = String.raw`
 		assertRenderer(groupHasActiveConnection(schedulerGroup), 'scheduler fixture should contain an active source');
 		assertRenderer(groupNeedsYouTubeOwnerChatPolling(schedulerGroup), 'waiting owner chat should keep polling beside an active source');
 
+		const lockedModeWarnings = [];
+		const originalToastWarning = Toast.warning;
+		Toast.warning = function (message, title) {
+			lockedModeWarnings.push({ title: String(title || ''), message: String(message || '') });
+		};
+		try {
+			const schedulerGroupElement = document.querySelector('[data-group-id="' + schedulerGroupId + '"]');
+			const websocketOption = schedulerGroupElement?.querySelector('.mode-option[data-mode="websocket"]');
+			assertRenderer(websocketOption, 'active YouTube group should expose its WebSocket mode option');
+			assertRenderer(getComputedStyle(websocketOption).pointerEvents !== 'none',
+				'locked YouTube group mode option must remain clickable so it can explain how to unlock');
+			websocketOption.click();
+			assertRenderer(stateManager.getGroup(schedulerGroupId)?.connectionMode === 'classic',
+				'clicking a locked group mode option must not change the saved mode');
+			assertRenderer(lockedModeWarnings.length === 1
+				&& /stop sources first/i.test(lockedModeWarnings[0].title)
+				&& /stop all/i.test(lockedModeWarnings[0].message),
+				'locked YouTube group mode option should tell the user to stop active sources first');
+		} finally {
+			Toast.warning = originalToastWarning;
+		}
+
 		const originalDiscoveryCheck = checkYouTubeGroupForNewStreams;
 		const originalSetTimeout = window.setTimeout;
 		const originalClearTimeout = window.clearTimeout;
@@ -525,6 +547,7 @@ const rendererWorkflow = String.raw`
 			markerQuery,
 			launchPlan,
 			ownerAuthError,
+			lockedModeWarnings,
 			launchUrls: createWindowCalls.map(call => call.url)
 		};
 	} finally {

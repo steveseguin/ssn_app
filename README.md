@@ -13,6 +13,7 @@ This repository contains the desktop application. The Social Stream web interfac
 
 - **Persistent capture windows** for each chat source, including pages that require a real browser session.
 - **Standard and direct-connection modes** for supported platforms, with source-specific sign-in and fallback handling.
+- **Native Discord bot sources** that capture and send channel messages without keeping Discord Web open.
 - **Hidden and headless capture** so source windows do not need to remain on screen.
 - **Separate browser sessions** for multiple accounts on the same platform.
 - **Local Text-to-Speech and speech recognition** using bundled or locally cached models.
@@ -28,6 +29,7 @@ This repository contains the desktop application. The Social Stream web interfac
 
 | Guide | Audience | Covers |
 | --- | --- | --- |
+| [Native Discord Sources](docs/DISCORD_NATIVE.md) | Discord server operators | Bot creation, Message Content Intent, channel permissions, secure token storage, and troubleshooting |
 | [Desktop App Guide](docs/DESKTOP_APP.md) | Users and operators | Sources, sessions, hidden capture, local media, backups, tray behavior, headless use, and troubleshooting |
 | [Automation, MCP, and Local APIs](docs/AUTOMATION.md) | Humans and AI agents | MCP setup, HTTP endpoints, commands, local servers, safety rules, examples, and version discovery |
 | [Cloud and Headless Hosting](docs/CLOUD_HOSTING.md) | Server operators | Xvfb, AppImage deployment, systemd, remote control, and capture diagnostics |

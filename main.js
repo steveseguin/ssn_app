@@ -198,6 +198,7 @@ const { setupKickOAuthHandler } = require('./resources/electron-kick-handler');
 const { setupExternalBrowserSigninHandler } = require('./resources/electron-rumble-handler');
 const { setupVpzoneOAuthHandler } = require('./resources/electron-vpzone-handler');
 const { setupMediaUploadHandler } = require('./resources/electron-media-upload-handler');
+const { setupDiscordHandler, clearDiscordBotAuthStore } = require('./resources/electron-discord-handler');
 const { setupElectronLocalMedia } = require('./resources/electron-local-media-server');
 const { createControlApiRouter } = require('./resources/electron-control-api');
 const { SourceObservationService } = require('./resources/source-observation-service');
@@ -1966,6 +1967,63 @@ process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
 
 let connectionStates = new Map();
 let browserViews = {};
+
+const NATIVE_SOURCE_BACKGROUND_RELAY_RETRIES = 3;
+const NATIVE_SOURCE_BACKGROUND_RELAY_RETRY_MS = 250;
+
+function relayNativeSourcePayloadToBackground(payload, attempt = 0) {
+    const frames = mainWindow && mainWindow.webContents && mainWindow.webContents.mainFrame
+        ? mainWindow.webContents.mainFrame.frames
+        : null;
+    let posted = false;
+    if (Array.isArray(frames)) {
+        frames.forEach((frame) => {
+            if (!matchesSocialStreamPagePath(frame && frame.url, 'background')) return;
+            try {
+                frame.postMessage('fromMain', payload);
+                posted = true;
+            } catch (error) {
+                console.warn('[Discord] Failed to forward a message to the Social Stream background page:', error?.message || error);
+            }
+        });
+    }
+    if (!posted && attempt < NATIVE_SOURCE_BACKGROUND_RELAY_RETRIES) {
+        setTimeout(() => relayNativeSourcePayloadToBackground(payload, attempt + 1), NATIVE_SOURCE_BACKGROUND_RELAY_RETRY_MS);
+    }
+    return posted;
+}
+
+function getDiscordTestClientOptions() {
+    if (app.isPackaged || process.env.SSAPP_DISCORD_TEST_MODE !== '1') return {};
+    const apiBase = String(process.env.SSAPP_DISCORD_TEST_API_BASE || '').trim();
+    const gatewayUrl = String(process.env.SSAPP_DISCORD_TEST_GATEWAY_URL || '').trim();
+    try {
+        const api = new URL(apiBase);
+        const gateway = new URL(gatewayUrl);
+        if (!isLoopbackHost(api.hostname) || !isLoopbackHost(gateway.hostname)) throw new Error('test endpoints must use loopback');
+        if (!['http:', 'https:'].includes(api.protocol) || !['ws:', 'wss:'].includes(gateway.protocol)) {
+            throw new Error('test endpoint protocols are invalid');
+        }
+        return { apiBase: api.toString(), gatewayUrl: gateway.toString() };
+    } catch (error) {
+        console.warn('[Discord] Ignoring invalid local test endpoints:', error?.message || error);
+        return {};
+    }
+}
+
+const discordIntegration = setupDiscordHandler({
+    getMainWindow: () => mainWindow,
+    getBrowserViews: () => browserViews,
+    getSettings: getCachedSettings,
+    clientOptions: getDiscordTestClientOptions(),
+    forwardMessage: relayNativeSourcePayloadToBackground,
+    recordCapture: (payload, context) => {
+        if (sourceObservationService) sourceObservationService.recordCapture(payload, context);
+    },
+    recordStatus: (payload, context) => {
+        if (sourceObservationService) sourceObservationService.recordStatus(payload, context);
+    }
+});
 
 function normalizeSourceAccountRole(role) {
     const value = String(role || 'normal').trim().toLowerCase();
@@ -7639,6 +7697,12 @@ async function clearAllData() {
         }
 
         try {
+            clearDiscordBotAuthStore();
+        } catch (discordAuthStoreError) {
+            console.error('Failed to clear Discord bot auth store during reset:', discordAuthStoreError);
+        }
+
+        try {
             if (mainWindow && mainWindow.webContents) {
                 const clearScript = `
                     (function(){
@@ -11182,6 +11246,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     })
                     .filter((t) => t !== null);
 
+                let handled = false;
+                const virtualTargets = parsedTargets.length
+                    ? parsedTargets.map((target) => browserViews[target]).filter((view) => view && view.isVirtualSource)
+                    : Object.values(browserViews).filter((view) => view && view.isVirtualSource);
+
+                for (const view of virtualTargets) {
+                    if (view.isTikTokVirtual) continue;
+                    try {
+                        view.webContents?.send('sendToTab', { text });
+                        handled = true;
+                    } catch (_) { }
+                }
+
                 const availableWssIds = Object.keys(websocketConnections).map((key) => Number(key)).filter((n) => Number.isFinite(n));
                 const availableWssIdSet = new Set(availableWssIds);
 
@@ -11193,15 +11270,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         .filter((t) => availableWssIdSet.has(t))
                     : availableWssIds;
 
-                if (!targetWssIds.length) {
-                    return false;
-                }
-
                 for (const wssId of targetWssIds) {
                     if (!Number.isFinite(wssId)) continue;
                     sendToTikTok({ wssID: wssId, message: text }).catch(() => {});
+                    handled = true;
                 }
-                return true;
+                return handled;
             } catch (_) {
                 return false;
             }
@@ -11220,7 +11294,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 const rawTargets = Array.isArray(overlay.tid) ? overlay.tid : [overlay.tid];
                 const browserTargets = rawTargets.filter((target) => {
                     const numericTarget = typeof target === 'number' ? target : Number(target);
-                    return !Number.isFinite(numericTarget) || numericTarget < 900000;
+                    if (!Number.isFinite(numericTarget)) return true;
+                    if (browserViews[numericTarget]?.isVirtualSource) return false;
+                    return numericTarget < 900000;
                 });
 
                 if (!browserTargets.length) {
@@ -14811,12 +14887,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 return;
             }
 
-            if (view.isTikTokVirtual) {
-                const wssID = view.wssID;
-                if (wssID !== undefined) {
-                    cleanupConnection(wssID);
+            if (view.isVirtualSource || view.isTikTokVirtual) {
+                if (view.isTikTokVirtual && view.wssID !== undefined) {
+                    cleanupConnection(view.wssID);
                 } else {
+                    if (typeof view.close === 'function') view.close();
                     delete browserViews[args.vid];
+                    releaseWindowId(args.vid);
                 }
                 eventRet.returnValue = true;
                 return;
@@ -15272,9 +15349,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
         const view = getActiveBrowserView(args.tab);
         if (view) {
 
-            // Check if this is a TikTok virtual tab
-            if (view && view.isTikTokVirtual) {
-                log("TikTok virtual tab - input received. Skipping direct sendToTikTok to avoid double-send (handled by handleDockChatSend).");
+            // Virtual sources are handled by handleDockChatSend to avoid double sends.
+            if (view && (view.isVirtualSource || view.isTikTokVirtual)) {
+                log("Virtual source input received. Skipping direct send to avoid double-send (handled by handleDockChatSend).");
                 eventRet.returnValue = true;
                 return;
 
@@ -16417,6 +16494,9 @@ app.on("before-quit", (event) => {
     }
     if (appDialogService) {
         appDialogService.close();
+    }
+    if (discordIntegration) {
+        discordIntegration.closeAll();
     }
 });
 
@@ -20291,6 +20371,8 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     // Use a special tab ID that won't conflict with real browser tabs
     const virtualTabId = 900000 + wssID; // High number to avoid conflicts
     browserViews[virtualTabId] = {
+        isVirtualSource: true,
+        virtualSourceTarget: 'tiktok',
         isTikTokVirtual: true,
         wssID: wssID,
         sourceId: sourceIdFromRenderer || null,

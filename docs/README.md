@@ -4,6 +4,7 @@ These guides cover the Social Stream Ninja desktop application itself. They focu
 
 ## Start here
 
+- [Native Discord Sources](DISCORD_NATIVE.md) — create a Discord bot, grant minimal permissions, select channels, and troubleshoot direct Discord capture.
 - [Desktop App Guide](DESKTOP_APP.md) — the human guide to installing, operating, backing up, and troubleshooting SSApp.
 - [Automation, MCP, and Local APIs](AUTOMATION.md) — setup and reference material for people building automation and for AI agents controlling SSApp.
 - [Cloud and Headless Hosting](CLOUD_HOSTING.md) — running real capture windows on a Linux server with Xvfb and systemd.

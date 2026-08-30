@@ -119,7 +119,7 @@ function statusHasSignal(data, pattern) {
 
 function isUsableView(view) {
 	try {
-		if (!view || view.isTikTokVirtual || !view.webContents) return false;
+		if (!view || view.isVirtualSource || view.isTikTokVirtual || !view.webContents) return false;
 		if (typeof view.isDestroyed === 'function' && view.isDestroyed()) return false;
 		return typeof view.webContents.isDestroyed !== 'function' || !view.webContents.isDestroyed();
 	} catch (_) {
@@ -494,7 +494,7 @@ class SourceObservationService {
 			sourceId,
 			source,
 			hasWindow,
-			windowKind: view && view.isTikTokVirtual ? 'virtual' : hasWindow ? 'browser' : 'none',
+			windowKind: view && (view.isVirtualSource || view.isTikTokVirtual) ? 'virtual' : hasWindow ? 'browser' : 'none',
 			page: null,
 			process: null,
 			counters: this.counters.get(sourceId) || emptyCounters(),

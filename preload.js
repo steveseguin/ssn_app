@@ -733,6 +733,22 @@ const localMediaBridge = {
 	rotateToken: async () => ipcRenderer.invoke('local-media:rotate-token'),
 };
 
+const discordBridge = {
+	listBots: async () => ipcRenderer.invoke('discord-bots-list'),
+	saveBot: async (payload = {}) => ipcRenderer.invoke('discord-bot-save', payload),
+	removeBot: async (authRef) => ipcRenderer.invoke('discord-bot-remove', authRef),
+	discover: async (authRef) => ipcRenderer.invoke('discord-bot-discover', authRef),
+	connectSource: async (payload = {}) => ipcRenderer.invoke('discord-source-connect', payload),
+	disconnectSource: async (sourceId) => ipcRenderer.invoke('discord-source-disconnect', sourceId),
+	openExternal: async (url) => ipcRenderer.invoke('discord-open-external', url),
+	onStatus(callback) {
+		if (typeof callback !== 'function') return () => {};
+		const listener = (_event, status) => callback(status);
+		ipcRenderer.on('discordConnectionStatus', listener);
+		return () => ipcRenderer.removeListener('discordConnectionStatus', listener);
+	},
+};
+
 function configureContextBridge(){
 	try {
 		console.log('[Preload] Configuring contextBridge with ninjafy (including OAuth methods)');
@@ -783,6 +799,8 @@ function configureContextBridge(){
 		  getSourceWindowConfig: getSourceWindowConfig,
 
 		  localMedia: localMediaBridge,
+
+		  discord: discordBridge,
 
 		  getSttCapabilities: async () => {
 			return await ipcRenderer.invoke('stt:get-capabilities');
@@ -1004,6 +1022,8 @@ try {
 			getInjectedScriptFlag: () => INJECTED_SCRIPT_FLAG,
 
 			localMedia: localMediaBridge,
+
+			discord: discordBridge,
 			
 			sendMessage: (a, b, c, tabID) => {
 				const messageData = b || a;
