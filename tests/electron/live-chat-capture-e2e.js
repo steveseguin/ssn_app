@@ -194,9 +194,10 @@ async function run() {
 			return ping && ping.ok;
 		}, 'SSApp remote control', 60000);
 
-		const windows = await requestJson(controlPort, token, '/windows');
-		const mainWindow = (windows.windows || []).find(item => String(item.url || '').includes('index.html'));
-		assert.ok(mainWindow && mainWindow.id, `Main window not found: ${JSON.stringify(windows)}`);
+		const mainWindow = await waitFor(async () => {
+			const windows = await requestJson(controlPort, token, '/windows');
+			return (windows.windows || []).find(item => String(item.url || '').includes('index.html')) || false;
+		}, 'Main window navigation', 60000);
 		await waitFor(async () => {
 			const response = await requestJson(controlPort, token, '/exec', {
 				windowId: mainWindow.id,

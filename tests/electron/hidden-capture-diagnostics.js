@@ -38,7 +38,7 @@ function parseUrlArg() {
 	const platformArg = process.argv.find((value) => value.startsWith('--platform='));
 	if (!platformArg) return null;
 	const platform = platformArg.slice('--platform='.length).trim().toLowerCase();
-	if (!['youtube', 'twitch', 'kick', 'tiktok'].includes(platform)) return null;
+	if (!['youtube', 'twitch', 'kick', 'tiktok', 'worldswave'].includes(platform)) return null;
 	const fixtureUrl = pathToFileURL(path.join(repoRoot, 'tests', 'electron', 'fixtures', 'hidden-capture.html')).href;
 	return `${fixtureUrl}?platform=${encodeURIComponent(platform)}`;
 }

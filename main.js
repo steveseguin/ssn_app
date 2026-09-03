@@ -5078,7 +5078,7 @@ function getHiddenCaptureDiagnosticSourceFiles(targetUrl) {
             path.basename(fileURLToPath(parsed)) === 'hidden-capture.html'
         ) {
             const fixturePlatform = String(parsed.searchParams.get('platform') || 'youtube').toLowerCase();
-			if (['youtube', 'twitch', 'kick', 'tiktok'].includes(fixturePlatform)) {
+			if (['youtube', 'twitch', 'kick', 'tiktok', 'worldswave'].includes(fixturePlatform)) {
                 return [`sources/${fixturePlatform}.js`];
             }
             return [];
@@ -5087,6 +5087,7 @@ function getHiddenCaptureDiagnosticSourceFiles(targetUrl) {
         if (hostname === 'twitch.tv' || hostname.endsWith('.twitch.tv')) return ['sources/twitch.js'];
         if (hostname === 'kick.com' || hostname.endsWith('.kick.com')) return ['sources/kick.js'];
         if (hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com')) return ['sources/tiktok.js'];
+		if (hostname === 'worldswave.com' || hostname.endsWith('.worldswave.com')) return ['sources/worldswave.js'];
         if (
             hostname === 'facebook.com' || hostname.endsWith('.facebook.com') ||
             hostname === 'workplace.com' || hostname.endsWith('.workplace.com')
@@ -5295,7 +5296,13 @@ async function runHiddenCaptureDiagnostics() {
 			fixturePlatform: window.__fixturePlatform || null,
 			fixtureLocationError: window.__fixtureLocationError || null,
 			chatMessageRows: document.querySelectorAll('[data-e2e="chat-message"]').length,
-			hasChatRoom: !!document.querySelector('[data-e2e="chat-room"]')
+			hasChatRoom: !!document.querySelector('[data-e2e="chat-room"]'),
+			worldsWaveActive: !!window.__SSN_WORLDSWAVE_SOURCE_ACTIVE__,
+			worldsWaveRows: document.querySelectorAll('[data-ww-msg-id]').length,
+			worldsWaveMarkedRows: document.querySelectorAll('[data-ssn-last-message-signature]').length,
+			worldsWaveLastSignature: document.querySelector('[data-ww-chat-list] > :last-child')?.dataset?.ssnLastMessageSignature || null,
+			hasNinjafySendMessage: !!window.ninjafy?.sendMessage,
+			hasChromeRuntime: !!window.chrome?.runtime?.id
 		}))()`, true);
 
 		report.probeInstall = await view.webContents.executeJavaScript(HIDDEN_CAPTURE_PROBE_INSTALL, true);

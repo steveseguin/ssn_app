@@ -38,6 +38,11 @@
 			} else if (platform === "tiktok") {
 				root.innerHTML = '<div id="tiktok-feed" data-e2e="chat-room"></div>';
 				feed = document.getElementById("tiktok-feed");
+			} else if (platform === "worldswave") {
+				root.innerHTML = '<div data-ww-chat-root data-ww-channel="Hidden Capture Fixture">' +
+					'<div id="worldswave-feed" class="ww-chat-list" data-ww-chat-list></div>' +
+					'</div>';
+				feed = document.getElementById("worldswave-feed");
 			} else {
 				root.innerHTML = '<yt-live-chat-app><yt-live-chat-item-list-renderer>' +
 					'<div id="item-scroller"><div id="item-offset">' +
@@ -122,6 +127,25 @@
 				return row;
 			}
 
+			function createWorldsWaveRow(id) {
+				var row = document.createElement("div");
+				var author = document.createElement("span");
+				var message = document.createElement("span");
+				row.id = "ssn-hidden-capture-" + id;
+				row.className = "ww-chat-message ssn-chat-row";
+				row.dataset.wwMsgId = "hidden-capture-" + id;
+				row.dataset.wwUserId = "fixture-user";
+				row.dataset.wwDisplayName = "SSN Hidden Capture Fixture";
+				author.className = "ww-chat-display-name";
+				author.textContent = "SSN Hidden Capture Fixture";
+				message.className = "ww-chat-body";
+				message.textContent = "hidden-capture message " + id;
+				row.appendChild(author);
+				row.appendChild(document.createTextNode(": "));
+				row.appendChild(message);
+				return row;
+			}
+
 			function createRow(value) {
 				var id = value && typeof value === "object" ? value.id : value;
 				var messageText = value && typeof value === "object" ? value.message : null;
@@ -133,7 +157,9 @@
 					? createTwitchRow(id)
 					: (platform === "kick"
 						? createKickRow(id)
-						: (platform === "tiktok" ? createTikTokRow(id, messageText, omitIdentity, indexValue) : createYouTubeRow(id)));
+						: (platform === "tiktok"
+							? createTikTokRow(id, messageText, omitIdentity, indexValue)
+							: (platform === "worldswave" ? createWorldsWaveRow(id) : createYouTubeRow(id))));
 			}
 
 			function startAuto() {

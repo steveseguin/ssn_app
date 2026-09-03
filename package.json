@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-  "version": "0.4.19",
+	"version": "0.4.20",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "desktopName": "socialstreamninja.desktop",
@@ -19,6 +19,7 @@
     "start:headless": "bash scripts/start-headless.sh",
     "test:headless-launcher": "bash tests/electron/headless-launcher-regression.sh",
     "test:hidden-capture": "node tests/electron/hidden-capture-diagnostics.js",
+    "test:reflection-filter": "node tests/electron/reflection-filter-e2e.js",
     "test:hidden-capture:soak": "node tests/electron/hidden-capture-soak.js",
     "test:twitch-bot-account:e2e": "node tests/electron/twitch-bot-account-e2e.js",
     "test:twitch-signin-compat": "node tests/electron/twitch-signin-compat-e2e.js",
