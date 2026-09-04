@@ -69,6 +69,7 @@
     "test:discord-native": "node tests/discord/discord-bot-client-regression.js",
     "test:discord-native:e2e": "node tests/electron/discord-native-e2e.js",
     "test:live-chat": "node tests/electron/live-chat-capture-e2e.js",
+    "test:chicken-royale:e2e": "node tests/electron/chicken-royale-join-e2e.js",
     "test:youtube-owner-discovery": "node tests/electron/youtube-owner-discovery-regression.js",
     "test:youtube-oauth-loopback": "node tests/electron/youtube-oauth-loopback-e2e.js",
     "test:chathistory-export": "node tests/electron/chathistory-export-regression.js",

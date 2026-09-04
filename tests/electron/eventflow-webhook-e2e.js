@@ -139,12 +139,87 @@ async function waitForDebugger(port, child, timeoutMs = 30000) {
 	throw new Error("Timed out waiting for SSApp DevTools");
 }
 
+async function testGlobalDiscordWebhookFormatting(page, receiver) {
+	const deadline = Date.now() + 90000;
+	let popupFrame = null;
+	let backgroundFrame = null;
+	while (Date.now() < deadline) {
+		popupFrame = page.frames().find((candidate) => /\/popup\.html(?:[?#]|$)/.test(candidate.url()));
+		backgroundFrame = page.frames().find((candidate) => /\/background\.html(?:[?#]|$)/.test(candidate.url()));
+		if (popupFrame && backgroundFrame) {
+			const popupReady = await popupFrame.evaluate(() => {
+				return typeof document.querySelector('[data-setting="postallserverdiscordsimple"]')?.onchange === "function";
+			}).catch(() => false);
+			const backgroundReady = await backgroundFrame.evaluate(() => {
+				return typeof settings !== "undefined" && typeof sendAllToDiscord === "function";
+			}).catch(() => false);
+			if (popupReady && backgroundReady) break;
+		}
+		await page.waitForTimeout(200);
+	}
+	if (!popupFrame || !backgroundFrame) throw new Error("Social Stream popup/background frames did not initialize");
+	const ready = await backgroundFrame.evaluate(() => typeof sendAllToDiscord === "function").catch(() => false);
+	if (!ready) throw new Error("Social Stream popup/background scripts did not initialize");
+
+	const webhookUrl = `http://127.0.0.1:${receiver.port}/discord-global`;
+	await popupFrame.evaluate((url) => {
+		const update = (selector, value, checked) => {
+			const input = document.querySelector(selector);
+			if (!input) throw new Error(`Missing popup control: ${selector}`);
+			if (checked) input.checked = value;
+			else input.value = value;
+			input.dispatchEvent(new Event("change", { bubbles: true }));
+		};
+		update('[data-textsetting="postallserverdiscord"]', url, false);
+		update('[data-setting="postalldiscord"]', true, true);
+		update('[data-setting="postallserverdiscordsimple"]', true, true);
+	}, webhookUrl);
+	await backgroundFrame.waitForFunction((url) => {
+		return typeof settings !== "undefined"
+			&& typeof sendAllToDiscord === "function"
+			&& settings.postalldiscord?.setting === true
+			&& settings.postallserverdiscord?.textsetting === url
+			&& settings.postallserverdiscordsimple?.setting === true;
+	}, webhookUrl);
+
+	const sourceMessage = {
+		type: "youtube",
+		chatname: "Compact User",
+		chatmessage: "Small <b>Discord</b> message",
+		chatimg: "https://i.imgur.com/avatar.png",
+	};
+	await backgroundFrame.evaluate((message) => sendAllToDiscord(message), sourceMessage);
+	await waitForWebhookRequest(receiver);
+	assert.deepEqual(JSON.parse(receiver.requests[0].body), {
+		content: "Small Discord message",
+		username: "Compact User @ Youtube",
+		avatar_url: "https://i.imgur.com/avatar.png",
+	});
+
+	await popupFrame.evaluate(() => {
+		const input = document.querySelector('[data-setting="postallserverdiscordsimple"]');
+		input.checked = false;
+		input.dispatchEvent(new Event("change", { bubbles: true }));
+	});
+	await backgroundFrame.waitForFunction(() => typeof settings !== "undefined" && !getSettingFlag("postallserverdiscordsimple"));
+	await backgroundFrame.evaluate((message) => sendAllToDiscord(message), sourceMessage);
+	while (receiver.requests.length < 2) await page.waitForTimeout(50);
+	const richPayload = JSON.parse(receiver.requests[1].body);
+	assert.equal(richPayload.content, undefined);
+	assert.equal(richPayload.embeds[0].description, "Small Discord message");
+	assert.ok(richPayload.embeds[0].timestamp);
+	receiver.requests.length = 0;
+}
+
 async function connectToEditor(port) {
 	const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
 	const pages = browser.contexts().flatMap((context) => context.pages());
 	const page = pages.find((candidate) => candidate.url().includes("index.html")) || pages[0];
 	if (!page) throw new Error("SSApp did not expose its main Electron page");
+	return { browser, page };
+}
 
+async function openEditor(page) {
 	const editorLink = page.locator('#main-navigation a[data-page="event-flow-editor"]');
 	await editorLink.waitFor({ state: "visible" });
 
@@ -157,7 +232,7 @@ async function connectToEditor(port) {
 		await page.waitForTimeout(250);
 	}
 	if (!frame) throw new Error("Event Flow editor frame did not initialize");
-	return { browser, frame };
+	return frame;
 }
 
 async function waitForWebhookRequest(receiver, timeoutMs = 10000) {
@@ -183,7 +258,9 @@ async function run() {
 		await waitForDebugger(debuggerPort, child);
 		const connected = await connectToEditor(debuggerPort);
 		browser = connected.browser;
-		const frame = connected.frame;
+		console.log("[E2E] Testing global Discord webhook rich/simple formatting through saved popup settings");
+		await testGlobalDiscordWebhookFormatting(connected.page, receiver);
+		const frame = await openEditor(connected.page);
 
 		console.log("[E2E] Creating the built-in Chat Relay to Discord flow");
 		await frame.locator("#template-select").selectOption("chat-relay");
