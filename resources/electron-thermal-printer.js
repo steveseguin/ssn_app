@@ -27,6 +27,12 @@ function parseLengthMicrons(value, fallback, minimum, maximum) {
 	return Math.max(minimum, Math.min(maximum, Math.round(amount * multiplier)));
 }
 
+function parseOptionalLengthMicrons(value, minimum, maximum) {
+	if (value === undefined || value === null || value === '') return 0;
+	if (/^0+(?:\.0+)?\s*(?:mm|cm|in)?$/i.test(String(value).trim())) return 0;
+	return parseLengthMicrons(value, 0, minimum, maximum);
+}
+
 function normalizeCssLength(value, fallback, maximum) {
 	const match = String(value || '').trim().match(/^(\d+(?:\.\d+)?)\s*(mm|cm|in|px|pt)?$/i);
 	if (!match) return fallback;
@@ -55,6 +61,7 @@ function normalizePrintOptions(options = {}) {
 	return {
 		printerName: String(options.printerName || '').trim().slice(0, 256),
 		widthMicrons: parseLengthMicrons(options.width, DEFAULT_WIDTH_MICRONS, MIN_WIDTH_MICRONS, MAX_WIDTH_MICRONS),
+		heightMicrons: parseOptionalLengthMicrons(options.height, MIN_HEIGHT_MICRONS, MAX_HEIGHT_MICRONS),
 		marginTop: normalizeCssLength(options.marginTop, sharedMargin || '0mm', 25),
 		marginRight: normalizeCssLength(options.marginRight, sharedMargin || '2mm', 25),
 		marginBottom: normalizeCssLength(options.marginBottom, sharedMargin || '0mm', 25),
@@ -70,13 +77,14 @@ function normalizePrintOptions(options = {}) {
 
 function buildPrintDocument(htmlContent, options) {
 	const widthMm = options.widthMicrons / 1000;
+	const heightRule = options.heightMicrons ? `${options.heightMicrons / 1000}mm` : 'auto';
 	return `<!doctype html>
 <html>
 <head>
 	<meta charset="utf-8">
 	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline'">
 	<style>
-		@page { size: ${widthMm}mm auto; margin: 0; }
+		@page { size: ${widthMm}mm ${heightRule}; margin: 0; }
 		html, body { width: 100%; margin: 0; padding: 0; }
 		body {
 			box-sizing: border-box;
@@ -182,7 +190,10 @@ class ElectronThermalPrinter {
 				document.getElementById('ssapp-thermal-print-root').getBoundingClientRect().height
 			)`);
 			const measuredHeightMicrons = Math.ceil((Number(contentHeightPx) || 0) * MICRONS_PER_INCH / CSS_PIXELS_PER_INCH);
-			const pageHeightMicrons = Math.max(MIN_HEIGHT_MICRONS, Math.min(MAX_HEIGHT_MICRONS, measuredHeightMicrons + options.feedMicrons));
+			const pageHeightMicrons = options.heightMicrons || Math.max(
+				MIN_HEIGHT_MICRONS,
+				Math.min(MAX_HEIGHT_MICRONS, measuredHeightMicrons + options.feedMicrons)
+			);
 
 			const printOptions = {
 				silent: true,
@@ -230,6 +241,7 @@ class ElectronThermalPrinter {
 					left: options.marginLeft,
 				},
 				feedMicrons: options.feedMicrons,
+				fixedHeight: options.heightMicrons > 0,
 			};
 		} finally {
 			this.activeWindows.delete(printWindow);

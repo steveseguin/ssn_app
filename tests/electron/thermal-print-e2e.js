@@ -191,6 +191,7 @@ async function run() {
 		assert.equal(popupState.options.marginTop, '0mm');
 		assert.equal(popupState.options.marginBottom, '0mm');
 		assert.equal(popupState.options.feed, '1mm');
+		assert.equal(popupState.options.height, undefined);
 		assert.equal(popupState.options.marginType, 'printableArea');
 
 		const result = await backgroundFrame.evaluate(async ({ selectedPrinter, testMessage }) => {
@@ -232,6 +233,7 @@ async function run() {
 		assert.equal(result.message.thermalPrintResult.marginType, 'printableArea');
 		assert.deepEqual(result.message.thermalPrintResult.margins, { top: '0mm', right: '2mm', bottom: '0mm', left: '2mm' });
 		assert.equal(result.message.thermalPrintResult.feedMicrons, 1000);
+		assert.equal(result.message.thermalPrintResult.fixedHeight, false);
 		await waitForSubmittedJobsToFinish(printerName, initialJobIds);
 		console.log(`thermal-print-e2e: PASS (${JSON.stringify(result.message.thermalPrintResult)})`);
 	} catch (error) {
