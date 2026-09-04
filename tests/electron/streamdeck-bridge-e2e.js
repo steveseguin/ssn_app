@@ -798,6 +798,56 @@ async function run() {
 		assert.equal(backgroundBridge.result.ok, true, 'background SSApp route failed');
 		assert.equal(backgroundBridge.result.payload.source.id, seed.sourceId, 'background route returned wrong source');
 
+		const p2pFeedDelivery = await execInRenderer(port, `
+			(() => {
+				const frame = document.getElementById('frame2');
+				const bg = frame && frame.contentWindow;
+				if (!bg || typeof bg.sendDataP2P !== 'function') {
+					return { ok: false, error: 'background P2P sender unavailable' };
+				}
+				const original = {
+					ninjaBridge: bg.ninjaBridge,
+					iframe: bg.iframe,
+					connectedPeers: bg.connectedPeers,
+					socketserverDock: bg.socketserverDock,
+					settings: bg.settings
+				};
+				const labels = [];
+				const broadcasts = [];
+				const socketPackets = [];
+				try {
+					bg.ninjaBridge = {
+						isReady: () => true,
+						getPeers: () => ({ deck: 'streamdeck', dock: 'dock' }),
+						sendToLabel: (data, label) => {
+							labels.push({ data, label });
+							return true;
+						},
+						send: data => {
+							broadcasts.push(data);
+							return true;
+						}
+					};
+					bg.iframe = false;
+					bg.connectedPeers = {};
+					bg.socketserverDock = { readyState: 1, send: data => socketPackets.push(JSON.parse(data)) };
+					bg.settings = Object.assign({}, bg.settings || {}, { server2: true, server2additivedelivery: false });
+					bg.sendDataP2P({ mid: 'streamdeck-feed', chatname: 'Test', chatmessage: 'Hello', type: 'youtube' });
+					return { ok: true, labels, broadcasts, socketPackets };
+				} finally {
+					bg.ninjaBridge = original.ninjaBridge;
+					bg.iframe = original.iframe;
+					bg.connectedPeers = original.connectedPeers;
+					bg.socketserverDock = original.socketserverDock;
+					bg.settings = original.settings;
+				}
+			})()
+		`, 'Stream Deck P2P feed delivery alongside server2');
+		assert.equal(p2pFeedDelivery.ok, true, `P2P feed delivery failed: ${JSON.stringify(p2pFeedDelivery)}`);
+		assert.equal(p2pFeedDelivery.labels.filter(entry => entry.label === 'streamdeck').length, 1, 'P2P Stream Deck feed was not sent exactly once');
+		assert.equal(p2pFeedDelivery.socketPackets.length, 1, 'server2 Dock feed was not preserved');
+		assert.equal(p2pFeedDelivery.broadcasts.length, 0, 'Stream Deck feed should not fall through to a duplicate broadcast');
+
 		const iframeTransportBridge = await execInRenderer(port, `
 			(async () => {
 				const frame = document.getElementById('frame2');

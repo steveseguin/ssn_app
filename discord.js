@@ -338,6 +338,42 @@
 		modalState.discovery = null;
 	}
 
+	async function addStreamKitSourcePrompt() {
+		const value = window.prompt(
+			'Paste the Discord StreamKit Chat Widget URL from https://streamkit.discord.com/overlay:'
+		);
+		if (!value) return;
+
+		let url;
+		try {
+			url = new URL(String(value).trim());
+		} catch (_) {
+			Toast.error('Discord StreamKit', 'Enter the full StreamKit Chat Widget URL.');
+			return;
+		}
+		if (
+			url.protocol !== 'https:'
+			|| url.hostname.toLowerCase() !== 'streamkit.discord.com'
+			|| !/^\/overlay\/chat\/\d+\/\d+\/?$/.test(url.pathname)
+		) {
+			Toast.error('Discord StreamKit', 'That is not a Discord StreamKit Chat Widget URL.');
+			return;
+		}
+		if (typeof newOtherSource !== 'function') {
+			Toast.error('Discord StreamKit', 'The source setup is unavailable. Restart SSApp and try again.');
+			return;
+		}
+
+		closeModal();
+		await newOtherSource('discord', url.toString(), false, {
+			username: 'Discord StreamKit',
+			sourceFile: 'sources/discordstreamkit.js',
+			sourceFiles: ['sources/discordstreamkit.js'],
+			discordStreamKit: true,
+		});
+		Toast.info('Discord StreamKit', 'Source added. Keep Discord Desktop running, then activate the source.');
+	}
+
 	async function showDiscordAddSourcePrompt(sourceId = null) {
 		const modal = element('discordAddSourceModal');
 		if (!modal) return;
@@ -508,6 +544,7 @@
 			closeModal();
 			if (typeof newOtherSourcePrompt === 'function') newOtherSourcePrompt('discord');
 		});
+		element('discordStreamKitModeButton')?.addEventListener('click', addStreamKitSourcePrompt);
 		element('discordBackButton')?.addEventListener('click', showModeChoice);
 		element('discordCancelButton')?.addEventListener('click', closeModal);
 		element('discordSaveBotButton')?.addEventListener('click', saveBot);
@@ -528,6 +565,7 @@
 	}
 
 	window.showDiscordAddSourcePrompt = showDiscordAddSourcePrompt;
+	window.addDiscordStreamKitSourcePrompt = addStreamKitSourcePrompt;
 	window.setupDiscordSourceControls = setupDiscordSourceControls;
 	window.applyDiscordNativeSourceUI = applyDiscordNativeSourceUI;
 	window.createDiscordNativeSource = async function (source) {

@@ -79,6 +79,7 @@ async function waitForMainWindow(port, timeoutMs = 60000) {
 const rendererWorkflow = `
 (async () => {
 	const discordUrl = "https://discord.com/channels/123/456";
+	const streamKitUrl = "https://streamkit.discord.com/overlay/chat/123/456";
 	for (let attempt = 0; attempt < 100; attempt += 1) {
 		const ready = Array.isArray(manifest?.content_scripts) && manifest.content_scripts.some(entry =>
 			Array.isArray(entry.js) && entry.js.includes("./sources/capturevideo.js")
@@ -89,6 +90,7 @@ const rendererWorkflow = `
 
 	const normalize = value => String(value || "").replace(/\\\\/g, "/").replace(/^\\.?\\//, "");
 	const freshFiles = checkSupported(discordUrl).map(normalize);
+	const streamKitFiles = checkSupported(streamKitUrl).map(normalize);
 	const createWindowCalls = [];
 	const originalSendSync = ipcRenderer.sendSync.bind(ipcRenderer);
 	ipcRenderer.sendSync = function (channel, args) {
@@ -127,6 +129,7 @@ const rendererWorkflow = `
 
 	return {
 		freshFiles,
+		streamKitFiles,
 		launchFiles: createWindowCalls.map(call => call.sourceFiles)
 	};
 })()
@@ -170,6 +173,7 @@ async function run() {
 		assert(response && response.ok === true, response && response.error ? response.error : "Renderer workflow failed");
 		const expected = ["sources/discord.js", "thirdparty/vdoninja-sdk.js", "sources/capturevideo.js"];
 		assert.deepStrictEqual(response.result.freshFiles, expected);
+		assert.deepStrictEqual(response.result.streamKitFiles, ["sources/discordstreamkit.js"]);
 		assert.deepStrictEqual(response.result.launchFiles, [expected, expected]);
 		console.log("discord-sdk-workflow-e2e: PASS");
 	} catch (error) {

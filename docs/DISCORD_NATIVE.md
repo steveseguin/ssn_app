@@ -2,7 +2,7 @@
 
 SSApp can capture and send Discord channel messages directly through a bot. Discord Desktop and Discord Web do not need to be open. The connection runs locally for as long as SSApp is running, including while SSApp is minimized to the system tray.
 
-This setup is intended for servers where you can install a bot. If you cannot install one, choose **Discord > Use Discord Web capture** and provide the channel URL instead.
+This setup is intended for servers where you can install a bot. If you cannot install one, choose **Discord > Use Discord Web capture** and provide the channel URL instead. You can also use an official Discord StreamKit Chat Widget URL when Discord Desktop can remain open.
 
 ## What you need
 
@@ -80,6 +80,14 @@ The selected channel is probably capture-only. Grant the bot **Send Messages** i
 ### Discord Web is already configured
 
 The Web source and native bot source can coexist, but capturing the same channel through both will create duplicate messages. Stop or remove the Web source after confirming the native source works.
+
+## StreamKit capture
+
+Choose **Discord > Use a Discord StreamKit URL** and paste the Chat Widget URL created at `https://streamkit.discord.com/overlay`.
+
+StreamKit uses the locally running Discord Desktop client. Discord Desktop must remain open and the StreamKit application must be authorized. SSApp captures new text rows exposed by the widget; StreamKit does not expose the same complete avatar, attachment, role, or message metadata available to the native bot.
+
+Do not run StreamKit, Discord Web, and the native bot against the same channel at the same time unless duplicate messages are intentional.
 
 ## Deployment note
 

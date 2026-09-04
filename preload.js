@@ -837,6 +837,14 @@ function configureContextBridge(){
 			  tts: async (text, settings) => {
 				return await ipcRenderer.invoke('tts', {text, settings});
 			  },
+
+			  systemTts: async (text, settings = {}) => {
+				return await ipcRenderer.invoke('system-tts:synthesize', { text, ...settings });
+			  },
+
+			  printThermal: async (htmlContent, options = {}) => {
+				return await ipcRenderer.invoke('thermal-print', { htmlContent, options });
+			  },
 			  
 			  onSendToTab: (callback) => {
 				ipcRenderer.on('sendToTab', (event, ...args) => {
@@ -1163,6 +1171,14 @@ try {
 
 			tts: async (text, settings) => {
 				return await ipcRenderer.invoke('tts', {text, settings});
+			},
+
+			systemTts: async (text, settings = {}) => {
+				return await ipcRenderer.invoke('system-tts:synthesize', { text, ...settings });
+			},
+
+			printThermal: async (htmlContent, options = {}) => {
+				return await ipcRenderer.invoke('thermal-print', { htmlContent, options });
 			},
 
 			onKickWsEvent: (() => {

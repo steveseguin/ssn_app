@@ -194,6 +194,7 @@ async function createStreamDeckServer(relayPort) {
 					payload: {
 						settings: {
 							sessionId,
+							transport: 'websocket',
 							apiHost: `127.0.0.1:${relayPort}`,
 							useTls: false,
 							httpFallback: false,

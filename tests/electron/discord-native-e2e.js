@@ -260,6 +260,12 @@ async function execInMain(code) {
 	return response.result;
 }
 
+async function execInView(key, code) {
+	const response = await requestJson('/view-exec', { key: String(key), code });
+	if (!response.ok) throw new Error(response.error || 'Source execution failed.');
+	return response.result;
+}
+
 async function waitForApp() {
 	await waitFor(async () => {
 		try {
@@ -312,9 +318,78 @@ async function runSetupWorkflow() {
 			ok: !!modal && !modal.classList.contains('hidden'),
 			nativeChoice: !!document.getElementById('discordNativeModeButton'),
 			webChoice: !!document.getElementById('discordWebModeButton'),
+			streamKitChoice: !!document.getElementById('discordStreamKitModeButton'),
 		};
 	})()`);
-	assert.deepStrictEqual(opened, { ok: true, nativeChoice: true, webChoice: true });
+	assert.deepStrictEqual(opened, { ok: true, nativeChoice: true, webChoice: true, streamKitChoice: true });
+
+	await execInMain(`(() => {
+		window.prompt = () => 'https://streamkit.discord.com/overlay/chat/300000000000000003/400000000000000004';
+		document.getElementById('discordStreamKitModeButton').click();
+		return true;
+	})()`);
+	const streamKitSource = await waitFor(() => execInMain(`stateManager.getSources().find(source => source.discordStreamKit) || null`),
+		'Discord StreamKit source creation');
+	assert.strictEqual(streamKitSource.target, 'discord');
+	assert.strictEqual(streamKitSource.sourceFile, 'sources/discordstreamkit.js');
+	assert.deepStrictEqual(streamKitSource.sourceFiles, ['sources/discordstreamkit.js']);
+
+	await waitFor(() => execInMain(`(() => {
+		try {
+			const background = document.getElementById('frame2')?.contentWindow;
+			if (!background || typeof background.processIncomingMessage !== 'function') return false;
+			if (!background.__ssappDiscordCaptured) {
+				background.__ssappDiscordCaptured = [];
+				const original = background.processIncomingMessage;
+				background.processIncomingMessage = async function (message, sender) {
+					if (message?.type === 'discord') background.__ssappDiscordCaptured.push(JSON.parse(JSON.stringify(message)));
+					return original.call(this, message, sender);
+				};
+			}
+			return true;
+		} catch (_) {
+			return false;
+		}
+	})()`), 'Social Stream background message interceptor');
+
+	await execInMain(`document.querySelector('[data-source-id="${streamKitSource.id}"] [data-activatehtml]').click(); true;`);
+	const activeStreamKit = await waitFor(async () => {
+		const current = await execInMain(`stateManager.getSource('${streamKitSource.id}')`);
+		return current?.status === 'active' && current.vid ? current : null;
+	}, 'Discord StreamKit source activation');
+	await execInView(activeStreamKit.vid, `(() => {
+		document.body.innerHTML = '<div class="Chat_chatContainer__fixture">'
+			+ '<div class="Chat_channelName__fixture">#reactions</div>'
+			+ '<ul class="Chat_messages__fixture">'
+			+ '<li class="Chat_message__fixture"><span class="Chat_timestamp__fixture">12:40 AM</span>'
+			+ '<span class="Chat_username__fixture">Backlog</span>'
+			+ '<span class="Chat_messageText__fixture">Already visible</span></li>'
+			+ '</ul></div>';
+		return true;
+	})()`);
+	await waitFor(() => execInView(activeStreamKit.vid,
+		`document.querySelector('[class^="Chat_message__"]')?.dataset?.ssnStreamKitSeen === 'true'`),
+		'Discord StreamKit parser attachment');
+	assert.strictEqual(await execInMain(`document.getElementById('frame2').contentWindow.__ssappDiscordCaptured.length`), 0,
+		'StreamKit backlog must not be captured');
+	await execInView(activeStreamKit.vid, `(() => {
+		const row = document.createElement('li');
+		row.className = 'Chat_message__fixture';
+		row.innerHTML = '<span class="Chat_timestamp__fixture">12:41 AM</span>'
+			+ '<span class="Chat_username__fixture" style="color:rgb(88, 101, 242)">StreamKit User</span>'
+			+ '<span class="Chat_messageText__fixture">Hello &lt;StreamKit&gt; <strong>friends</strong></span>';
+		document.querySelector('[class^="Chat_messages__"]').appendChild(row);
+		return true;
+	})()`);
+	const streamKitCapture = await waitFor(() => execInMain(
+		`document.getElementById('frame2')?.contentWindow?.__ssappDiscordCaptured?.[0] || null`
+	), 'Discord StreamKit message delivery');
+	assert.strictEqual(streamKitCapture.type, 'discord');
+	assert.strictEqual(streamKitCapture.chatname, 'StreamKit User');
+	assert.ok(streamKitCapture.chatmessage.includes('Hello &lt;StreamKit&gt; <strong>friends</strong>'));
+	await execInMain(`document.getElementById('frame2').contentWindow.__ssappDiscordCaptured = []; true;`);
+
+	await execInMain(`showDiscordAddSourcePrompt(); true;`);
 
 	await execInMain(`document.getElementById('discordNativeModeButton').click(); true;`);
 	await waitFor(() => execInMain(`!document.getElementById('discordNativeSetup').classList.contains('hidden')`), 'native Discord setup panel');
@@ -350,24 +425,6 @@ async function runSetupWorkflow() {
 	assert.strictEqual(source.channelId, fixture.channel.id);
 	assert.strictEqual(source.connectionMode, 'websocket');
 	assert.strictEqual(Object.prototype.hasOwnProperty.call(source, 'token'), false);
-
-	await waitFor(() => execInMain(`(() => {
-		try {
-			const background = document.getElementById('frame2')?.contentWindow;
-			if (!background || typeof background.processIncomingMessage !== 'function') return false;
-			if (!background.__ssappDiscordCaptured) {
-				background.__ssappDiscordCaptured = [];
-				const original = background.processIncomingMessage;
-				background.processIncomingMessage = async function (message, sender) {
-					if (message?.type === 'discord') background.__ssappDiscordCaptured.push(JSON.parse(JSON.stringify(message)));
-					return original.call(this, message, sender);
-				};
-			}
-			return true;
-		} catch (_) {
-			return false;
-		}
-	})()`), 'Social Stream background message interceptor');
 
 	await execInMain(`document.querySelector('[data-source-id="${source.id}"] [data-activatehtml]').click(); true;`);
 	const active = await waitFor(async () => {

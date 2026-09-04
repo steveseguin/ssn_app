@@ -206,6 +206,11 @@ const { AppWindowControlService } = require('./resources/app-window-control-serv
 const { AppDialogService } = require('./resources/app-dialog-service');
 const { buildMcpLaunchConfig } = require('./resources/mcp-launch-config');
 const { KickWsClient } = require('./resources/kick-ws-client');
+const { WindowsSystemTts } = require('./resources/windows-system-tts');
+const { ElectronThermalPrinter } = require('./resources/electron-thermal-printer');
+
+const windowsSystemTts = new WindowsSystemTts();
+const thermalPrinter = new ElectronThermalPrinter({ BrowserWindow });
 
 const SOCIAL_STREAM_REMOTE_HOSTS = new Set([
     'socialstream.ninja',
@@ -16486,6 +16491,8 @@ app.on("before-quit", (event) => {
         }
     }
     shutdownTtsWorker();
+    windowsSystemTts.stop();
+    thermalPrinter.stop();
     shutdownSttWorker();
     if (localMediaService) {
         localMediaService.stop().catch(() => { });
@@ -17875,6 +17882,45 @@ ipcMain.handle('stt:get-diagnostics', async (event) => {
 
 ipcMain.handle("tts", async (event, data) => {
     return enqueueTtsRequest(data);
+});
+
+function isTrustedSystemTtsSender(event) {
+    const frame = event && event.senderFrame;
+    const senderUrl = String(frame && frame.url || (event.sender && event.sender.getURL()) || '');
+    if (isSocialStreamRemoteUrl(senderUrl)) return true;
+    try {
+        if (!senderUrl.startsWith('file:')) return false;
+        const senderPath = fileURLToPath(senderUrl);
+        const trustedRoots = [path.resolve(__dirname)];
+        if (Argv.filesource) {
+            try {
+                trustedRoots.push(path.resolve(String(Argv.filesource).startsWith('file:')
+                    ? fileURLToPath(Argv.filesource)
+                    : String(Argv.filesource)));
+            } catch (_) { }
+        }
+        return trustedRoots.some((root) => isPathInsideDirectory(root, senderPath));
+    } catch (_) {
+        return false;
+    }
+}
+
+ipcMain.handle('system-tts:synthesize', async (event, data) => {
+    if (!isTrustedSystemTtsSender(event)) {
+        const error = new Error('Windows System TTS is only available to Social Stream pages.');
+        error.code = 'SSAPP_SYSTEM_TTS_FORBIDDEN';
+        throw error;
+    }
+    return windowsSystemTts.synthesize(data);
+});
+
+ipcMain.handle('thermal-print', async (event, data = {}) => {
+    if (!isTrustedSystemTtsSender(event)) {
+        const error = new Error('Thermal printing is only available to Social Stream pages.');
+        error.code = 'SSAPP_PRINT_FORBIDDEN';
+        throw error;
+    }
+    return thermalPrinter.print(data.htmlContent, data.options || {});
 });
 
 const TTS_WORKER_PATH = path.join(__dirname, 'tts-worker.js');

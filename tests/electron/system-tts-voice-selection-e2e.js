@@ -9,13 +9,81 @@ const http = require('http');
 const net = require('net');
 const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const electronPath = require('electron');
 const repoRoot = path.resolve(__dirname, '..', '..');
 const socialStreamRoot = path.resolve(repoRoot, '..', 'social_stream');
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-system-tts-'));
 const token = `system-tts-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const audioMeterScript = path.join(__dirname, 'helpers', 'windows-audio-peak-meter.ps1');
+const appExecutable = process.env.SSAPP_TTS_E2E_EXECUTABLE || electronPath;
+
+function startWindowsAudioPeakMeter(targetProcessId) {
+	const stopFile = path.join(profileDir, `audio-meter-stop-${Date.now()}`);
+	const meterArgs = [
+		'-NoProfile',
+		'-ExecutionPolicy', 'Bypass',
+		'-File', audioMeterScript,
+		'-StopFile', stopFile,
+		'-TargetProcessId', String(targetProcessId),
+		'-MaxDurationMs', '60000',
+	];
+	const child = spawn('powershell.exe', meterArgs, {
+		stdio: ['ignore', 'pipe', 'pipe'],
+		windowsHide: true,
+	});
+	let output = '';
+	let errorOutput = '';
+	let readyResolved = false;
+	let resolveReady;
+	let rejectReady;
+	const ready = new Promise((resolve, reject) => {
+		resolveReady = resolve;
+		rejectReady = reject;
+	});
+	child.stdout.on('data', chunk => {
+		output += chunk.toString();
+		if (!readyResolved && output.includes('READY')) {
+			readyResolved = true;
+			resolveReady();
+		}
+	});
+	child.stderr.on('data', chunk => { errorOutput += chunk.toString(); });
+	child.once('error', error => {
+		if (!readyResolved) rejectReady(error);
+	});
+	const result = new Promise((resolve, reject) => {
+		child.once('exit', code => {
+			if (!readyResolved) {
+				rejectReady(new Error(`Windows audio meter exited before it was ready (${code}): ${errorOutput || output}`));
+			}
+			if (code !== 0) {
+				reject(new Error(`Windows audio meter failed (${code}): ${errorOutput || output}`));
+				return;
+			}
+			try {
+				const jsonLine = output.trim().split(/\r?\n/).find(line => line.startsWith('{'));
+				resolve(JSON.parse(jsonLine));
+			} catch (error) {
+				reject(new Error(`Windows audio meter returned invalid output: ${output}\n${error.message}`));
+			}
+		});
+	});
+	// The app assertion can fail before the meter result is awaited. Attach a handler now so
+	// cleanup terminating PowerShell cannot become an unrelated unhandled rejection.
+	result.catch(() => {});
+	return {
+		ready,
+		result,
+		stop() {
+			if (!fs.existsSync(stopFile)) fs.writeFileSync(stopFile, 'stop');
+		},
+		kill() {
+			if (child.exitCode === null) child.kill();
+		},
+	};
+}
 
 function getFreePort() {
 	return new Promise((resolve, reject) => {
@@ -25,6 +93,33 @@ function getFreePort() {
 			const port = server.address().port;
 			server.close(() => resolve(port));
 		});
+	});
+}
+
+function encodePowerShellCommand(command) {
+	return Buffer.from(command, 'utf16le').toString('base64');
+}
+
+function findPackagedMainProcessId() {
+	const escapedProfile = profileDir.replace(/'/g, "''");
+	const command = [
+		`$profile = '${escapedProfile}'`,
+		'$content = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($profile) } | Select-Object -First 1',
+		'if ($content) { [Console]::Write($content.ParentProcessId) }',
+	].join('; ');
+	const result = spawnSync('powershell.exe', ['-NoProfile', '-EncodedCommand', encodePowerShellCommand(command)], {
+		encoding: 'utf8',
+		windowsHide: true,
+	});
+	const processId = Number(String(result.stdout || '').trim());
+	return Number.isInteger(processId) && processId > 0 ? processId : null;
+}
+
+function killWindowsProcessTree(processId) {
+	if (!processId) return;
+	spawnSync('taskkill.exe', ['/pid', String(processId), '/t', '/f'], {
+		stdio: 'ignore',
+		windowsHide: true,
 	});
 }
 
@@ -75,7 +170,11 @@ async function waitForControl(port, child, timeoutMs = 60000) {
 
 async function stopApp(child) {
 	if (!child || child.exitCode !== null) return;
-	child.kill();
+	if (process.platform === 'win32') {
+		killWindowsProcessTree(child.pid);
+	} else {
+		child.kill();
+	}
 	await Promise.race([
 		new Promise(resolve => child.once('exit', resolve)),
 		new Promise(resolve => setTimeout(resolve, 5000)),
@@ -98,14 +197,15 @@ async function run() {
 	}
 
 	const port = await getFreePort();
-	const child = spawn(electronPath, [
-		'.',
+	const appArgs = [
 		'--multiinstance',
 		'--preferlocalassets',
 		`--filesource=${socialStreamRoot}`,
 		'--remote-control',
 		...linuxLaunchArgs(),
-	], {
+	];
+	if (!process.env.SSAPP_TTS_E2E_EXECUTABLE) appArgs.unshift('.');
+	const child = spawn(appExecutable, appArgs, {
 		cwd: repoRoot,
 		env: {
 			...process.env,
@@ -120,6 +220,8 @@ async function run() {
 		windowsHide: true,
 	});
 	let output = '';
+	let audioMeter = null;
+	let packagedMainProcessId = null;
 	child.stdout.on('data', chunk => { output += chunk.toString(); });
 	child.stderr.on('data', chunk => { output += chunk.toString(); });
 
@@ -136,6 +238,13 @@ async function run() {
 		}
 		assert.ok(mainWindow, `Main SSApp window was not found: ${JSON.stringify(windows)}`);
 
+		if (process.env.SSAPP_TTS_E2E_EXECUTABLE) {
+			packagedMainProcessId = findPackagedMainProcessId();
+			assert.ok(packagedMainProcessId, 'Could not identify the packaged app process from its isolated profile.');
+		}
+		audioMeter = startWindowsAudioPeakMeter(packagedMainProcessId || child.pid);
+		await audioMeter.ready;
+		const preferredVoiceName = process.env.SSAPP_TTS_E2E_VOICE || 'Microsoft David - English (United States)';
 		const response = await requestJson(port, '/exec', {
 			windowId: mainWindow.id,
 			code: `(async () => {
@@ -151,29 +260,46 @@ async function run() {
 					throw new Error('Timed out waiting for ' + label);
 				};
 
-				const runSpeechProbe = async (targetWindow, trigger) => {
+				const runAudioProbe = async (targetWindow, trigger) => {
 					const synth = targetWindow.speechSynthesis;
 					const originalSpeak = synth.speak;
-					const probe = { called: false, started: false, assignedVoice: '', error: '' };
+					const mediaPrototype = targetWindow.HTMLMediaElement.prototype;
+					const originalPlay = mediaPrototype.play;
+					const probe = {
+						speechCalled: false,
+						speechStarted: false,
+						speechEnded: false,
+						assignedVoice: '',
+						mediaPlayed: false,
+						mediaEnded: false,
+						error: '',
+					};
 					synth.speak = function(utterance) {
-						probe.called = true;
+						probe.speechCalled = true;
 						probe.assignedVoice = utterance.voice && utterance.voice.name || '';
-						utterance.addEventListener('start', () => { probe.started = true; });
+						utterance.addEventListener('start', () => { probe.speechStarted = true; });
+						utterance.addEventListener('end', () => { probe.speechEnded = true; });
 						utterance.addEventListener('error', event => { probe.error = event.error || 'speech error'; });
 						return originalSpeak.call(synth, utterance);
+					};
+					mediaPrototype.play = function() {
+						probe.mediaPlayed = true;
+						this.addEventListener('ended', () => { probe.mediaEnded = true; }, { once: true });
+						this.addEventListener('error', () => { probe.error = 'media playback error'; }, { once: true });
+						return originalPlay.call(this);
 					};
 					try {
 						trigger();
 						await waitUntil(
-							() => probe.error || probe.started || synth.speaking,
-							15000,
-							'system speech to start'
+							() => probe.error || probe.speechEnded || probe.mediaEnded,
+							30000,
+							'system TTS audio to finish'
 						);
-						if (synth.speaking) probe.started = true;
 						return { ...probe };
 					} finally {
-						synth.cancel();
+						if (probe.speechCalled) synth.cancel();
 						synth.speak = originalSpeak;
+						mediaPrototype.play = originalPlay;
 					}
 				};
 
@@ -196,7 +322,7 @@ async function run() {
 				const popupWindow = frame.contentWindow;
 				await waitUntil(() => popupWindow.speechSynthesis.getVoices().length, 15000, 'Windows system voices');
 				const descriptors = popupWindow.populateSystemVoiceDropdowns();
-				const preferredName = 'Microsoft Sabina - Spanish (Mexico)';
+				const preferredName = ${JSON.stringify(preferredVoiceName)};
 				const selected = descriptors.find(voice => voice.name === preferredName) ||
 					descriptors.find(voice => !voice.default) || descriptors[0];
 				if (!selected) throw new Error('No system voice was available for the popup test.');
@@ -210,9 +336,23 @@ async function run() {
 				voiceSelect.value = selected.code;
 				const popupUrl = popupWindow.location.href;
 				const popupSettings = popupWindow.eval('TTSManager.getSettings()');
-				const popupProbe = await runSpeechProbe(popupWindow, () => {
+				const popupProbe = await runAudioProbe(popupWindow, () => {
 					popupWindow.document.querySelector('#ttsTestContainer .tts-test-button').click();
 				});
+				const volumeToggle = popupWindow.document.querySelector('input[data-param1="volume"]');
+				const volumeInput = popupWindow.document.querySelector('input[data-numbersetting="volume"]');
+				if (!volumeToggle || !volumeInput) throw new Error('Popup TTS volume controls were not found.');
+				volumeToggle.checked = true;
+				volumeInput.value = '0';
+				popupWindow.eval('TTSManager.testTTS()');
+				await waitUntil(
+					() => popupWindow.document.getElementById('ttsFeedback')?.textContent.includes('volume is set to 0'),
+					5000,
+					'zero-volume TTS warning'
+				);
+				const zeroVolumeFeedback = popupWindow.document.getElementById('ttsFeedback').textContent;
+				volumeToggle.checked = false;
+				volumeInput.value = '1.0';
 
 				const legacyVoiceName = selected.name.replace(/[^a-zA-Z0-9\\s]/g, '').trim().replaceAll(' ', '_');
 				const localDockUrl = new URL('dock.html', popupUrl).href;
@@ -237,7 +377,7 @@ async function run() {
 					'dock TTS URL configuration'
 				);
 				await waitUntil(() => dockWindow.speechSynthesis.getVoices().length, 15000, 'dock Windows system voices');
-				const dockProbe = await runSpeechProbe(dockWindow, () => {
+				const dockProbe = await runAudioProbe(dockWindow, () => {
 					dockWindow.TTS.speak('Live system voice test.', true);
 				});
 
@@ -249,6 +389,9 @@ async function run() {
 					selectedLanguage: selected.lang,
 					storedCode: selected.code,
 					popupSettingsVoice: popupSettings.system.voice,
+					popupNativeBridgeAvailable: typeof (popupWindow.ninjafy || popupWindow.electronApi)?.systemTts === 'function',
+					popupNativeResult: popupWindow.eval('TTSManager.lastDesktopSystemTts || null'),
+					zeroVolumeFeedback,
 					popupProbe,
 					legacyVoiceName,
 					dockRequestedVoice: dockWindow.TTS.voiceName,
@@ -259,6 +402,8 @@ async function run() {
 						normalized: dockWindow.TTS.normalizeSystemVoiceIdentifier(voice.name),
 					})),
 					dockResolvedVoice: dockWindow.TTS.voice && dockWindow.TTS.voice.name || '',
+					dockNativeBridgeAvailable: !!dockWindow.TTS.getDesktopSystemTtsBridge(),
+					dockNativeResult: dockWindow.TTS.lastDesktopSystemTts || null,
 					dockProbe,
 				};
 				dockFrame.remove();
@@ -271,27 +416,62 @@ async function run() {
 		assert.ok(String(result.popupUrl).startsWith('file:'), result.popupUrl);
 		assert.ok(String(result.dockUrl).startsWith('file:'), result.dockUrl);
 		assert.strictEqual(result.popupSettingsVoice, result.selectedVoice, JSON.stringify(result));
-		assert.strictEqual(result.popupProbe.called, true, JSON.stringify(result));
-		assert.strictEqual(result.popupProbe.started, true, JSON.stringify(result));
+		assert.ok(result.zeroVolumeFeedback.includes('volume is set to 0'), JSON.stringify(result));
 		assert.strictEqual(result.popupProbe.error, '', JSON.stringify(result));
-		assert.strictEqual(result.popupProbe.assignedVoice, result.selectedVoice, JSON.stringify(result));
-		assert.strictEqual(result.dockResolvedVoice, result.selectedVoice, JSON.stringify(result));
-		assert.strictEqual(result.dockProbe.called, true, JSON.stringify(result));
-		assert.strictEqual(result.dockProbe.started, true, JSON.stringify(result));
+		if (!result.dockNativeBridgeAvailable) {
+			assert.strictEqual(result.dockResolvedVoice, result.selectedVoice, JSON.stringify(result));
+		}
 		assert.strictEqual(result.dockProbe.error, '', JSON.stringify(result));
-		assert.strictEqual(result.dockProbe.assignedVoice, result.selectedVoice, JSON.stringify(result));
+		for (const [name, probe] of [['popup', result.popupProbe], ['dock', result.dockProbe]]) {
+			const webSpeechCompleted = probe.speechCalled && probe.speechStarted && probe.speechEnded;
+			const nativeAudioCompleted = probe.mediaPlayed && probe.mediaEnded;
+			assert.ok(webSpeechCompleted || nativeAudioCompleted, `${name} TTS did not complete audio playback: ${JSON.stringify(result)}`);
+			if (webSpeechCompleted) {
+				assert.strictEqual(probe.assignedVoice, result.selectedVoice, JSON.stringify(result));
+			}
+		}
+		if (result.popupNativeBridgeAvailable) {
+			assert.strictEqual(result.popupProbe.mediaEnded, true, JSON.stringify(result));
+			assert.ok(result.popupNativeResult?.voice, JSON.stringify(result));
+			assert.ok(result.selectedVoice.startsWith(result.popupNativeResult.voice), JSON.stringify(result));
+		}
+		if (result.dockNativeBridgeAvailable) {
+			assert.strictEqual(result.dockProbe.mediaEnded, true, JSON.stringify(result));
+			assert.ok(result.dockNativeResult?.voice, JSON.stringify(result));
+			assert.ok(result.selectedVoice.startsWith(result.dockNativeResult.voice), JSON.stringify(result));
+		}
 
-		console.log(`System TTS Electron end-to-end checks passed with ${result.selectedVoice}.`);
+		audioMeter.stop();
+		const audioMeasurement = await audioMeter.result;
+		const requiredPeak = 0.005;
+		assert.ok(
+			audioMeasurement.baselineMaxPeak < requiredPeak,
+			`The app was already producing audio before the TTS probe: ${JSON.stringify(audioMeasurement)}`
+		);
+		assert.ok(
+			audioMeasurement.maxPeak > requiredPeak && audioMeasurement.activeSamples >= 5,
+			`System TTS events completed but the Windows output was silent: ${JSON.stringify(audioMeasurement)}`
+		);
+
+		console.log(
+			`System TTS Electron end-to-end checks passed with ${result.selectedVoice}; ` +
+			`Windows output peak ${audioMeasurement.maxPeak.toFixed(4)}.`
+		);
 		if (!result.preferredVoiceAvailable) {
-			console.log('Microsoft Sabina was not installed; the end-to-end check used another installed Windows voice.');
+			console.log(`${preferredVoiceName} was not installed; the end-to-end check used another installed Windows voice.`);
 		}
 		const holdMs = Number(process.env.SSAPP_TTS_E2E_HOLD_MS || 0);
 		if (holdMs > 0) await new Promise(resolve => setTimeout(resolve, holdMs));
 	} catch (error) {
 		throw new Error(`${error.message}\n${output.slice(-5000)}`);
 	} finally {
+		if (audioMeter) {
+			audioMeter.stop();
+			audioMeter.kill();
+		}
+		if (packagedMainProcessId) killWindowsProcessTree(packagedMainProcessId);
 		await stopApp(child);
-		fs.rmSync(profileDir, { recursive: true, force: true });
+		fs.rmSync(profileDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 	}
 }
 
