@@ -448,6 +448,39 @@ async function pressPreset(streamDeck, relay, command, value, expectedFeedback =
 	return { context, request, callback };
 }
 
+async function pressP2pPreset(streamDeck, command, value, expectedFeedback = 'showOk') {
+	actionSequence += 1;
+	const context = `streamdeck-plugin-e2e-p2p-${actionSequence}-${command}`;
+	const settings = { command };
+	if (typeof value !== 'undefined') settings.value = commandValue(value);
+	const appearStart = streamDeck.messages.length;
+	streamDeck.send(actionEvent('willAppear', context, settings));
+	await streamDeck.waitForMessage(
+		message => message.event === 'setTitle' && message.context === context,
+		`${command} P2P title render`,
+		10000,
+		appearStart
+	);
+	const feedbackStart = streamDeck.messages.length;
+	streamDeck.send(actionEvent('keyDown', context, settings));
+	if (command === 'creditsReset') {
+		await streamDeck.waitForMessage(
+			message => message.event === 'setTitle' && message.context === context,
+			'creditsReset P2P confirmation prompt',
+			10000,
+			feedbackStart
+		);
+		streamDeck.send(actionEvent('keyDown', context, settings));
+	}
+	await streamDeck.waitForMessage(
+		message => message.event === expectedFeedback && message.context === context,
+		`${command} P2P ${expectedFeedback}`,
+		30000,
+		feedbackStart
+	);
+	return context;
+}
+
 async function waitForRelayAction(relay, start, action, label, timeoutMs = 30000) {
 	return await waitFor(
 		() => relay.messages.slice(start).find(message => message && message.action === action && message.apiid === sessionId),
@@ -1042,6 +1075,64 @@ async function run() {
 		assert.equal(p2pApiOffStatus.payload.diagnostics.transport, 'p2p');
 		assert.equal(p2pApiOffStatus.payload.capabilities.ssapp.available, true);
 
+		const p2pSsnCommands = [];
+		for (const command of SSN_PRESETS) {
+			await pressP2pPreset(streamDeck, command, ssnValues[command]);
+			p2pSsnCommands.push(command);
+		}
+		assert.deepEqual(new Set(p2pSsnCommands), new Set(SSN_PRESETS), 'not every SSN preset ran over P2P');
+
+		const p2pAddedUsername = `streamdeck-p2p-added-${Date.now()}`;
+		const p2pSsappCommands = [];
+		await pressP2pPreset(streamDeck, 'getSources');
+		p2pSsappCommands.push('getSources');
+		await pressP2pPreset(streamDeck, 'getSource', sourceId);
+		p2pSsappCommands.push('getSource');
+		await pressP2pPreset(streamDeck, 'addSource', {
+			target: 'twitch',
+			username: p2pAddedUsername,
+			connectionMode: 'classic',
+			idempotencyKey: `streamdeck-p2p-added-${Date.now()}`
+		});
+		p2pSsappCommands.push('addSource');
+		const p2pAddedSourceId = await waitFor(
+			() => execInRenderer(remotePort, mainWindow.id, `
+				(() => {
+					const source = stateManager.getSources().find(item => item.username === ${JSON.stringify(p2pAddedUsername)});
+					return source ? source.id : null;
+				})()
+			`, 'find source added over P2P'),
+			'source added over P2P',
+			10000
+		);
+		await pressP2pPreset(streamDeck, 'updateSource', {
+			sourceId: p2pAddedSourceId,
+			updates: { username: `${p2pAddedUsername}-updated` }
+		});
+		p2pSsappCommands.push('updateSource');
+		await pressP2pPreset(streamDeck, 'setSourceMute', { sourceId, isMuted: true });
+		p2pSsappCommands.push('setSourceMute');
+		await pressP2pPreset(streamDeck, 'toggleSourceMute', sourceId);
+		p2pSsappCommands.push('toggleSourceMute');
+		await pressP2pPreset(streamDeck, 'setSourceConnectionMode', { sourceId, mode: 'classic' });
+		p2pSsappCommands.push('setSourceConnectionMode');
+		await pressP2pPreset(streamDeck, 'startSource', sourceId);
+		p2pSsappCommands.push('startSource');
+		await pressP2pPreset(streamDeck, 'setSourceVisibility', { sourceId, isVisible: false });
+		p2pSsappCommands.push('setSourceVisibility');
+		await pressP2pPreset(streamDeck, 'toggleSourceVisibility', sourceId);
+		p2pSsappCommands.push('toggleSourceVisibility');
+		await pressP2pPreset(streamDeck, 'restartSource', sourceId);
+		p2pSsappCommands.push('restartSource');
+		await pressP2pPreset(streamDeck, 'stopSource', sourceId);
+		p2pSsappCommands.push('stopSource');
+		await pressP2pPreset(streamDeck, 'removeSource', { sourceId: p2pAddedSourceId, confirm: true });
+		p2pSsappCommands.push('removeSource');
+		assert.deepEqual(new Set(p2pSsappCommands), new Set(SUPPORTED_SSAPP_PRESETS), 'not every supported SSApp preset ran over P2P');
+		for (const command of GATED_SSAPP_PRESETS) {
+			await pressP2pPreset(streamDeck, command, undefined, 'showAlert');
+		}
+
 		const p2pSourceStart = streamDeck.messages.length;
 		streamDeck.send({
 			event: 'sendToPlugin',
@@ -1139,6 +1230,78 @@ async function run() {
 			'P2P chat with API disabled',
 			15000,
 			p2pChatStart
+		);
+
+		const iframeP2p = await execInRenderer(remotePort, mainWindow.id, `
+			(async () => {
+				const background = document.getElementById('frame2').contentWindow;
+				await background.handleRuntimeMessage(
+					{ cmd: 'saveSetting', setting: 'sdk', value: false },
+					null,
+					function () {}
+				);
+				return {
+					apiEnabled: !!background.settings.socketserver,
+					usingSdk: !!background.useNinjaSDK,
+					hasIframe: !!background.iframe
+				};
+			})()
+		`, 'switch P2P publisher from SDK to iframe');
+		assert.equal(iframeP2p.apiEnabled, false, 'Remote Control API turned on while switching to iframe P2P');
+		assert.equal(iframeP2p.usingSdk, false, 'P2P publisher did not switch out of SDK mode');
+		await waitFor(
+			() => execInRenderer(remotePort, mainWindow.id, `
+				(() => !!document.getElementById('frame2').contentWindow.iframe)()
+			`, 'wait for P2P iframe publisher'),
+			'P2P iframe publisher creation',
+			15000
+		);
+		await waitFor(async () => {
+			const health = await execInRenderer(remotePort, mainWindow.id, `
+				(() => document.getElementById('frame2').contentWindow.getDockTransportHealth())()
+			`, 'read iframe P2P peer health');
+			return health.p2pPeerLabels.includes('streamdeck') && health.p2pPeerLabels.includes('dock');
+		}, 'Stream Deck and Dock peers after iframe P2P switch', 60000);
+
+		statusStart = streamDeck.messages.length;
+		streamDeck.send({
+			event: 'sendToPlugin',
+			action: ACTION_UUIDS.command,
+			context: inspectorContext,
+			payload: { type: 'testConnection' }
+		});
+		const iframeP2pStatus = await streamDeck.waitForMessage(
+			message => message.event === 'sendToPropertyInspector' &&
+				message.context === inspectorContext &&
+				message.payload?.type === 'status' &&
+				message.payload?.message === 'Connection verified.',
+			'P2P connection through iframe with Remote Control API disabled',
+			30000,
+			statusStart
+		);
+		assert.equal(iframeP2pStatus.payload.ok, true);
+		assert.equal(iframeP2pStatus.payload.diagnostics.transport, 'p2p');
+		await pressP2pPreset(streamDeck, 'getSources');
+		const iframeChatStart = streamDeck.messages.length;
+		await execInRenderer(remotePort, mainWindow.id, `
+			(() => {
+				const background = document.getElementById('frame2').contentWindow;
+				background.sendDataP2P({
+					mid: 'p2p-iframe-api-off-chat',
+					chatname: 'Iframe P2P',
+					chatmessage: 'Iframe transport remains independent of the API',
+					type: 'youtube'
+				});
+				return true;
+			})()
+		`, 'send iframe P2P feed with API disabled');
+		await streamDeck.waitForMessage(
+			message => message.event === 'setFeedback' &&
+				message.context === p2pChatContext &&
+				message.payload?.name === 'Iframe P2P',
+			'iframe P2P chat with API disabled',
+			15000,
+			iframeChatStart
 		);
 
 		await execInRenderer(remotePort, mainWindow.id, `
@@ -1262,7 +1425,10 @@ async function run() {
 			sourceStopped: stoppedState.status === 'inactive',
 			credentialsRedacted: true,
 			apiToggle: true,
-			p2pWithApiOff: true
+			p2pWithApiOff: true,
+			iframeP2pWithApiOff: true,
+			p2pSsnPresets: p2pSsnCommands.length,
+			p2pSsappPresets: p2pSsappCommands.length
 		}));
 	} catch (error) {
 		console.error('[streamdeck-plugin-e2e] SSApp stdout:', appStdout.slice(-4000));
