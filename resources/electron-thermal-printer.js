@@ -50,15 +50,16 @@ function normalizeMarginType(value) {
 }
 
 function normalizePrintOptions(options = {}) {
-	const sharedMargin = normalizeCssLength(options.margin, '2mm', 25);
+	const hasSharedMargin = Object.prototype.hasOwnProperty.call(options, 'margin');
+	const sharedMargin = hasSharedMargin ? normalizeCssLength(options.margin, '0mm', 25) : null;
 	return {
 		printerName: String(options.printerName || '').trim().slice(0, 256),
 		widthMicrons: parseLengthMicrons(options.width, DEFAULT_WIDTH_MICRONS, MIN_WIDTH_MICRONS, MAX_WIDTH_MICRONS),
-		marginTop: normalizeCssLength(options.marginTop, sharedMargin, 25),
-		marginRight: normalizeCssLength(options.marginRight, sharedMargin, 25),
-		marginBottom: normalizeCssLength(options.marginBottom, sharedMargin, 25),
-		marginLeft: normalizeCssLength(options.marginLeft, sharedMargin, 25),
-		feedMicrons: parseLengthMicrons(options.feed, 3000, 0, 25000),
+		marginTop: normalizeCssLength(options.marginTop, sharedMargin || '0mm', 25),
+		marginRight: normalizeCssLength(options.marginRight, sharedMargin || '2mm', 25),
+		marginBottom: normalizeCssLength(options.marginBottom, sharedMargin || '0mm', 25),
+		marginLeft: normalizeCssLength(options.marginLeft, sharedMargin || '2mm', 25),
+		feedMicrons: parseLengthMicrons(options.feed, 1000, 0, 25000),
 		marginType: normalizeMarginType(options.marginType),
 		fontSize: normalizeCssLength(options.fontSize, '10pt', 72),
 		fontFamily: normalizeFontFamily(options.fontFamily),

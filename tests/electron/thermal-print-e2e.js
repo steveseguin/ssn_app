@@ -108,6 +108,7 @@ async function run() {
 	}
 
 	const printerName = getArgument('printer') || String(process.env.SSAPP_THERMAL_TEST_PRINTER || '').trim();
+	const testMessage = getArgument('message');
 	if (!printerName) {
 		throw new Error('Pass the physical printer explicitly, for example: npm run test:thermal-print:e2e -- --printer="POS-58"');
 	}
@@ -187,21 +188,27 @@ async function run() {
 		assert.equal(popupState.options.width, '58mm');
 		assert.equal(popupState.options.marginLeft, '2mm');
 		assert.equal(popupState.options.marginRight, '2mm');
+		assert.equal(popupState.options.marginTop, '0mm');
+		assert.equal(popupState.options.marginBottom, '0mm');
+		assert.equal(popupState.options.feed, '1mm');
 		assert.equal(popupState.options.marginType, 'printableArea');
 
-		const result = await backgroundFrame.evaluate(async (selectedPrinter) => {
+		const result = await backgroundFrame.evaluate(async ({ selectedPrinter, testMessage }) => {
 			const actionNode = {
 				id: 'physical_thermal_print_test',
 				type: 'action',
 				actionType: 'customJs',
 				config: {
-					code: `return printThermal(
-						'<div style="border:1px solid #000;padding:2mm">' +
+					code: `const printHtml = message.testMessage
+						? '<div><strong>' + message.chatname + '</strong><br>' + message.testMessage + '</div>'
+						: '<div style="border:1px solid #000;padding:2mm">' +
 						'<div style="display:flex;justify-content:space-between;font-size:8pt"><b>| LEFT</b><b>RIGHT |</b></div>' +
 						'<div style="font-size:18pt;font-weight:bold;text-align:center">BUYER #12</div>' +
 						'<div style="font-size:13pt;margin-top:3mm">Inky</div>' +
 						'<div style="font-size:13pt">Test Product</div>' +
-						'<div style="font-size:8pt;margin-top:3mm;text-align:center">SSApp printable-area E2E</div></div>',
+						'<div style="font-size:8pt;margin-top:3mm;text-align:center">SSApp printable-area E2E</div></div>';
+					return printThermal(
+						printHtml,
 						{ printerName: message.testPrinterName, fontSize: '10pt' }
 					).then((printResult) => ({
 						...result,
@@ -213,16 +220,18 @@ async function run() {
 			return await window.eventFlowSystem.executeAction(actionNode, {
 				type: 'test',
 				chatname: 'Inky',
-				chatmessage: 'Test Product',
+				chatmessage: testMessage || 'Test Product',
+				testMessage,
 				testPrinterName: selectedPrinter,
 			}, { id: 'physical_print_test', nodes: [actionNode], connections: [] });
-		}, printerName);
+		}, { selectedPrinter: printerName, testMessage });
 
 		assert.equal(result?.modified, true, `Event Flow did not return a modified message: ${JSON.stringify(result)}`);
 		assert.equal(result?.message?.thermalPrintResult?.success, true, JSON.stringify(result?.message?.thermalPrintResult));
 		assert.equal(result.message.thermalPrintResult.printerName.toLowerCase(), printerName.toLowerCase());
 		assert.equal(result.message.thermalPrintResult.marginType, 'printableArea');
-		assert.deepEqual(result.message.thermalPrintResult.margins, { top: '2mm', right: '2mm', bottom: '2mm', left: '2mm' });
+		assert.deepEqual(result.message.thermalPrintResult.margins, { top: '0mm', right: '2mm', bottom: '0mm', left: '2mm' });
+		assert.equal(result.message.thermalPrintResult.feedMicrons, 1000);
 		await waitForSubmittedJobsToFinish(printerName, initialJobIds);
 		console.log(`thermal-print-e2e: PASS (${JSON.stringify(result.message.thermalPrintResult)})`);
 	} catch (error) {
