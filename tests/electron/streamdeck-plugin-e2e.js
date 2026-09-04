@@ -1075,12 +1075,43 @@ async function run() {
 			30000,
 			p2pDockStart
 		);
-		await streamDeck.waitForMessage(
-			message => message.event === 'showOk' && message.context === p2pCommandContext,
-			'P2P Dock command completion',
-			30000,
-			p2pCommandFeedbackStart
-		);
+		try {
+			await streamDeck.waitForMessage(
+				message => message.event === 'showOk' && message.context === p2pCommandContext,
+				'P2P Dock command completion',
+				30000,
+				p2pCommandFeedbackStart
+			);
+		} catch (error) {
+			const p2pDebug = await execInRenderer(remotePort, mainWindow.id, `
+				(() => {
+					const background = document.getElementById('frame2').contentWindow;
+					return {
+						pendingDockRequests: background.pendingStreamDeckDockRequests.size,
+						peers: background.ninjaBridge ? background.ninjaBridge.getPeers() : {}
+					};
+				})()
+			`, 'read P2P Dock callback diagnostics');
+			const statusDebugStart = streamDeck.messages.length;
+			streamDeck.send({
+				event: 'sendToPlugin',
+				action: ACTION_UUIDS.command,
+				context: inspectorContext,
+				payload: { type: 'requestStatus' }
+			});
+			const pluginStatus = await streamDeck.waitForMessage(
+				message => message.event === 'sendToPropertyInspector' && message.context === inspectorContext && message.payload?.type === 'status',
+				'P2P failure status diagnostics',
+				5000,
+				statusDebugStart
+			);
+			throw new Error(`${error.message}: ${JSON.stringify({
+				p2pDebug,
+				dockRequests: p2pDockClient.requests.slice(p2pDockStart),
+				pluginStatus: pluginStatus.payload,
+				streamDeckMessages: streamDeck.messages.slice(p2pCommandFeedbackStart)
+			})}`);
+		}
 
 		const p2pChatContext = 'streamdeck-plugin-e2e-p2p-chat';
 		streamDeck.send(actionEvent('willAppear', p2pChatContext, { title: 'P2P Chat' }, {
@@ -1145,7 +1176,7 @@ async function run() {
 			outChannel: 1,
 			requestTimeoutMs: 1500
 		});
-		await waitFor(() => relay.joinedClientCount() === 2, 'WebSocket plugin to join while SSApp API is off', 15000);
+		await waitFor(() => relay.joinedClientCount() === 3, 'WebSocket plugin command and chat-feed sockets to join while SSApp API is off', 15000);
 		statusStart = streamDeck.messages.length;
 		streamDeck.send({
 			event: 'sendToPlugin',
@@ -1176,7 +1207,7 @@ async function run() {
 				return !!background.settings.socketserver;
 			})()
 		`, 're-enable Remote Control API for WebSocket mode');
-		await waitFor(() => relay.joinedClientCount() === 3, 'SSApp API socket to rejoin WebSocket plugin', 15000);
+		await waitFor(() => relay.joinedClientCount() === 4, 'SSApp API socket to rejoin WebSocket plugin sockets', 15000);
 		statusStart = streamDeck.messages.length;
 		streamDeck.send({
 			event: 'sendToPlugin',
