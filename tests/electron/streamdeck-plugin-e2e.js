@@ -1025,10 +1025,17 @@ async function run() {
 		await waitFor(() => relay.joinedClientCount() === 2, 'SSApp API socket to leave the relay', 15000);
 
 		p2pDockClient = await createP2pDockClient();
+		// Reproduce an upgrade from the WebSocket-only plugin: its saved settings
+		// contain the old relay fields but no transport selection. New builds must
+		// normalize that legacy shape to P2P so SSApp's API channels can stay off.
 		streamDeck.setGlobalSettings({
 			sessionId,
 			password: '',
-			transport: 'p2p',
+			apiHost: `127.0.0.1:${relay.port}`,
+			useTls: false,
+			httpFallback: true,
+			inChannel: 2,
+			outChannel: 1,
 			requestTimeoutMs: 30000
 		});
 		let lastP2pHealth = null;
@@ -1426,6 +1433,7 @@ async function run() {
 			credentialsRedacted: true,
 			apiToggle: true,
 			p2pWithApiOff: true,
+			legacySettingsUpgrade: true,
 			iframeP2pWithApiOff: true,
 			p2pSsnPresets: p2pSsnCommands.length,
 			p2pSsappPresets: p2pSsappCommands.length
