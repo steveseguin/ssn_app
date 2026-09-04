@@ -194,39 +194,113 @@ async function run() {
 		assert.equal(popupState.options.height, undefined);
 		assert.equal(popupState.options.marginType, 'printableArea');
 
-		const result = await backgroundFrame.evaluate(async ({ selectedPrinter, testMessage }) => {
-			const actionNode = {
-				id: 'physical_thermal_print_test',
+		const editorLink = page.locator('#main-navigation a[data-page="event-flow-editor"]');
+		await editorLink.waitFor({ state: 'visible' });
+		let editorFrame = null;
+		const editorDeadline = Date.now() + 30000;
+		while (Date.now() < editorDeadline) {
+			await editorLink.click();
+			editorFrame = page.frames().find((frame) => frame.name() === 'frame2');
+			const ready = editorFrame && await editorFrame.evaluate(() =>
+				!!window.flowEditor && !!window.eventFlowSystem && typeof window.ninjafy?.printThermal === 'function'
+			).catch(() => false);
+			if (ready) break;
+			editorFrame = null;
+			await page.waitForTimeout(250);
+		}
+		assert.ok(editorFrame, 'Event Flow editor did not become ready with the native printer bridge.');
+
+		const editorState = await editorFrame.evaluate(async ({ selectedPrinter, testMessage }) => {
+			const trigger = {
+				id: 'donation_trigger',
+				type: 'trigger',
+				triggerType: 'eventDonation',
+				x: 50,
+				y: 100,
+				config: { sources: [], minAmount: 10 },
+			};
+			const action = {
+				id: 'thermal_label_action',
 				type: 'action',
 				actionType: 'printThermal',
+				x: 400,
+				y: 100,
 				config: {
-					text: testMessage ? `{username}\n${testMessage}` : '{username}\n{message}',
-					fontSize: 18,
+					text: testMessage ? `{username}\n${testMessage}` : '{username}\n{donation}',
+					fontSize: 24,
 					fontFamily: 'monospace',
 					fontWeight: 'bold',
 					textAlign: 'center',
-					lineHeight: 1.15,
+					lineHeight: 1,
 					copies: 1,
 					printerName: selectedPrinter,
-					labelHeight: 0,
+					labelHeight: 29,
 				},
 			};
-			return await window.eventFlowSystem.executeAction(actionNode, {
-				type: 'test',
-				chatname: 'Inky',
-				chatmessage: testMessage || 'Test Product',
-			}, { id: 'physical_print_test', nodes: [actionNode], connections: [] });
+			const flow = {
+				id: 'physical_thermal_editor_test',
+				name: 'Physical Thermal Editor Test',
+				active: true,
+				nodes: [trigger, action],
+				connections: [{ from: trigger.id, to: action.id }],
+			};
+			window.flowEditor.currentFlow = flow;
+			window.flowEditor.renderFlow();
+			window.flowEditor.showNodeProperties(action);
+			return {
+				paletteHasAction: document.body.innerText.includes('Print Thermal Label'),
+				propertyValues: {
+					text: document.getElementById('prop-text')?.value,
+					fontSize: document.getElementById('prop-fontSize')?.value,
+					printerName: document.getElementById('prop-printerName')?.value,
+					labelHeight: document.getElementById('prop-labelHeight')?.value,
+				},
+				valueOnlyDonationMatches: await window.eventFlowSystem.evaluateTrigger(
+					trigger,
+					{ type: 'test', hasDonation: '$25.00 CAD', donoValue: 25 },
+					flow
+				),
+				belowMinimumDoesNotMatch: !(await window.eventFlowSystem.evaluateTrigger(
+					trigger,
+					{ type: 'test', hasDonation: '$5.00 CAD', donoValue: 5 },
+					flow
+				)),
+			};
 		}, { selectedPrinter: printerName, testMessage });
+		assert.equal(editorState.paletteHasAction, true, 'Print Thermal Label is missing from the Event Flow palette.');
+		assert.equal(editorState.propertyValues.fontSize, '24');
+		assert.equal(editorState.propertyValues.printerName.toLowerCase(), printerName.toLowerCase());
+		assert.equal(editorState.propertyValues.labelHeight, '29');
+		assert.equal(editorState.valueOnlyDonationMatches, true, 'Donation / Tip should match hasDonation without an event name.');
+		assert.equal(editorState.belowMinimumDoesNotMatch, true, 'Donation / Tip minimum amount was not enforced.');
 
-		assert.equal(result?.modified, true, `Event Flow did not return a modified message: ${JSON.stringify(result)}`);
-		assert.equal(result?.message?.thermalPrintResult?.success, true, JSON.stringify(result?.message?.thermalPrintResult));
-		assert.equal(result.message.thermalPrintResult.printerName.toLowerCase(), printerName.toLowerCase());
-		assert.equal(result.message.thermalPrintResult.marginType, 'printableArea');
-		assert.deepEqual(result.message.thermalPrintResult.margins, { top: '0mm', right: '2mm', bottom: '0mm', left: '2mm' });
-		assert.equal(result.message.thermalPrintResult.feedMicrons, 1000);
-		assert.equal(result.message.thermalPrintResult.fixedHeight, false);
+		await editorFrame.locator('#open-test-panel').click();
+		await editorFrame.locator('#test-source').selectOption('youtube');
+		await editorFrame.locator('#test-username').fill('Inky');
+		await editorFrame.locator('#test-message').fill('Editor printer test');
+		await editorFrame.locator('#test-donation').setChecked(true);
+		await editorFrame.locator('#test-donation-amount').fill('$25.00 CAD');
+		const previousResults = await editorFrame.locator('#test-results').innerText();
+		await editorFrame.locator('#run-test-btn').click();
+		await editorFrame.waitForFunction((oldText) => {
+			const current = document.getElementById('test-results')?.innerText || '';
+			return current.includes('thermalPrintResult') && current !== oldText;
+		}, previousResults, { timeout: 30000 });
+		const result = await editorFrame.evaluate(() => {
+			const output = document.getElementById('test-results')?.innerText || '';
+			const match = output.match(/thermalPrintResult:\s*(\{.*\})/);
+			return { output, printResult: match ? JSON.parse(match[1]) : null };
+		});
+
+		assert.equal(result.printResult?.success, true, result.output);
+		assert.equal(result.printResult.printerName.toLowerCase(), printerName.toLowerCase());
+		assert.equal(result.printResult.marginType, 'printableArea');
+		assert.deepEqual(result.printResult.margins, { top: '0mm', right: '2mm', bottom: '0mm', left: '2mm' });
+		assert.equal(result.printResult.feedMicrons, 1000);
+		assert.equal(result.printResult.heightMicrons, 29000);
+		assert.equal(result.printResult.fixedHeight, true);
 		await waitForSubmittedJobsToFinish(printerName, initialJobIds);
-		console.log(`thermal-print-e2e: PASS (${JSON.stringify(result.message.thermalPrintResult)})`);
+		console.log(`thermal-print-e2e: PASS (${JSON.stringify(result.printResult)})`);
 	} catch (error) {
 		if (output) console.error(output.trim());
 		throw error;
