@@ -175,10 +175,74 @@ async function createDockClient(relayPort) {
 	};
 }
 
+async function createP2pDockClient() {
+	const sdkPath = path.join(
+		socialStreamRepo,
+		'ssn-streamdeck',
+		'plugin',
+		'node_modules',
+		'@vdoninja',
+		'sdk',
+		'vdoninja-sdk-node.js'
+	);
+	const sdkModule = await import(pathToFileURL(sdkPath).href);
+	const VDONinja = sdkModule.default || sdkModule.VDONinjaSDK || sdkModule.VDONinja;
+	assert.equal(typeof VDONinja, 'function', 'VDO.Ninja Node SDK is unavailable for the P2P Dock fixture');
+	const sdk = new VDONinja({
+		host: 'wss://wss.socialstream.ninja',
+		room: sessionId,
+		password: false,
+		salt: 'vdo.ninja',
+		label: 'dock',
+		autoRecover: true
+	});
+	const requests = [];
+	sdk.addEventListener('dataReceived', event => {
+		const detail = event.detail || {};
+		const request = detail.data && detail.data.overlayNinja ? detail.data.overlayNinja : detail.data;
+		if (!request || typeof request !== 'object') return;
+		requests.push(request);
+		if (!request.get || !detail.uuid) return;
+		sdk.sendData({
+			overlayNinja: {
+				callback: {
+					get: request.get,
+					result: {
+						ok: true,
+						status: 'completed',
+						request: request.get,
+						payload: { action: request.action, accepted: true }
+					}
+				}
+			}
+		}, detail.uuid);
+	});
+	await sdk.connect();
+	await sdk.joinRoom({ room: sessionId, password: false });
+	await sdk.view(sessionId, { dataOnly: true, label: 'dock', downloads: false, allowresources: false });
+	return {
+		requests,
+		waitForRequest: (predicate, label, timeoutMs = 15000, startAt = 0) =>
+			waitFor(() => requests.slice(startAt).find(predicate), label, timeoutMs),
+		close: () => sdk.disconnect()
+	};
+}
+
 async function createStreamDeckServer(relayPort) {
 	const messages = [];
 	const actionContexts = new Map();
 	let socket = null;
+	let globalSettingsContext = pluginUuid;
+	let globalSettings = {
+		sessionId,
+		transport: 'websocket',
+		apiHost: `127.0.0.1:${relayPort}`,
+		useTls: false,
+		httpFallback: false,
+		inChannel: 2,
+		outChannel: 1,
+		requestTimeoutMs: 20000
+	};
 	const server = new WebSocket.WebSocketServer({ port: 0, host: '127.0.0.1' });
 	await once(server, 'listening');
 	server.on('connection', client => {
@@ -187,22 +251,12 @@ async function createStreamDeckServer(relayPort) {
 			const message = JSON.parse(raw.toString());
 			messages.push(message);
 			if (message.event === 'getGlobalSettings') {
+				globalSettingsContext = message.context || globalSettingsContext;
 				send({
 					event: 'didReceiveGlobalSettings',
 					context: message.context,
 					id: message.id,
-					payload: {
-						settings: {
-							sessionId,
-							transport: 'websocket',
-							apiHost: `127.0.0.1:${relayPort}`,
-							useTls: false,
-							httpFallback: false,
-							inChannel: 2,
-							outChannel: 1,
-							requestTimeoutMs: 20000
-						}
-					}
+					payload: { settings: globalSettings }
 				});
 			}
 			if (message.event === 'getSettings') {
@@ -251,7 +305,16 @@ async function createStreamDeckServer(relayPort) {
 		port: address && typeof address === 'object' ? address.port : 0,
 		messages,
 		send,
-		waitForMessage: (predicate, label, timeoutMs = 10000) => waitFor(() => messages.find(predicate), label, timeoutMs),
+		setGlobalSettings: settings => {
+			globalSettings = { ...settings };
+			send({
+				event: 'didReceiveGlobalSettings',
+				context: globalSettingsContext,
+				payload: { settings: globalSettings }
+			});
+		},
+		waitForMessage: (predicate, label, timeoutMs = 10000, startAt = 0) =>
+			waitFor(() => messages.slice(startAt).find(predicate), label, timeoutMs),
 		close: () => new Promise(resolve => {
 			if (socket) socket.terminate();
 			server.close(resolve);
