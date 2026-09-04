@@ -217,6 +217,10 @@ async function createP2pDockClient() {
 			}
 		}, detail.uuid);
 	});
+	sdk.addEventListener('dataChannelOpen', event => {
+		const uuid = event.detail && event.detail.uuid;
+		if (uuid) sdk.sendData({ overlayNinja: { type: 'ssnPeerHello', label: 'dock' } }, uuid);
+	});
 	await sdk.connect();
 	await sdk.joinRoom({ room: sessionId, password: false });
 	await sdk.view(sessionId, { dataOnly: true, label: 'dock', downloads: false, allowresources: false });
@@ -492,6 +496,7 @@ async function run() {
 	let appChild = null;
 	let pluginChild = null;
 	let dockClient = null;
+	let p2pDockClient = null;
 	let appStdout = '';
 	let appStderr = '';
 	let pluginStdout = '';
@@ -576,6 +581,7 @@ async function run() {
 				background.socketserver = false;
 				background.serverURL = 'ws://127.0.0.1:${relay.port}/api';
 				background.streamID = ${JSON.stringify(sessionId)};
+				background.password = false;
 				background.isExtensionOn = true;
 				background.settings = Object.assign({}, background.settings || {}, { socketserver: true });
 				background.__streamDeckE2eCreditsPackets = [];
@@ -946,6 +952,250 @@ async function run() {
 		streamDeck.send(actionEvent('willDisappear', chatContext, chatSettings, { action: ACTION_UUIDS.chat, controller: 'Encoder' }));
 		streamDeck.send(actionEvent('willDisappear', timerContext, timerSettings, { action: ACTION_UUIDS.timer, controller: 'Encoder' }));
 
+		const disableApi = await execInRenderer(remotePort, mainWindow.id, `
+			(async () => {
+				const background = document.getElementById('frame2').contentWindow;
+				const warnings = [];
+				const originalWarn = background.console.warn;
+				background.console.warn = function () {
+					warnings.push(Array.from(arguments).map(value => value && value.message ? value.message : String(value)).join(' '));
+					return originalWarn.apply(this, arguments);
+				};
+				await background.handleRuntimeMessage(
+					{ cmd: 'saveSetting', setting: 'socketserver', value: false },
+					null,
+					function () {}
+				);
+				await background.handleRuntimeMessage(
+					{ cmd: 'saveSetting', setting: 'sdk', value: true },
+					null,
+					function () {}
+				);
+				const started = Date.now();
+				while (!(background.ninjaBridge && background.ninjaBridge.isReady())) {
+					if (Date.now() - started > 45000) break;
+					await new Promise(resolve => setTimeout(resolve, 100));
+				}
+				background.console.warn = originalWarn;
+				return {
+					apiEnabled: !!background.settings.socketserver,
+					p2pReady: !!(background.ninjaBridge && background.ninjaBridge.isReady()),
+					usingSdk: !!background.useNinjaSDK,
+					hasBridge: !!background.ninjaBridge,
+					hasIframe: !!background.iframe,
+					warnings: warnings
+				};
+			})()
+		`, 'disable remote API and initialize SSApp P2P publisher');
+		assert.equal(disableApi.apiEnabled, false, 'Remote Control API did not turn off');
+		assert.equal(disableApi.p2pReady, true, `SSApp P2P publisher did not initialize while Remote Control API was off: ${JSON.stringify(disableApi)}`);
+		await waitFor(() => relay.joinedClientCount() === 2, 'SSApp API socket to leave the relay', 15000);
+
+		p2pDockClient = await createP2pDockClient();
+		streamDeck.setGlobalSettings({
+			sessionId,
+			password: '',
+			transport: 'p2p',
+			requestTimeoutMs: 30000
+		});
+		let lastP2pHealth = null;
+		try {
+			await waitFor(async () => {
+			const health = await execInRenderer(remotePort, mainWindow.id, `
+				(() => {
+					const background = document.getElementById('frame2').contentWindow;
+					const health = background.getDockTransportHealth();
+					return Object.assign({}, health, {
+						bridgeReady: !!(background.ninjaBridge && background.ninjaBridge.isReady()),
+						bridgePeers: background.ninjaBridge ? background.ninjaBridge.getPeers() : {},
+						sdkState: background.ninjaBridge && background.ninjaBridge.vdo ? background.ninjaBridge.vdo.state : null,
+						sdkConnections: background.ninjaBridge && background.ninjaBridge.vdo && background.ninjaBridge.vdo.connections
+							? background.ninjaBridge.vdo.connections.size
+							: 0
+					});
+				})()
+			`, 'read P2P peer health');
+			lastP2pHealth = health;
+			return health.p2pPeerLabels.includes('streamdeck') && health.p2pPeerLabels.includes('dock');
+			}, 'Stream Deck and Dock P2P peers', 45000);
+		} catch (error) {
+			throw new Error(`${error.message}: ${JSON.stringify(lastP2pHealth)}`);
+		}
+
+		let statusStart = streamDeck.messages.length;
+		streamDeck.send({
+			event: 'sendToPlugin',
+			action: ACTION_UUIDS.command,
+			context: inspectorContext,
+			payload: { type: 'testConnection' }
+		});
+		const p2pApiOffStatus = await streamDeck.waitForMessage(
+			message => message.event === 'sendToPropertyInspector' &&
+				message.context === inspectorContext &&
+				message.payload?.type === 'status' &&
+				message.payload?.message === 'Connection verified.',
+			'P2P connection with Remote Control API disabled',
+			45000,
+			statusStart
+		);
+		assert.equal(p2pApiOffStatus.payload.ok, true);
+		assert.equal(p2pApiOffStatus.payload.diagnostics.transport, 'p2p');
+		assert.equal(p2pApiOffStatus.payload.capabilities.ssapp.available, true);
+
+		const p2pSourceStart = streamDeck.messages.length;
+		streamDeck.send({
+			event: 'sendToPlugin',
+			action: ACTION_UUIDS.command,
+			context: inspectorContext,
+			payload: { type: 'requestSources' }
+		});
+		const p2pSources = await streamDeck.waitForMessage(
+			message => message.event === 'sendToPropertyInspector' &&
+				message.context === inspectorContext &&
+				message.payload?.type === 'sources' &&
+				message.payload.sources.some(source => source.id === sourceId),
+			'SSApp source command over P2P with API disabled',
+			30000,
+			p2pSourceStart
+		);
+		assert.equal(p2pSources.payload.error, undefined);
+
+		const p2pDockStart = p2pDockClient.requests.length;
+		const p2pCommandContext = 'streamdeck-plugin-e2e-p2p-dock-command';
+		streamDeck.send(actionEvent('willAppear', p2pCommandContext, { command: 'nextInQueue' }));
+		await streamDeck.waitForMessage(
+			message => message.event === 'setTitle' && message.context === p2pCommandContext,
+			'P2P Dock command title'
+		);
+		const p2pCommandFeedbackStart = streamDeck.messages.length;
+		streamDeck.send(actionEvent('keyDown', p2pCommandContext, { command: 'nextInQueue' }));
+		await p2pDockClient.waitForRequest(
+			request => request.action === 'nextInQueue',
+			'Dock-owned command over P2P',
+			30000,
+			p2pDockStart
+		);
+		await streamDeck.waitForMessage(
+			message => message.event === 'showOk' && message.context === p2pCommandContext,
+			'P2P Dock command completion',
+			30000,
+			p2pCommandFeedbackStart
+		);
+
+		const p2pChatContext = 'streamdeck-plugin-e2e-p2p-chat';
+		streamDeck.send(actionEvent('willAppear', p2pChatContext, { title: 'P2P Chat' }, {
+			action: ACTION_UUIDS.chat,
+			controller: 'Encoder'
+		}));
+		const p2pChatStart = streamDeck.messages.length;
+		await execInRenderer(remotePort, mainWindow.id, `
+			(() => {
+				const background = document.getElementById('frame2').contentWindow;
+				background.sendDataP2P({
+					mid: 'p2p-api-off-chat',
+					chatname: 'API Off P2P',
+					chatmessage: 'Stream Deck still receives chat',
+					type: 'youtube'
+				});
+				return true;
+			})()
+		`, 'send P2P feed with API disabled');
+		await streamDeck.waitForMessage(
+			message => message.event === 'setFeedback' &&
+				message.context === p2pChatContext &&
+				message.payload?.name === 'API Off P2P',
+			'P2P chat with API disabled',
+			15000,
+			p2pChatStart
+		);
+
+		await execInRenderer(remotePort, mainWindow.id, `
+			(async () => {
+				const background = document.getElementById('frame2').contentWindow;
+				await background.handleRuntimeMessage(
+					{ cmd: 'saveSetting', setting: 'socketserver', value: true },
+					null,
+					function () {}
+				);
+				return !!background.settings.socketserver;
+			})()
+		`, 'enable Remote Control API while plugin remains P2P');
+		await waitFor(() => relay.joinedClientCount() === 2, 'SSApp API socket to rejoin while plugin remains P2P', 15000);
+
+		await execInRenderer(remotePort, mainWindow.id, `
+			(async () => {
+				const background = document.getElementById('frame2').contentWindow;
+				await background.handleRuntimeMessage(
+					{ cmd: 'saveSetting', setting: 'socketserver', value: false },
+					null,
+					function () {}
+				);
+				return !background.settings.socketserver;
+			})()
+		`, 'disable Remote Control API again');
+		await waitFor(() => relay.joinedClientCount() === 1, 'SSApp API socket to leave relay again', 15000);
+
+		streamDeck.setGlobalSettings({
+			sessionId,
+			transport: 'websocket',
+			apiHost: `127.0.0.1:${relay.port}`,
+			useTls: false,
+			httpFallback: false,
+			inChannel: 2,
+			outChannel: 1,
+			requestTimeoutMs: 1500
+		});
+		await waitFor(() => relay.joinedClientCount() === 2, 'WebSocket plugin to join while SSApp API is off', 15000);
+		statusStart = streamDeck.messages.length;
+		streamDeck.send({
+			event: 'sendToPlugin',
+			action: ACTION_UUIDS.command,
+			context: inspectorContext,
+			payload: { type: 'testConnection' }
+		});
+		const websocketApiOffStatus = await streamDeck.waitForMessage(
+			message => message.event === 'sendToPropertyInspector' &&
+				message.context === inspectorContext &&
+				message.payload?.type === 'status' &&
+				String(message.payload?.message || '').startsWith('Connection test failed:'),
+			'WebSocket failure with Remote Control API disabled',
+			10000,
+			statusStart
+		);
+		assert.equal(websocketApiOffStatus.payload.ok, false);
+		assert.equal(websocketApiOffStatus.payload.diagnostics.transport, 'websocket');
+
+		await execInRenderer(remotePort, mainWindow.id, `
+			(async () => {
+				const background = document.getElementById('frame2').contentWindow;
+				await background.handleRuntimeMessage(
+					{ cmd: 'saveSetting', setting: 'socketserver', value: true },
+					null,
+					function () {}
+				);
+				return !!background.settings.socketserver;
+			})()
+		`, 're-enable Remote Control API for WebSocket mode');
+		await waitFor(() => relay.joinedClientCount() === 3, 'SSApp API socket to rejoin WebSocket plugin', 15000);
+		statusStart = streamDeck.messages.length;
+		streamDeck.send({
+			event: 'sendToPlugin',
+			action: ACTION_UUIDS.command,
+			context: inspectorContext,
+			payload: { type: 'testConnection' }
+		});
+		const websocketApiOnStatus = await streamDeck.waitForMessage(
+			message => message.event === 'sendToPropertyInspector' &&
+				message.context === inspectorContext &&
+				message.payload?.type === 'status' &&
+				message.payload?.message === 'Connection verified.',
+			'WebSocket recovery after Remote Control API re-enabled',
+			15000,
+			statusStart
+		);
+		assert.equal(websocketApiOnStatus.payload.ok, true);
+		assert.equal(websocketApiOnStatus.payload.diagnostics.transport, 'websocket');
+
 		assert.equal(pluginChild.exitCode, null, `plugin exited early\nstdout:\n${pluginStdout}\nstderr:\n${pluginStderr}`);
 		console.log('[streamdeck-plugin-e2e] PASS', JSON.stringify({
 			connection: connectionStatus.payload.state,
@@ -959,7 +1209,9 @@ async function run() {
 			sourceListed: !!listedSource,
 			sourceStarted: !!(activeState.vid || activeState.wssId),
 			sourceStopped: stoppedState.status === 'inactive',
-			credentialsRedacted: true
+			credentialsRedacted: true,
+			apiToggle: true,
+			p2pWithApiOff: true
 		}));
 	} catch (error) {
 		console.error('[streamdeck-plugin-e2e] SSApp stdout:', appStdout.slice(-4000));
@@ -976,6 +1228,7 @@ async function run() {
 		await stopChild(pluginChild);
 		await stopChild(appChild);
 		if (dockClient) await dockClient.close().catch(() => undefined);
+		if (p2pDockClient) await p2pDockClient.close().catch(() => undefined);
 		await streamDeck.close().catch(() => undefined);
 		await relay.close().catch(() => undefined);
 		await sourceFixture.close().catch(() => undefined);
