@@ -994,6 +994,21 @@ async function run() {
 					warnings.push(Array.from(arguments).map(value => value && value.message ? value.message : String(value)).join(' '));
 					return originalWarn.apply(this, arguments);
 				};
+				background.__streamDeckE2eP2pRequests = [];
+				if (!background.__streamDeckE2eOriginalProcessIncomingRequest) {
+					background.__streamDeckE2eOriginalProcessIncomingRequest = background.processIncomingRequest;
+					background.processIncomingRequest = function (request, uuid) {
+						if (request && request.action) {
+							background.__streamDeckE2eP2pRequests.push({
+								action: request.action,
+								target: request.target || null,
+								get: request.get || null,
+								uuid: uuid || null
+							});
+						}
+						return background.__streamDeckE2eOriginalProcessIncomingRequest.apply(this, arguments);
+					};
+				}
 				await background.handleRuntimeMessage(
 					{ cmd: 'saveSetting', setting: 'socketserver', value: false },
 					null,
@@ -1138,6 +1153,16 @@ async function run() {
 		assert.deepEqual(new Set(p2pSsappCommands), new Set(SUPPORTED_SSAPP_PRESETS), 'not every supported SSApp preset ran over P2P');
 		for (const command of GATED_SSAPP_PRESETS) {
 			await pressP2pPreset(streamDeck, command, undefined, 'showAlert');
+		}
+		const receivedP2pActions = await execInRenderer(remotePort, mainWindow.id, `
+			(() => document.getElementById('frame2').contentWindow.__streamDeckE2eP2pRequests || [])()
+		`, 'read commands received by the P2P host');
+		const receivedP2pActionNames = new Set(receivedP2pActions.map(request => request.action));
+		for (const command of [...SSN_PRESETS, ...SUPPORTED_SSAPP_PRESETS]) {
+			assert(receivedP2pActionNames.has(command), `${command} did not reach Social Stream over P2P`);
+		}
+		for (const command of GATED_SSAPP_PRESETS) {
+			assert.equal(receivedP2pActionNames.has(command), false, `${command} reached Social Stream despite its capability gate`);
 		}
 
 		const p2pSourceStart = streamDeck.messages.length;
@@ -1436,7 +1461,8 @@ async function run() {
 			legacySettingsUpgrade: true,
 			iframeP2pWithApiOff: true,
 			p2pSsnPresets: p2pSsnCommands.length,
-			p2pSsappPresets: p2pSsappCommands.length
+			p2pSsappPresets: p2pSsappCommands.length,
+			p2pCommandsReceived: receivedP2pActionNames.size
 		}));
 	} catch (error) {
 		console.error('[streamdeck-plugin-e2e] SSApp stdout:', appStdout.slice(-4000));

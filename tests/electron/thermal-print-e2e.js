@@ -159,6 +159,36 @@ async function run() {
 		}
 		assert.ok(backgroundFrame, 'SSApp background/Event Flow runtime did not become ready.');
 
+		let popupFrame = null;
+		const popupDeadline = Date.now() + 30000;
+		while (Date.now() < popupDeadline) {
+			popupFrame = page.frames().find((frame) => frame.name() === 'frame1');
+			const ready = popupFrame && await popupFrame.evaluate(() =>
+				typeof window.refreshThermalPrinterList === 'function' &&
+				typeof window.getThermalPrinterOptionsFromPopup === 'function' &&
+				!!document.getElementById('testThermalPrinter')
+			).catch(() => false);
+			if (ready) break;
+			popupFrame = null;
+			await page.waitForTimeout(200);
+		}
+		assert.ok(popupFrame, 'SSApp printer settings UI did not become ready.');
+		const popupState = await popupFrame.evaluate(async () => {
+			const printers = await window.refreshThermalPrinterList();
+			return {
+				printers,
+				options: window.getThermalPrinterOptionsFromPopup(),
+				datalistValues: Array.from(document.querySelectorAll('#thermalPrinterNames option')).map((option) => option.value),
+			};
+		});
+		assert.ok(popupState.printers.some((printer) => printer.name.toLowerCase() === printerName.toLowerCase()),
+			`Printer settings UI did not discover ${printerName}: ${JSON.stringify(popupState)}`);
+		assert.ok(popupState.datalistValues.some((name) => name.toLowerCase() === printerName.toLowerCase()));
+		assert.equal(popupState.options.width, '58mm');
+		assert.equal(popupState.options.marginLeft, '2mm');
+		assert.equal(popupState.options.marginRight, '2mm');
+		assert.equal(popupState.options.marginType, 'printableArea');
+
 		const result = await backgroundFrame.evaluate(async (selectedPrinter) => {
 			const actionNode = {
 				id: 'physical_thermal_print_test',
@@ -172,7 +202,7 @@ async function run() {
 						'<div style="font-size:13pt;margin-top:3mm">Inky</div>' +
 						'<div style="font-size:13pt">Test Product</div>' +
 						'<div style="font-size:8pt;margin-top:3mm;text-align:center">SSApp printable-area E2E</div></div>',
-						{ printerName: message.testPrinterName, width: '58mm', margin: '2mm', marginType: 'printableArea', fontSize: '10pt' }
+						{ printerName: message.testPrinterName, fontSize: '10pt' }
 					).then((printResult) => ({
 						...result,
 						modified: true,
@@ -192,6 +222,7 @@ async function run() {
 		assert.equal(result?.message?.thermalPrintResult?.success, true, JSON.stringify(result?.message?.thermalPrintResult));
 		assert.equal(result.message.thermalPrintResult.printerName.toLowerCase(), printerName.toLowerCase());
 		assert.equal(result.message.thermalPrintResult.marginType, 'printableArea');
+		assert.deepEqual(result.message.thermalPrintResult.margins, { top: '2mm', right: '2mm', bottom: '2mm', left: '2mm' });
 		await waitForSubmittedJobsToFinish(printerName, initialJobIds);
 		console.log(`thermal-print-e2e: PASS (${JSON.stringify(result.message.thermalPrintResult)})`);
 	} catch (error) {

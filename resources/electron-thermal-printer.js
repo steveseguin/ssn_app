@@ -222,6 +222,13 @@ class ElectronThermalPrinter {
 				widthMicrons: options.widthMicrons,
 				heightMicrons: pageHeightMicrons,
 				marginType: options.marginType,
+				margins: {
+					top: options.marginTop,
+					right: options.marginRight,
+					bottom: options.marginBottom,
+					left: options.marginLeft,
+				},
+				feedMicrons: options.feedMicrons,
 			};
 		} finally {
 			this.activeWindows.delete(printWindow);
