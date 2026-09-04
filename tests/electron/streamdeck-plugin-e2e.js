@@ -1119,6 +1119,7 @@ async function run() {
 			controller: 'Encoder'
 		}));
 		const p2pChatStart = streamDeck.messages.length;
+		let relayJoinStart = relay.messages.length;
 		await execInRenderer(remotePort, mainWindow.id, `
 			(() => {
 				const background = document.getElementById('frame2').contentWindow;
@@ -1151,7 +1152,11 @@ async function run() {
 				return !!background.settings.socketserver;
 			})()
 		`, 'enable Remote Control API while plugin remains P2P');
-		await waitFor(() => relay.joinedClientCount() === 2, 'SSApp API socket to rejoin while plugin remains P2P', 15000);
+		await waitFor(
+			() => relay.messages.slice(relayJoinStart).find(message => message.join === sessionId && message.in === 1 && message.out === 2),
+			'SSApp API socket to rejoin while plugin remains P2P',
+			15000
+		);
 
 		await execInRenderer(remotePort, mainWindow.id, `
 			(async () => {
@@ -1166,6 +1171,7 @@ async function run() {
 		`, 'disable Remote Control API again');
 		await waitFor(() => relay.joinedClientCount() === 1, 'SSApp API socket to leave relay again', 15000);
 
+		relayJoinStart = relay.messages.length;
 		streamDeck.setGlobalSettings({
 			sessionId,
 			transport: 'websocket',
@@ -1176,7 +1182,16 @@ async function run() {
 			outChannel: 1,
 			requestTimeoutMs: 1500
 		});
-		await waitFor(() => relay.joinedClientCount() === 3, 'WebSocket plugin command and chat-feed sockets to join while SSApp API is off', 15000);
+		await waitFor(
+			() => relay.messages.slice(relayJoinStart).find(message => message.join === sessionId && message.in === 2 && message.out === 1),
+			'WebSocket plugin command socket to join while SSApp API is off',
+			15000
+		);
+		await waitFor(
+			() => relay.messages.slice(relayJoinStart).find(message => message.join === sessionId && message.in === 4 && message.out === 3),
+			'WebSocket plugin chat-feed socket to join while SSApp API is off',
+			15000
+		);
 		statusStart = streamDeck.messages.length;
 		streamDeck.send({
 			event: 'sendToPlugin',
@@ -1196,6 +1211,7 @@ async function run() {
 		assert.equal(websocketApiOffStatus.payload.ok, false);
 		assert.equal(websocketApiOffStatus.payload.diagnostics.transport, 'websocket');
 
+		relayJoinStart = relay.messages.length;
 		await execInRenderer(remotePort, mainWindow.id, `
 			(async () => {
 				const background = document.getElementById('frame2').contentWindow;
@@ -1207,7 +1223,11 @@ async function run() {
 				return !!background.settings.socketserver;
 			})()
 		`, 're-enable Remote Control API for WebSocket mode');
-		await waitFor(() => relay.joinedClientCount() === 4, 'SSApp API socket to rejoin WebSocket plugin sockets', 15000);
+		await waitFor(
+			() => relay.messages.slice(relayJoinStart).find(message => message.join === sessionId && message.in === 1 && message.out === 2),
+			'SSApp API socket to rejoin WebSocket plugin sockets',
+			15000
+		);
 		statusStart = streamDeck.messages.length;
 		streamDeck.send({
 			event: 'sendToPlugin',
