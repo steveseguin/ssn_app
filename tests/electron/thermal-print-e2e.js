@@ -198,32 +198,23 @@ async function run() {
 			const actionNode = {
 				id: 'physical_thermal_print_test',
 				type: 'action',
-				actionType: 'customJs',
+				actionType: 'printThermal',
 				config: {
-					code: `const printHtml = message.testMessage
-						? '<div><strong>' + message.chatname + '</strong><br>' + message.testMessage + '</div>'
-						: '<div style="border:1px solid #000;padding:2mm">' +
-						'<div style="display:flex;justify-content:space-between;font-size:8pt"><b>| LEFT</b><b>RIGHT |</b></div>' +
-						'<div style="font-size:18pt;font-weight:bold;text-align:center">BUYER #12</div>' +
-						'<div style="font-size:13pt;margin-top:3mm">Inky</div>' +
-						'<div style="font-size:13pt">Test Product</div>' +
-						'<div style="font-size:8pt;margin-top:3mm;text-align:center">SSApp printable-area E2E</div></div>';
-					return printThermal(
-						printHtml,
-						{ printerName: message.testPrinterName, fontSize: '10pt' }
-					).then((printResult) => ({
-						...result,
-						modified: true,
-						message: { ...message, thermalPrintResult: printResult }
-					}));`,
+					text: testMessage ? `{username}\n${testMessage}` : '{username}\n{message}',
+					fontSize: 18,
+					fontFamily: 'monospace',
+					fontWeight: 'bold',
+					textAlign: 'center',
+					lineHeight: 1.15,
+					copies: 1,
+					printerName: selectedPrinter,
+					labelHeight: 0,
 				},
 			};
 			return await window.eventFlowSystem.executeAction(actionNode, {
 				type: 'test',
 				chatname: 'Inky',
 				chatmessage: testMessage || 'Test Product',
-				testMessage,
-				testPrinterName: selectedPrinter,
 			}, { id: 'physical_print_test', nodes: [actionNode], connections: [] });
 		}, { selectedPrinter: printerName, testMessage });
 
