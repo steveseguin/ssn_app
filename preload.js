@@ -845,6 +845,10 @@ function configureContextBridge(){
 			  printThermal: async (htmlContent, options = {}) => {
 				return await ipcRenderer.invoke('thermal-print', { htmlContent, options });
 			  },
+
+			  listThermalPrinters: async () => {
+				return await ipcRenderer.invoke('thermal-printers:list');
+			  },
 			  
 			  onSendToTab: (callback) => {
 				ipcRenderer.on('sendToTab', (event, ...args) => {
@@ -1179,6 +1183,10 @@ try {
 
 			printThermal: async (htmlContent, options = {}) => {
 				return await ipcRenderer.invoke('thermal-print', { htmlContent, options });
+			},
+
+			listThermalPrinters: async () => {
+				return await ipcRenderer.invoke('thermal-printers:list');
 			},
 
 			onKickWsEvent: (() => {

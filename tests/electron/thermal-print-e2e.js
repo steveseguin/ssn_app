@@ -166,11 +166,13 @@ async function run() {
 				actionType: 'customJs',
 				config: {
 					code: `return printThermal(
+						'<div style="border:1px solid #000;padding:2mm">' +
+						'<div style="display:flex;justify-content:space-between;font-size:8pt"><b>| LEFT</b><b>RIGHT |</b></div>' +
 						'<div style="font-size:18pt;font-weight:bold;text-align:center">BUYER #12</div>' +
 						'<div style="font-size:13pt;margin-top:3mm">Inky</div>' +
 						'<div style="font-size:13pt">Test Product</div>' +
-						'<div style="font-size:8pt;margin-top:3mm;text-align:center">SSApp thermal print E2E</div>',
-						{ printerName: message.testPrinterName, width: '58mm', margin: '2mm', fontSize: '10pt' }
+						'<div style="font-size:8pt;margin-top:3mm;text-align:center">SSApp printable-area E2E</div></div>',
+						{ printerName: message.testPrinterName, width: '58mm', margin: '2mm', marginType: 'printableArea', fontSize: '10pt' }
 					).then((printResult) => ({
 						...result,
 						modified: true,
@@ -189,6 +191,7 @@ async function run() {
 		assert.equal(result?.modified, true, `Event Flow did not return a modified message: ${JSON.stringify(result)}`);
 		assert.equal(result?.message?.thermalPrintResult?.success, true, JSON.stringify(result?.message?.thermalPrintResult));
 		assert.equal(result.message.thermalPrintResult.printerName.toLowerCase(), printerName.toLowerCase());
+		assert.equal(result.message.thermalPrintResult.marginType, 'printableArea');
 		await waitForSubmittedJobsToFinish(printerName, initialJobIds);
 		console.log(`thermal-print-e2e: PASS (${JSON.stringify(result.message.thermalPrintResult)})`);
 	} catch (error) {

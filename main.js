@@ -17923,6 +17923,22 @@ ipcMain.handle('thermal-print', async (event, data = {}) => {
     return thermalPrinter.print(data.htmlContent, data.options || {});
 });
 
+ipcMain.handle('thermal-printers:list', async (event) => {
+    if (!isTrustedSystemTtsSender(event)) {
+        const error = new Error('Printer discovery is only available to Social Stream pages.');
+        error.code = 'SSAPP_PRINT_FORBIDDEN';
+        throw error;
+    }
+    const printers = await event.sender.getPrintersAsync();
+    return printers.map((printer) => ({
+        name: String(printer.name || ''),
+        displayName: String(printer.displayName || printer.name || ''),
+        description: String(printer.description || ''),
+        isDefault: !!printer.isDefault,
+        status: Number(printer.status) || 0,
+    }));
+});
+
 const TTS_WORKER_PATH = path.join(__dirname, 'tts-worker.js');
 let ttsWorker = null;
 let ttsActiveRequest = null;

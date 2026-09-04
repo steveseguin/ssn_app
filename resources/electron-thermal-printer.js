@@ -45,11 +45,21 @@ function normalizeLineHeight(value) {
 	return String(Math.max(0.8, Math.min(3, amount)));
 }
 
+function normalizeMarginType(value) {
+	return String(value || '').toLowerCase() === 'none' ? 'none' : 'printableArea';
+}
+
 function normalizePrintOptions(options = {}) {
+	const sharedMargin = normalizeCssLength(options.margin, '2mm', 25);
 	return {
 		printerName: String(options.printerName || '').trim().slice(0, 256),
 		widthMicrons: parseLengthMicrons(options.width, DEFAULT_WIDTH_MICRONS, MIN_WIDTH_MICRONS, MAX_WIDTH_MICRONS),
-		margin: normalizeCssLength(options.margin, '0mm', 25),
+		marginTop: normalizeCssLength(options.marginTop, sharedMargin, 25),
+		marginRight: normalizeCssLength(options.marginRight, sharedMargin, 25),
+		marginBottom: normalizeCssLength(options.marginBottom, sharedMargin, 25),
+		marginLeft: normalizeCssLength(options.marginLeft, sharedMargin, 25),
+		feedMicrons: parseLengthMicrons(options.feed, 3000, 0, 25000),
+		marginType: normalizeMarginType(options.marginType),
 		fontSize: normalizeCssLength(options.fontSize, '10pt', 72),
 		fontFamily: normalizeFontFamily(options.fontFamily),
 		lineHeight: normalizeLineHeight(options.lineHeight),
@@ -78,7 +88,7 @@ function buildPrintDocument(htmlContent, options) {
 		#ssapp-thermal-print-root {
 			box-sizing: border-box;
 			width: 100%;
-			padding: ${options.margin};
+			padding: ${options.marginTop} ${options.marginRight} ${options.marginBottom} ${options.marginLeft};
 			overflow-wrap: anywhere;
 		}
 		*, *::before, *::after { box-sizing: border-box; }
@@ -171,13 +181,13 @@ class ElectronThermalPrinter {
 				document.getElementById('ssapp-thermal-print-root').getBoundingClientRect().height
 			)`);
 			const measuredHeightMicrons = Math.ceil((Number(contentHeightPx) || 0) * MICRONS_PER_INCH / CSS_PIXELS_PER_INCH);
-			const pageHeightMicrons = Math.max(MIN_HEIGHT_MICRONS, Math.min(MAX_HEIGHT_MICRONS, measuredHeightMicrons + 3000));
+			const pageHeightMicrons = Math.max(MIN_HEIGHT_MICRONS, Math.min(MAX_HEIGHT_MICRONS, measuredHeightMicrons + options.feedMicrons));
 
 			const printOptions = {
 				silent: true,
 				printBackground: true,
 				color: false,
-				margins: { marginType: 'none' },
+				margins: { marginType: options.marginType },
 				landscape: false,
 				copies: options.copies,
 				pageSize: {
@@ -211,6 +221,7 @@ class ElectronThermalPrinter {
 				printerName: selectedPrinter && selectedPrinter.name ? selectedPrinter.name : '',
 				widthMicrons: options.widthMicrons,
 				heightMicrons: pageHeightMicrons,
+				marginType: options.marginType,
 			};
 		} finally {
 			this.activeWindows.delete(printWindow);
