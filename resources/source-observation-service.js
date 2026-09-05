@@ -16,6 +16,9 @@ const MAX_TEXT_CHARS = 20000;
 const MAX_FILL_CHARS = 2000;
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024;
 const SCREENSHOT_TIMEOUT_MS = 10000;
+// Shared across source and app-window API instances: two callers must not race
+// each other's temporary visibility/opacity changes on the same window.
+const windowCaptures = new WeakMap();
 const INSPECTION_TIMEOUT_MS = 10000;
 const FRAME_INSPECTION_TIMEOUT_MS = 2000;
 const ALLOWED_KEYS = new Set([
@@ -166,6 +169,47 @@ function withTimeout(promise, timeoutMs, message) {
 			timer = setTimeout(() => reject(Object.assign(new Error(message), { code: 'SSAPP_TIMEOUT' })), timeoutMs);
 		}),
 	]).finally(() => clearTimeout(timer));
+}
+
+function captureWindowPage(view) {
+	const previous = windowCaptures.get(view) || Promise.resolve();
+	const capture = previous.catch(() => {}).then(async () => {
+		const capturePage = async () => {
+			const image = await withTimeout(view.webContents.capturePage(), SCREENSHOT_TIMEOUT_MS, 'Source screenshot timed out.');
+			if (image.isEmpty()) throw new Error('The window has no rendered screenshot surface.');
+			return image;
+		};
+		try {
+			return await capturePage();
+		} catch (error) {
+			if (!isUsableView(view) || typeof view.isVisible !== 'function' || view.isVisible()) throw error;
+			if (typeof view.showInactive !== 'function') throw error;
+		}
+		// Never-shown Chromium windows may have no surface to copy. Use the same
+		// non-focusing warm-up for both screenshot APIs, then restore hidden state.
+		const opacity = typeof view.getOpacity === 'function' ? view.getOpacity() : 1;
+		const internalCapture = view.__ssappInternalCapture;
+		try {
+			view.__ssappInternalCapture = true;
+			if (typeof view.setOpacity === 'function') view.setOpacity(0);
+			view.showInactive();
+			await new Promise(resolve => setTimeout(resolve, 100));
+			return await capturePage();
+		} finally {
+			try {
+				if (isUsableView(view)) {
+					view.hide();
+					if (typeof view.setOpacity === 'function') view.setOpacity(opacity);
+				}
+			} finally {
+				view.__ssappInternalCapture = internalCapture;
+			}
+		}
+	});
+	windowCaptures.set(view, capture);
+	const release = () => { if (windowCaptures.get(view) === capture) windowCaptures.delete(view); };
+	capture.then(release, release);
+	return capture;
 }
 
 const SNAPSHOT_SCRIPT = `(${function snapshotPage(options) {
@@ -540,7 +584,7 @@ class SourceObservationService {
 		const maxWidth = clampInteger(value.maxWidth, 1600, 320, 1600);
 		let image;
 		try {
-			image = await withTimeout(view.webContents.capturePage(), SCREENSHOT_TIMEOUT_MS, 'Source screenshot timed out.');
+			image = await captureWindowPage(view);
 		} catch (error) {
 			return controlError(error.code || 'SCREENSHOT_FAILED', error.message || 'Source screenshot failed.');
 		}

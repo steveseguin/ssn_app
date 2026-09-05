@@ -79,7 +79,7 @@ async function run() {
 		assert.match(tree, /Social Stream|SocialStream/i, 'Setup window missing from real X display');
 		await request('command', { action: 'updateSettings', value: { settings: { preferTikTokLegacy: true } } });
 		child.kill('SIGTERM');
-		await stopped(143);
+		await stopped(0);
 		await launch(false);
 		const settings = await request('command', { action: 'getSettings', value: {} });
 		assert.strictEqual(settings.payload.settings.preferTikTokLegacy, true, 'Setup settings lost on restart');

@@ -125,7 +125,7 @@ set +e
 wait "$LAUNCHER_PID"
 APP_STATUS=$?
 set -e
-test "$APP_STATUS" -eq 143
+test "$APP_STATUS" -eq 0
 test -f "$SSAPP_TEST_XVFB_STOPPED"
 ! kill -0 "$(cat "$SSAPP_TEST_APP_PID")" 2>/dev/null
 
@@ -145,7 +145,7 @@ set +e
 wait "$LAUNCHER_PID"
 APP_STATUS=$?
 set -e
-test "$APP_STATUS" -eq 143
+test "$APP_STATUS" -eq 0
 test -f "$SSAPP_TEST_XVFB_STOPPED"
 test ! -f "$SSAPP_TEST_APP_PID"
 

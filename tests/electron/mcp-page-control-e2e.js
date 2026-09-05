@@ -400,6 +400,7 @@ async function run() {
 			connectionMode: 'classic',
 			autoActivate: false,
 			idempotencyKey: 'mcp-page-control-e2e',
+			isVisible: false,
 		});
 		sourceId = payloadOf(added).source?.id;
 		assert.ok(sourceId, JSON.stringify(added));
@@ -491,6 +492,21 @@ async function run() {
 		const image = (screenshot.content || []).find(item => item.type === 'image');
 		assert.ok(image && image.data && image.mimeType === 'image/png', 'Screenshot did not return MCP image content.');
 		assert.ok(Buffer.from(image.data, 'base64').subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])));
+		assert.strictEqual(payloadOf(await mcp.call('ssapp_get_source_diagnostics', { sourceId })).page.visible, false,
+			'Screenshot left the initially hidden source visible.');
+		const sourceWindow = payloadOf(await mcp.call('ssapp_list_app_windows')).windows.find(window =>
+			window.kind !== 'main' && window.redactedUrl === new URL(fixture.url).origin
+		);
+		assert.ok(sourceWindow, 'Fixture window missing from app-window controls.');
+		const overlappingScreenshots = await Promise.all([
+			mcp.call('ssapp_capture_source_screenshot', { sourceId, maxWidth: 640 }),
+			mcp.call('ssapp_capture_app_window_screenshot', { windowId: sourceWindow.windowId, maxWidth: 640 }),
+		]);
+		for (const result of overlappingScreenshots) {
+			assert.ok(result.content.some(item => item.type === 'image' && item.data), 'Concurrent screenshot was empty.');
+		}
+		assert.strictEqual(payloadOf(await mcp.call('ssapp_get_source_diagnostics', { sourceId })).page.visible, false,
+			'Overlapping source/app screenshots left the source visible.');
 
 		const inspectionStartedAt = Date.now();
 		const inspection = payloadOf(await mcp.call('ssapp_inspect_source_page', {

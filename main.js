@@ -13389,7 +13389,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 }
                 const reparkHiddenWindow = () => {
                     try {
-                        if (!isBrowserViewDestroyed(view) && view.__ss_visible === false) {
+                        if (!isBrowserViewDestroyed(view) && view.__ss_visible === false && view.__ssappInternalCapture !== true) {
                             stealthHideView(view);
                         }
                     } catch (_) { }

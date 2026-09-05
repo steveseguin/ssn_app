@@ -78,7 +78,9 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' INT
-trap 'exit 143' TERM
+# SIGTERM is a handled service-stop request. Keep actual app/display failures
+# nonzero, but do not make systemd report a successful cleanup as a failed unit.
+trap 'exit 0' TERM
 
 start_xvfb() {
 	Xvfb ":$DISPLAY_NUM" -screen 0 "$SCREEN_SIZE" -nolisten tcp "$@" &

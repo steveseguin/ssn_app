@@ -89,24 +89,6 @@ class AppWindowControlService {
 		return { ...result, payload };
 	}
 
-	async capture(window, key, source, value) {
-		if (window.isVisible()) return this.observation.screenshot(key, source, value);
-		const hiddenResult = await this.observation.screenshot(key, source, value);
-		if (hiddenResult.ok) return hiddenResult;
-		const opacity = typeof window.getOpacity === 'function' ? window.getOpacity() : 1;
-		try {
-			window.__ssappInternalCapture = true;
-			if (typeof window.setOpacity === 'function') window.setOpacity(0);
-			window.showInactive();
-			await new Promise(resolve => setTimeout(resolve, 100));
-			return await this.observation.screenshot(key, source, value);
-		} finally {
-			window.hide();
-			if (typeof window.setOpacity === 'function') window.setOpacity(opacity);
-			window.__ssappInternalCapture = false;
-		}
-	}
-
 	async execute(action, value = {}) {
 		if (action === 'listAppWindows') {
 			return { ok: true, payload: { windows: this.windows().map(window => this.summarize(window)) } };
@@ -127,7 +109,7 @@ class AppWindowControlService {
 		}
 		const pseudoSource = { tabId: null };
 		let result;
-		if (action === 'captureAppWindowScreenshot') result = await this.capture(window, key, pseudoSource, value);
+		if (action === 'captureAppWindowScreenshot') result = await this.observation.screenshot(key, pseudoSource, value);
 		else if (action === 'inspectAppWindow') result = await this.observation.inspect(key, pseudoSource, value);
 		else if (action === 'interactAppWindow') result = await this.observation.interact(key, pseudoSource, value);
 		else return controlError('UNSUPPORTED_ACTION', 'Unsupported app-window action.');
