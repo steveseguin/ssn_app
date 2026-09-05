@@ -7,7 +7,7 @@ See the [0.4.22 Linux review](LINUX_VALIDATION_2026-09-05.md) for the latest pac
 functional test results, and remaining coverage gaps.
 
 The [0.4.23 follow-up](LINUX_VALIDATION_2026-09-05_FOLLOWUP.md) covers MCP transport fixes
-and the new packaged-app checks in Linux CI.
+and the new packaged-app checks in Linux CI. The [source-dialog review](LINUX_VALIDATION_2026-09-05_DIALOGS.md) adds keyboard selection and persistence coverage.
 
 ## Capture in windows you cannot see
 
@@ -181,3 +181,17 @@ libvips and the speech worker fails even though speech works from source. The ex
   reproduced locally. The frame pump is page-agnostic and covers it in principle.
 - **Tray icon appearance is unverified.** No tray host was available; only the consequence of
   its absence was tested and mitigated.
+
+## Source settings with a keyboard
+
+Open a source's settings button and choose User Agent Settings or Browser Session Settings.
+Tab and Shift+Tab stay inside the dialog. Use Enter or Space to select a browser session;
+Save applies that choice. Escape or Cancel closes the dialog and returns focus to the source's
+settings button. Escape used during input-method composition does not close it.
+
+Dialog titles and the custom-input labels follow the app language. Some other text in these
+dialogs is still English. Validate with an actual screen reader before claiming full screen-reader
+support; the automated Linux check verifies keyboard behavior and accessible markup.
+
+Run `npm run test:source-dialog-accessibility:e2e` under Xvfb for this workflow alone, or
+`npm run test:linux-package -- /absolute/path/to/app.AppImage` for the complete package gate.

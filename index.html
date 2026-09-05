@@ -711,7 +711,7 @@
     <!-- User Agent Settings Modal -->
     <div class="modal hidden" id="userAgentModal">
         <div class="modal-content modal-md">
-            <h2>User Agent Settings</h2>
+            <h2 data-i18n="useragent.title">User Agent Settings</h2>
             <div class="modal-body">
                 <div>
                     <label for="userAgentSelect" class="field-label">Select User Agent</label>
@@ -719,6 +719,7 @@
                         <option value="AUTO">AUTO (Use config file)</option>
                     </select>
                 </div>
+                <label for="customUserAgentInput" class="field-label" data-i18n="useragent.label">User Agent</label>
                 <div class="field-row">
                     <input type="text" id="customUserAgentInput" placeholder="Enter custom user agent..." class="modal-input">
                     <button onclick="addCustomUserAgent()">Add</button>
@@ -734,7 +735,7 @@
 
     <div class="modal hidden" id="sessionModal">
         <div class="modal-content modal-md">
-            <h2>Browser Session Settings</h2>
+            <h2 data-i18n="session.title">Browser Session Settings</h2>
             <div class="modal-body">
                 <div>
                     <label class="field-label">Select Browser Session</label>
@@ -744,7 +745,7 @@
                     <!-- Sessions will be populated here -->
                 </div>
                 <div>
-                    <label class="field-label">Create New Session</label>
+                    <label for="customSessionName" class="field-label" data-i18n="session.create">Create New Session</label>
                     <div class="field-row">
                         <input type="text" id="customSessionName" placeholder="e.g. work-account" class="modal-input">
                         <button onclick="addCustomSession()">Create</button>
@@ -10204,6 +10205,13 @@
             modal.className = 'ssapp-modal-overlay';
             modal.innerHTML = content;
 
+            document.body.appendChild(modal);
+            activateModal(modal, closeModal, previousFocus, focusRestoreSelector);
+            return modal;
+        }
+
+        function activateModal(modal, onClose, previousFocus = document.activeElement,
+            focusRestoreSelector = getModalFocusRestoreSelector(previousFocus)) {
             const dialog = modal.querySelector('[role="dialog"]') || modal.firstElementChild || modal;
             if (!dialog.hasAttribute('role')) dialog.setAttribute('role', 'dialog');
             dialog.setAttribute('aria-modal', 'true');
@@ -10231,11 +10239,12 @@
             });
 
             modal._ssappModalState = { previousFocus, focusRestoreSelector, backgroundState, dialog };
-            modal.addEventListener('keydown', event => {
+            const onKeyDown = event => {
+                if (event.isComposing || event.keyCode === 229) return;
                 if (event.key === 'Escape') {
                     event.preventDefault();
                     event.stopPropagation();
-                    closeModal();
+                    onClose();
                     return;
                 }
                 if (event.key !== 'Tab') return;
@@ -10253,28 +10262,35 @@
                     : (activeIndex < 0 || activeIndex >= focusable.length - 1 ? 0 : activeIndex + 1);
                 focusable[nextIndex].focus();
                 setVisibleFocusElement(focusable[nextIndex]);
-            });
-
-            modal.addEventListener('click', event => {
-                if (event.target === modal) closeModal();
-            });
-
-            document.body.appendChild(modal);
+            };
+            const onClick = event => {
+                if (event.target === modal) onClose();
+            };
+            modal.addEventListener('keydown', onKeyDown);
+            modal.addEventListener('click', onClick);
+            Object.assign(modal._ssappModalState, { onKeyDown, onClick });
             queueMicrotask(() => {
-                if (!modal.isConnected || modal.contains(document.activeElement)) return;
+                if (!modal.isConnected || !modal._ssappModalState || modal.contains(document.activeElement)) return;
                 const focusTarget = getModalFocusableElements(modal)[0] || dialog;
                 if (focusTarget === dialog && !dialog.hasAttribute('tabindex')) dialog.setAttribute('tabindex', '-1');
                 focusTarget.focus();
                 setVisibleFocusElement(focusTarget);
             });
-            return modal;
         }
 
         function closeModal(options = {}) {
             const modal = document.getElementById('tiktok-auth-modal');
             if (!modal) return;
-            const state = modal._ssappModalState || {};
             modal.remove();
+            deactivateModal(modal, options);
+        }
+
+        function deactivateModal(modal, options = {}) {
+            const state = modal._ssappModalState;
+            if (!state) return;
+            delete modal._ssappModalState;
+            modal.removeEventListener('keydown', state.onKeyDown);
+            modal.removeEventListener('click', state.onClick);
             (state.backgroundState || []).forEach(({ element, inert, hadAriaHidden, ariaHidden }) => {
                 if (!element?.isConnected) return;
                 element.inert = inert;
@@ -16167,6 +16183,10 @@
 
         const translationPatches = {
             'th': {
+                "useragent.label": "ตัวแทนผู้ใช้",
+                "session.create": "สร้างเซสชันใหม่",
+                "useragent.title": "การตั้งค่าตัวแทนผู้ใช้",
+                "session.title": "การตั้งค่าเซสชันเบราว์เซอร์",
                 'useragent.current': 'การตั้งค่าปัจจุบันของแหล่งข้อมูล',
                 'session.platformDefault': 'ค่าเริ่มต้นของแพลตฟอร์ม',
                 'useragent.remove': 'นำออก',
@@ -16177,6 +16197,10 @@
                 'nav.language': 'ภาษา',
             },
             'ar': {
+                "useragent.label": "وكيل المستخدم",
+                "session.create": "إنشاء جلسة جديدة",
+                "useragent.title": "إعدادات وكيل المستخدم",
+                "session.title": "إعدادات جلسة المتصفح",
                 'useragent.current': 'إعداد المصدر الحالي',
                 'session.platformDefault': 'الإعداد الافتراضي للمنصة',
                 'useragent.remove': 'إزالة',
@@ -16187,6 +16211,10 @@
                 'nav.language': 'اللغة',
             },
             en: {
+                "useragent.label": "User Agent",
+                "session.create": "Create New Session",
+                "useragent.title": "User Agent Settings",
+                "session.title": "Browser Session Settings",
                 'nav.menu': 'Navigation menu',
                 'nav.language': 'Language',
                 'toast.missingusername': 'Missing Username',
@@ -16211,6 +16239,10 @@
                 'connection.failed': 'Connection failed'
             },
             'pt-BR': {
+                "useragent.label": "Agente do usuário",
+                "session.create": "Criar nova sessão",
+                "useragent.title": "Configurações do agente do usuário",
+                "session.title": "Configurações da sessão do navegador",
                 'useragent.current': 'Configuração atual da fonte',
                 'session.platformDefault': 'Padrão da plataforma',
                 'useragent.remove': 'Remover',
@@ -16244,6 +16276,10 @@
                 'connection.failed': 'Falha na conexão'
             },
             es: {
+                "useragent.label": "Agente de usuario",
+                "session.create": "Crear nueva sesión",
+                "useragent.title": "Configuración del agente de usuario",
+                "session.title": "Configuración de sesión del navegador",
                 'useragent.current': 'Configuración actual de la fuente',
                 'session.platformDefault': 'Predeterminado de la plataforma',
                 'useragent.remove': 'Eliminar',
@@ -16317,6 +16353,10 @@
                 'connection.failed': 'Připojení selhalo'
             },
             fr: {
+                "useragent.label": "Agent utilisateur",
+                "session.create": "Créer une session",
+                "useragent.title": "Paramètres de l’agent utilisateur",
+                "session.title": "Paramètres de session du navigateur",
                 'useragent.current': 'Paramètre actuel de la source',
                 'session.platformDefault': 'Valeur par défaut de la plateforme',
                 'useragent.remove': 'Supprimer',
@@ -16357,6 +16397,10 @@
                 'connection.failed': 'Échec de la connexion'
             },
             de: {
+                "useragent.label": "User-Agent",
+                "session.create": "Neue Sitzung erstellen",
+                "useragent.title": "User-Agent-Einstellungen",
+                "session.title": "Browsersitzungseinstellungen",
                 'useragent.current': 'Aktuelle Quelleneinstellung',
                 'session.platformDefault': 'Plattformstandard',
                 'useragent.remove': 'Entfernen',
@@ -16397,6 +16441,10 @@
                 'connection.failed': 'Verbindung fehlgeschlagen'
             },
             it: {
+                "useragent.label": "User agent",
+                "session.create": "Crea nuova sessione",
+                "useragent.title": "Impostazioni user agent",
+                "session.title": "Impostazioni sessione del browser",
                 'btn.connectwebsocket': 'Connetti WebSocket',
                 'btn.closewebsocket': '⏹️ Chiudi WebSocket',
                 'btn.stopconnecting': '⏹️ Interrompi connessione',
@@ -16429,6 +16477,10 @@
                 'connection.failed': 'Connessione non riuscita'
             },
             ja: {
+                "useragent.label": "ユーザーエージェント",
+                "session.create": "新しいセッションを作成",
+                "useragent.title": "ユーザーエージェント設定",
+                "session.title": "ブラウザーセッション設定",
                 'btn.connectwebsocket': 'WebSocketに接続',
                 'btn.closewebsocket': '⏹️ WebSocketを閉じる',
                 'btn.stopconnecting': '⏹️ 接続を停止',
@@ -16461,6 +16513,10 @@
                 'connection.failed': '接続に失敗しました'
             },
             'zh-CN': {
+                "useragent.label": "用户代理",
+                "session.create": "创建新会话",
+                "useragent.title": "用户代理设置",
+                "session.title": "浏览器会话设置",
                 'useragent.current': '当前来源设置',
                 'session.platformDefault': '平台默认值',
                 'useragent.remove': '移除',
@@ -16573,6 +16629,10 @@
                 'connection.failed': '연결 실패'
             },
             ru: {
+                "useragent.label": "Агент пользователя",
+                "session.create": "Создать сеанс",
+                "useragent.title": "Настройки агента пользователя",
+                "session.title": "Настройки сеанса браузера",
                 'btn.connectwebsocket': 'Подключить WebSocket',
                 'btn.closewebsocket': '⏹️ Закрыть WebSocket',
                 'btn.stopconnecting': '⏹️ Остановить подключение',
@@ -16605,6 +16665,10 @@
                 'connection.failed': 'Не удалось подключиться'
             },
             tr: {
+                "useragent.label": "Kullanıcı aracısı",
+                "session.create": "Yeni oturum oluştur",
+                "useragent.title": "Kullanıcı aracısı ayarları",
+                "session.title": "Tarayıcı oturumu ayarları",
                 'useragent.current': 'Geçerli kaynak ayarı',
                 'session.platformDefault': 'Platform varsayılanı',
                 'useragent.remove': 'Kaldır',
@@ -16645,6 +16709,10 @@
                 'connection.failed': 'Bağlantı başarısız'
             },
             uk: {
+                "useragent.label": "Агент користувача",
+                "session.create": "Створити сеанс",
+                "useragent.title": "Налаштування агента користувача",
+                "session.title": "Налаштування сеансу браузера",
                 'useragent.current': 'Поточне налаштування джерела',
                 'session.platformDefault': 'Типове налаштування платформи',
                 'useragent.remove': 'Видалити',
@@ -18174,11 +18242,15 @@
             updateCustomUserAgentsList();
 
             // Show modal
-            document.getElementById('userAgentModal').classList.remove('hidden');
+            const modal = document.getElementById('userAgentModal');
+            modal.classList.remove('hidden');
+            activateModal(modal, closeUserAgentModal, sourceElement.querySelector('.settings-btn'));
         }
 
         function closeUserAgentModal() {
-            document.getElementById('userAgentModal').classList.add('hidden');
+            const modal = document.getElementById('userAgentModal');
+            modal.classList.add('hidden');
+            deactivateModal(modal);
             currentSourceId = null;
         }
 
@@ -18387,11 +18459,15 @@
             updateSessionsList();
 
             // Show modal
-            document.getElementById('sessionModal').classList.remove('hidden');
+            const modal = document.getElementById('sessionModal');
+            modal.classList.remove('hidden');
+            activateModal(modal, closeSessionModal, sourceElement.querySelector('.settings-btn'));
         }
 
         function closeSessionModal() {
-            document.getElementById('sessionModal').classList.add('hidden');
+            const modal = document.getElementById('sessionModal');
+            modal.classList.add('hidden');
+            deactivateModal(modal);
             currentSessionSourceId = null;
         }
 
@@ -18494,8 +18570,12 @@
                     sessionDiv.classList.add('selected');
                 }
 
-                const sessionName = document.createElement('span');
+                const sessionName = document.createElement('button');
+                sessionName.type = 'button';
                 sessionName.className = 'session-item-name';
+                sessionName.style.cssText = 'flex: 1; align-self: stretch; text-align: start; color: inherit; font: inherit; background: transparent; border: 0;';
+                sessionName.setAttribute('aria-pressed', String(window.currentSelectedSession === session.name));
+                sessionName.onclick = () => selectSession(session.name);
                 sessionName.textContent = session.name || '';
 
                 const actions = document.createElement('span');
@@ -18508,7 +18588,8 @@
 
                 const removeButton = document.createElement('button');
                 removeButton.className = 'session-remove-btn';
-                removeButton.title = 'Remove session';
+                removeButton.title = translateTemplate('useragent.removeNamed', { name: session.name });
+                removeButton.setAttribute('aria-label', removeButton.title);
                 removeButton.textContent = '×';
                 removeButton.addEventListener('click', (event) => {
                     event.stopPropagation();
@@ -18518,7 +18599,9 @@
 
                 sessionDiv.appendChild(sessionName);
                 sessionDiv.appendChild(actions);
-                sessionDiv.onclick = () => selectSession(session.name);
+                sessionDiv.onclick = event => {
+                    if (!event.target.closest('button')) selectSession(session.name);
+                };
                 container.appendChild(sessionDiv);
             });
         }
@@ -18530,7 +18613,8 @@
             // Update visual selection
             document.querySelectorAll('.session-item').forEach(item => {
                 item.classList.remove('selected');
-                if (item.hasAttribute('aria-pressed')) item.setAttribute('aria-pressed', String(item.dataset.sessionValue === sessionValue));
+                const selectionButton = item.matches('button') ? item : item.querySelector('button[aria-pressed]');
+                if (selectionButton) selectionButton.setAttribute('aria-pressed', String(item.dataset.sessionValue === sessionValue));
                 if (item.dataset.sessionValue === sessionValue) {
                     item.classList.add('selected');
                 }

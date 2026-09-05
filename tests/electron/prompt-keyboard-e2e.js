@@ -40,7 +40,7 @@ async function run() {
 		await closingAction(prompt, () => prompt.locator('#isShorts').press('Escape'));
 		await new Promise(resolve => setTimeout(resolve, 250));
 		result.escapeFromCheckbox = prompt.isClosed();
-		if (!prompt.isClosed()) await prompt.getByRole('button', { name: 'Cancel', exact: true }).click();
+		if (!prompt.isClosed()) await closingAction(prompt, () => prompt.getByRole('button', { name: 'Cancel', exact: true }).click());
 		await main.waitForFunction(() => window.__promptResult === null);
 
 		prompt = await open();
@@ -50,7 +50,7 @@ async function run() {
 			.catch(error => { if (!prompt.isClosed()) throw error; });
 		await new Promise(resolve => setTimeout(resolve, 250));
 		result.compositionStaysOpen = !prompt.isClosed();
-		if (!prompt.isClosed()) await prompt.getByRole('button', { name: 'Cancel', exact: true }).click();
+		if (!prompt.isClosed()) await closingAction(prompt, () => prompt.getByRole('button', { name: 'Cancel', exact: true }).click());
 		await main.waitForFunction(() => window.__promptResult !== 'pending');
 
 		prompt = await open({ message: Array(45).fill('Detailed instructions for the current prompt.').join('\n'), errorMessage: 'Please check the value.' });
