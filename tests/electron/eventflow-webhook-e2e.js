@@ -50,6 +50,7 @@ function startWebhookReceiver() {
 		});
 		request.on("end", () => {
 			requests.push({
+				at: Date.now(),
 				method: request.method,
 				url: request.url,
 				headers: request.headers,
@@ -244,6 +245,94 @@ async function waitForWebhookRequest(receiver, timeoutMs = 10000) {
 	throw new Error("Timed out waiting for the local webhook request");
 }
 
+async function testStatefulFlows(frame, receiver) {
+	const create = async (stateType, config, sideBranch = false) => {
+		receiver.requests.length = 0;
+		return frame.evaluate(async ({ stateType, config, port, sideBranch }) => {
+			const system = window.eventFlowSystem;
+			for (const flow of [...system.flows]) await system.deleteFlow(flow.id);
+			const id = `review_${Date.now()}`;
+			const stateId = `node_${Date.now()}_state`;
+			const webhook = (nodeId, route) => ({ id: nodeId, type: 'action', actionType: 'webhook', config: {
+				url: `http://127.0.0.1:${port}/${route}`, body: '{"message":"{message}"}', syncMode: true
+			}});
+			const flow = { id, name: `E2E ${stateType}`, active: true, nodes: [
+				{ id: 'node_trigger', type: 'trigger', triggerType: 'anyMessage', config: {} },
+				{ id: stateId, type: 'state', stateType, config },
+				{ id: 'node_logic', type: 'logic', logicType: 'OR', config: {} },
+				webhook('node_action', 'state')
+			], connections: [
+				{ from: 'node_trigger', to: stateId }, { from: stateId, to: 'node_logic' }, { from: 'node_logic', to: 'node_action' }
+			] };
+			if (sideBranch) {
+				flow.nodes.push(webhook('node_side', 'side'));
+				flow.connections.push({ from: 'node_trigger', to: 'node_side' });
+			}
+			await system.saveFlow(flow);
+			await window.flowEditor.loadFlow(id);
+			return { id, stateId };
+		}, { stateType, config, port: receiver.port, sideBranch });
+	};
+	const send = values => frame.evaluate(async values => {
+		for (const value of values) await window.eventFlowSystem.processMessage({
+			type: 'youtube', chatname: 'E2E', chatmessage: value, textonly: true
+		});
+	}, values);
+	const stateRequests = () => receiver.requests.filter(request => request.url === '/state');
+	const messages = () => stateRequests().map(request => JSON.parse(request.body).message);
+	const queueConfig = { maxSize: 10, overflowStrategy: 'DROP_OLDEST', processingDelayMs: 350, ttlMs: 60000, autoDequeue: true };
+	for (const [type, config, recoveryMs] of [
+		['THROTTLE', { messagesPerSecond: 1 }, 1100],
+		['SEMAPHORE', { maxConcurrent: 1, timeoutMs: 700 }, 800]
+	]) {
+		await create(type, config);
+		await send(['one', 'two', 'three']);
+		assert.deepEqual(messages(), ['one'], `${type} must enforce its configured limit`);
+		await frame.waitForTimeout(recoveryMs);
+		await send(['after release']);
+		assert.deepEqual(messages(), ['one', 'after release'], `${type} must recover after its window expires`);
+	}
+	await create('QUEUE', queueConfig, true);
+	await send(['one', 'two', 'three']);
+	await frame.waitForTimeout(1200);
+	assert.deepEqual(messages(), ['one', 'two', 'three'], 'queue must drain in order without more incoming messages');
+	assert.equal(receiver.requests.filter(request => request.url === '/side').length, 3, 'queue continuation must not replay other branches');
+	const times = stateRequests().map(request => request.at);
+	assert.ok(times[1] - times[0] >= 300 && times[2] - times[1] >= 300, 'queue must honor spacing');
+	for (const [strategy, expected] of [['DROP_OLDEST', ['one', 'three']], ['DROP_NEWEST', ['one', 'two']]]) {
+		await create('QUEUE', { ...queueConfig, maxSize: 1, overflowStrategy: strategy });
+		await send(['one', 'two', 'three']);
+		await frame.waitForTimeout(900);
+		assert.deepEqual(messages(), expected, `queue overflow ${strategy}`);
+	}
+	await create('QUEUE', { ...queueConfig, ttlMs: 100 });
+	await send(['one', 'expired']);
+	await frame.waitForTimeout(800);
+	assert.deepEqual(messages(), ['one'], 'expired queued messages must not execute');
+	for (const action of ['disable', 'delete', 'remove-node']) {
+		const flow = await create('QUEUE', queueConfig);
+		await send(['one', 'must not run']);
+		await frame.evaluate(async ({ flow, action }) => {
+			const system = window.eventFlowSystem;
+			if (action === 'delete') await system.deleteFlow(flow.id);
+			else {
+				const saved = await system.getFlowById(flow.id);
+				const updated = JSON.parse(JSON.stringify(saved));
+				if (action === 'disable') updated.active = false;
+				else updated.nodes = updated.nodes.filter(node => node.id !== flow.stateId);
+				await system.saveFlow(updated);
+			}
+		}, { flow, action });
+		await frame.waitForTimeout(800);
+		assert.deepEqual(messages(), ['one'], `${action} must cancel queued actions`);
+		assert.equal(await frame.evaluate(stateId => {
+			const system = window.eventFlowSystem;
+			return system.nodeStates.has(stateId) || system.messageQueues.has(stateId) || system.stateTimers.has(stateId);
+		}, flow.stateId), false, `${action} must release queue state and timers`);
+	}
+	console.log('[E2E] PASS state limits, timed queue delivery, overflow, expiry, and cancellation/cleanup');
+}
+
 async function run() {
 	assert.ok(fs.existsSync(path.join(SOURCE_ROOT, "actions", "EventFlowSystem.js")), `Social Stream source is missing: ${SOURCE_ROOT}`);
 	const profileDirectory = fs.mkdtempSync(PROFILE_PREFIX);
@@ -311,6 +400,7 @@ async function run() {
 		assert.equal(receiver.requests.length, 1, "one source message should produce exactly one webhook request");
 
 		console.log("[E2E] PASS Discord webhook variables rendered through the actual SSApp Event Flow runtime");
+		await testStatefulFlows(frame, receiver);
 	} finally {
 		if (browser) await browser.close().catch(() => {});
 		await stopApp(child);

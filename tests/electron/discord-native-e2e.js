@@ -52,6 +52,7 @@ let mainWindowId = null;
 let output = '';
 let outboundMessages = [];
 let identifyPayloads = [];
+let rejectNextSend = false;
 
 function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -107,6 +108,10 @@ async function startDiscordFixture() {
 			if (request.method === 'POST' && pathname === `/channels/${fixture.channel.id}/messages`) {
 				const body = await readJsonBody(request);
 				outboundMessages.push(body);
+				if (rejectNextSend) {
+					rejectNextSend = false;
+					return sendJson(response, 403, { message: 'Fixture send denied', code: 50013 });
+				}
 				return sendJson(response, 200, {
 					id: String(800000000000000000n + BigInt(outboundMessages.length)),
 					channel_id: fixture.channel.id,
@@ -488,9 +493,74 @@ async function runSetupWorkflow() {
 	assert.strictEqual(outboundMessages[0].enforce_nonce, true);
 	assert.ok(outboundMessages[0].nonce);
 
+	await verifyRelayAndTextOnly(active);
+
 	await execInMain(`stateManager.updateSource('${source.id}', { autoActivate: true }); true;`);
 	await sleep(1200);
 	return source.id;
+}
+
+async function verifyRelayAndTextOnly(active) {
+	const runBackground = (code) => execInMain(`document.getElementById('frame2').contentWindow.eval(${JSON.stringify(code)})`);
+	await runBackground(`isExtensionOn = true; settings.disablehost = false; relaytargets = ['discord']; true;`);
+	assert.strictEqual(await runBackground(`getSourceType(${active.vid})`), 'discord');
+	const sendRelay = async (text, destination = false) => {
+		const count = outboundMessages.length;
+		await runBackground(`sendMessageToTabs(${JSON.stringify({ response: text, destination })}, false, null, true)`);
+		await waitFor(() => outboundMessages.length > count, `relay: ${text}`);
+		await sleep(600);
+		assert.strictEqual(outboundMessages.length, count + 1, 'each relay should send exactly once');
+		assert.strictEqual(outboundMessages[count].content, text);
+	};
+	await sendRelay('Targeted native relay', 'discord');
+	await sendRelay('Untargeted native relay');
+	const beforeMismatch = outboundMessages.length;
+	await runBackground(`sendMessageToTabs({ response: 'Wrong destination', destination: 'youtube' }, false, null, true)`);
+	await sleep(600);
+	assert.strictEqual(outboundMessages.length, beforeMismatch, 'other platform destinations must not reach Discord');
+
+	// Exercise the real dock IPC entry point from the background frame, including broadcast replies.
+	for (const tid of [active.vid, false]) {
+		const count = outboundMessages.length;
+		const text = `Dock reply ${tid}`;
+		await runBackground(`ipcRenderer.sendSync('postMessage', { overlayNinja: ${JSON.stringify({ response: text, tid, host: true })} }); true;`);
+		await waitFor(() => outboundMessages.length > count, text);
+		await sleep(1000);
+		assert.strictEqual(outboundMessages.length, count + 1, 'dock replies must not be duplicated by native and background routes');
+		assert.strictEqual(outboundMessages[count].content, text);
+	}
+
+	await execInMain(`window.__discordSendErrors = []; window.ninjafy.discord.onStatus(status => {
+		if (status.status === 'error') window.__discordSendErrors.push(status);
+	}); true;`);
+	rejectNextSend = true;
+	await sendRelay('Rejected native relay', 'discord');
+	await waitFor(() => execInMain(`window.__discordSendErrors.some(status => status.message === 'Fixture send denied')`), 'send error reaches UI');
+	await sleep(800);
+	assert.strictEqual(output.includes('Unhandled Rejection at:'), false, 'handled send failures must not trigger global rejection reporting');
+	await sendRelay('Native relay recovers after rejection', 'discord');
+
+	await runBackground(`settings.textonlymode = true; chrome.storage.sync.set({ settings }); true;`);
+	const message = {
+		id: '500000000000000111', guild_id: fixture.guild.id, channel_id: fixture.channel.id,
+		author: { id: '600000000000000006', username: 'A&B', bot: false },
+		content: 'Hello <@600000000000000006> <:wave:123>\n<literal> & text',
+		mentions: [{ id: '600000000000000006', username: 'A&B' }],
+		attachments: [{ url: 'https://example.test/file.txt?a=1&b=2', filename: 'file.txt' }],
+	};
+	dispatchGatewayMessage(message);
+	const plain = await waitFor(() => runBackground(`__ssappDiscordCaptured.find(message => message.meta?.messageId === '${message.id}') || null`), 'text-only capture');
+	assert.strictEqual(plain.textonly, true);
+	assert.strictEqual(plain.chatname, 'A&B');
+	assert.strictEqual(plain.chatmessage, 'Hello @A&B :wave:\n<literal> & text\nhttps://example.test/file.txt?a=1&b=2');
+	await runBackground(`settings.textonlymode = false; chrome.storage.sync.set({ settings }); true;`);
+	message.id = '500000000000000112';
+	dispatchGatewayMessage(message);
+	const rich = await waitFor(() => runBackground(`__ssappDiscordCaptured.find(message => message.meta?.messageId === '${message.id}') || null`), 'rich capture after toggling text-only off');
+	assert.strictEqual(rich.textonly, false);
+	assert.ok(rich.chatmessage.includes('<img '));
+	assert.ok(rich.chatmessage.includes('<br>&lt;literal&gt; &amp; text'));
+	console.log('Discord relay, dock reply, send-error recovery, and text-only workflows passed.');
 }
 
 async function verifyRestart(sourceId) {
@@ -512,6 +582,29 @@ async function verifyRestart(sourceId) {
 	}, 'native Discord source stop');
 	const views = (await requestJson('/views')).views || [];
 	assert.strictEqual(views.some((item) => Number(item.key) >= 1000000), false);
+
+	// Group deletion must close both native connections and classic browser sources.
+	await execInMain(`(async () => {
+		stateManager.addGroup({ id: 'delete-group-e2e', target: 'custom', username: 'Delete group test' });
+		const streamKit = stateManager.getSources().find(source => source.discordStreamKit);
+		for (const id of ['${sourceId}', streamKit.id]) {
+			stateManager.moveSourceToGroup(id, 'delete-group-e2e');
+			await activateSource(document.querySelector('[data-source-id="' + id + '"] [data-activatehtml]'));
+		}
+		return true;
+	})()`);
+	const groupedSources = await waitFor(async () => {
+		const sources = await execInMain(`stateManager.getSources().filter(source => source.groupId === 'delete-group-e2e')`);
+		return sources.length === 2 && sources.every(source => source.vid && source.status === 'active') ? sources : null;
+	}, 'grouped native and browser connections');
+	await execInMain(`deleteThis(document.querySelector('[data-group-id="delete-group-e2e"]')); true;`);
+	await sleep(1200);
+	assert.strictEqual(await execInMain(`stateManager.getSources().some(source => source.groupId === 'delete-group-e2e')`), false);
+	const afterDelete = (await requestJson('/views')).views || [];
+	assert.strictEqual(afterDelete.some(view => groupedSources.some(source => source.vid === Number(view.key))), false,
+		'deleted groups must not leave native or browser views running');
+	await waitFor(() => gatewaySockets.size === 0, 'deleted group disconnects Discord Gateway');
+	console.log('Group deletion closed native and browser sources.');
 }
 
 async function closeFixtures() {

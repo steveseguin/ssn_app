@@ -142,7 +142,7 @@ function resolveRoleColor(message, guild) {
     return `#${Number(colored[0].color).toString(16).padStart(6, '0')}`;
 }
 
-function replaceDiscordTokens(content, message, guild, channelLookup) {
+function replaceDiscordTokens(content, message, guild, channelLookup, textOnly = false) {
     let output = String(content || '');
     const mentions = new Map((Array.isArray(message?.mentions) ? message.mentions : []).map((user) => [String(user.id), user]));
     const roles = new Map((Array.isArray(guild?.roles) ? guild.roles : []).map((role) => [String(role.id), role]));
@@ -153,6 +153,7 @@ function replaceDiscordTokens(content, message, guild, channelLookup) {
     });
     output = output.replace(/<@&(\d+)>/g, (_match, id) => `@${roles.get(String(id))?.name || 'role'}`);
     output = output.replace(/<#(\d+)>/g, (_match, id) => `#${channelLookup?.get(String(id))?.name || 'channel'}`);
+    if (textOnly) return output.replace(/<a?:([A-Za-z0-9_]+):\d+>/g, ':$1:');
     output = escapeHtml(output);
     output = output.replace(/&lt;(a?):([A-Za-z0-9_]+):(\d+)&gt;/g, (_match, animated, name, id) => {
         const extension = animated ? 'gif' : 'webp';
@@ -185,7 +186,7 @@ function firstMediaUrl(message) {
     return '';
 }
 
-function appendAttachmentLinks(chatmessage, message) {
+function appendAttachmentLinks(chatmessage, message, textOnly = false) {
     const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
     const links = attachments
         .filter((attachment) => {
@@ -196,8 +197,9 @@ function appendAttachmentLinks(chatmessage, message) {
         })
         .map((attachment) => String(attachment.url));
     if (!links.length) return chatmessage;
-    const rendered = links.map((url) => escapeHtml(url)).join('<br>');
-    return chatmessage ? `${chatmessage}<br>${rendered}` : rendered;
+    const separator = textOnly ? '\n' : '<br>';
+    const rendered = links.map((url) => textOnly ? url : escapeHtml(url)).join(separator);
+    return chatmessage ? `${chatmessage}${separator}${rendered}` : rendered;
 }
 
 function normalizeDiscordMessage(message, context = {}) {
@@ -206,14 +208,14 @@ function normalizeDiscordMessage(message, context = {}) {
     const guild = context.guild || null;
     const channelLookup = context.channelLookup || new Map();
     const displayName = message.member?.nick || message.author.global_name || message.author.username || '';
-    let chatmessage = replaceDiscordTokens(message.content || '', message, guild, channelLookup);
+    let chatmessage = replaceDiscordTokens(message.content || '', message, guild, channelLookup, context.textOnly);
 
     if (!chatmessage) {
         const embed = Array.isArray(message.embeds) ? message.embeds[0] : null;
         const fallbackText = [embed?.title, embed?.description, embed?.url].filter(Boolean).join('\n');
-        chatmessage = replaceDiscordTokens(fallbackText, message, guild, channelLookup);
+        chatmessage = replaceDiscordTokens(fallbackText, message, guild, channelLookup, context.textOnly);
     }
-    chatmessage = appendAttachmentLinks(chatmessage, message);
+    chatmessage = appendAttachmentLinks(chatmessage, message, context.textOnly);
 
     const contentimg = firstMediaUrl(message);
     if (!displayName && !chatmessage && !contentimg) return null;
@@ -221,7 +223,7 @@ function normalizeDiscordMessage(message, context = {}) {
     const nameColor = resolveRoleColor(message, guild);
     const payload = {
         id: String(message.id || ''),
-        chatname: escapeHtml(displayName),
+        chatname: displayName,
         chatbadges: '',
         backgroundColor: '',
         textColor: '',
@@ -362,7 +364,7 @@ class DiscordRestClient {
         const key = String(channelId || 'global');
         const previous = this.channelQueues.get(key) || Promise.resolve();
         const next = previous.catch(() => {}).then(task);
-        const tracked = next.finally(() => {
+        const tracked = next.catch(() => {}).finally(() => {
             if (this.channelQueues.get(key) === tracked) this.channelQueues.delete(key);
         });
         this.channelQueues.set(key, tracked);

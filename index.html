@@ -7193,7 +7193,20 @@
             } else if (groupId) {
                 const group = stateManager.getGroup(groupId);
                 if (group) {
-                    (group.streams || []).forEach(sourceId => cancelSourceNavigationRecovery(sourceId));
+                    // Close connections while their source records and window IDs still exist.
+                    for (const id of [...(group.streams || [])]) {
+                        cancelSourceNavigationRecovery(id);
+                        cancelPendingTikTokActivation(id);
+                        const groupedSource = stateManager.getSource(id);
+                        if (!groupedSource || !ipcRenderer) continue;
+                        const tikTokWssId = getTikTokWssId(groupedSource);
+                        if (groupedSource.target === 'tiktok' && tikTokWssId) {
+                            ipcRenderer.sendSync('disconnectTikTokConnection', { wssID: tikTokWssId });
+                        }
+                        if (groupedSource.vid) {
+                            ipcRenderer.sendSync('closeWindow', { vid: groupedSource.vid });
+                        }
+                    }
                     stateManager.removeGroup(groupId);
                 }
             }

@@ -17,6 +17,23 @@ remote controller
 The optional localhost `/api/v1` and MCP adapter are only for an AI tool running on the same
 machine as SSApp. They are not the cloud-control path.
 
+## Owncast and Rocket.Chat
+
+SSApp captures chat and feeds Social Stream's chat and featured-message overlays. To put
+those overlays into the actual Owncast video, a broadcasting application on the server must
+render the overlay URLs over the video and send the combined stream to Owncast. Installing
+SSApp beside Owncast does not perform that video composition. Owncast documents this
+[broadcasting workflow](https://owncast.online/docs/broadcasting/) and using
+[chat as a browser layer](https://owncast.online/docs/embed/).
+
+Budget separately for video rendering and encoding; the memory guidance below is for chat
+capture alone. A web-page overlay over an embedded player is also possible, but will not
+appear inside the video in other players or recordings.
+
+There is no built-in Rocket.Chat connector in the current source tree. Rocket.Chat needs a
+separate integration before its messages reach these overlays; headless mode does not add
+that connector or remove the need to authenticate private chat sources.
+
 ## What you need
 
 - Ubuntu 22.04+, Debian 12+, or a similar Linux system
@@ -26,7 +43,7 @@ machine as SSApp. They are not the cloud-control path.
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y xvfb x11-utils
+sudo apt-get install -y xvfb x11-utils xauth
 ```
 
 SSApp remains a browser application internally. Expect a few hundred MB of memory plus
@@ -89,6 +106,16 @@ Useful settings:
 
 If you are developing from a source checkout, `npm run start:headless` remains a convenience
 wrapper around the same setup. Downloaded-app users do not need that script.
+The wrapper honors `SSAPP_USER_DATA_DIR` first, then the older `SSAPP_DATA_DIR` alias,
+and otherwise uses `$HOME/.local/share/ssapp-headless`. It selects X11 for its Xvfb display,
+cleans up its own display on exit, and leaves a reused display running.
+If its own display dies, the wrapper stops the app and exits with a failure so a supervisor
+can restart it. Shutdown allows each child ten seconds to exit before forcing that child
+to stop. Xvfb startup errors are printed to the terminal or service log.
+
+For initial setup from a checkout, run `npm run start:headless -- --setup` and connect VNC
+as described below. Put `--setup` first; remaining arguments are passed to Electron. Stop
+the setup instance before starting `npm run start:headless` with the same profile.
 
 Use `SSAPP_USER_DATA_DIR`, not Chromium's `--user-data-dir`; SSApp sets its application data
 path during startup.
@@ -107,6 +134,18 @@ If FUSE is unavailable, use the extracted executable instead:
 VNC is useful for choosing the Social Stream session or completing a platform sign-in. It
 is not required after setup for public read-only chat sources.
 
+For a downloaded app, start Xvfb and set `DISPLAY` and `SSAPP_USER_DATA_DIR` as above,
+then launch **without** `--ssapp-headless-control` for this setup session:
+
+```bash
+SSAPP_HEADLESS_CONTROL=0 /opt/socialstream/socialstreamninja.AppImage --ozone-platform=x11 --no-hwa
+```
+
+Run the VNC command in a second SSH terminal. A headless instance intentionally hides its
+windows, so attaching VNC to that instance alone will show an empty display. Finish setup,
+quit the app, and restart with the headless flag and the same profile. Browser sign-in data
+copied from another OS may not decrypt; complete platform sign-ins on the server itself.
+
 ```bash
 sudo apt-get install -y x11vnc
 x11vnc -display :99 -localhost -rfbport 5900 -nopw -forever &
@@ -122,18 +161,29 @@ Connect a VNC client to `localhost:5900`, then stop `x11vnc` when finished.
 
 ## Keep it running with systemd
 
+Create a dedicated service account first, unless it already exists:
+
+```bash
+id ssapp >/dev/null 2>&1 || sudo useradd --system --create-home --home-dir /var/lib/ssapp --shell /usr/sbin/nologin ssapp
+```
+
+Use this account and `/var/lib/ssapp` for the initial setup too. The service needs ownership
+of its profile, including any files restored from a backup.
+
 ```ini
 # /etc/systemd/system/ssapp.service
 [Unit]
 Description=Social Stream Ninja (headless)
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=ssapp
+StateDirectory=ssapp
 WorkingDirectory=/opt/socialstream
 Environment=SSAPP_USER_DATA_DIR=/var/lib/ssapp
-ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1920x1080x24 -nolisten tcp -extension GLX" /opt/socialstream/socialstreamninja.AppImage --ssapp-headless-control --no-hwa
+ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1920x1080x24 -nolisten tcp -extension GLX" /opt/socialstream/socialstreamninja.AppImage --ozone-platform=x11 --ssapp-headless-control --no-hwa
 Restart=on-failure
 RestartSec=10
 KillSignal=SIGTERM
@@ -152,6 +202,12 @@ journalctl -u ssapp -f
 SSApp handles `SIGTERM` and `SIGINT` as clean shutdowns. Avoid `SIGKILL` when possible.
 
 ## Developer capture diagnostic
+
+On Linux, `npm run test:headless-launcher:e2e` runs the real app through the wrapper on an
+unused Xvfb display with a temporary profile. It checks visible setup, saving settings,
+headless restart with those settings, and cleanup after display failure. Set
+`SSAPP_TEST_ELECTRON=/path/to/electron` to select a Linux Electron binary for a shared
+checkout. The temporary profile and logs are retained at the path printed by the test.
 
 The hidden-capture diagnostic creates real Electron source windows through the normal IPC
 path and verifies that work continues while those windows are off screen. It is a repository

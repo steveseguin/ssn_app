@@ -11265,6 +11265,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                 for (const view of virtualTargets) {
                     if (view.isTikTokVirtual) continue;
+                    // Discord uses the background relay router for host and automated messages.
+                    if (view.virtualSourceTarget === 'discord') continue;
                     try {
                         view.webContents?.send('sendToTab', { text });
                         handled = true;
@@ -11307,6 +11309,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 const browserTargets = rawTargets.filter((target) => {
                     const numericTarget = typeof target === 'number' ? target : Number(target);
                     if (!Number.isFinite(numericTarget)) return true;
+                    if (browserViews[numericTarget]?.virtualSourceTarget === 'discord') return true;
                     if (browserViews[numericTarget]?.isVirtualSource) return false;
                     return numericTarget < 900000;
                 });
@@ -15136,6 +15139,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
         log("sendToTab-async");
         const view = getActiveBrowserView(args.tab);
         if (view && view.webContents) {
+            if (view.isVirtualSource && view.virtualSourceTarget === 'discord') {
+                if (args.message === 'getSource') return 'discord';
+                if (args.message?.type === 'SEND_MESSAGE') {
+                    view.webContents.send('sendToTab', args.message);
+                    return true;
+                }
+                return false;
+            }
             return new Promise((resolve) => {
                 const requestId = `${Date.now()}-${Math.random()}`;
 
@@ -15263,6 +15274,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 tabs.push({
                     id: parseInt(key),
                     url: url,
+                    virtualSourceTarget: view.isVirtualSource ? view.virtualSourceTarget || null : null,
                     accountRole: normalizeSourceAccountRole(viewArgs.accountRole),
                     sourceId: viewArgs.sourceId || view.sourceId || null,
                     customSession: viewArgs.customSession || null

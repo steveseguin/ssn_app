@@ -18,6 +18,7 @@
     "test:session-isolation": "node tests/electron/session-isolation-e2e.js",
     "start:headless": "bash scripts/start-headless.sh",
     "test:headless-launcher": "bash tests/electron/headless-launcher-regression.sh",
+    "test:headless-launcher:e2e": "node tests/electron/headless-launcher-e2e.js",
     "test:hidden-capture": "node tests/electron/hidden-capture-diagnostics.js",
     "test:reflection-filter": "node tests/electron/reflection-filter-e2e.js",
     "test:hidden-capture:soak": "node tests/electron/hidden-capture-soak.js",
