@@ -147,6 +147,7 @@ function launchApp(debugPort, sourcePort) {
 	const args = [
 		...ELECTRON_APP_ARGS,
 		"--multiinstance",
+		`--savefolder=${PROFILE_DIR}${path.sep}`,
 		`--filesource=http://127.0.0.1:${sourcePort}/`,
 		`--remote-debugging-port=${debugPort}`,
 		"--disable-logs",
@@ -383,6 +384,158 @@ async function closeHistory(historyPage) {
 	assert.strictEqual(historyPage.isClosed(), true, "Message Browser window did not close.");
 }
 
+async function verifyHistoryReviewFixes(page, popup, background) {
+	const marker = `${MESSAGE_PREFIX}-review`;
+	await background.evaluate(async marker => {
+		await messageStoreDB.ensureDB();
+		await new Promise((resolve, reject) => {
+			const transaction = messageStoreDB.db.transaction("messages", "readwrite");
+			const store = transaction.objectStore("messages");
+			for (const [day, userid] of [[14, 123456], [15, 789012]]) {
+				store.add({ chatname: "Review fixture", chatmessage: `${marker}-${day}`, userid,
+					timestamp: new Date(2026, 7, day, 12).getTime(), textonly: true });
+			}
+			for (const hours of [23, 25]) {
+				store.add({ chatname: "Recent fixture", chatmessage: `${marker}-${hours}h`,
+					timestamp: Date.now() - hours * 60 * 60 * 1000, textonly: true });
+			}
+			transaction.oncomplete = resolve;
+			transaction.onerror = () => reject(transaction.error);
+		});
+	}, marker);
+	let imageRequests = 0;
+	const blockImages = route => { imageRequests += 1; return route.abort(); };
+	await page.context().route("**/sources/images/**", blockImages);
+	const { historyPage, history } = await openHistoryAndWait(page, popup, `${marker}-15`);
+	try {
+		const session = await page.context().newCDPSession(historyPage);
+		await session.send("Emulation.setTimezoneOverride", { timezoneId: "America/Toronto" });
+		await history.locator("#message-date-from").fill("2026-08-15");
+		await history.locator("#message-date-to").fill("2026-08-15");
+		await historyPage.waitForTimeout(650);
+		const dates = await history.locator(".message-text").allTextContents();
+		await history.locator("#clear-filters").click();
+		await historyPage.waitForTimeout(450);
+		await history.locator("#search-input").fill("789012");
+		await historyPage.waitForTimeout(650);
+		const search = await history.locator(".message-text").allTextContents();
+		const requestsBefore = imageRequests;
+		await historyPage.waitForTimeout(750);
+		const retries = imageRequests - requestsBefore;
+		const dayRange = await history.evaluate(() => {
+			const range = getDateRangeFromTimeframe("day");
+			return range.endTimestamp - range.startTimestamp;
+		});
+		const result = { dates, search, retries, dayRange };
+		console.log("History review reproduction", JSON.stringify(result));
+		assert.deepStrictEqual(dates, [`${marker}-15`], "Date filter selected the wrong local calendar day.");
+		assert.deepStrictEqual(search, [`${marker}-15`], "Searching a numeric user ID failed.");
+		assert.strictEqual(retries, 0, "Failed fallback avatars kept retrying.");
+		assert.strictEqual(dayRange, 24 * 60 * 60 * 1000, "Last 24 Hours exported more than 24 hours.");
+		await history.getByLabel("Username:", { exact: true }).fill("Review fixture");
+		await history.getByLabel("Search messages", { exact: true }).fill("");
+		await historyPage.waitForTimeout(450);
+		assert.strictEqual(await history.locator(".message-text").count(), 2);
+		await history.locator("#clear-filters").click();
+		await history.locator("#export-format").selectOption("json");
+		await history.locator("#export-timeframe").selectOption("day");
+		const downloadPromise = historyPage.waitForEvent("download", { timeout: 15000 });
+		await history.locator("#export-button").click();
+		const download = await downloadPromise;
+		const exportPath = path.join(PROFILE_DIR, download.suggestedFilename());
+		const downloadDeadline = Date.now() + 15000;
+		while (!fs.existsSync(exportPath) && Date.now() < downloadDeadline) await historyPage.waitForTimeout(100);
+		assert.ok(fs.existsSync(exportPath), "History export did not finish downloading.");
+		const exported = JSON.parse(fs.readFileSync(exportPath, "utf8"));
+		assert.deepStrictEqual(exported.map(message => message.chatmessage), [`${marker}-23h`],
+			"Last 24 Hours download included a message older than 24 hours.");
+		await session.detach();
+	} finally {
+		await closeHistory(historyPage);
+		await page.context().unroute("**/sources/images/**", blockImages);
+	}
+}
+
+async function seedPaginationMessages(frame) {
+	await frame.evaluate(async () => {
+		const database = await new Promise((resolve, reject) => {
+			const request = indexedDB.open("chatMessagesDB_v3");
+			request.onupgradeneeded = () => {
+				const store = request.result.createObjectStore("messages", { keyPath: "id", autoIncrement: true });
+				store.createIndex("timestamp", "timestamp");
+			};
+			request.onsuccess = () => resolve(request.result);
+			request.onerror = () => reject(request.error);
+		});
+		await new Promise((resolve, reject) => {
+			const transaction = database.transaction("messages", "readwrite");
+			const store = transaction.objectStore("messages");
+			store.clear();
+			const timestamp = Date.now();
+			for (let id = 1; id <= 650; id++) {
+				store.put({ id, timestamp, chatname: "Pagination", chatmessage: `page-${id}`, textonly: true });
+			}
+			transaction.oncomplete = resolve;
+			transaction.onerror = () => reject(transaction.error);
+		});
+		database.close();
+	});
+}
+
+async function verifyHistoryScroll(history) {
+	await history.waitForFunction(() => document.querySelectorAll(".message-wrapper").length === 100);
+	await history.evaluate(() => {
+		window.__paginationFilterChecks = 0;
+		const original = messageMatchesFilters;
+		messageMatchesFilters = function (...args) {
+			window.__paginationFilterChecks++;
+			return original.apply(this, args);
+		};
+	});
+	const seen = new Set();
+	for (let step = 0; step < 9; step++) {
+		for (const text of await history.locator(".message-text").allTextContents()) seen.add(text);
+		await history.locator("#messages-container").evaluate(element => { element.scrollTop = element.scrollHeight; });
+		await history.waitForTimeout(300);
+	}
+	const filterChecks = await history.evaluate(() => window.__paginationFilterChecks);
+	console.log("History pagination reproduction", JSON.stringify({ seen: seen.size, filterChecks }));
+	assert.strictEqual(seen.size, 650, "Scrolling skipped messages with identical timestamps.");
+	assert.ok(filterChecks <= 650, "Paging repeatedly filtered the entire saved archive.");
+	for (let step = 0; step < 9; step++) {
+		await history.locator("#messages-container").evaluate(element => { element.scrollTop = 0; });
+		await history.waitForTimeout(300);
+	}
+	assert.strictEqual(await history.locator(".message-text").first().textContent(), "page-650",
+		"Scrolling back up did not recover the newest message after trimming.");
+	await history.locator("#keyword-filter").fill("page-6");
+	await history.waitForFunction(() => {
+		const rows = Array.from(document.querySelectorAll(".message-text"));
+		return rows.length === 62 && rows.every(row => row.textContent.startsWith("page-6"));
+	});
+	await history.locator("#clear-filters").click();
+	await history.waitForFunction(() => document.querySelectorAll(".message-wrapper").length === 100);
+	const messageRegion = history.getByRole("region", { name: "Saved messages" });
+	await messageRegion.focus();
+	await messageRegion.press("End");
+	await history.waitForFunction(() => document.querySelectorAll(".message-wrapper").length >= 200);
+}
+
+async function verifyHistoryPagination(page, popup, background) {
+	await seedPaginationMessages(background);
+	const { historyPage, history } = await openHistoryAndWait(page, popup, "page-650");
+	try {
+		await verifyHistoryScroll(history);
+		await seedPaginationMessages(history);
+		const directUrl = new URL(history.url());
+		directUrl.searchParams.delete("ssappSnapshot");
+		await history.goto(directUrl.href);
+		await verifyHistoryScroll(history);
+	} finally {
+		await closeHistory(historyPage);
+	}
+}
+
 async function verifySnapshotFeatures(historyPage, history, background) {
 	const firstMarker = `${MESSAGE_PREFIX}-first`;
 	const secondMarker = `${MESSAGE_PREFIX}-second`;
@@ -527,6 +680,8 @@ async function runAppPass(sourcePort, options = {}) {
 			assert.strictEqual(secondVisible, true, "Second stored message did not persist across an app restart.");
 			await verifySnapshotFeatures(persistedHistory.historyPage, persistedHistory.history, background);
 			await closeHistory(persistedHistory.historyPage);
+			await verifyHistoryReviewFixes(page, popup, background);
+			await verifyHistoryPagination(page, popup, background);
 		}
 
 		await page.waitForTimeout(500);

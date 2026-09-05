@@ -32,6 +32,8 @@ The top navigation provides the app's normal working areas:
 
 The right-side panel is the embedded Social Stream settings interface. It contains links for OBS docks and overlays, chat behavior, Event Flow, bots, TTS, styling, and the wider Social Stream feature set.
 
+In desktop text-entry prompts, press Enter in the text field to submit or Escape from any control to cancel. While composing text with an input method editor (IME), these keys remain available to the composition picker. Prompts with long instructions can be scrolled to reach all controls.
+
 ## Sources and connection modes
 
 Each added source is a saved definition. Activating it creates either a real Electron source window or a direct connector, depending on the selected mode and platform.
@@ -48,6 +50,8 @@ Supported platforms offer direct-connection modes. These avoid depending on a vi
 
 The exact choices are platform-specific. For example, TikTok can expose WebSocket Auto and polling compatibility modes. Use the labels and help available on the source card instead of assuming that every platform accepts the same mode.
 
+For YouTube sources, stop capture before switching between **YouTube** and **YouTube Shorts** in the source's additional settings. The switch keeps the same video ID and preserves unrelated URL parameters.
+
 ### Source state
 
 - **Inactive** means the source definition is saved but no capture window or connector is running.
@@ -57,9 +61,31 @@ The exact choices are platform-specific. For example, TikTok can expose WebSocke
 
 Stopping a source closes its active connection. Hiding a source leaves capture running.
 
+The group's mute control applies to its currently running capture pages and saves the choice for later activation. Sources outside that group are unaffected.
+
+If an **Audio update incomplete** warning appears, the preference was saved but one or more running pages could not be updated. Stop and reactivate the affected sources to apply it.
+
+**Stop connecting** also cancels a pending source-page lookup. A delayed result from that attempt is discarded instead of reactivating the source.
+
+Deleting a group removes its child sources and stops their capture connections. **Clear All Sources** removes every source and group. Bulk deletion saves the resulting configuration once, so it does not rewrite the entire settings list for each removed source.
+
 ## Browser sessions and sign-in
 
 Named browser sessions let the same SSApp installation keep separate cookies and storage for different accounts. A source card shows the session it uses, and its settings menu can move it to another session while inactive.
+
+Every source's session dialog includes a platform-default option, including custom website sources. Select it and save to return from a named session to the default browser session.
+
+Groups retain their selected browser session and custom settings across restarts, even when they currently contain no discovered streams.
+
+Removing a custom browser session resets referencing sources and groups to their platform defaults and clears remembered assignments to that session. The change applies on their next activation; already-running capture pages keep their current session until stopped.
+
+Opening sign-in from a group uses that group's browser session and custom user agent. A user agent identifies the browser to the website; **AUTO** uses the platform's default configuration.
+
+If a source's user agent or associated browser-identification fields differ from the local presets, **Current source setting** preserves the full configuration when you open and save User Agent Settings. Selecting a named preset applies that preset's fields. Select **AUTO** explicitly to remove the override and its associated header settings.
+
+Previously saved Chrome 142–144 Windows/Mac presets may contain an extra space in the version number. Reselect the named preset and save to use the corrected value on the next activation or sign-in.
+
+Removing a custom user-agent entry deletes only that named preset, even if another preset has the same value. Removing the currently selected entry selects **AUTO** in the dialog; save to apply that change to the source.
 
 Use separate sessions when:
 
@@ -134,6 +160,16 @@ Use **File > Enable Local Server** to start it. New installations default to `12
 The menu also lets you change the port. When enabled, SSApp adds the matching `localserverport` value to generated Social Stream links.
 
 **Allow Local Server Connections from the LAN** changes the bind address to `0.0.0.0`. LAN mode has no authentication or encryption. Enable it only on a trusted network. For cross-machine control over the internet, prefer Social Stream's normal WebRTC transport.
+
+## Saved message history
+
+Open **Message Browser** from the Social Stream settings panel to search saved chat and download JSON, TSV, or HTML exports. Search accepts names, numeric or text user IDs, message text, and source types.
+
+Date filters and custom export dates use your computer's local calendar days, including the full ending day. **Last 24 Hours** exports the preceding 24 hours exactly. Export time ranges replace the on-screen date range; other active filters still apply.
+
+The desktop Message Browser shows a snapshot taken when it opens. Close and reopen it to include newly saved messages. **Delete All History** clears the saved database, including messages outside the current filters.
+
+The browser displays up to 500 messages at once. Scroll down for older messages and back up for newer ones; removing a row from the display does not delete its saved message. Keyboard users can Tab to the **Saved messages** region and use Page Up, Page Down, Home, or End to scroll.
 
 ## Backup and transfer
 

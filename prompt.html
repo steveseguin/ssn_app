@@ -1,6 +1,7 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
     <style>
         body {
             font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
@@ -30,6 +31,11 @@
             display: flex;
             flex-direction: column;
             gap: 12px;
+            overflow-y: auto;
+            overflow-wrap: anywhere;
+        }
+        .dialog > * {
+            flex-shrink: 0;
         }
         h2 {
             margin: 0;
@@ -109,11 +115,11 @@
 </head>
 <body>
     <div class="dialog-container">
-        <div class="dialog">
+        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="title" aria-describedby="message">
             <h2 id="title"></h2>
             <p id="message"></p>
-            <p id="errorMessage" class="error-message"></p>
-            <input type="text" id="input" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+            <p id="errorMessage" class="error-message" role="alert"></p>
+            <input type="text" id="input" aria-labelledby="title" aria-describedby="message errorMessage" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
             <!-- Add checkbox containers -->
             <div class="checkbox-container" id="shortsCheckbox">
                 <input type="checkbox" id="isShorts">
@@ -161,10 +167,12 @@
 					errorElement.style.display = 'block';
 					errorElement.textContent = data.errorMessage;
 					inputElement?.classList.add('error');
+					inputElement?.setAttribute('aria-invalid', 'true');
 				} else {
 					errorElement.style.display = 'none';
 					errorElement.textContent = '';
 					inputElement?.classList.remove('error');
+					inputElement?.removeAttribute('aria-invalid');
 				}
 			}
 			
@@ -222,6 +230,7 @@
 					errorElement.style.display = 'none';
 					errorElement.textContent = '';
 					inputElement.classList.remove('error');
+					inputElement.removeAttribute('aria-invalid');
 				}
 			});
 		}
@@ -257,11 +266,15 @@
             window.close();
         }
         
-        document.getElementById('input').addEventListener('keydown', function(event) {
-            if (event.key === 'Enter') {
-                submit();
-            } else if (event.key === 'Escape') {
+        document.addEventListener('keydown', function(event) {
+            // Enter/Escape can belong to an IME candidate picker, not the dialog.
+            if (event.isComposing || event.keyCode === 229) return;
+            if (event.key === 'Escape') {
+                event.preventDefault();
                 cancel();
+            } else if (event.key === 'Enter' && event.target === inputElement) {
+                event.preventDefault();
+                submit();
             }
         });
     </script>

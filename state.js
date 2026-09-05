@@ -23,6 +23,7 @@ class StateManager {
         this.listeners = new Map(); // event -> Set of callbacks
         this.initialized = false;
         this.persistenceKey = 'socialStreamState';
+        this.persistenceBatchDepth = 0;
     }
 
     // Helper to check if platform supports WebSockets
@@ -80,8 +81,10 @@ class StateManager {
         
         try {
             const saved = localStorage.getItem(this.persistenceKey);
+            let loadedCurrentState = false;
             if (saved) {
                 const parsed = JSON.parse(saved);
+                loadedCurrentState = Array.isArray(parsed.sources) && Array.isArray(parsed.groups);
                 // Convert arrays back to Maps
                 if (parsed.sources) {
                     this.state.sources = new Map(parsed.sources);
@@ -167,8 +170,9 @@ class StateManager {
                 }
             }
             
-            // Also migrate old settings format if exists
-            this.migrateOldSettings();
+            // An empty source list is still a saved configuration. Its legacy copy
+            // omits newer group fields, so importing it again would lose settings.
+            if (!loadedCurrentState) this.migrateOldSettings();
             
         } catch (e) {
             console.error('Error loading state:', e);
@@ -657,39 +661,40 @@ class StateManager {
         const group = this.state.groups.get(groupId);
         if (!group) return false;
         
-        // Remove all sources in the group
-        group.streams.forEach(sourceId => {
-            this.removeSource(sourceId);
+        return this.batchPersistence(() => {
+            // Remove all sources in the group
+            group.streams.forEach(sourceId => {
+                this.removeSource(sourceId);
+            });
+
+            this.state.groups.delete(groupId);
+            this.emit('groupRemoved', { groupId, group });
+            return true;
         });
-        
-        this.state.groups.delete(groupId);
-        this.emit('groupRemoved', { groupId, group });
-        this.persist();
-        return true;
     }
 
     // Remove every source and group
     clearAllSourcesAndGroups() {
-        const groupIds = Array.from(this.state.groups.keys());
-        groupIds.forEach(groupId => {
-            if (this.state.groups.has(groupId)) {
-                this.removeGroup(groupId);
+        this.batchPersistence(() => {
+            const groupIds = Array.from(this.state.groups.keys());
+            groupIds.forEach(groupId => {
+                if (this.state.groups.has(groupId)) {
+                    this.removeGroup(groupId);
+                }
+            });
+
+            const remainingSourceIds = Array.from(this.state.sources.keys());
+            remainingSourceIds.forEach(sourceId => {
+                if (this.state.sources.has(sourceId)) {
+                    this.removeSource(sourceId);
+                }
+            });
+
+            const hasRootOrderEntries = Array.isArray(this.state.global.rootOrder) && this.state.global.rootOrder.length > 0;
+            if (hasRootOrderEntries) {
+                this.updateGlobal({ rootOrder: [] });
             }
         });
-
-        const remainingSourceIds = Array.from(this.state.sources.keys());
-        remainingSourceIds.forEach(sourceId => {
-            if (this.state.sources.has(sourceId)) {
-                this.removeSource(sourceId);
-            }
-        });
-
-        const hasRootOrderEntries = Array.isArray(this.state.global.rootOrder) && this.state.global.rootOrder.length > 0;
-        if (hasRootOrderEntries) {
-            this.updateGlobal({ rootOrder: [] });
-        } else {
-            this.persist();
-        }
 
         this.emit('allSourcesCleared');
     }
@@ -833,8 +838,21 @@ class StateManager {
         return true;
     }
 
+    // Bulk operations still emit each lifecycle event immediately, but write the
+    // complete configuration once after all synchronous changes and listeners finish.
+    batchPersistence(callback) {
+        this.persistenceBatchDepth++;
+        try {
+            return callback();
+        } finally {
+            this.persistenceBatchDepth--;
+            if (this.persistenceBatchDepth === 0) this.persist();
+        }
+    }
+
     // Persist state to localStorage
     persist() {
+        if (this.persistenceBatchDepth > 0) return;
         try {
             const toSave = {
                 sources: Array.from(this.state.sources.entries()),

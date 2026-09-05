@@ -2310,6 +2310,7 @@
             const muteButton = element.querySelector('.group-actions button[data-group-mute]');
             if (muteButton) {
                 muteButton.textContent = group.groupMuted ? '🔇 Muted' : '🔊 Unmuted';
+                muteButton.setAttribute('aria-pressed', String(!!group.groupMuted));
                 muteButton.title = group.groupMuted
                     ? 'Unmute all capture pages in this group. New sources will inherit this setting.'
                     : 'Mute all capture pages in this group. New sources will inherit this setting.';
@@ -4410,7 +4411,25 @@
             if (!groupId) return;
             const group = stateManager.getGroup(groupId);
             if (!group) return;
-            stateManager.updateGroup(groupId, { groupMuted: !group.groupMuted });
+            const newMuteState = !group.groupMuted;
+            stateManager.updateGroup(groupId, { groupMuted: newMuteState });
+            // Updating saved child flags only updates their UI. Active capture
+            // pages need the same mute command used by the individual control.
+            let failedCount = 0;
+            for (const sourceId of group.streams) {
+                const source = stateManager.getSource(sourceId);
+                if (!source?.vid || !ipcRenderer) continue;
+                try {
+                    const applied = ipcRenderer.sendSync('muteWindow', { vid: source.vid, muteWindow: newMuteState });
+                    if (applied !== true) failedCount++;
+                } catch (error) {
+                    failedCount++;
+                    console.error(`Failed to mute/unmute source ${sourceId}:`, error);
+                }
+            }
+            if (failedCount) {
+                Toast.warning(translate('group.audio.incomplete'), translateTemplate('group.audio.failed', { count: failedCount }));
+            }
         }
 
         function updateModeSelector(clickedOption) {
@@ -7485,8 +7504,9 @@
             const effectiveMode = getEffectiveConnectionMode(source) || source.connectionMode;
             const tikTokWssId = getTikTokWssId(source);
             const canceledNavigationRecovery = cancelSourceNavigationRecovery(sourceId);
+            const canceledPendingActivation = pendingSourceActivations.delete(sourceId);
 
-            if (canceledNavigationRecovery && !hasConnectionHandles(source)) {
+            if ((canceledNavigationRecovery || canceledPendingActivation) && !hasConnectionHandles(source)) {
                 stateManager.updateSource(sourceId, {
                     status: 'inactive',
                     vid: null,
@@ -7495,7 +7515,8 @@
                     activeConnectionMode: null,
                     error: null
                 });
-                updateConnectionStatus(entry, 'stopped', 'Reconnect stopped.');
+                if (canceledNavigationRecovery) updateConnectionStatus(entry, 'stopped', 'Reconnect stopped.');
+                else updateConnectionStatus(entry, 'clear');
                 setTimeout(() => updateConnectionStatus(entry, 'clear'), 1000);
                 restoreActivateButton(entry);
                 return;
@@ -7629,6 +7650,7 @@
         const STALE_CONNECTION_STATUSES = new Set(['activating', 'active', 'connected', 'reconnecting']);
 
         const pendingTikTokActivations = new Map();
+        const pendingSourceActivations = new Map();
         let tikTokActivationTokenSeed = 0;
 
         function beginPendingTikTokActivation(sourceId) {
@@ -9200,6 +9222,10 @@
             const resolvedTarget = target || source.target;
             const normalizedMode = resolvedTarget === 'tiktok' ? normalizeTikTokMode(mode) : mode;
             let pendingTikTokToken = null;
+            // TikTok has its own token lifecycle; other asynchronous starters also
+            // need to distinguish a stopped attempt from a subsequent activation.
+            const activationToken = resolvedTarget === 'tiktok' ? null : {};
+            if (activationToken) pendingSourceActivations.set(sourceId, activationToken);
 
             try {
                 const baseUpdate = {
@@ -9229,7 +9255,7 @@
                     windowId = await createClassicWindowFromSource(source, tabid);
                 }
 
-                if (stateManager.getSource(sourceId) !== source || (pendingTikTokToken && !isPendingTikTokActivationCurrent(sourceId, pendingTikTokToken))) {
+                if (stateManager.getSource(sourceId) !== source || (activationToken && pendingSourceActivations.get(sourceId) !== activationToken) || (pendingTikTokToken && !isPendingTikTokActivationCurrent(sourceId, pendingTikTokToken))) {
                     if (windowId && ipcRenderer && resolvedTarget === 'tiktok' && (normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')) {
                         const actualWssId = windowId > 900000 ? windowId - 900000 : windowId;
                         if (actualWssId) {
@@ -9350,7 +9376,7 @@
                 return { success: false, error: new Error('Activation failed without window ID') };
             } catch (error) {
                 const fallbackInfo = resolveTikTokFallbackInfo(error);
-                if (stateManager.getSource(sourceId) !== source || (pendingTikTokToken && !isPendingTikTokActivationCurrent(sourceId, pendingTikTokToken))) {
+                if (stateManager.getSource(sourceId) !== source || (activationToken && pendingSourceActivations.get(sourceId) !== activationToken) || (pendingTikTokToken && !isPendingTikTokActivationCurrent(sourceId, pendingTikTokToken))) {
                     markPendingTikTokActivationComplete(sourceId, pendingTikTokToken);
                     return { success: false, error: new Error('Activation canceled') };
                 }
@@ -9370,6 +9396,10 @@
                     updateConnectionStatus(entry, 'error', statusMessage);
                 }
                 return { success: false, error, fallbackInfo };
+            } finally {
+                if (activationToken && pendingSourceActivations.get(sourceId) === activationToken) {
+                    pendingSourceActivations.delete(sourceId);
+                }
             }
         }
 
@@ -11521,9 +11551,10 @@
             if (config[effectivePlatform]?.signin) conf = { ...conf, ...config[effectivePlatform].signin };
 
             // Apply custom user agent if set
-            if (source && source.userAgent && source.userAgent !== 'AUTO') {
-                conf.userAgent = source.userAgent;
-                if (source.mockUserAgentData) conf.mockUserAgentData = source.mockUserAgentData;
+            const signinSource = source || group;
+            if (signinSource?.userAgent && signinSource.userAgent !== 'AUTO') {
+                conf.userAgent = signinSource.userAgent;
+                if (signinSource.mockUserAgentData) conf.mockUserAgentData = signinSource.mockUserAgentData;
                 console.log('[SignIn] Using custom user agent:', conf.userAgent);
             } else {
                 console.log('[SignIn] Using AUTO user agent from config:', conf.userAgent);
@@ -12583,6 +12614,7 @@
 
             stateManager.on('sourceRemoved', ({ sourceId, source }) => {
                 cancelPendingTikTokActivation(sourceId);
+                pendingSourceActivations.delete(sourceId);
                 cancelSourceNavigationRecovery(sourceId);
                 const element = document.querySelector(`[data-source-id="${sourceId}"]`);
                 element?.remove();
@@ -14998,6 +15030,12 @@
         // Translation system
         const translations = {
             'en': {
+                'useragent.current': 'Current source setting',
+                'session.platformDefault': 'Platform default',
+                'useragent.remove': 'Remove',
+                'useragent.removeNamed': 'Remove {name}',
+                'group.audio.incomplete': 'Audio update incomplete',
+                'group.audio.failed': 'Could not update {count} capture page(s). Settings were saved; stop and reactivate affected sources.',
                 // Navigation
                 'nav.streams': '🎭 Sources and Settings',
                 'nav.linkoverlay': '🔗 Links and Settings',
@@ -17627,15 +17665,19 @@
                 const newType = currentType === 'youtube' ? 'youtubeshorts' : 'youtube';
 
                 // Update the source in state manager
-                let newUrl = source.url;
-                if (currentType === 'youtube' && newType === 'youtubeshorts') {
-                    // Add &shorts if not already present
-                    if (!newUrl.includes('&shorts')) {
-                        newUrl += '&shorts';
+                let newUrl = source.url || '';
+                if (newUrl) {
+                    try {
+                        const parsedUrl = new URL(newUrl);
+                        if (newType === 'youtubeshorts') {
+                            parsedUrl.searchParams.set('shorts', '');
+                        } else {
+                            parsedUrl.searchParams.delete('shorts');
+                        }
+                        newUrl = parsedUrl.href;
+                    } catch (_) {
+                        // Keep non-URL input intact; activation resolves the video/channel.
                     }
-                } else if (currentType === 'youtubeshorts' && newType === 'youtube') {
-                    // Remove &shorts
-                    newUrl = newUrl.replace('&shorts', '');
                 }
 
                 const updates = {
@@ -17778,11 +17820,11 @@
             },
             {
                 "name": "Chrome 142 - Windows",
-                "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142 .0.0.0 Safari/537.36"
+                "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
             },
             {
                 "name": "Chrome 142 - Mac",
-                "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142 .0.0.0 Safari/537.36"
+                "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
             },
             {
                 "name": "Chrome 142 - Linux",
@@ -17790,11 +17832,11 @@
             },
             {
                 "name": "Chrome 143 - Windows",
-                "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143 .0.0.0 Safari/537.36"
+                "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
             },
             {
                 "name": "Chrome 143 - Mac",
-                "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143 .0.0.0 Safari/537.36"
+                "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
             },
             {
                 "name": "Chrome 143 - Linux",
@@ -17802,11 +17844,11 @@
             },
             {
                 "name": "Chrome 144 - Windows",
-                "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144 .0.0.0 Safari/537.36"
+                "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
             },
             {
                 "name": "Chrome 144 - Mac",
-                "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144 .0.0.0 Safari/537.36"
+                "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
             },
             {
                 "name": "Chrome 144 - Linux",
@@ -17997,7 +18039,21 @@
 
             // Set current selection
             const currentUserAgent = source.userAgent || 'AUTO';
-            select.value = currentUserAgent;
+            // Match the full configuration: identical UA strings can carry
+            // different browser-identification fields in imported sources.
+            const currentMock = source.mockUserAgentData ? JSON.stringify(source.mockUserAgentData) : null;
+            let currentOption = Array.from(select.options).find(option =>
+                option.value === currentUserAgent && (option.dataset.mock || null) === currentMock
+            );
+            if (!currentOption) {
+                const option = document.createElement('option');
+                option.value = currentUserAgent;
+                option.textContent = translate('useragent.current');
+                if (currentMock) option.dataset.mock = currentMock;
+                select.appendChild(option);
+                currentOption = option;
+            }
+            currentOption.selected = true;
 
             // Update custom user agents list
             updateCustomUserAgentsList();
@@ -18090,7 +18146,8 @@
                 details.appendChild(value);
 
                 const removeButton = document.createElement('button');
-                removeButton.textContent = 'Remove';
+                removeButton.textContent = translate('useragent.remove');
+                removeButton.setAttribute('aria-label', translateTemplate('useragent.removeNamed', { name: ua.name || ua.value }));
                 removeButton.style.cssText = 'margin-left: 10px; padding: 4px 8px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;';
                 removeButton.addEventListener('click', () => removeCustomUserAgent(index));
 
@@ -18104,7 +18161,7 @@
             if (!confirm('Are you sure you want to remove this custom user agent?')) return;
 
             const savedUserAgents = JSON.parse(localStorage.getItem('customUserAgents') || '[]');
-            const removedAgent = savedUserAgents[index];
+            if (!Number.isInteger(index) || index < 0 || index >= savedUserAgents.length) return;
             savedUserAgents.splice(index, 1);
             localStorage.setItem('customUserAgents', JSON.stringify(savedUserAgents));
 
@@ -18113,16 +18170,20 @@
 
             // Update the dropdown - remove the deleted option
             const select = document.getElementById('userAgentSelect');
-            if (select && removedAgent) {
-                // Find and remove the option with matching value
-                for (let i = select.options.length - 1; i >= 0; i--) {
-                    if (select.options[i].value === removedAgent.value) {
+            if (select) {
+                // Values can repeat; remove only the selected library entry.
+                // Keep indices aligned for further removals in the same dialog.
+                for (const option of Array.from(select.options)) {
+                    if (option.dataset.customIndex === undefined) continue;
+                    const customIndex = Number(option.dataset.customIndex);
+                    if (customIndex === index) {
                         // If this was the selected option, reset to AUTO
-                        if (select.selectedIndex === i) {
+                        if (option.selected) {
                             select.value = 'AUTO';
                         }
-                        select.remove(i);
-                        break;
+                        option.remove();
+                    } else if (customIndex > index) {
+                        option.dataset.customIndex = customIndex - 1;
                     }
                 }
             }
@@ -18289,20 +18350,21 @@
                 'rumble': 'Rumble Default'
             };
 
-            // Add platform-specific default if available
-            if (platformDefaults[source.target]) {
-                const platformDiv = document.createElement('div');
+            // Every source needs a way back to its default session.
+            {
+                const platformDiv = document.createElement('button');
+                platformDiv.type = 'button';
+                platformDiv.style.cssText = 'width: 100%; color: inherit; font: inherit; text-align: left;';
                 platformDiv.className = 'session-item';
                 platformDiv.dataset.sessionValue = `default-${source.target}`;
+                platformDiv.setAttribute('aria-pressed', String(window.currentSelectedSession === `default-${source.target}`));
                 if (window.currentSelectedSession === `default-${source.target}`) {
                     platformDiv.classList.add('selected');
                 }
-                platformDiv.innerHTML = `
-            <span class="session-item-name">${platformDefaults[source.target]}</span>
-            <span class="session-item-actions">
-                <span style="color: #aaa; font-size: 12px;">Platform default</span>
-            </span>
-        `;
+                const platformName = document.createElement('span');
+                platformName.className = 'session-item-name';
+                platformName.textContent = platformDefaults[source.target] || translate('session.platformDefault');
+                platformDiv.appendChild(platformName);
                 platformDiv.onclick = () => selectSession(`default-${source.target}`);
                 container.appendChild(platformDiv);
             }
@@ -18353,6 +18415,7 @@
             // Update visual selection
             document.querySelectorAll('.session-item').forEach(item => {
                 item.classList.remove('selected');
+                if (item.hasAttribute('aria-pressed')) item.setAttribute('aria-pressed', String(item.dataset.sessionValue === sessionValue));
                 if (item.dataset.sessionValue === sessionValue) {
                     item.classList.add('selected');
                 }
@@ -18360,7 +18423,7 @@
         }
 
         function removeCustomSession(sessionName) {
-            if (!confirm('Are you sure you want to remove this custom session? Any sources using this session will revert to default.')) return;
+            if (!confirm('Are you sure you want to remove this custom session? Sources and groups using it will revert to default for their next activation.')) return;
 
             const customSessions = JSON.parse(localStorage.getItem('customSessions') || '[]');
             const sessionIndex = customSessions.findIndex(s => s.name === sessionName);
@@ -18370,12 +18433,24 @@
             customSessions.splice(sessionIndex, 1);
             localStorage.setItem('customSessions', JSON.stringify(customSessions));
 
-            // Update any sources using this session
-            const allSources = stateManager.getSources();
-            allSources.forEach(source => {
-                if (source.customSession === sessionName) {
-                    stateManager.updateSource(source.id, { customSession: `default-${source.target}` });
-                }
+            stateManager.batchPersistence(() => {
+                stateManager.getSources().forEach(source => {
+                    if (source.customSession === sessionName) {
+                        stateManager.updateSource(source.id, { customSession: `default-${source.target}` });
+                    }
+                });
+                stateManager.getGroups().forEach(group => {
+                    if (group.customSession === sessionName) {
+                        stateManager.updateGroup(group.id, { customSession: `default-${group.target}` });
+                    }
+                });
+                // Bindings intentionally survive source deletion, but must not
+                // restore a session the user has explicitly removed.
+                const sessionBindings = { ...stateManager.ensureSessionBindings() };
+                Object.keys(sessionBindings).forEach(key => {
+                    if (sessionBindings[key] === sessionName) delete sessionBindings[key];
+                });
+                stateManager.updateGlobal({ sessionBindings });
             });
 
             // If this was the selected session, select platform default

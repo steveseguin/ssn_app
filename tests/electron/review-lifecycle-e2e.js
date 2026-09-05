@@ -31,6 +31,36 @@ async function run() {
 	try {
 		const page = await app.firstWindow();
 		await page.waitForFunction(() => window.stateManager?.initialized && typeof performActivationAttempt === 'function');
+		await page.waitForTimeout(1500);
+		// Hold asset lookup to reproduce Stop while a WebSocket source is opening.
+		// Once released, the real source-window IPC path loads the local fixture.
+		await page.evaluate(fixture => {
+			window.reviewOriginalResolver = resolveWebSocketHtml;
+			resolveWebSocketHtml = async () => {
+				await new Promise(resolve => { window.reviewResolveAssets = resolve; });
+				return { url: fixture, origin: 'remote', branch: 'main' };
+			};
+			window.reviewStopSource = stateManager.addSource({ target: 'custom', username: 'stop_fixture', connectionMode: 'websocket', autoActivate: false });
+			window.reviewStopAttempt = performActivationAttempt({ sourceId: window.reviewStopSource, mode: 'websocket' });
+		}, fixture);
+		await page.waitForFunction(() => !!window.reviewResolveAssets);
+		const stopId = await page.evaluate(() => window.reviewStopSource);
+		await page.locator(`[data-source-id="${stopId}"] [data-activatehtml]`).evaluate(button => button.click());
+		const stoppedBeforeReply = await page.evaluate(() => stateManager.getSource(window.reviewStopSource).status);
+		await page.evaluate(async () => {
+			window.reviewResolveAssets();
+			await window.reviewStopAttempt;
+			resolveWebSocketHtml = window.reviewOriginalResolver;
+		});
+		const stopResult = await page.evaluate(() => ({ status: stateManager.getSource(window.reviewStopSource).status, vid: stateManager.getSource(window.reviewStopSource).vid }));
+		await page.waitForTimeout(500);
+		const lateWindows = await app.evaluate(({ BrowserWindow }, fixture) => BrowserWindow.getAllWindows().filter(win => win.webContents.getURL().startsWith(fixture)).length, fixture);
+		console.log('Stop during lookup reproduction', { stoppedBeforeReply, ...stopResult, lateWindows });
+		assert.strictEqual(stoppedBeforeReply, 'inactive', 'Stop did not cancel pending asset lookup.');
+		assert.strictEqual(stopResult.status, 'inactive');
+		assert.strictEqual(stopResult.vid, null);
+		assert.strictEqual(lateWindows, 0, 'A late asset lookup opened a window after Stop.');
+		await page.evaluate(id => deleteThis(document.querySelector(`[data-source-id="${id}"]`)), stopId);
 		// Exercise the real Delete and Clear All paths without contacting TikTok.
 		for (const clearAll of [false, true]) {
 			const canceled = await page.evaluate(async clearAll => {
