@@ -84,4 +84,5 @@ change was made without evidence from a physical Wayland desktop. X11 screenshot
 Physical GPU drivers, GNOME/KDE integration, system tray behavior, real screen readers, physical
 audio output, ARM, and authenticated platform sessions still need real desktop/account testing.
 Memory samples are provided but do not establish leak-free behavior over hours or days. The
-corrected AUR recipe is ready for publication; public users still receive 0.4.18-2 until it is deployed.
+corrected AUR recipe was subsequently published as 0.4.18-3 on September 5, 2026
+(AUR commit `3388a6c`), with its public package page and Git repository verified.

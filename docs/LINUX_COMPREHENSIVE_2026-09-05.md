@@ -64,9 +64,9 @@ Local logs and screenshots: `/home/ubuntu/code/ssapp-linux-comprehensive-2026090
 Earlier build, makepkg, soak and Wayland evidence remains under
 `/home/ubuntu/code/ssapp-linux-practical-20260905/`.
 
-The public AUR recipe remains 0.4.18-2 until the corrected recipe is published separately.
-The clean-container dependency fix and locally staged upgrade were tested; this is not a claim
-that the public package has already been repaired. Container test commands disable Chromium's
+Publication follow-up: the tested 0.4.18-3 dependency correction was pushed to AUR on
+September 5, 2026, as commit `3388a6c`; the public package page and Git repository confirm it.
+The locally staged 0.4.24 AppImage remains a separate, unpublished application build. Container test commands disable Chromium's
 sandbox; the installed launcher does not. Native Arch sandbox verification, physical Wayland
 screenshots, GPU/desktop/tray integration, audio hardware, screen readers, ARM and authenticated
 live-platform testing remain outstanding as described in the practical report. Continue native desktop verification, especially Wayland screenshot behavior.

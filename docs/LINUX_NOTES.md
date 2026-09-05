@@ -223,5 +223,7 @@ For the headless launcher on Arch, install `xorg-server-xvfb` and `xorg-xdpyinfo
 and `xorg-xwininfo`; these are test tools rather than app dependencies.
 
 See [practical Linux validation](LINUX_PRACTICAL_2026-09-05.md) for real installation,
-upgrade/reinstall, browser, window, screenshot, and long-session results. Updating this Git
-repository does not publish the corrected recipe to AUR.
+upgrade/reinstall, browser, window, screenshot, and long-session results. The corrected recipe
+was published to [AUR](https://aur.archlinux.org/packages/socialstreamninja) on September 5, 2026
+as 0.4.18-3 (AUR commit `3388a6c`). The public package page and Git repository were verified.
+This is a dependency correction for the existing 0.4.18 release, not publication of the local 0.4.24 build.
