@@ -47,6 +47,7 @@ async function run() {
 		logFd = fs.openSync(path.join(profile, setup ? 'setup.log' : 'headless.log'), 'w');
 		child = spawn('bash', ['scripts/start-headless.sh', ...(setup ? ['--setup'] : []),
 			...(packagedApp ? [] : ['.', '--running-from-source', '--filesource', `file://${path.resolve(repoRoot, '../social_stream')}/`]),
+			...(process.env.SSAPP_TEST_NO_SANDBOX === '1' ? ['--no-sandbox'] : []),
 			'--ssapp-control-api', `--ssapp-control-port=${port}`], {
 			cwd: repoRoot,
 			env: { ...process.env, SSAPP_BINARY: binary, SSAPP_USER_DATA_DIR: profile,

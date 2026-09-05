@@ -79,6 +79,13 @@ The downloaded app contains the adapter. A separate Node or Python installation 
 
 ### MCP startup order
 
+SSApp 0.4.23 includes MCP adapter 1.2.2. An interrupted HTTP response now returns
+`SSAPP_UNREACHABLE` instead of leaving the tool call unanswered. After any transport failure,
+read the app's state before retrying a mutation: the operation may already have taken effect.
+The adapter also finishes writing queued replies before exiting when client stdin closes.
+Clients must continue reading stdout through EOF, especially for large screenshot replies.
+No command or tool schema changed in this patch.
+
 SSApp 0.4.14 includes MCP adapter 1.2.0. Its complete stable tool list remains discoverable when the MCP client starts before the main SSApp process. Version-gated calls re-check the live app's capabilities when invoked.
 
 Older adapters may expose only the tools available during startup. With those versions, start SSApp before the MCP client or reconnect the MCP server after SSApp starts.

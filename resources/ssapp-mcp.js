@@ -5,7 +5,7 @@
 const http = require('http');
 const readline = require('readline');
 
-const MCP_SERVER_VERSION = '1.2.1';
+const MCP_SERVER_VERSION = '1.2.2';
 const MCP_PROTOCOL_VERSION = '2025-06-18';
 const DEFAULT_URL = 'http://127.0.0.1:17777';
 const configuredRequestTimeoutMs = Number.parseInt(process.env.SSAPP_MCP_REQUEST_TIMEOUT_MS, 10);
@@ -351,6 +351,7 @@ function apiRequest(pathname, body, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
 		}, res => {
 			let responseText = '';
 			res.setEncoding('utf8');
+			res.on('error', error => reject(normalizeRequestError(error)));
 			res.on('data', chunk => { responseText += chunk; });
 			res.on('end', () => {
 				let data;
@@ -556,7 +557,9 @@ let pendingMessages = 0;
 let inputClosed = false;
 
 function exitWhenIdle() {
-	if (inputClosed && pendingMessages === 0) process.exit(0);
+	// stdout is asynchronous when piped. An immediate exit can truncate screenshots
+	// and other large replies when a client closes stdin after its last request.
+	if (inputClosed && pendingMessages === 0) process.stdout.end(() => process.exit(0));
 }
 
 input.on('line', line => {

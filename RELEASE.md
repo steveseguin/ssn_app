@@ -194,6 +194,14 @@ Confirm all of the following:
 
 ### Current GitHub Actions warning
 
+Both Linux build workflows now validate the extracted AppImage before uploading artifacts.
+The gate covers headless setup/recovery, MCP discovery/control and transport failures,
+navigation/localization, and packaged speech. A successful build alone is not a passing gate.
+
+The publish job is restricted to `steveseguin/social_stream`. In `ssn_app`, even the tag and
+developer lanes can only build/upload workflow artifacts; they cannot create GitHub releases
+or release tags. Publishing permissions are granted only to the guarded publish job.
+
 The `release-builds.yml` numbered build currently runs Windows and Linux successfully, but its fallback updater defaults to `social_stream/main`. Do not use those numbered-build artifacts for a beta-backed release unless the workflow is changed or its logs prove that it cloned `social_stream.git#beta` and wrote that source into the bundled `main` fallback.
 
 The manual commands above are the known-good process used for v0.4.12.

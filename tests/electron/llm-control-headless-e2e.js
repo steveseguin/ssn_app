@@ -264,7 +264,9 @@ async function withTimeout(promise, timeoutMs, message) {
 }
 
 function startMcpSession(port) {
-	const child = spawn(process.execPath, [path.join(repoRoot, 'resources', 'ssapp-mcp.js')], {
+	const child = spawn(packagedApp || process.execPath, packagedApp
+		? ['--ssapp-mcp', ...(process.platform === 'linux' ? ['--ozone-platform=headless'] : [])]
+		: [path.join(repoRoot, 'resources', 'ssapp-mcp.js')], {
 		cwd: repoRoot,
 		env: {
 			...process.env,
@@ -314,7 +316,7 @@ async function runMcpChecks(port) {
 	try {
 		const initialized = await session.call(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'ssapp-e2e', version: '1' } });
 		assert.strictEqual(initialized.result.serverInfo.name, 'social-stream-ninja');
-		assert.strictEqual(initialized.result.serverInfo.version, '1.2.1');
+		assert.strictEqual(initialized.result.serverInfo.version, '1.2.2');
 		const responseCountBeforeNotification = session.responses.size;
 		session.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 999, reason: 'e2e' } })}\n`);
 		await new Promise(resolve => setTimeout(resolve, 200));
@@ -372,7 +374,7 @@ async function startMcpBeforeApp(port) {
 			capabilities: {},
 			clientInfo: { name: 'ssapp-startup-order-e2e', version: '1' },
 		});
-		assert.strictEqual(initialized.result.serverInfo.version, '1.2.1');
+		assert.strictEqual(initialized.result.serverInfo.version, '1.2.2');
 		assert.strictEqual(initialized.result.capabilities.tools.listChanged, false);
 
 		const listed = await session.call(2, 'tools/list');

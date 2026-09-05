@@ -1,6 +1,6 @@
 {
   "name": "SocialStream",
-	"version": "0.4.22",
+	"version": "0.4.23",
   "description": "Standalone version of Social Stream Ninja",
   "author": "Steve Seguin <steve@seguin.email>",
   "desktopName": "socialstreamninja.desktop",
@@ -66,6 +66,8 @@
     "test:review-fixes": "node tests/electron/review-fixes-regression.js",
     "test:mcp-control:e2e": "node tests/electron/ssapp-mcp-e2e.js",
     "test:mcp-launch:e2e": "node tests/electron/ssapp-mcp-launch-e2e.js",
+    "test:mcp-transport:e2e": "node tests/electron/mcp-transport-e2e.js",
+    "test:linux-package": "bash scripts/test-linux-package.sh",
     "test:mcp-page-control:e2e": "node tests/electron/mcp-page-control-e2e.js",
     "test:mcp-app-window-dialog:e2e": "node tests/electron/mcp-app-window-dialog-e2e.js",
     "test:mcp-tiktok-soak": "node tests/electron/mcp-tiktok-live-soak.js",

@@ -6,6 +6,9 @@ version 0.4.7 (Electron 43, Chromium 150), on X11 (Xvfb with xfwm4) and Wayland 
 See the [0.4.22 Linux review](LINUX_VALIDATION_2026-09-05.md) for the latest packaging fixes,
 functional test results, and remaining coverage gaps.
 
+The [0.4.23 follow-up](LINUX_VALIDATION_2026-09-05_FOLLOWUP.md) covers MCP transport fixes
+and the new packaged-app checks in Linux CI.
+
 ## Capture in windows you cannot see
 
 This is the big one, and it is fixed rather than merely documented — see
@@ -148,6 +151,19 @@ display. These packaged tests select bundled assets so they do not silently depe
 developer's neighboring checkout. The adapter-only test intentionally runs without a display.
 The navigation test uses `--no-sandbox` in its isolated test process to accommodate Linux CI
 hosts; that switch is not added by the development launcher.
+
+To run the full packaged-app gate used by both Linux build workflows:
+
+```bash
+npm run test:linux-package -- /absolute/path/to/app.AppImage
+```
+
+It extracts the AppImage into a temporary installation (no FUSE required), checks MCP
+discovery without a display, tests setup and headless recovery, then runs control,
+interrupted-response/large-screenshot, navigation/localization, and speech workflows on
+private Xvfb displays. The temporary installation is removed when the script exits.
+Install `xvfb`, `xauth`, and `x11-utils` first. CI sets `SSAPP_TEST_NO_SANDBOX=1` only for
+isolated testing on runners that prohibit Chromium's sandbox; normal launches are unchanged.
 
 Run the packaged speech test as well as the source test. Sharp's native library and its
 `@img` dependencies must be outside `app.asar`; otherwise the Linux loader cannot find

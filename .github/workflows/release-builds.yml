@@ -25,7 +25,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-builds-${{ github.ref_name }}
@@ -181,6 +181,21 @@ jobs:
       - name: Build desktop app
         run: ${{ matrix.build_command }}
 
+      - name: Install Linux test display tools
+        if: matrix.id == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb xauth x11-utils
+
+      - name: Validate the packaged Linux app
+        if: matrix.id == 'linux'
+        timeout-minutes: 15
+        env:
+          SSAPP_TEST_NO_SANDBOX: '1'
+        shell: bash
+        run: |
+          images=(dist/*.AppImage)
+          test "${#images[@]}" -eq 1
+          npm run test:linux-package -- "${images[0]}"
+
       - name: Submit Windows executables to VirusTotal
         if: matrix.id == 'windows'
         run: node scripts/submit-virustotal.js --dir dist
@@ -197,7 +212,10 @@ jobs:
     needs:
       - prepare
       - build
-    if: needs.prepare.outputs.publish == 'true' && needs.prepare.outputs.channel != 'artifact'
+    # Application release tags/artifacts belong only in the Social Stream repository.
+    if: github.repository == 'steveseguin/social_stream' && needs.prepare.outputs.publish == 'true' && needs.prepare.outputs.channel != 'artifact'
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

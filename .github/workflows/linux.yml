@@ -71,7 +71,19 @@ jobs:
           npm install
 
       - name: Build Electron app for Linux
-        run: npm run build:linux
+        run: npm run build:linux -- --publish never
+
+      - name: Install Linux test display tools
+        run: sudo apt-get update && sudo apt-get install -y xvfb xauth x11-utils
+
+      - name: Validate the packaged Linux app
+        timeout-minutes: 15
+        env:
+          SSAPP_TEST_NO_SANDBOX: '1'
+        run: |
+          images=(dist/*.AppImage)
+          test "${#images[@]}" -eq 1
+          npm run test:linux-package -- "${images[0]}"
 
       - name: Archive Artifacts
         uses: actions/upload-artifact@v4
