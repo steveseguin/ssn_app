@@ -12,13 +12,15 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 const { spawn } = require('child_process');
 
-const electronPath = require('electron');
+const packagedApp = process.env.SSAPP_TEST_APP;
+const electronPath = packagedApp || require('electron');
 const repoRoot = path.resolve(__dirname, '..', '..');
 const expectedSsappVersion = require(path.join(repoRoot, 'package.json')).version;
 const expectedApiVersion = '1.3.1';
 const sourceUrlSecret = 'CONTROL_API_SOURCE_SECRET';
 const socialStreamRoot = path.resolve(repoRoot, '..', 'social_stream');
 const socialStreamUrl = pathToFileURL(socialStreamRoot + path.sep).href;
+const appPathArgs = packagedApp ? [] : ['.', '--running-from-source', '--filesource', socialStreamUrl];
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-headless-control-'));
 
 function getFreePort() {
@@ -136,7 +138,7 @@ async function waitForReady(port, child, timeoutMs = 60000) {
 
 async function startApp(port) {
 	const child = spawn(electronPath, [
-		'.', '--running-from-source', '--multiinstance', '--filesource', socialStreamUrl,
+		...appPathArgs, '--multiinstance',
 		'--ssapp-headless-control', '--ssapp-control-api', `--ssapp-control-port=${port}`, '--no-hwa',
 		...linuxLaunchArgs(),
 	], {
@@ -144,6 +146,7 @@ async function startApp(port) {
 		env: {
 			...process.env,
 			SSAPP_USER_DATA_DIR: profileDir,
+			SSAPP_PREFER_LOCAL_ASSETS: packagedApp ? '1' : '0',
 			SSAPP_CONTROL_API: '0',
 			SSAPP_HEADLESS_CONTROL: '0',
 			SSAPP_CONTROL_PORT: String(port),
@@ -168,7 +171,7 @@ async function startApp(port) {
 async function assertHeadlessDoesNotEnableControlApi(port) {
 	const headlessOnlyProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-headless-no-api-'));
 	const child = spawn(electronPath, [
-		'.', '--running-from-source', '--multiinstance', '--filesource', socialStreamUrl,
+		...appPathArgs, '--multiinstance',
 		// Headless on, control API deliberately off — the point of this check.
 		'--ssapp-headless-control', `--ssapp-control-port=${port}`, '--no-hwa',
 		...linuxLaunchArgs(),
@@ -177,6 +180,7 @@ async function assertHeadlessDoesNotEnableControlApi(port) {
 		env: {
 			...process.env,
 			SSAPP_USER_DATA_DIR: headlessOnlyProfile,
+			SSAPP_PREFER_LOCAL_ASSETS: packagedApp ? '1' : '0',
 			SSAPP_CONTROL_API: '0',
 			SSAPP_HEADLESS_CONTROL: '0',
 			SSAPP_CONTROL_PORT: String(port),

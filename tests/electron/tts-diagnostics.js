@@ -6,7 +6,8 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const electronPath = require('electron');
+const packagedApp = process.env.SSAPP_TEST_APP;
+const electronPath = packagedApp || require('electron');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 const reportPath = path.join(os.tmpdir(), `ssapp-tts-diagnostics-${Date.now()}.json`);
@@ -39,8 +40,7 @@ function run() {
 		const child = spawn(
 			electronPath,
 			[
-				'.',
-				'--running-from-source',
+				...(packagedApp ? [] : ['.', '--running-from-source']),
 				'--tts-diagnostics',
 				`--tts-report=${reportPath}`,
 				...linuxLaunchArgs(),

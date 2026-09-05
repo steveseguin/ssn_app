@@ -15,7 +15,8 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function run() {
 	assert.strictEqual(process.platform, 'linux', 'Run this integration test on Linux with Xvfb installed.');
 	const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-launcher-e2e-'));
-	const binary = process.env.SSAPP_TEST_ELECTRON || require('electron');
+	const packagedApp = process.env.SSAPP_TEST_APP;
+	const binary = packagedApp || process.env.SSAPP_TEST_ELECTRON || require('electron');
 	const server = net.createServer();
 	await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 	const port = server.address().port;
@@ -44,11 +45,12 @@ async function run() {
 	}
 	async function launch(setup) {
 		logFd = fs.openSync(path.join(profile, setup ? 'setup.log' : 'headless.log'), 'w');
-		child = spawn('bash', ['scripts/start-headless.sh', ...(setup ? ['--setup'] : []), '.',
-			'--running-from-source', '--filesource', `file://${path.resolve(repoRoot, '../social_stream')}/`,
+		child = spawn('bash', ['scripts/start-headless.sh', ...(setup ? ['--setup'] : []),
+			...(packagedApp ? [] : ['.', '--running-from-source', '--filesource', `file://${path.resolve(repoRoot, '../social_stream')}/`]),
 			'--ssapp-control-api', `--ssapp-control-port=${port}`], {
 			cwd: repoRoot,
 			env: { ...process.env, SSAPP_BINARY: binary, SSAPP_USER_DATA_DIR: profile,
+				SSAPP_PREFER_LOCAL_ASSETS: packagedApp ? '1' : '0',
 				SSAPP_DATA_DIR: path.join(profile, 'wrong'), SSAPP_DISPLAY_NUM: String(display), SSAPP_HEADLESS_CONTROL: '1' },
 			stdio: ['ignore', logFd, logFd],
 		});

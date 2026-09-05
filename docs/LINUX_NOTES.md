@@ -1,8 +1,10 @@
 # Linux notes
 
 What behaves differently on Linux, what is not available at all, and what to check first when
-a Linux user reports something odd. Everything here was verified on Ubuntu with app version
-0.4.7 (Electron 43, Chromium 150), on X11 (Xvfb with xfwm4) and on Wayland (headless weston).
+a Linux user reports something odd. The original findings were verified on Ubuntu with app
+version 0.4.7 (Electron 43, Chromium 150), on X11 (Xvfb with xfwm4) and Wayland (headless Weston).
+See the [0.4.22 Linux review](LINUX_VALIDATION_2026-09-05.md) for the latest packaging fixes,
+functional test results, and remaining coverage gaps.
 
 ## Capture in windows you cannot see
 
@@ -100,6 +102,18 @@ yourself.
 
 ## Developing and testing on Linux
 
+Keep the repositories side by side, for example `~/code/ssn_app` and `~/code/social_stream`.
+From `ssn_app`, run `npm install`, then `npm run start-linux`. The launcher resolves the
+neighboring source directory, supports spaces in the path, and stops with a clear error if
+that checkout is missing. It does not load the disposable build fallback as development
+source. Use **File > Load Social Stream From Folder** for a checkout in another location.
+
+For an isolated development profile:
+
+```bash
+SSAPP_USER_DATA_DIR="$(mktemp -d /tmp/ssapp-dev.XXXXXX)" npm run start-linux
+```
+
 The app needs a display even when every window is hidden. `--ozone-platform=headless` looks
 like it should avoid that but segfaults during startup on both Electron 38 and 43 — use Xvfb.
 On hosts whose drivers advertise GLX but cannot serve it, Xvfb itself crashes unless started
@@ -113,6 +127,32 @@ npm run test:hidden-capture          # add --headless or --start-hidden
 
 See `AGENTS.md` for the full list of hidden-capture test entry points, and
 `docs/CLOUD_HOSTING.md` for running on a server.
+
+The compact navigation menu supports Enter/Space to open, Escape to close, and returns
+keyboard focus to its button when navigation hides a focused link. The menu name, expanded
+state, current page, and language selector are exposed to accessibility tools. Their labels
+follow the selected app language.
+
+To check a built AppImage or extracted executable with temporary profiles:
+
+```bash
+SSAPP_TEST_APP="/path/to/socialstreamninja.AppImage" npm run test:headless-launcher:e2e
+DISPLAY=:99 SSAPP_TEST_APP="/path/to/socialstreamninja.AppImage" npm run test:mcp-control:e2e
+DISPLAY=:99 SSAPP_TEST_APP="/path/to/socialstreamninja.AppImage" npm run test:navigation-accessibility:e2e
+DISPLAY=:99 SSAPP_TEST_APP="/path/to/socialstreamninja.AppImage" npm run test:tts
+SSAPP_MCP_BINARY="/path/to/socialstreamninja.AppImage" npm run test:mcp-launch:e2e
+```
+
+The launcher test starts its own display; the control and navigation tests need a working
+display. These packaged tests select bundled assets so they do not silently depend on a
+developer's neighboring checkout. The adapter-only test intentionally runs without a display.
+The navigation test uses `--no-sandbox` in its isolated test process to accommodate Linux CI
+hosts; that switch is not added by the development launcher.
+
+Run the packaged speech test as well as the source test. Sharp's native library and its
+`@img` dependencies must be outside `app.asar`; otherwise the Linux loader cannot find
+libvips and the speech worker fails even though speech works from source. The explicit
+`asarUnpack` entries in `package.json` keep those libraries accessible.
 
 ## Known gaps in this testing
 

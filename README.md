@@ -136,6 +136,10 @@ npm run start2
 
 `npm run start2` runs SSApp from this checkout. During normal development, Social Stream source changes belong in a neighboring `social_stream` checkout; use a local-source launch or **File > Load Social Stream From Folder** to load them.
 
+On Linux, `npm run start-linux` loads the neighboring `../social_stream` checkout and reports
+an error if it is missing. Paths containing spaces are supported. See
+[Linux development and testing](docs/LINUX_NOTES.md#developing-and-testing-on-linux).
+
 ### Builds
 
 ```bash

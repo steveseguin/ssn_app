@@ -97,8 +97,9 @@
 
 <body>
     <nav id="main-navigation">
-        <button class="menu-toggle" onclick="toggleMenu()">☰</button>
-        <ul>
+        <button class="menu-toggle" type="button" onclick="toggleMenu()" aria-label="Navigation menu"
+            data-i18n-aria-label="nav.menu" aria-controls="navigation-links" aria-expanded="false">☰</button>
+        <ul id="navigation-links">
             <li><a href="#" data-page="streams">🎭 Sources and Settings</a></li>
             <li><a href="#" data-page="dashboard">📰 Status and Logs</a></li>
             <li><a href="#" data-page="event-flow-editor">⚡ Event Flow Editor</a></li>
@@ -107,7 +108,7 @@
             <li><a href="#" data-page="sessions">🧑‍🤝‍🧑 Sessions</a></li>
         </ul>
         <div class="language-selector">
-            <select id="language-select" aria-label="Language" onchange="changeLanguage(this.value)">
+            <select id="language-select" aria-label="Language" data-i18n-aria-label="nav.language" onchange="changeLanguage(this.value)">
                 <option value="en-us">🇺🇸 English (US)</option>
                 <option value="en-uk">🇬🇧 English (UK)</option>
                 <option value="pt-br">🇧🇷 Português (Brasil)</option>
@@ -15013,8 +15014,10 @@
             const navLinks = document.querySelectorAll('#main-navigation a');
             navLinks.forEach(link => {
                 link.classList.remove('active');
+                link.removeAttribute('aria-current');
                 if (link.getAttribute('data-page') === pageName) {
                     link.classList.add('active');
+                    link.setAttribute('aria-current', 'page');
                 }
             });
 
@@ -16163,7 +16166,29 @@
         };
 
         const translationPatches = {
+            'th': {
+                'useragent.current': 'การตั้งค่าปัจจุบันของแหล่งข้อมูล',
+                'session.platformDefault': 'ค่าเริ่มต้นของแพลตฟอร์ม',
+                'useragent.remove': 'นำออก',
+                'useragent.removeNamed': 'นำ {name} ออก',
+                'group.audio.incomplete': 'การอัปเดตเสียงไม่สมบูรณ์',
+                'group.audio.failed': 'ไม่สามารถอัปเดตหน้าจับภาพ {count} หน้าได้ บันทึกการตั้งค่าแล้ว โปรดหยุดและเปิดใช้งานแหล่งข้อมูลที่ได้รับผลกระทบอีกครั้ง',
+                'nav.menu': 'เมนูนำทาง',
+                'nav.language': 'ภาษา',
+            },
+            'ar': {
+                'useragent.current': 'إعداد المصدر الحالي',
+                'session.platformDefault': 'الإعداد الافتراضي للمنصة',
+                'useragent.remove': 'إزالة',
+                'useragent.removeNamed': 'إزالة {name}',
+                'group.audio.incomplete': 'تحديث الصوت غير مكتمل',
+                'group.audio.failed': 'تعذر تحديث {count} من صفحات الالتقاط. تم حفظ الإعدادات؛ أوقف المصادر المتأثرة ثم أعد تفعيلها.',
+                'nav.menu': 'قائمة التنقل',
+                'nav.language': 'اللغة',
+            },
             en: {
+                'nav.menu': 'Navigation menu',
+                'nav.language': 'Language',
                 'toast.missingusername': 'Missing Username',
                 'toast.invalidusername': 'Invalid Username',
                 'toast.invalidtiktokusername': 'Invalid TikTok Username',
@@ -16186,6 +16211,14 @@
                 'connection.failed': 'Connection failed'
             },
             'pt-BR': {
+                'useragent.current': 'Configuração atual da fonte',
+                'session.platformDefault': 'Padrão da plataforma',
+                'useragent.remove': 'Remover',
+                'useragent.removeNamed': 'Remover {name}',
+                'group.audio.incomplete': 'Atualização de áudio incompleta',
+                'group.audio.failed': 'Não foi possível atualizar {count} página(s) de captura. As configurações foram salvas; pare e reative as fontes afetadas.',
+                'nav.menu': 'Menu de navegação',
+                'nav.language': 'Idioma',
                 'btn.hidecapture': '👁️ Ocultar página de captura',
                 'source.velora': 'Velora',
                 'source.vpzone': 'VPZONE',
@@ -16211,6 +16244,14 @@
                 'connection.failed': 'Falha na conexão'
             },
             es: {
+                'useragent.current': 'Configuración actual de la fuente',
+                'session.platformDefault': 'Predeterminado de la plataforma',
+                'useragent.remove': 'Eliminar',
+                'useragent.removeNamed': 'Eliminar {name}',
+                'group.audio.incomplete': 'Actualización de audio incompleta',
+                'group.audio.failed': 'No se pudieron actualizar {count} páginas de captura. Se guardó la configuración; detén y reactiva las fuentes afectadas.',
+                'nav.menu': 'Menú de navegación',
+                'nav.language': 'Idioma',
                 'btn.hidecapture': '👁️ Ocultar página de captura',
                 'source.velora': 'Velora',
                 'source.vpzone': 'VPZONE',
@@ -16236,6 +16277,14 @@
                 'connection.failed': 'Falló la conexión'
             },
             cs: {
+                'useragent.current': 'Aktuální nastavení zdroje',
+                'session.platformDefault': 'Výchozí nastavení platformy',
+                'useragent.remove': 'Odebrat',
+                'useragent.removeNamed': 'Odebrat {name}',
+                'group.audio.incomplete': 'Aktualizace zvuku není dokončena',
+                'group.audio.failed': 'Nepodařilo se aktualizovat {count} stránek zachytávání. Nastavení bylo uloženo; zastavte a znovu aktivujte dotčené zdroje.',
+                'nav.menu': 'Navigační nabídka',
+                'nav.language': 'Jazyk',
                 'btn.connectwebsocket': 'Připojit WebSocket',
                 'btn.closewebsocket': '⏹️ Zavřít WebSocket',
                 'btn.stopconnecting': '⏹️ Zastavit připojování',
@@ -16268,6 +16317,14 @@
                 'connection.failed': 'Připojení selhalo'
             },
             fr: {
+                'useragent.current': 'Paramètre actuel de la source',
+                'session.platformDefault': 'Valeur par défaut de la plateforme',
+                'useragent.remove': 'Supprimer',
+                'useragent.removeNamed': 'Supprimer {name}',
+                'group.audio.incomplete': 'Mise à jour audio incomplète',
+                'group.audio.failed': 'Impossible de mettre à jour {count} page(s) de capture. Les paramètres ont été enregistrés ; arrêtez et réactivez les sources concernées.',
+                'nav.menu': 'Menu de navigation',
+                'nav.language': 'Langue',
                 'btn.connectwebsocket': 'Connecter WebSocket',
                 'btn.closewebsocket': '⏹️ Fermer WebSocket',
                 'btn.stopconnecting': '⏹️ Arrêter la connexion',
@@ -16300,6 +16357,14 @@
                 'connection.failed': 'Échec de la connexion'
             },
             de: {
+                'useragent.current': 'Aktuelle Quelleneinstellung',
+                'session.platformDefault': 'Plattformstandard',
+                'useragent.remove': 'Entfernen',
+                'useragent.removeNamed': '{name} entfernen',
+                'group.audio.incomplete': 'Audioaktualisierung unvollständig',
+                'group.audio.failed': '{count} Aufnahmeseite(n) konnten nicht aktualisiert werden. Die Einstellungen wurden gespeichert; betroffene Quellen stoppen und erneut aktivieren.',
+                'nav.menu': 'Navigationsmenü',
+                'nav.language': 'Sprache',
                 'btn.connectwebsocket': 'WebSocket verbinden',
                 'btn.closewebsocket': '⏹️ WebSocket schließen',
                 'btn.stopconnecting': '⏹️ Verbindung stoppen',
@@ -16396,6 +16461,14 @@
                 'connection.failed': '接続に失敗しました'
             },
             'zh-CN': {
+                'useragent.current': '当前来源设置',
+                'session.platformDefault': '平台默认值',
+                'useragent.remove': '移除',
+                'useragent.removeNamed': '移除 {name}',
+                'group.audio.incomplete': '音频更新未完成',
+                'group.audio.failed': '无法更新 {count} 个捕获页面。设置已保存；请停止并重新激活受影响的来源。',
+                'nav.menu': '导航菜单',
+                'nav.language': '语言',
                 'btn.connectwebsocket': '连接 WebSocket',
                 'btn.closewebsocket': '⏹️ 关闭 WebSocket',
                 'btn.stopconnecting': '⏹️ 停止连接',
@@ -16428,6 +16501,14 @@
                 'connection.failed': '连接失败'
             },
             'zh-TW': {
+                'useragent.current': '目前來源設定',
+                'session.platformDefault': '平台預設值',
+                'useragent.remove': '移除',
+                'useragent.removeNamed': '移除 {name}',
+                'group.audio.incomplete': '音訊更新未完成',
+                'group.audio.failed': '無法更新 {count} 個擷取頁面。設定已儲存；請停止並重新啟用受影響的來源。',
+                'nav.menu': '導覽選單',
+                'nav.language': '語言',
                 'btn.connectwebsocket': '連接 WebSocket',
                 'btn.closewebsocket': '⏹️ 關閉 WebSocket',
                 'btn.stopconnecting': '⏹️ 停止連接',
@@ -16524,6 +16605,14 @@
                 'connection.failed': 'Не удалось подключиться'
             },
             tr: {
+                'useragent.current': 'Geçerli kaynak ayarı',
+                'session.platformDefault': 'Platform varsayılanı',
+                'useragent.remove': 'Kaldır',
+                'useragent.removeNamed': '{name} kaldır',
+                'group.audio.incomplete': 'Ses güncellemesi tamamlanamadı',
+                'group.audio.failed': '{count} yakalama sayfası güncellenemedi. Ayarlar kaydedildi; etkilenen kaynakları durdurup yeniden etkinleştirin.',
+                'nav.menu': 'Gezinme menüsü',
+                'nav.language': 'Dil',
                 'btn.connectwebsocket': 'WebSocket bağlan',
                 'btn.closewebsocket': '⏹️ WebSocket kapat',
                 'btn.stopconnecting': '⏹️ Bağlanmayı durdur',
@@ -16556,6 +16645,14 @@
                 'connection.failed': 'Bağlantı başarısız'
             },
             uk: {
+                'useragent.current': 'Поточне налаштування джерела',
+                'session.platformDefault': 'Типове налаштування платформи',
+                'useragent.remove': 'Видалити',
+                'useragent.removeNamed': 'Видалити {name}',
+                'group.audio.incomplete': 'Оновлення звуку не завершено',
+                'group.audio.failed': 'Не вдалося оновити {count} сторінок захоплення. Налаштування збережено; зупиніть і знову активуйте відповідні джерела.',
+                'nav.menu': 'Меню навігації',
+                'nav.language': 'Мова',
                 'source.velora': 'Velora',
                 'source.vpzone': 'VPZONE',
                 'toast.missingusername': 'Бракує імені користувача',
@@ -17090,8 +17187,8 @@
                 "source.autoactivate": "เปิดใช้งานอัตโนมัติ",
                 "source.youtube.username": "ยูทูป",
                 "source.youtube.videoid": "วิดีโอ YouTube",
-                "source.twitch": "กระตุก",
-                "source.kick": "เตะ",
+                "source.twitch": "Twitch",
+                "source.kick": "Kick",
                 "source.velora": "เวโลรา",
                 "source.vpzone": "VPZONE",
                 "source.instagram": "อินสตาแกรมไลฟ์",
@@ -17365,6 +17462,10 @@
                 element.title = translate(element.getAttribute('data-i18n-title'));
             });
 
+            document.querySelectorAll('[data-i18n-aria-label]').forEach(element => {
+                element.setAttribute('aria-label', translate(element.getAttribute('data-i18n-aria-label')));
+            });
+
             // Update dynamically created content
             updateDynamicTranslations();
 
@@ -17543,20 +17644,35 @@
             });
         }
 
-        // Toggle mobile menu
-        function toggleMenu() {
-            const navList = document.querySelector('#main-navigation ul');
-            navList.classList.toggle('active');
+        function setNavigationMenuOpen(open) {
+            const navList = document.getElementById('navigation-links');
+            const toggle = document.querySelector('.menu-toggle');
+            navList.classList.toggle('active', open);
+            toggle.setAttribute('aria-expanded', String(open));
+            if (!open && navList.contains(document.activeElement) && window.matchMedia('(max-width: 1150px)').matches) {
+                toggle.focus();
+            }
         }
+
+        // Toggle compact navigation on smaller app windows.
+        function toggleMenu() {
+            setNavigationMenuOpen(!document.getElementById('navigation-links').classList.contains('active'));
+        }
+
+        document.getElementById('main-navigation').addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape' || event.isComposing) return;
+            if (!document.getElementById('navigation-links').classList.contains('active')) return;
+            event.preventDefault();
+            setNavigationMenuOpen(false);
+        });
 
         // Close mobile menu when clicking outside
         document.addEventListener('click', (e) => {
             const nav = document.getElementById('main-navigation');
-            const menuToggle = document.querySelector('.menu-toggle');
             const navList = document.querySelector('#main-navigation ul');
 
             if (!nav.contains(e.target) && navList.classList.contains('active')) {
-                navList.classList.remove('active');
+                setNavigationMenuOpen(false);
             }
         });
 
@@ -17575,8 +17691,7 @@
                     if (page) {
                         showPage(page);
                         // Close mobile menu after navigation
-                        const navList = document.querySelector('#main-navigation ul');
-                        navList.classList.remove('active');
+                        setNavigationMenuOpen(false);
                     }
                 });
             });

@@ -208,6 +208,9 @@ unused Xvfb display with a temporary profile. It checks visible setup, saving se
 headless restart with those settings, and cleanup after display failure. Set
 `SSAPP_TEST_ELECTRON=/path/to/electron` to select a Linux Electron binary for a shared
 checkout. The temporary profile and logs are retained at the path printed by the test.
+To test the actual installed AppImage or extracted executable instead of source Electron,
+set `SSAPP_TEST_APP=/absolute/path/to/app`. That mode uses the packaged assets and exercises
+the same visible setup, saved settings, hidden restart, and display-loss cleanup.
 
 The hidden-capture diagnostic creates real Electron source windows through the normal IPC
 path and verifies that work continues while those windows are off screen. It is a repository

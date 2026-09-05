@@ -10,7 +10,7 @@
     "start2": "electron . --running-from-source",
     "start3": "electron . --running-from-source --filesource C:/Users/steve/Code/social_stream/",
     "start4": "electron . --running-from-source --filesource /Users/steveseguin/Code/social_stream/",
-    "start-linux": "electron . --running-from-source --filesource /home/ubuntu/code/ssn_app/resources/social_stream_fallback/main/",
+    "start-linux": "bash scripts/start-linux.sh",
     "update:fallback": "node scripts/updateSocialStreamFallback.js",
     "test:settings-loss": "node tests/electron/settings-loss-diagnostics.js",
     "test:settings-rootcause": "node tests/electron/settings-rootcause-diagnostics.js",
@@ -19,6 +19,7 @@
     "start:headless": "bash scripts/start-headless.sh",
     "test:headless-launcher": "bash tests/electron/headless-launcher-regression.sh",
     "test:headless-launcher:e2e": "node tests/electron/headless-launcher-e2e.js",
+    "test:navigation-accessibility:e2e": "node tests/electron/navigation-accessibility-e2e.js",
     "test:review-lifecycle:e2e": "node tests/electron/review-lifecycle-e2e.js",
     "test:review-recovery:e2e": "node tests/electron/review-recovery-e2e.js",
     "test:prompt-keyboard:e2e": "node tests/electron/prompt-keyboard-e2e.js",
@@ -191,6 +192,8 @@
     ],
     "asarUnpack": [
       "Kokoro-82M-ONNX/**/*",
+      "node_modules/sharp/**/*",
+      "node_modules/@img/**/*",
       "resources/social_stream_fallback/**/*"
     ],
     "mac": {
@@ -336,19 +339,18 @@
     "undici": "^7.5.0",
     "unzipper": "^0.12.3",
     "utf-8-validate": "^6.0.5",
-    "ws": "^8.18.1",
+    "ws": "^8.21.0",
     "yargs": "^17.7.2"
   },
   "overrides": {
     "brace-expansion@<1.1.18": "1.1.18",
     "brace-expansion@>=2.0.0 <2.1.4": "2.1.4",
     "brace-expansion@>=3.0.0 <5.0.9": "5.0.9",
-    "fast-uri": "3.1.4",
+    "fast-uri": "3.1.6",
+    "fflate": "^0.8.3",
+    "protobufjs": "7.6.6",
     "sharp": "$sharp",
-    "tar": "7.5.22",
-    "tiktok-live-connector": {
-      "protobufjs": "7.6.1"
-    }
+    "tar": "7.5.22"
   },
   "engines": {
     "node": ">=20.9.0",
