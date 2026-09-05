@@ -103,7 +103,26 @@ async function run() {
 				await page.keyboard.press('Escape');
 			}
 		}
-		console.log(`PASS source dialog focus, repeated open/close, Tab containment, IME, keyboard selection, save/reload, and ${locales.length} language choices (${packagedApp ? 'packaged' : 'source'}).`);
+		await page.selectOption('#language-select', 'en-us');
+		for (const [name, modalId, removeSelector] of [
+			['openUserAgentSettings', 'userAgentModal', '#customUserAgentsList button'],
+			['openSessionSettings', 'sessionModal', '.session-remove-btn'],
+		]) {
+			await open(name);
+			page.once('dialog', dialog => dialog.accept());
+			await page.locator(`#${modalId} ${removeSelector}`).first().press('Enter');
+			const modal = page.locator(`#${modalId}`);
+			assert.ok(await modal.evaluate(el => el.contains(document.activeElement)), 'Deleting a setting must retain dialog focus');
+			await page.keyboard.press('Escape');
+			assert.ok(!(await modal.isVisible()), 'Escape must still close the dialog after deletion');
+			assert.ok(await source.locator('.settings-btn').evaluate(el => el === document.activeElement));
+		}
+		await page.reload();
+		await page.waitForFunction(() => window.stateManager?.initialized, null, {polling: 100});
+		assert.deepStrictEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('customUserAgents'))), []);
+		assert.deepStrictEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('customSessions'))), []);
+		assert.strictEqual(await page.evaluate(id => stateManager.getSource(id).customSession, id), 'default-youtube');
+		console.log(`PASS source dialog focus, repeated open/close, Tab containment, IME, keyboard selection/deletion, save/reload, and ${locales.length} language choices (${packagedApp ? 'packaged' : 'source'}).`);
 
 	} finally {
 		await app.close();

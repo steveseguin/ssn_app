@@ -18352,6 +18352,7 @@
             savedUserAgents.splice(index, 1);
             localStorage.setItem('customUserAgents', JSON.stringify(savedUserAgents));
 
+            const restoreFocus = document.getElementById('customUserAgentsList').contains(document.activeElement);
             // Update the custom user agents list display
             updateCustomUserAgentsList();
 
@@ -18373,6 +18374,11 @@
                         option.dataset.customIndex = customIndex - 1;
                     }
                 }
+            }
+
+            if (restoreFocus && select) {
+                select.focus();
+                setVisibleFocusElement(select);
             }
 
             Toast.success('User Agent Removed', 'Custom user agent has been removed');
@@ -18658,8 +18664,16 @@
                 window.currentSelectedSession = source ? `default-${source.target}` : 'AUTO';
             }
 
+            const restoreFocus = document.getElementById('sessionsList').contains(document.activeElement);
             // Update the list
             updateSessionsList();
+            if (restoreFocus) {
+                const selectedButton = document.querySelector('#sessionsList button[aria-pressed="true"]');
+                if (selectedButton) {
+                    selectedButton.focus();
+                    setVisibleFocusElement(selectedButton);
+                }
+            }
 
             Toast.success('Session Removed', `Removed session "${sessionName}"`);
         }

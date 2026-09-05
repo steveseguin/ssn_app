@@ -187,7 +187,8 @@ libvips and the speech worker fails even though speech works from source. The ex
 Open a source's settings button and choose User Agent Settings or Browser Session Settings.
 Tab and Shift+Tab stay inside the dialog. Use Enter or Space to select a browser session;
 Save applies that choice. Escape or Cancel closes the dialog and returns focus to the source's
-settings button. Escape used during input-method composition does not close it.
+settings button. Removing a saved entry returns focus to the remaining selection control, so
+Escape continues to work. Escape used during input-method composition does not close the dialog.
 
 Dialog titles and the custom-input labels follow the app language. Some other text in these
 dialogs is still English. Validate with an actual screen reader before claiming full screen-reader

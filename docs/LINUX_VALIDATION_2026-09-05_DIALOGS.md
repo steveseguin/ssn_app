@@ -72,3 +72,30 @@ Native Wayland testing uses headless Weston with the Pixman renderer; X11 uses X
 disabled. These are real Electron workflows, but do not establish physical GPU, desktop tray,
 GNOME/KDE, screen-reader, ARM, authenticated live-platform, or Windows/macOS compatibility.
 Those coverage gaps from the earlier reports remain. No release, tag, or upload was performed.
+
+## Post-sync deletion review
+
+After pulling the latest Social Stream beta changes, an additional real-app workflow exposed
+lost focus when removing a saved user agent or browser session. The confirmation was accepted,
+but removing the focused button left `document.activeElement` on `BODY`. Escape then failed to
+close the still-visible settings dialog. This affected both settings dialogs.
+
+Deletion now returns keyboard focus to the user-agent selector or the selected browser-session
+button, only when focus was in the list being rebuilt. The existing regression now accepts the
+real confirmation dialogs, verifies focus and Escape, reloads the app, and checks that the
+removed entries stay removed and a deleted session falls back to the platform default.
+
+The synced-source run also passed the headless setup/save/restart/display-loss workflow, MCP
+app-window interaction and dialogs, and all 20 hidden-capture checks. The hidden fixture delivered
+315 messages overall, including 180 while hidden and 45 with no compositor frames. A separate
+Linux MCP shutdown check received a real initialization response, sent SIGTERM to the launcher,
+and verified that none of its four child processes remained alive afterward; no shutdown fix
+was needed.
+
+The post-sync Linux AppImage build, direct AppImage deletion workflow, and full extracted-package
+gate all passed, including offline MCP discovery, headless persistence, MCP control/recovery,
+14-language navigation/dialog checks, and two real speech outputs using one model load.
+The post-sync build and package-gate logs are saved separately under
+`/home/ubuntu/code/ssapp-linux-validation-20260905-pass4/`. Earlier validation results above refer
+to the preceding build. The remaining platform, screen-reader, translation, and reproducible-install
+limitations still apply; these checks do not establish that every live-platform workflow works.
