@@ -196,3 +196,14 @@ support; the automated Linux check verifies keyboard behavior and accessible mar
 
 Run `npm run test:source-dialog-accessibility:e2e` under Xvfb for this workflow alone, or
 `npm run test:linux-package -- /absolute/path/to/app.AppImage` for the complete package gate.
+
+## Moving saved browser settings
+
+Settings exports now include the reusable custom browser-session and user-agent lists. Import
+restores these definitions alongside the source configuration. Browser-session definitions are
+names and metadata; they do not transfer login cookies. Sign into the accounts again on a new
+machine. Older backup files omitted these lists and cannot recreate definitions they never saved.
+
+Malformed definition lists are rejected before import changes the profile. As with other imports,
+the previous profile settings are saved to `settings-before-import.data` before a valid import.
+The Linux package gate also tests export/restore and repeated capture-page crash recovery.

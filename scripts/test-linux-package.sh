@@ -24,7 +24,7 @@ cd "$REPO_ROOT"
 
 npm run test:mcp-launch:e2e
 npm run test:headless-launcher:e2e
-for test_script in test:mcp-control:e2e test:mcp-transport:e2e test:navigation-accessibility:e2e test:source-dialog-accessibility:e2e test:tts; do
+for test_script in test:mcp-control:e2e test:mcp-transport:e2e test:navigation-accessibility:e2e test:source-dialog-accessibility:e2e test:review-recovery:e2e test:tts; do
 	xvfb-run -a -s '-screen 0 1920x1080x24 -extension GLX -nolisten tcp' npm run "$test_script"
 done
 echo "Linux packaged-app validation passed."

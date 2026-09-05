@@ -7,6 +7,8 @@ const SETTINGS_BACKUP_VERSION = 1;
 
 const LOCAL_STORAGE_SETTING_KEYS = [
 	'socialStreamState',
+	'customSessions',
+	'customUserAgents',
 	'settings',
 	'betaMode',
 	'youtubeAutoAdd',
@@ -84,6 +86,18 @@ function normalizeSettingsBackupPayload(input) {
 
 	const cachedState = copyRecognizedCachedStateFields(input);
 	const localStorage = normalizeLocalStoragePayload(input.localStorage);
+	// Reusable definitions are separate from source settings; reject broken libraries before import.
+	for (const [key, field] of [['customSessions', 'name'], ['customUserAgents', 'value']]) {
+		if (!hasOwn(localStorage, key)) continue;
+		let entries;
+		try { entries = JSON.parse(localStorage[key]); } catch (_) {
+			throw new Error(`Invalid ${key} JSON in settings backup`);
+		}
+		if (!Array.isArray(entries) || entries.some(entry => !isPlainObject(entry)
+			|| typeof entry[field] !== 'string' || !entry[field].trim())) {
+			throw new Error(`Invalid ${key}: expected a list of definitions with ${field}`);
+		}
+	}
 	// Validate nested serialized data before the importer touches the current profile.
 	for (const key of ['socialStreamState', 'settings']) {
 		if (!hasOwn(localStorage, key)) continue;
