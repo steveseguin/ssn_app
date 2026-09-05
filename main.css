@@ -1633,6 +1633,9 @@ button.group-control {
 }
 
 .beta-toggle {
+  max-width: 100%;
+  box-sizing: border-box;
+  flex-wrap: wrap;
   display: flex;
   float: right;
   align-items: center;
@@ -2129,6 +2132,8 @@ to {
 }
 
 .control-panel-left {
+  min-width: 0;
+  flex-wrap: wrap;
   display: flex !important;
   align-items: center !important;
   gap: 24px !important;
@@ -2136,6 +2141,9 @@ to {
 }
 
 .control-panel .mode-selector {
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
   display: inline-flex !important;
   align-items: center !important;
   gap: 12px !important;
@@ -2208,6 +2216,10 @@ to {
 }
 
 .mode-options {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  flex-wrap: wrap;
   display: flex;
   background: rgba(0, 0, 0, 0.2);
   border-radius: 6px;

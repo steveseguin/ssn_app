@@ -21,6 +21,7 @@
     "test:headless-launcher:e2e": "node tests/electron/headless-launcher-e2e.js",
     "test:source-dialog-accessibility:e2e": "node tests/electron/source-dialog-accessibility-e2e.js",
     "test:navigation-accessibility:e2e": "node tests/electron/navigation-accessibility-e2e.js",
+    "test:linux-practical:e2e": "node tests/electron/linux-practical-e2e.js",
     "test:review-lifecycle:e2e": "node tests/electron/review-lifecycle-e2e.js",
     "test:review-recovery:e2e": "node tests/electron/review-recovery-e2e.js",
     "test:prompt-keyboard:e2e": "node tests/electron/prompt-keyboard-e2e.js",

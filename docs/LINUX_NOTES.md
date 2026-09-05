@@ -207,3 +207,21 @@ machine. Older backup files omitted these lists and cannot recreate definitions 
 Malformed definition lists are rejected before import changes the profile. As with other imports,
 the previous profile settings are saved to `settings-before-import.data` before a valid import.
 The Linux package gate also tests export/restore and repeated capture-page crash recovery.
+
+## Arch / AUR validation
+
+The published `socialstreamninja` 0.4.18-2 recipe was reproduced in a clean Arch container:
+it built and installed, but launch failed because required shared libraries were missing.
+The checked-in 0.4.18-3 recipe makes GTK3, NSS, ALSA, CUPS, and Mesa runtime dependencies.
+FUSE is unnecessary for this package because it installs extracted AppImage contents.
+`.SRCINFO` was regenerated with `makepkg --printsrcinfo`. On a minimal installation, the optional
+`noto-fonts` and `noto-fonts-emoji` packages provide normal text and emoji icons; both were checked
+in the running app. CJK fonts are also recommended for those languages, but were not tested here.
+
+For the headless launcher on Arch, install `xorg-server-xvfb` and `xorg-xdpyinfo`, then set
+`SSAPP_BINARY=/usr/bin/socialstreamninja`. The integration tests additionally use `xorg-xauth`
+and `xorg-xwininfo`; these are test tools rather than app dependencies.
+
+See [practical Linux validation](LINUX_PRACTICAL_2026-09-05.md) for real installation,
+upgrade/reinstall, browser, window, screenshot, and long-session results. Updating this Git
+repository does not publish the corrected recipe to AUR.
