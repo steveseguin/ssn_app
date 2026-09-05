@@ -30,7 +30,11 @@ every desktop, GPU or streaming account.
 | Arch GUI before upgrade, after upgrade and after reinstall | Six launch/quit cycles and 18 source start/stop cycles passed, including minimize/restore and HTTPS in a real source window |
 
 Arch screenshots cover the dashboard, compact layout, active source and public HTTPS page.
-The current AppImage is the same binary validated in the practical report; a follow-up 0.4.24 build will validate the inspection fix described below.
+The initial matrix used the same 0.4.23 AppImage as the practical report. A new 0.4.24 AppImage
+was then built from Social Stream beta to validate the inspection fix described below. Its full
+packaged-app gate passed again, including headless/MCP launch and transport, control API,
+keyboard/localization, recovery/import/export and two real TTS syntheses. The saved artifact
+has SHA-256 `63517f61e363ef6d8f6cc5a899729e0589b67342a99a51755df7a5a1dafbdb15`.
 
 ## MCP page-control findings
 
@@ -47,7 +51,10 @@ while two diagnostic repeats passed. Inspection awaited every frame without a de
 0.4.24 now allows two seconds per frame and ten seconds overall, skipping unresponsive subframes.
 An unavailable main page returns `SOURCE_PAGE_UNAVAILABLE` rather than an empty success. The
 existing real fixture continuously navigates an iframe; the test now also bounds inspection time.
-Two complete runs passed after bounding the waits. The checked-in control skill documents the
+Four complete runs passed after bounding the waits: three source runs and one using the
+0.4.24 packaged executable. The final source and packaged runs include the timing assertion.
+A further packaged GUI run passed one launch/quit and three source start/stop cycles, with
+screenshots and saved-source retention. The checked-in control skill documents the
 minimum version and retry behavior. This fixes an unbounded wait; it does not prove that every
 cause of delayed renderer execution has been eliminated.
 
