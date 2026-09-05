@@ -1167,6 +1167,16 @@ async function importSettingsBackupWithDialog() {
         });
         if (confirmResult.response !== 0) return null;
 
+        await flushPendingStorageSaveForSettingsBackup();
+        const previousLocalSettings = await collectMainWindowSettingsLocalStorage();
+        if (!Object.keys(previousLocalSettings).length) {
+            throw new Error('Could not read current app settings. Import canceled to preserve your profile.');
+        }
+        const rollbackPath = path.join(app.getPath('userData'), 'settings-before-import.data');
+        const rollbackTempPath = `${rollbackPath}.tmp`;
+        writeSettingsBackupFile(rollbackTempPath, cachedState, previousLocalSettings);
+        fs.renameSync(rollbackTempPath, rollbackPath);
+
         const cachedStateResult = applyImportedCachedSettings(imported.cachedState);
         const restoredLocalStorageCount = await applyImportedSettingsLocalStorage(imported.localStorage);
 
@@ -1188,7 +1198,7 @@ async function importSettingsBackupWithDialog() {
             buttons: ['OK'],
             title: 'Settings Imported',
             message: 'Settings were imported and the app window is reloading.',
-            detail: `${cachedStateResult.settingsCount} Social Stream setting key${cachedStateResult.settingsCount === 1 ? '' : 's'} restored.${restoredLocalStorageCount ? `\n${restoredLocalStorageCount} app setting key${restoredLocalStorageCount === 1 ? '' : 's'} restored.` : ''}`
+            detail: `${cachedStateResult.settingsCount} Social Stream setting key${cachedStateResult.settingsCount === 1 ? '' : 's'} restored.${restoredLocalStorageCount ? `\n${restoredLocalStorageCount} app setting key${restoredLocalStorageCount === 1 ? '' : 's'} restored.` : ''}\n\nPrevious settings saved to:\n${rollbackPath}`
         });
 
         return {
@@ -3652,6 +3662,25 @@ function executeJavaScriptQuietly(webContents, script, label, userGesture) {
 
 app.on('render-process-gone', (_event, webContents, details) => {
     const reason = details && details.reason ? String(details.reason) : 'unknown';
+    if (reason !== 'clean-exit') {
+        for (const [tabID, view] of Object.entries(browserViews || {})) {
+            if (!view || view.webContents !== webContents) continue;
+            const notify = (crashed) => {
+                if (browserViews[tabID] !== view || !mainWindow || mainWindow.isDestroyed()) return;
+                mainWindow.webContents.send('source-renderer-state', {
+                    tabID: Number(tabID), sourceId: view.args?.sourceId || view.sourceId || null, crashed
+                });
+            };
+            notify(true);
+            if (!view.__ssappCrashReloadPending) {
+                view.__ssappCrashReloadPending = true;
+                webContents.once('did-finish-load', () => {
+                    view.__ssappCrashReloadPending = false;
+                    notify(false);
+                });
+            }
+        }
+    }
     if (!isStabilityCrashReason(reason)) return;
     let crashedUrl = null;
     try {
@@ -14954,14 +14983,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     }
 
-    function clearCacheForDomainSession(url) {
-        const domain = getPrimaryDomain(url);
-        const sess = getOrCreatePersistentSession(domain);
-        sess.clearCache().then(() => {
-            log(`Cache cleared for ${domain} of this session`);
-        });
-    }
-
     ipcMain.handle('clearWindowCache', async (event, windowId) => {
         try {
 
@@ -14997,104 +15018,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
     });
 
     async function clearDataForDomain(webContentsInstance) {
-        const ses = webContentsInstance.session;
         try {
-            const url = webContentsInstance.getURL();
-            const {
-                protocol,
-                hostname
-            } = new URL(url);
-            log(`Starting to clear data for: ${url}`);
-
-            // Get the base domain (e.g., 'youtube.com' from 'www.youtube.com')
-            const baseDomain = hostname.split('.').slice(-2).join('.');
-
-            // Clear all storage types for the specific domain and its subdomains
-            await ses.clearStorageData({
-                origin: `${protocol}//*.${baseDomain}`,
-                storages: [
-                    'appcache',
-                    'cookies',
-                    'filesystem',
-                    'indexdb',
-                    'localstorage',
-                    'shadercache',
-                    'websql',
-                    'serviceworkers',
-                    'cachestorage',
-                ],
-            });
-            log('Domain-specific storage cleared');
-
-            // Clear cookies for the specific domain and its subdomains
-            const cookies = await ses.cookies.get({
-                domain: baseDomain
-            });
-            for (const cookie of cookies) {
-                await ses.cookies.remove(`${protocol}//${cookie.domain}`, cookie.name);
+            const parsed = new URL(webContentsInstance.getURL());
+            if (!['http:', 'https:'].includes(parsed.protocol)) {
+                throw new Error('Cache clearing requires an HTTP or HTTPS source.');
             }
-            log('Domain-specific cookies cleared');
-
-            // Inject JavaScript to clear client-side storage
-            await webContentsInstance.executeJavaScript(`
-		  // Clear localStorage and sessionStorage
-		  localStorage.clear();
-		  sessionStorage.clear();
-		  
-		  // Clear cookies (limited to those accessible by JavaScript)
-		  document.cookie.split(";").forEach(function(c) { 
-			document.cookie = c.replace(/^ +/, "").replace(/=.*/, "=;expires=" + new Date().toUTCString() + ";path=/"); 
-		  });
-		  
-		  // Clear IndexedDB
-		  if (window.indexedDB) {
-			indexedDB.databases().then(dbs => {
-			  dbs.forEach(db => indexedDB.deleteDatabase(db.name));
-			});
-		  }
-		  
-		  // Clear Cache Storage
-		  if (window.caches) {
-			caches.keys().then(names => {
-			  names.forEach(name => caches.delete(name));
-			});
-		  }
-		  
-		  // Unregister Service Workers
-		  if (navigator.serviceWorker) {
-			navigator.serviceWorker.getRegistrations().then(registrations => {
-			  registrations.forEach(registration => registration.unregister());
-			});
-		  }
-
-		  console.log('Client-side storage and accessible cookies cleared');
-		`);
-            log('Client-side storage cleared');
-
-            // Clear cache for the specific domain
-            await ses.clearCache({
-                origin: `${protocol}//*.${baseDomain}`
+            // Chromium handles registrable cookie domains (including co.uk), while
+            // the remaining storage is scoped to this exact origin and browser session.
+            await webContentsInstance.session.clearData({
+                origins: [parsed.origin],
+                originMatchingMode: 'origin-in-all-contexts',
+                dataTypes: ['cache', 'cookies', 'fileSystems', 'indexedDB', 'localStorage', 'serviceWorkers', 'webSQL', 'backgroundFetch']
             });
-            log('Domain-specific cache cleared');
-
-            // Clear auth cache for the specific domain and its subdomains
-            if (typeof ses.clearAuthCache === 'function') {
-                await ses.clearAuthCache({
-                    type: 'password',
-                    origin: `${protocol}//*.${baseDomain}`
-                });
-                log('Domain-specific auth cache cleared');
-            }
-            try {
-                clearCacheForDomainSession(url)
-            } catch (e) {
-                console.error(e);
-            }
-
-            log(`All possible data cleared for ${baseDomain} and its subdomains`);
+            await webContentsInstance.executeJavaScript('sessionStorage.clear();');
             return true;
         } catch (error) {
-            console.error(`Error clearing data:`, error);
+            console.error('Error clearing source data:', error);
             return false;
         }
     }
@@ -19391,7 +19330,7 @@ function createMenu() {
                                     defaultId: 0,
                                     cancelId: 1,
                                     title: 'Local AI / Automation',
-                                    message: menuItem.checked ? 'Local control API enabled.' : 'Local control API disabled.',
+                                    message: menuItem.checked ? 'Local control API will be enabled after restart.' : 'Local control API will be disabled after restart.',
                                     detail: 'Restart Social Stream Ninja to apply this change.'
                                 });
                                 if (result.response === 0) {
@@ -19437,7 +19376,10 @@ function createMenu() {
                                     buttons: ['OK'],
                                     title: 'MCP Setup Copied',
                                     message: 'The MCP server configuration was copied.',
-                                    detail: 'Paste it into your local AI tool\'s MCP settings. The downloaded app is the MCP command; Node and a source checkout are not required.'
+                                    detail: 'Paste it into your local AI tool\'s MCP settings. Keep SSApp running with the Local Control API enabled; the MCP adapter connects to it.'
+                                        + (app.isPackaged
+                                            ? ' A separate Node installation or source checkout is not required.'
+                                            : ' This setup uses your current Electron installation and source checkout.')
                                 });
                             }
                         },

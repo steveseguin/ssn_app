@@ -978,59 +978,9 @@ class YouTubeStatusManager {
     }
 
     showGlobalSettingsModal() {
-        if (document.getElementById('ytGlobalSettingsModal')) return;
-        const modal = document.createElement('div');
-        modal.id = 'ytGlobalSettingsModal';
-        modal.className = 'modal';
-        modal.style.display = 'block';
-
-        const currentSettings = stateManager.state.global;
-
-        modal.innerHTML = `
-            <div class="modal-content">
-                <span class="yt-stream-close" onclick="this.closest('.modal').remove()">×</span>
-                <h2>YouTube Stream Sync Settings</h2>
-                <div style="margin: 20px 0;">
-                    <label style="display: block; margin-bottom: 15px;">
-                        <input type="checkbox" id="ytAutoAddToggle" ${currentSettings.youtubeAutoAdd ? 'checked' : ''}>
-                        Automatically add new live streams to groups
-                    </label>
-                    <label style="display: block; margin-bottom: 15px;">
-                        <input type="checkbox" id="ytAutoCleanupToggle" ${currentSettings.youtubeAutoCleanup ? 'checked' : ''}>
-                        Automatically remove ended streams from groups
-                    </label>
-                    <label style="display: block;">
-                        Check Interval:
-                        <select id="ytCheckIntervalSelect" style="margin-left: 10px;">
-                            <option value="60000" ${currentSettings.youtubeCheckInterval === 60000 ? 'selected' : ''}>1 minute</option>
-                            <option value="180000" ${currentSettings.youtubeCheckInterval === 180000 ? 'selected' : ''}>3 minutes</option>
-                            <option value="300000" ${currentSettings.youtubeCheckInterval === 300000 ? 'selected' : ''}>5 minutes</option>
-                            <option value="600000" ${currentSettings.youtubeCheckInterval === 600000 ? 'selected' : ''}>10 minutes</option>
-                        </select>
-                    </label>
-                </div>
-                <div style="text-align: right;">
-                    <button class="yt-stream-button primary" onclick="YouTubeStatusManager.instance.saveGlobalSettings(this.closest('.modal'))">Save Settings</button>
-                    <button class="yt-stream-button secondary" onclick="this.closest('.modal').remove()">Cancel</button>
-                </div>
-            </div>`;
-        document.body.appendChild(modal);
+        Toast.info("YouTube Auto-Discovery", "Use Auto-activate on each YouTube group to discover live streams. Global sync and cleanup settings are no longer supported.");
     }
 
-    saveGlobalSettings(modalElement) {
-        const autoAdd = modalElement.querySelector('#ytAutoAddToggle').checked;
-        const autoCleanup = modalElement.querySelector('#ytAutoCleanupToggle').checked;
-        const interval = parseInt(modalElement.querySelector('#ytCheckIntervalSelect').value);
-
-        stateManager.updateGlobal({
-            youtubeAutoAdd: autoAdd,
-            youtubeAutoCleanup: autoCleanup,
-            youtubeCheckInterval: interval
-        });
-
-        Toast.success("Settings Saved", "YouTube sync settings updated.");
-        modalElement.remove();
-    }
 }
 YouTubeStatusManager.instance = null;
 

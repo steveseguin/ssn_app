@@ -107,16 +107,16 @@
             <li><a href="#" data-page="sessions">🧑‍🤝‍🧑 Sessions</a></li>
         </ul>
         <div class="language-selector">
-            <select id="language-select" onchange="changeLanguage(this.value)">
-                <option value="en-us">🇺🇸 American</option>
-                <option value="en-uk">🇬🇧 English</option>
-                <option value="pt-br">🇧🇷 Portuguese - BR</option>
+            <select id="language-select" aria-label="Language" onchange="changeLanguage(this.value)">
+                <option value="en-us">🇺🇸 English (US)</option>
+                <option value="en-uk">🇬🇧 English (UK)</option>
+                <option value="pt-br">🇧🇷 Português (Brasil)</option>
                 <option value="ar" title="Arabic">العربية</option>
                 <option value="es">🇪🇸 Español</option>
                 <option value="fr">🇫🇷 Français</option>
                 <option value="de">🇩🇪 Deutsch</option>
                 <option value="cs">🇨🇿 Čeština</option>
-                <option value="th">🇹🇭 Thai</option>
+                <option value="th">🇹🇭 ไทย</option>
                 <option value="zh-CN">🇨🇳 简体中文</option>
                 <option value="zh-TW">🇹🇼 繁體中文</option>
                 <option value="tr">🇹🇷 Türkçe</option>
@@ -7682,13 +7682,16 @@
             ele.textContent = idsToClear.length > 1 ? 'Clearing All...' : 'Clearing...';
             ele.disabled = true;
 
-            for (const vid of idsToClear) {
+            let clearedCount = 0;
+            for (const vid of [...new Set(idsToClear)]) {
                 if (ipcRenderer) {
                     try {
                         const result = await ipcRenderer.invoke('clearWindowCache', vid);
-                        if (!result.success) {
-                            console.error('Failed to clear cache for', vid, result.error);
+                        if (!result?.success) {
+                            console.error('Failed to clear cache for', vid, result?.error);
                             Toast.error("Error", `Cache clear failed for source window ${vid}.`);
+                        } else {
+                            clearedCount++;
                         }
                     } catch (error) {
                         console.error('Error invoking clearWindowCache for', vid, error);
@@ -7696,7 +7699,12 @@
                     }
                 }
             }
-            Toast.success("Success", `Cache cleared for ${idsToClear.length} source(s).`);
+            const requestedCount = new Set(idsToClear).size;
+            if (clearedCount === requestedCount) {
+                Toast.success("Success", `Cache cleared for ${clearedCount} source(s).`);
+            } else {
+                Toast.warning("Cache Clear Incomplete", `Cleared ${clearedCount} of ${requestedCount} source(s). Retry the failed sources.`);
+            }
             ele.textContent = buttonText;
             ele.disabled = false;
         }
@@ -7840,7 +7848,7 @@
             }
 
             const controllableGlobalSettings = new Set([
-                'betaMode', 'youtubeAutoAdd', 'youtubeAutoCleanup', 'youtubeCheckInterval',
+                'betaMode',
                 'forceTikTokClassic', 'preferTikTokLegacy', 'lastTikTokMode'
             ]);
             const controllableSourceSettings = new Set([
@@ -7848,7 +7856,7 @@
                 'autoActivate', 'replyOnly', 'accountRole', 'customSession'
             ]);
             const booleanGlobalSettings = new Set([
-                'betaMode', 'youtubeAutoAdd', 'youtubeAutoCleanup', 'forceTikTokClassic', 'preferTikTokLegacy'
+                'betaMode', 'forceTikTokClassic', 'preferTikTokLegacy'
             ]);
             const booleanSourceSettings = new Set(['isVisible', 'isMuted', 'autoActivate', 'replyOnly']);
             const inactiveOnlySourceSettings = new Set([
@@ -7857,9 +7865,6 @@
             ]);
             const settingDefinitions = Object.freeze({
                 betaMode: { type: 'boolean', default: false, restartRequired: false, sensitive: false },
-                youtubeAutoAdd: { type: 'boolean', default: false, restartRequired: false, sensitive: false },
-                youtubeAutoCleanup: { type: 'boolean', default: false, restartRequired: false, sensitive: false },
-                youtubeCheckInterval: { type: 'integer', default: 300000, minimum: 30000, maximum: 86400000, restartRequired: false, sensitive: false },
                 forceTikTokClassic: { type: 'boolean', default: false, restartRequired: false, sensitive: false },
                 preferTikTokLegacy: { type: 'boolean', default: false, restartRequired: false, sensitive: false },
                 lastTikTokMode: { type: 'string', enum: ['classic', 'tiktok-websocket', 'tiktok-legacy'], default: 'tiktok-legacy', restartRequired: false, sensitive: false }
@@ -7986,13 +7991,6 @@
                         return err('INVALID_TARGET', `${key} must be a boolean.`);
                     }
                     updates[key] = settingValue;
-                }
-                if ('youtubeCheckInterval' in updates) {
-                    const interval = Number(updates.youtubeCheckInterval);
-                    if (!Number.isFinite(interval) || interval < 30000 || interval > 86400000) {
-                        return err('INVALID_TARGET', 'youtubeCheckInterval must be from 30000 through 86400000 milliseconds.');
-                    }
-                    updates.youtubeCheckInterval = Math.round(interval);
                 }
                 if ('lastTikTokMode' in updates && !['classic', 'tiktok-websocket', 'tiktok-legacy'].includes(updates.lastTikTokMode)) {
                     return err('INVALID_TARGET', 'Unsupported TikTok mode.');
@@ -9160,7 +9158,7 @@
                 fallbackState.pendingAutoRetry = false;
 
                 const latestSource = stateManager.getSource(sourceId);
-                if (!latestSource || latestSource.status === 'active') {
+                if (latestSource !== source || latestSource.status === 'active') {
                     return;
                 }
 
@@ -9231,7 +9229,7 @@
                     windowId = await createClassicWindowFromSource(source, tabid);
                 }
 
-                if (pendingTikTokToken && !isPendingTikTokActivationCurrent(sourceId, pendingTikTokToken)) {
+                if (stateManager.getSource(sourceId) !== source || (pendingTikTokToken && !isPendingTikTokActivationCurrent(sourceId, pendingTikTokToken))) {
                     if (windowId && ipcRenderer && resolvedTarget === 'tiktok' && (normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')) {
                         const actualWssId = windowId > 900000 ? windowId - 900000 : windowId;
                         if (actualWssId) {
@@ -9241,15 +9239,16 @@
                                 console.warn('Error disconnecting canceled TikTok activation:', cancelError);
                             }
                         }
+                    } else if (windowId && ipcRenderer) {
+                        try {
+                            ipcRenderer.sendSync('closeWindow', { vid: windowId });
+                        } catch (cancelError) {
+                            console.warn('Error closing canceled activation:', cancelError);
+                        }
                     }
                     markPendingTikTokActivationComplete(sourceId, pendingTikTokToken);
-                    stateManager.updateSource(sourceId, {
-                        status: 'inactive',
-                        vid: null,
-                        wssId: null,
-                        tiktokWssId: null,
-                        activeConnectionMode: null
-                    });
+                    // Stop/delete already updated state; an older attempt must not overwrite
+                    // a replacement source or a newer activation of this source.
                     return { success: false, error: new Error('Activation canceled') };
                 }
 
@@ -9351,6 +9350,10 @@
                 return { success: false, error: new Error('Activation failed without window ID') };
             } catch (error) {
                 const fallbackInfo = resolveTikTokFallbackInfo(error);
+                if (stateManager.getSource(sourceId) !== source || (pendingTikTokToken && !isPendingTikTokActivationCurrent(sourceId, pendingTikTokToken))) {
+                    markPendingTikTokActivationComplete(sourceId, pendingTikTokToken);
+                    return { success: false, error: new Error('Activation canceled') };
+                }
                 if (pendingTikTokToken) {
                     markPendingTikTokActivationComplete(sourceId, pendingTikTokToken);
                 }
@@ -12579,6 +12582,8 @@
             });
 
             stateManager.on('sourceRemoved', ({ sourceId, source }) => {
+                cancelPendingTikTokActivation(sourceId);
+                cancelSourceNavigationRecovery(sourceId);
                 const element = document.querySelector(`[data-source-id="${sourceId}"]`);
                 element?.remove();
                 const tikTokWssId = getTikTokWssId(source);
@@ -13126,6 +13131,22 @@
                 const SOURCE_NAVIGATION_SUCCESS_MESSAGE_DELAY_MS = 4000;
                 const SOURCE_NAVIGATION_STABLE_RESET_MS = 30000;
                 const sourceNavigationRecoveries = new Map();
+
+                ipcRenderer.on('source-renderer-state', (_event, payload) => {
+                    const source = getSourceForWindowPayload(payload || {});
+                    if (!source || Number(source.vid) !== Number(payload.tabID)) return;
+                    const entry = document.querySelector(`[data-source-id="${source.id}"]`);
+                    if (payload.crashed) {
+                        cancelSourceNavigationRecovery(source.id);
+                        const message = 'The capture page crashed. Reload this source to reconnect.';
+                        stateManager.updateSource(source.id, { status: 'error', error: message });
+                        if (entry) updateConnectionStatus(entry, 'error', message);
+                    } else if (source.error === 'The capture page crashed. Reload this source to reconnect.') {
+                        const classic = (source.activeConnectionMode || source.connectionMode || 'classic') === 'classic';
+                        stateManager.updateSource(source.id, { status: classic ? 'active' : 'activating', error: null });
+                        if (entry) updateConnectionStatus(entry, classic ? 'connected' : 'connecting');
+                    }
+                });
 
                 function describeSourceChat(source) {
                     const channel = String(source?.username || source?.channel || '').trim();
@@ -17452,10 +17473,11 @@
             });
 
             // Update toggle labels
-            document.querySelectorAll('.toggle-label').forEach(label => {
-                if (label.textContent.includes('Auto-activate')) {
-                    label.textContent = translate('source.autoactivate');
-                }
+            document.querySelectorAll('.auto-activate-toggle').forEach(toggle => {
+                const text = translate('source.autoactivate');
+                const label = toggle.querySelector('.toggle-label');
+                if (label) label.textContent = text;
+                toggle.querySelector('input[data-state-key="autoActivate"]')?.setAttribute('aria-label', text);
             });
 
             // Update source buttons

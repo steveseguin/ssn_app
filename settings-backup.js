@@ -84,6 +84,43 @@ function normalizeSettingsBackupPayload(input) {
 
 	const cachedState = copyRecognizedCachedStateFields(input);
 	const localStorage = normalizeLocalStoragePayload(input.localStorage);
+	// Validate nested serialized data before the importer touches the current profile.
+	for (const key of ['socialStreamState', 'settings']) {
+		if (!hasOwn(localStorage, key)) continue;
+		let state;
+		try { state = JSON.parse(localStorage[key]); } catch (_) {
+			throw new Error(`Invalid ${key} JSON in settings backup`);
+		}
+		if (!isPlainObject(state)) throw new Error(`Invalid ${key}: expected an object`);
+		if (key === 'settings') {
+			for (const field of ['urls', 'groups']) {
+				if (hasOwn(state, field) && (!Array.isArray(state[field]) || state[field].some(item => !isPlainObject(item)))) {
+					throw new Error(`Invalid settings.${field}`);
+				}
+			}
+			continue;
+		}
+		for (const field of ['sources', 'groups']) {
+			if (!Array.isArray(state[field])) throw new Error(`Invalid socialStreamState.${field}`);
+			const ids = new Set();
+			for (const entry of state[field]) {
+				if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string' || !entry[0]
+					|| ids.has(entry[0]) || !isPlainObject(entry[1]) || typeof entry[1].target !== 'string' || !entry[1].target
+					|| (hasOwn(entry[1], 'id') && entry[1].id !== entry[0])) {
+					throw new Error(`Invalid socialStreamState.${field} entry`);
+				}
+				ids.add(entry[0]);
+				if (field === 'groups' && (!Array.isArray(entry[1].streams) || entry[1].streams.some(id => typeof id !== 'string'))) {
+					throw new Error('Invalid group streams in settings backup');
+				}
+			}
+		}
+		if (!isPlainObject(state.global)
+			|| (hasOwn(state.global, 'rootOrder') && (!Array.isArray(state.global.rootOrder) || state.global.rootOrder.some(id => typeof id !== 'string')))
+			|| (hasOwn(state.global, 'sessionBindings') && !isPlainObject(state.global.sessionBindings))) {
+			throw new Error('Invalid socialStreamState.global');
+		}
+	}
 
 	if (!Object.keys(cachedState).length && !Object.keys(localStorage).length) {
 		throw new Error('Settings file does not contain recognized Social Stream settings');

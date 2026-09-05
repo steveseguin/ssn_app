@@ -74,12 +74,12 @@ async function run() {
 		await launch(true);
 		const tree = execFileSync('xwininfo', ['-display', `:${display}`, '-root', '-tree'], { encoding: 'utf8' });
 		assert.match(tree, /Social Stream|SocialStream/i, 'Setup window missing from real X display');
-		await request('command', { action: 'updateSettings', value: { settings: { youtubeAutoCleanup: true } } });
+		await request('command', { action: 'updateSettings', value: { settings: { preferTikTokLegacy: true } } });
 		child.kill('SIGTERM');
 		await stopped(143);
 		await launch(false);
 		const settings = await request('command', { action: 'getSettings', value: {} });
-		assert.strictEqual(settings.payload.settings.youtubeAutoCleanup, true, 'Setup settings lost on restart');
+		assert.strictEqual(settings.payload.settings.preferTikTokLegacy, true, 'Setup settings lost on restart');
 		await delay(5000);
 		assert.strictEqual((await request('status')).app.mainWindowVisible, false);
 		const displayPid = Number(fs.readFileSync(`/tmp/.X${display}-lock`, 'utf8').trim());

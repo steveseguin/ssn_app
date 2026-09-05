@@ -61,7 +61,7 @@ jobs:
           # Download and compute checksum
           URL="https://github.com/steveseguin/social_stream/releases/download/${RELEASE_TAG}/socialstreamninja_linux_v${VERSION}_x86_64.AppImage"
           echo "Downloading AppImage from: $URL"
-          APPIMAGE="$(mktemp)"
+          APPIMAGE="$AUR_CURRENT_DIR/release.AppImage"
           if ! curl -fL --retry 3 --retry-delay 2 -o "$APPIMAGE" "$URL"; then
             rm -f "$APPIMAGE"
             echo "Linux AppImage is not available yet for $RELEASE_TAG"
@@ -83,18 +83,12 @@ jobs:
             exit 1
           fi
           CHECKSUM=$(sha256sum "$APPIMAGE" | cut -d' ' -f1)
-          rm -f "$APPIMAGE"
           echo "Computed SHA256: $CHECKSUM"
-
-          if [ "$VERSION" = "$CURRENT" ] && [ "$CHECKSUM" = "$CURRENT_CHECKSUM" ]; then
-            echo "AUR is already up to date for $VERSION with matching AppImage checksum"
-            exit 0
-          fi
 
           echo "Updating PKGBUILD to version $VERSION"
           if [ "$VERSION" = "$CURRENT" ]; then
             if [[ "$CURRENT_PKGREL" =~ ^[0-9]+$ ]]; then
-              PKGREL=$((CURRENT_PKGREL + 1))
+              PKGREL=$CURRENT_PKGREL
             else
               PKGREL=2
             fi
@@ -105,13 +99,20 @@ jobs:
           echo "New release version/checksum: $VERSION / $CHECKSUM"
           echo "New pkgrel: $PKGREL"
 
+          # Normalize before hashing: Windows line endings must not invalidate the package.
+          sed -i 's/\r$//' PKGBUILD socialstreamninja.desktop
+          DESKTOP_CHECKSUM=$(sha256sum socialstreamninja.desktop | cut -d' ' -f1)
+
           # Update pkgver
           sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
           sed -i "s/^pkgrel=.*/pkgrel=$PKGREL/" PKGBUILD
           sed -i "s/^_release_tag=.*/_release_tag=$RELEASE_TAG/" PKGBUILD
 
-          # Update sha256sums (first entry)
-          sed -i "s/^sha256sums=('[^']*'/sha256sums=('$CHECKSUM'/" PKGBUILD
+          # Hash both sources, including the desktop file shipped by this checkout.
+          sed -i "/^sha256sums=/,+1c\\sha256sums=('$CHECKSUM'\\n            '$DESKTOP_CHECKSUM')" PKGBUILD
+
+          # Reuse the already downloaded binary for makepkg's real source validation.
+          cp "$APPIMAGE" "socialstreamninja-$VERSION.AppImage"
 
           # Create non-root user for makepkg (required by makepkg)
           useradd -m builder
@@ -119,6 +120,20 @@ jobs:
 
           # Regenerate .SRCINFO
           su builder -c "makepkg --printsrcinfo > .SRCINFO"
+
+          # Packaging changes need an update even when the app binary is unchanged.
+          if cmp -s PKGBUILD "$AUR_CURRENT_DIR/PKGBUILD" &&
+             cmp -s socialstreamninja.desktop "$AUR_CURRENT_DIR/socialstreamninja.desktop" &&
+             cmp -s .SRCINFO "$AUR_CURRENT_DIR/.SRCINFO"; then
+            echo "AUR package files and metadata are already up to date"
+            exit 0
+          fi
+          if [ "$VERSION" = "$CURRENT" ]; then
+            PKGREL=$((PKGREL + 1))
+            sed -i "s/^pkgrel=.*/pkgrel=$PKGREL/" PKGBUILD
+            su builder -c "makepkg --printsrcinfo > .SRCINFO"
+          fi
+          su builder -c "makepkg --verifysource --noconfirm"
 
           echo "PKGBUILD updated successfully"
           cat PKGBUILD

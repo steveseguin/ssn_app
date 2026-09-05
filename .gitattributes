@@ -13,6 +13,9 @@
 *.xml text eol=lf
 *.txt text eol=lf
 *.sh text eol=lf
+PKGBUILD text eol=lf
+.SRCINFO text eol=lf
+*.desktop text eol=lf
 *.npmrc text eol=lf
 
 # Binary files

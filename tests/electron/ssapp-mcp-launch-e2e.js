@@ -83,7 +83,7 @@ async function run() {
 		})}\n`);
 		const initialized = await waitForResponse(responses, 1, child, stderr);
 		assert.strictEqual(initialized.result.serverInfo.name, 'social-stream-ninja');
-		assert.strictEqual(initialized.result.serverInfo.version, '1.2.0');
+		assert.strictEqual(initialized.result.serverInfo.version, '1.2.1');
 		assert.strictEqual(initialized.result.capabilities.tools.listChanged, false);
 		assert.match(initialized.result.instructions, /capabilities/i);
 		assert.match(initialized.result.instructions, /offline/i);

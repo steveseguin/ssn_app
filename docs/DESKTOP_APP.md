@@ -143,6 +143,10 @@ SSApp offers two intentionally different backup systems.
 
 **File > Settings Backup** exports or imports normal SSApp and Social Stream configuration. It is the smaller, safer choice when only settings need to move.
 
+Invalid source-list data is rejected before import. Before applying a valid import, SSApp
+saves the previous settings as `settings-before-import.data` in the current profile folder.
+The completion dialog shows its path; import that file to undo the most recent import.
+
 ### Advanced Full Session Transfer
 
 **File > Advanced Full Session Transfer** creates an encrypted archive of the complete application profile. It can include:
@@ -179,6 +183,9 @@ The **Preferences > Startup Flags** window exposes settings that must be applied
 - platform compatibility options.
 
 SSApp also tracks unclean startup failures. Repeated early crashes can automatically increase the GPU fallback level; stable sessions later ease that fallback. This is why a launch may report that stability mode was enabled even when the user did not manually change hardware acceleration.
+
+If a source's capture page crashes, its status changes to an error. Use that source's
+**Reload** button to reconnect; a successful Standard-mode page reload clears the crash error.
 
 Use **Help > Command Line Arguments** to view the launch options supported by the running version.
 

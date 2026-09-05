@@ -337,15 +337,14 @@ getSettings
 updateSettings
 ```
 
-The capabilities response lists the settings that the running version permits. API 1.3.0 currently advertises:
+The capabilities response lists the settings that the running version permits. SSApp 0.4.22 and newer advertise:
 
 - `betaMode`
-- `youtubeAutoAdd`
-- `youtubeAutoCleanup`
-- `youtubeCheckInterval`
 - `forceTikTokClassic`
 - `preferTikTokLegacy`
 - `lastTikTokMode`
+
+The retired global YouTube sync settings are rejected starting in SSApp 0.4.22. Use each YouTube group's Auto-activate setting for discovery. Older saved preferences are retained for backup compatibility.
 
 Example:
 
@@ -354,7 +353,7 @@ Example:
   "action": "updateSettings",
   "value": {
     "settings": {
-      "youtubeAutoCleanup": true
+      "preferTikTokLegacy": true
     }
   }
 }
