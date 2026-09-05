@@ -16,6 +16,8 @@ const MAX_TEXT_CHARS = 20000;
 const MAX_FILL_CHARS = 2000;
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024;
 const SCREENSHOT_TIMEOUT_MS = 10000;
+const INSPECTION_TIMEOUT_MS = 10000;
+const FRAME_INSPECTION_TIMEOUT_MS = 2000;
 const ALLOWED_KEYS = new Set([
 	'Enter', 'Escape', 'Tab', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 	'Home', 'End', 'PageUp', 'PageDown',
@@ -586,14 +588,17 @@ class SourceObservationService {
 		const frameResults = [];
 		const elements = [];
 		const expiresAtMs = Date.now() + REF_TTL_MS;
+		const deadline = Date.now() + INSPECTION_TIMEOUT_MS;
 		for (let frameIndex = 0; frameIndex < frames.length && elements.length < maxElements; frameIndex += 1) {
 			const frame = frames[frameIndex];
+			const remainingMs = deadline - Date.now();
+			if (remainingMs <= 0) break;
 			try {
-				const snapshot = await frame.executeJavaScript(`${SNAPSHOT_SCRIPT}(${JSON.stringify({
+				const snapshot = await withTimeout(frame.executeJavaScript(`${SNAPSHOT_SCRIPT}(${JSON.stringify({
 					maxElements: maxElements - elements.length,
 					maxTextChars: Math.max(100, Math.floor(maxTextChars / Math.max(1, frames.length))),
 					elementOrder,
-				})})`, true);
+				})})`, true), Math.min(FRAME_INSPECTION_TIMEOUT_MS, remainingMs), 'Page frame inspection timed out.');
 				frameResults.push({
 					frameIndex,
 					title: String(snapshot.title || '').slice(0, 500),
@@ -620,7 +625,11 @@ class SourceObservationService {
 					});
 					elements.push({ ref, frameIndex, ...publicItem });
 				}
-			} catch (_) { }
+			} catch (error) {
+				// A navigating subframe must not block inspection of the usable page.
+				if (frameIndex === 0) return controlError('SOURCE_PAGE_UNAVAILABLE', 'The source page could not be inspected. Wait for it to load and retry.');
+				if (error?.code === 'SSAPP_TIMEOUT') console.warn('[SourceObservation] Skipped an unresponsive frame during page inspection.');
+			}
 		}
 		this.pruneRefs();
 		const mainFrame = frameResults[0] || {};

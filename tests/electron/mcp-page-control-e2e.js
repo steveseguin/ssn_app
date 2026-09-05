@@ -13,7 +13,7 @@ const { pathToFileURL } = require('url');
 const { linuxLaunchArgs } = require('./helpers/electron-launch');
 const { SourceObservationService } = require('../../resources/source-observation-service');
 
-const electronPath = require('electron');
+const electronPath = process.env.SSAPP_TEST_APP || require('electron');
 const repoRoot = path.resolve(__dirname, '..', '..');
 const socialStreamRoot = path.resolve(repoRoot, '..', 'social_stream');
 const socialStreamUrl = pathToFileURL(socialStreamRoot + path.sep).href;
@@ -129,7 +129,8 @@ async function waitForMcpApp(mcp, timeoutMs = 60000) {
 function startApp(port, options = {}) {
 	const apiEnabled = options.apiEnabled !== false;
 	const args = [
-		'.', '--running-from-source', '--multiinstance', '--filesource', socialStreamUrl,
+		...(process.env.SSAPP_TEST_APP ? [] : ['.', '--running-from-source']),
+		'--multiinstance', '--filesource', socialStreamUrl,
 		...(apiEnabled ? ['--ssapp-control-api', `--ssapp-control-port=${port}`] : []),
 		'--no-hwa', ...linuxLaunchArgs(),
 	];
@@ -219,6 +220,9 @@ async function createFixtureServer() {
       chrome.runtime.sendMessage({ wssStatus: { platform: 'qa', status: 'error', reconnecting: true,
         message: 'Failed at https://errors.example.test/token/${controlErrorPathSecret}/chat?secret=${controlErrorQuerySecret}' } });
       chrome.runtime.sendMessage({ wssStatus: { platform: 'qa', status: 'connected', error: null, reconnecting: false } });
+      // A successful connection clears the error; use a subsequent warning to test control-response redaction.
+      chrome.runtime.sendMessage({ wssStatus: { platform: 'qa', status: 'warn',
+        message: 'See https://warnings.example.test/token/${controlErrorPathSecret}/chat?secret=${controlErrorQuerySecret}' } });
     })();
     var frameSequence = 0;
     setInterval(function () {
@@ -452,21 +456,22 @@ async function run() {
 
 		const diagnostics = await waitFor(async () => {
 			const result = payloadOf(await mcp.call('ssapp_get_source_diagnostics', { sourceId }));
-			return Number(result.counters?.byType?.status || 0) >= 4 ? result : false;
+			return Number(result.counters?.byType?.status || 0) >= 5 ? result : false;
 		}, 'real source status counter fixtures', 10000, 100);
 		assert.strictEqual(diagnostics.sourceId, sourceId);
 		assert.strictEqual(diagnostics.hasWindow, true);
 		assert.ok(diagnostics.counters && typeof diagnostics.counters === 'object');
 		assert.ok(Number.isInteger(diagnostics.process?.pid) && diagnostics.process.pid > 0, `Diagnostics omitted renderer PID: ${JSON.stringify(diagnostics.process)}`);
 		assert.ok(typeof diagnostics.process?.type === 'string' && diagnostics.process.type, `Diagnostics omitted renderer process type: ${JSON.stringify(diagnostics.process)}`);
-		assert.ok(Number.isFinite(diagnostics.process?.privateKb), `Diagnostics omitted private renderer memory in KiB: ${JSON.stringify(diagnostics.process)}`);
+		// Electron app.getAppMetrics() exposes memory.privateBytes only on Windows.
+		assert.ok(Number.isFinite(diagnostics.process?.privateKb) || (process.platform !== 'win32' && diagnostics.process?.privateKb === null), `Diagnostics returned invalid private renderer memory in KiB: ${JSON.stringify(diagnostics.process)}`);
 		assert.ok(Number.isFinite(diagnostics.process?.residentSetKb), `Diagnostics omitted resident-set renderer memory in KiB: ${JSON.stringify(diagnostics.process)}`);
 		assert.strictEqual(diagnostics.counters.errorSignals, 1, 'Real status flow counted error:null as an error signal.');
 		assert.strictEqual(diagnostics.counters.reconnectSignals, 1, 'Real status flow counted reconnecting:false as a reconnect signal.');
 		assert.strictEqual(JSON.stringify(diagnostics.page).includes('MCP_PATH_SECRET'), false, 'Diagnostics leaked a secret URL path segment.');
 		const controlSource = payloadOf(await mcp.call('ssapp_get_source', { sourceId })).source;
 		assert.strictEqual(controlSource.status, 'active', JSON.stringify(controlSource));
-		assert.ok(String(controlSource.error || '').includes('https://errors.example.test'), 'Fixture source error did not reach the MCP response.');
+		assert.ok(String(controlSource.error || '').includes('https://warnings.example.test'), 'Fixture source warning did not reach the MCP response.');
 		const controlResponses = [
 			controlSource,
 			payloadOf(await mcp.call('ssapp_list_sources')),
@@ -487,11 +492,13 @@ async function run() {
 		assert.ok(image && image.data && image.mimeType === 'image/png', 'Screenshot did not return MCP image content.');
 		assert.ok(Buffer.from(image.data, 'base64').subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])));
 
+		const inspectionStartedAt = Date.now();
 		const inspection = payloadOf(await mcp.call('ssapp_inspect_source_page', {
 			sourceId,
 			maxElements: 100,
 			maxTextChars: 10000,
 		}));
+		assert.ok(Date.now() - inspectionStartedAt < 12000, 'Page inspection was blocked by background frame navigation.');
 		const serializedInspection = JSON.stringify(inspection);
 		assert.ok(serializedInspection.includes('Semantic source fixture'));
 		assert.ok(/untrusted/i.test(JSON.stringify(inspection.contentSafety)), 'Inspection omitted the untrusted-content warning.');
