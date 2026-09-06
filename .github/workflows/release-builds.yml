@@ -129,7 +129,7 @@ jobs:
         include:
           - id: windows
             os: windows-latest
-            build_command: npm run build:win32 -- --publish never
+            build_command: npm.cmd run build:win32 -- --publish=never
             artifact_name: release-windows
             artifact_path: |
               dist/*.exe
@@ -195,6 +195,25 @@ jobs:
           images=(dist/*.AppImage)
           test "${#images[@]}" -eq 1
           npm run test:linux-package -- "${images[0]}"
+
+      - name: Validate Windows outage recovery
+        if: matrix.id == 'windows'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $env:SSAPP_TEST_APP = (Resolve-Path 'dist/win-unpacked/socialstream.exe').Path
+          $env:SSAPP_TEST_EXECUTABLE = $env:SSAPP_TEST_APP
+          $env:SSAPP_TEST_BUNDLED = '1'
+          npm run test:emotes:e2e
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:fallback-dependencies
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:offline-assets:e2e
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:source-mirrors:e2e
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:startup-outage:e2e
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Submit Windows executables to VirusTotal
         if: matrix.id == 'windows'

@@ -15,8 +15,10 @@ const { linuxLaunchArgs } = require('./helpers/electron-launch');
 
 const root = path.resolve(__dirname, '../..');
 const sourceRoot = path.resolve(process.env.SOCIAL_STREAM_SOURCE_DIR || path.join(root, '../social_stream'));
-const sourceBase = pathToFileURL(sourceRoot + path.sep).href;
+let sourceBase = pathToFileURL(sourceRoot + path.sep).href;
+const bundled = process.env.SSAPP_TEST_BUNDLED === '1';
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const textOnly = process.argv.includes('--text-only') || process.env.SSAPP_TEST_TEXT_ONLY === '1';
 
 function freePort() {
 	return new Promise((resolve, reject) => {
@@ -49,12 +51,12 @@ async function run() {
 	const relayPort = await freePort();
 	fs.writeFileSync(path.join(profile, 'savedSync.json'), JSON.stringify({
 		streamID: room, password: 'false', state: true,
-		settings: { server2: { setting: true } }, wsServer: true,
+		settings: { server2: { setting: true }, textonlymode: { setting: textOnly } }, wsServer: true,
 	}));
 	const executable = process.env.SSAPP_TEST_EXECUTABLE || require('electron');
 	const child = spawn(executable, [
 		...(process.env.SSAPP_TEST_EXECUTABLE ? [] : ['.']),
-		'--running-from-source', `--filesource=${sourceBase}`, '--multiinstance', '--disable-logs',
+		...(bundled ? ['--preferlocalassets'] : ['--running-from-source', `--filesource=${sourceBase}`]), '--multiinstance', '--disable-logs',
 		`--remote-debugging-port=${debugPort}`, `--ssapp-local-server-port=${relayPort}`,
 		...linuxLaunchArgs(),
 	], {
@@ -64,7 +66,7 @@ async function run() {
 	});
 	let browser;
 	let appPid;
-	const report = { profile, phases: [] };
+	const report = { profile, textOnly, phases: [] };
 	try {
 		browser = await until(() => chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`), 'SSApp debugger', 120000);
 		const system = await browser.newBrowserCDPSession();
@@ -73,6 +75,11 @@ async function run() {
 		const main = await until(async () => pages().find(page => page.url().includes('/index.html')), 'main window');
 		await until(() => main.evaluate(() => typeof ipcRenderer !== 'undefined' && typeof configReady !== 'undefined' && configReady), 'main initialization');
 		report.version = await main.evaluate(() => ipcRenderer.sendSync('getVersion'));
+		if (bundled) {
+			const resolved = await main.evaluate(() => window.ssappFallback.resolveUrl('dock.html', { branch: 'main' }));
+			assert.ok(resolved?.url, 'bundled dock available');
+			sourceBase = new URL('.', resolved.url).href;
+		}
 		const createWindow = args => main.evaluate(value => ipcRenderer.sendSync('createWindow', value), args);
 		await createWindow({
 			url: `${sourceBase}dock.html?session=${room}&password=false&server2&localserver&localserverport=${relayPort}`,
@@ -118,6 +125,7 @@ async function run() {
 				const frame = main.frames().find(f => f.url().includes('/background.html'));
 				return frame && await frame.evaluate(() => typeof processIncomingMessage === 'function' && socketserverDock?.readyState === 1) ? frame : null;
 			}, 'background relay');
+			assert.strictEqual(await background.evaluate(() => !!settings.textonlymode), textOnly, 'text-only setting survives background reload');
 			if (phase === 'blocked-library') {
 				// Also cover an older cached loader still requesting the separate asset.
 				const loaded = await background.evaluate(() => new Promise(resolve => {
@@ -144,13 +152,20 @@ async function run() {
 						window.__hiddenCaptureFixture.appendRows([id]);
 						const row = document.querySelector('.ssn-chat-row:last-child');
 						row.querySelector('#author-name,.chat-author__display-name,.chat-entry-username').textContent = `Emote ${phase} ${platform} ${id}`;
-						row.querySelector('#message,[data-a-target="chat-line-message-body"],.chat-entry-content').innerHTML = `it's 👑 <img src="https://cdn.betterttv.net/emote/64040c27ccf0dd06e1af2c67/2x" alt="sadNik" title="sadNik" class="regular-emote">`;
+						row.querySelector('#message,[data-a-target="chat-line-message-body"],.chat-entry-content').innerHTML = `it's 👑 sadNik :) <img src="https://cdn.betterttv.net/emote/64040c27ccf0dd06e1af2c67/2x" alt="sadNik" title="sadNik" class="regular-emote">`;
 					}, { phase, platform, id: Date.now() });
 				}
 				await delay(2500);
 			}
 			const captures = await background.evaluate(() => window.__emoteCaptures);
 			assert.strictEqual(captures.length, 6, phase + ': real source capture');
+			for (const capture of captures) {
+				assert.strictEqual(!!capture.textonly, textOnly, capture.type + ': source received text-only setting');
+				if (textOnly) {
+					assert.ok(!/<img\b|&#0*39;|&apos;/.test(capture.chatmessage), capture.type + ': clean text-only payload');
+					assert.ok(capture.chatmessage.includes("it's 👑 sadNik :)"), capture.type + ': plain emoji and emote names preserved');
+				}
+			}
 			const rows = await until(async () => {
 				const result = await evaluateDock(phase => Array.from(document.querySelectorAll('.highlight-chat'))
 					.filter(row => row.textContent.includes('Emote ' + phase))
@@ -158,13 +173,14 @@ async function run() {
 				return result.length === 6 ? result : null;
 			}, phase + ' dock messages');
 			for (const row of rows) {
-				assert.strictEqual(row.images, 1, phase + ': emote must remain an image');
+				assert.strictEqual(row.images, textOnly ? 0 : 1, phase + ': correct image behavior for selected mode');
+				assert.ok(row.text.includes('sadNik :)'), phase + ': text emotes survive');
 				assert.ok(row.text.includes("it's 👑"), phase + ': apostrophe and Unicode must survive');
 				assert.ok(!row.text.includes('<img') && !row.text.includes('&#039;'), phase + ': markup must not become text');
 			}
 			report.phases.push({ phase, blockedRequests, captures, rows });
 			await dock.screenshot({ path: path.join(profile, phase + '.png') });
-			console.log(`[emote-sanitizer] ${report.version} ${phase}: 6 captured messages rendered correctly`);
+			console.log(`[emote-sanitizer] ${report.version} ${textOnly ? 'text-only' : 'rich'} ${phase}: 6 captured messages rendered correctly`);
 		}
 	} finally {
 		fs.writeFileSync(path.join(profile, 'report.json'), JSON.stringify(report, null, 2));

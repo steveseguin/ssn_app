@@ -19,12 +19,15 @@ cd "$TEST_ROOT"
 "$APPIMAGE_PATH" --appimage-extract > extract.log
 export SSAPP_TEST_APP="$TEST_ROOT/squashfs-root/socialstreamninja"
 export SSAPP_MCP_BINARY="$SSAPP_TEST_APP"
+export SSAPP_TEST_EXECUTABLE="$SSAPP_TEST_APP"
+export SSAPP_TEST_BUNDLED=1
 test -x "$SSAPP_TEST_APP"
 cd "$REPO_ROOT"
 
 npm run test:mcp-launch:e2e
 npm run test:headless-launcher:e2e
-for test_script in test:mcp-control:e2e test:mcp-transport:e2e test:navigation-accessibility:e2e test:source-dialog-accessibility:e2e test:review-recovery:e2e test:tts; do
+npm run test:fallback-dependencies
+for test_script in test:emotes:e2e test:offline-assets:e2e test:source-mirrors:e2e test:mcp-control:e2e test:mcp-transport:e2e test:navigation-accessibility:e2e test:source-dialog-accessibility:e2e test:review-recovery:e2e test:tts; do
 	xvfb-run -a -s '-screen 0 1920x1080x24 -extension GLX -nolisten tcp' npm run "$test_script"
 done
 echo "Linux packaged-app validation passed."

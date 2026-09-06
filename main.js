@@ -7,6 +7,7 @@ const fsp = fs.promises;
 const path = require("path");
 const os = require("os");
 const { pathToFileURL, fileURLToPath } = require("url");
+const { getSocialStreamSourceUrls } = require('./resources/social-stream-source-mirrors');
 const {
     cleanVisibleString,
     firstNonEmptyVisibleString,
@@ -4025,26 +4026,24 @@ async function loadBundledSocialStream(branch, relativePath) {
 }
 
 async function fetchWithTimeout(url, timeoutMs = SOCIAL_STREAM_REMOTE_TIMEOUT_MS) {
-    const fetchPromise = fetch(url, { cache: 'no-store' });
+    const controller = new AbortController();
+    const fetchPromise = (async () => {
+        const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+        if (!response) throw new Error('No response received');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return { text: await response.text() };
+    })();
     let timeoutId;
     const timeoutPromise = new Promise((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(`Request timed out after ${timeoutMs} ms`)), timeoutMs);
+        timeoutId = setTimeout(() => {
+            reject(new Error(`Request timed out after ${timeoutMs} ms`));
+            controller.abort();
+        }, timeoutMs);
     });
     try {
-        const response = await Promise.race([fetchPromise, timeoutPromise]);
+        return await Promise.race([fetchPromise, timeoutPromise]);
+    } finally {
         clearTimeout(timeoutId);
-        if (!response) {
-            throw new Error('No response received');
-        }
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-        const text = await response.text();
-        return { text };
-    } catch (error) {
-        fetchPromise.catch(() => { }); // Prevent unhandled rejection if timeout wins
-        clearTimeout(timeoutId);
-        throw error;
     }
 }
 
@@ -4079,9 +4078,11 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
         let remoteError = null;
         let cachePath = null;
 
-        if (remoteUrl) {
+        const remoteCandidates = remoteUrl ? getSocialStreamSourceUrls(remoteUrl) : [];
+        const candidateTimeout = Math.max(1000, Math.ceil((options.timeoutMs || SOCIAL_STREAM_REMOTE_TIMEOUT_MS) / Math.max(1, remoteCandidates.length)));
+        for (const candidateUrl of remoteCandidates) {
             try {
-                const { text } = await fetchWithTimeout(remoteUrl, options.timeoutMs || SOCIAL_STREAM_REMOTE_TIMEOUT_MS);
+                const { text } = await fetchWithTimeout(candidateUrl, candidateTimeout);
                 validateSocialStreamSourceText(text, relativePath, remoteUrl);
                 if (relativePath) {
                     try {
@@ -4097,11 +4098,11 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
                 return {
                     text,
                     origin: 'remote',
-                    meta: { url: remoteUrl }
+                    meta: { url: candidateUrl }
                 };
             } catch (error) {
                 remoteError = error;
-                reporter.report('remote_load_error', error, { url: remoteUrl, branch, relativePath });
+                reporter.report('remote_load_error', error, { url: candidateUrl, branch, relativePath });
             }
         }
 
@@ -4111,6 +4112,7 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
                 if (cachePath) {
                     const cachedText = await readTextIfExists(cachePath);
                     if (typeof cachedText === 'string') {
+                        validateSocialStreamSourceText(cachedText, relativePath, remoteUrl);
                         return {
                             text: cachedText,
                             origin: 'cache',
@@ -4134,6 +4136,7 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
                 }
             }
             if (bundled && typeof bundled.text === 'string') {
+                validateSocialStreamSourceText(bundled.text, relativePath, remoteUrl);
                 const remoteReason = remoteError ? (remoteError.message || String(remoteError)) : null;
                 const meta = {
                     path: bundled.path,

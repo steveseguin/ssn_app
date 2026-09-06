@@ -799,15 +799,18 @@
         var devmode = urlParams.has("devmode");
         var sourcemode = urlParams.get("sourcemode") || false;
         const forceHostedGeneratedLinks = urlParams.has("hostedlinks");
-        // Ensure sourcemode has file:// protocol if it's a local path
-        if (sourcemode && !sourcemode.startsWith('http') && !sourcemode.startsWith('file://')) {
-            if (sourcemode.match(/^[A-Za-z]:\//)) {
-                // Windows path
-                sourcemode = `file:///${sourcemode}`;
+        // Normalize local paths before comparing them with iframe.src (an absolute URL).
+        // In particular, Windows CLI paths normally contain backslashes.
+        if (sourcemode && !/^https?:/i.test(sourcemode) && !sourcemode.startsWith('file://')) {
+            if (/^[A-Za-z]:[\\/]/.test(sourcemode)) {
+                const localPath = sourcemode.replace(/\\/g, '/');
+                sourcemode = `file:///${localPath.slice(0, 2)}/${localPath.slice(3).split('/').map(encodeURIComponent).join('/')}`;
             } else if (sourcemode.startsWith('/')) {
-                // Unix path
-                sourcemode = `file://${sourcemode}`;
+                sourcemode = `file://${sourcemode.split('/').map(encodeURIComponent).join('/')}`;
             }
+        }
+        if (sourcemode && sourcemode.startsWith('file://')) {
+            sourcemode = new URL(sourcemode).href;
         }
         var isBetaMode = false;
         const pendingTikTokStatusQueue = new Map();
@@ -13121,19 +13124,22 @@
                             localWebSocketPort = normalizeLocalWebSocketPort(args[1].port);
                         }
                     }
-                    const currentFrame1Src = document.getElementById("frame1")?.src;
                     let expectedFrame1Src = "";
                     try {
                         const resolved = await resolveSocialStreamPage('popup.html', {
                             versionParam: 'v=2',
-                            extraParams: getLanguageExtraParams()
+                            extraParams: getLanguageExtraParams(),
+                            generatedLinkBase: (!sourcemode && !devmode) || forceHostedGeneratedLinks
+                                ? `${getSsappHostedBase(isBetaMode ? 'beta' : 'main')}/`
+                                : ''
                         });
                         expectedFrame1Src = resolved && resolved.url ? resolved.url : "";
                     } catch (error) {
                         console.error('Failed to resolve popup frame after main signal:', error);
                     }
-                    if (document.getElementById("frame1") && currentFrame1Src !== expectedFrame1Src) {
-                        const popupFrame = document.getElementById("frame1");
+                    // Resolution is asynchronous; another loader may already have navigated this frame.
+                    const popupFrame = document.getElementById("frame1");
+                    if (popupFrame && expectedFrame1Src && popupFrame.src !== expectedFrame1Src) {
                         postLanguageToPopupFrameAfterLoad(popupFrame);
                         popupFrame.src = expectedFrame1Src;
                     }
@@ -14420,9 +14426,58 @@
             console.log(config);
             return true;
         }
+        function monitorBackgroundDependencies(frame) {
+            if (frame.dataset.dependencyMonitor) return;
+            frame.dataset.dependencyMonitor = '1';
+            let generation = 0;
+            let timer;
+            const monitor = () => {
+                clearTimeout(timer);
+                const currentGeneration = ++generation;
+                const originalUrl = frame.src;
+                if (!/^https?:/.test(originalUrl)) return;
+                const deadline = Date.now() + 15000;
+                const check = async () => {
+                    if (generation !== currentGeneration || frame.src !== originalUrl) return;
+                    let backgroundLoaded = false;
+                    let sanitizerLoaded = false;
+                    try {
+                        if (frame.contentWindow.location.href === originalUrl) {
+                            backgroundLoaded = typeof frame.contentWindow.processIncomingMessage === 'function';
+                            sanitizerLoaded = typeof frame.contentWindow.filterXSS === 'function';
+                        }
+                    } catch (_) { }
+                    if (backgroundLoaded && sanitizerLoaded) return;
+                    if (!backgroundLoaded && Date.now() < deadline) {
+                        timer = setTimeout(check, 500);
+                        return;
+                    }
+                    // Reload the complete bundle, avoiding a mix of remote and
+                    // bundled script versions after a partial site outage.
+                    try {
+                        const fallback = await resolveSocialStreamPage('background.html', {
+                            versionParam: 'v=2', forceLocal: true,
+                            extraParams: getLanguageExtraParams().concat(window.initialEditorView ? ['view=editor'] : [])
+                        });
+                        if (generation !== currentGeneration || frame.src !== originalUrl) return;
+                        if (fallback && fallback.url && fallback.url.startsWith('file:')) {
+                            frame.dataset.ssappOrigin = fallback.origin;
+                            frame.src = fallback.url;
+                            Toast.warning('Background Fallback', 'A required script failed to load. Using the bundled background service.');
+                        }
+                    } catch (error) {
+                        console.error('Background dependency recovery failed:', error);
+                    }
+                };
+                check();
+            };
+            frame.addEventListener('load', monitor);
+            new MutationObserver(monitor).observe(frame, { attributes: true, attributeFilter: ['src'] });
+        }
         async function setupIframeSource() {
             const frame2 = document.getElementById("frame2");
             if (!frame2) return false;
+            monitorBackgroundDependencies(frame2);
 
             const languageParams = getLanguageExtraParams();
 
@@ -14502,18 +14557,22 @@
             try {
                 const resolved = await resolveSocialStreamPage('popup.html', popupResolveOptions);
                 if (resolved && resolved.url) {
-                    postLanguageToPopupFrameAfterLoad(frame1);
-                    frame1.src = resolved.url;
-                    frame1.dataset.ssappOrigin = resolved.origin;
-                    frame1.classList.add('loading');
+                    if (forceReload || frame1.src !== resolved.url) {
+                        postLanguageToPopupFrameAfterLoad(frame1);
+                        frame1.src = resolved.url;
+                        frame1.dataset.ssappOrigin = resolved.origin;
+                        frame1.classList.add('loading');
+                    }
                     return true;
                 }
                 const fallback = await resolveSocialStreamPage('popup.html', { ...popupResolveOptions, forceLocal: true });
                 if (fallback && fallback.url) {
-                    postLanguageToPopupFrameAfterLoad(frame1);
-                    frame1.src = fallback.url;
-                    frame1.dataset.ssappOrigin = fallback.origin;
-                    frame1.classList.add('loading');
+                    if (forceReload || frame1.src !== fallback.url) {
+                        postLanguageToPopupFrameAfterLoad(frame1);
+                        frame1.src = fallback.url;
+                        frame1.dataset.ssappOrigin = fallback.origin;
+                        frame1.classList.add('loading');
+                    }
                     Toast.warning('Popup Fallback', 'Loaded local popup panel.');
                     return true;
                 }

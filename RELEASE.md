@@ -48,6 +48,12 @@ gh release view v<previous-version> -R steveseguin/social_stream
 ### 3. Run relevant tests
 
 - Run the tests related to the changed code before packaging.
+- Every fallback update/build checks local script, stylesheet, image, and data references against the bundle allowlist. A missing dependency blocks the build before replacing the generated bundle. Run `npm run check:fallback-dependencies` against the sibling Social Stream checkout (or `SSN_SOCIALSTREAM_SOURCE`) to check early.
+- Run `npm run test:fallback-dependencies` for the guard's negative cases. Literal references are checked; computed paths and optional downloaded voice/model files still require functional coverage.
+- Run `npm run test:offline-assets:e2e` and `npm run test:source-mirrors:e2e`. They use isolated profiles and real SSApp windows to test offline features, reloads, mirror outages, invalid responses, timeouts, and cached-script recovery. Without `SSAPP_TEST_APP`, the asset test stages the build allowlist from the sibling Social Stream checkout.
+- Run `npm run test:emotes:e2e` for both rich and text-only modes, including a blocked sanitizer request and reloads. Unicode emoji and plain-text emote names must survive. Set `SSAPP_TEST_EXECUTABLE` to a built executable and `SSAPP_TEST_BUNDLED=1` to exercise its bundled sources; omit the latter when checking an older binary against corrected source files.
+- Run `npm run test:startup-outage:e2e` for normal startup with requests blocked before initialization, restored connectivity, missing/stalled sanitizer scripts, message capture without duplicates, and an offline restart preserving the session. This starts the real source app through a transport-only test bootstrap, without forcing local assets. CI can serve fixture responses through the bundled-asset bridge when no sibling source checkout exists.
+- Before uploading Windows artifacts, set `SSAPP_TEST_APP` to the absolute `dist/win-unpacked/socialstream.exe` path and run the offline-assets and source-mirrors tests against the package, plus the bundled emote checks above. The Windows release workflow enforces these tests and the source startup-outage test. `npm run test:linux-package -- <AppImage>` includes the packaged offline, mirror, and emote tests for Linux.
 - For TikTok replay/flood changes, run at least:
 
 ```powershell
