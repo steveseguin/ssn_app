@@ -16,7 +16,7 @@ const electronPath = require('electron');
 const repoRoot = path.resolve(__dirname, '..', '..');
 const socialStreamRepo = path.resolve(repoRoot, '..', 'social_stream');
 const socialStreamRoot = pathToFileURL(socialStreamRepo + path.sep).href;
-const pluginRoot = path.join(socialStreamRepo, 'ssn-streamdeck', 'plugin', 'ninja.socialstream.streamdeck.sdPlugin');
+const pluginRoot = process.env.SSN_STREAMDECK_BUNDLE || path.join(socialStreamRepo, 'ssn-streamdeck', 'plugin', 'ninja.socialstream.streamdeck.sdPlugin');
 const pluginEntry = path.join(pluginRoot, 'bin', 'plugin.js');
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-streamdeck-plugin-profile-'));
 const token = `streamdeck-plugin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -36,6 +36,7 @@ const ACTION_UUIDS = Object.freeze({
 });
 
 const SSN_PRESETS = [
+	'getCommerceState', 'commerceShow', 'commerceNext', 'commerceHide', 'commerceResume',
 	'nextInQueue', 'clearOverlay', 'clearDock', 'clear', 'clearAll', 'clearHistory',
 	'creditsStart', 'creditsPreview', 'creditsTest', 'creditsReset', 'resetleaderboard',
 	'getQueueSize', 'sendChat', 'sendEncodedChat', 'pin', 'unpin', 'nextPinned', 'drawmode',
@@ -581,6 +582,7 @@ async function run() {
 					!document.getElementById('frame2') ||
 					!document.getElementById('frame2').contentWindow ||
 					typeof document.getElementById('frame2').contentWindow.setupSocket !== 'function' ||
+					typeof document.getElementById('frame2').contentWindow.handleMonetizationRequest !== 'function' ||
 					(typeof configReady !== 'undefined' && configReady !== true)
 				) {
 					if (Date.now() - started > 45000) return { ready: false };
@@ -635,6 +637,11 @@ async function run() {
 					return true;
 				};
 				background.setupSocket();
+				const commerce = await background.handleMonetizationRequest({ action: 'save', config: { commerce: { enabled: true, display: 'first', items: [
+					{ name: 'QA print', url: 'https://example.com/qa-print', purpose: 'shop' },
+					{ name: 'QA support', url: 'https://example.com/qa-support', purpose: 'support' }
+				] } } });
+				if (commerce.error) throw new Error(commerce.error);
 				return { ready: true, sourceId: ${JSON.stringify(sourceId)} };
 			})()
 		`, 'initialize SSApp Stream Deck bridge');
@@ -781,6 +788,15 @@ async function run() {
 		const ssnResults = new Map();
 		for (const command of SSN_PRESETS) {
 			ssnResults.set(command, await pressPreset(streamDeck, relay, command, ssnValues[command]));
+			if (command === 'getCommerceState' || command.startsWith('commerce')) {
+				const result = ssnResults.get(command).callback.callback.result;
+				assert.equal(result.ok, true, command + ' failed');
+				const state = await execInRenderer(remotePort, mainWindow.id, `document.getElementById('frame2').contentWindow.handleMonetizationRequest({action:'getCommerceState'})`, command + ' actual state');
+				const expected = { getCommerceState: 'scheduled', commerceShow: 'pinned', commerceNext: 'pinned', commerceHide: 'hidden', commerceResume: 'scheduled' }[command];
+				assert.equal(state.commerce.mode, expected, command + ' did not change the app state');
+				if (command === 'commerceShow') assert.equal(state.commerce.selected.url, 'https://example.com/qa-print');
+				if (command === 'commerceNext') assert.equal(state.commerce.selected.url, 'https://example.com/qa-support');
+			}
 		}
 
 		for (const command of ['creditsStart', 'creditsPreview', 'creditsTest', 'creditsReset']) {
