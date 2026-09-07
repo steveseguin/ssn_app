@@ -1,10 +1,13 @@
 # macOS v0.4.26 release validation
 
-Signing and release upload are in progress. Final artifact verification will be recorded below.
+Both final Mac builds passed signing, Apple notarization, Gatekeeper assessment, and package checks.
+Published to https://github.com/steveseguin/social_stream/releases/tag/v0.4.26.
+Verified all nine assets are uploaded, the release remains a public prerelease, and the
+four Mac asset sizes and GitHub SHA-256 digests match the final local artifacts.
 
 ## Source and scope
 
-- SSApp: `70e8dc8` plus `f303eb6` (mute persistence) and `d65561e` (Mac hiding and native runtime packaging).
+- SSApp: `70e8dc8` plus `f303eb6` (mute persistence) and `d65561e` (Mac hiding and native runtime packaging), plus runtime pin `c28e68d`.
 - Reviewed the last pull, `bd5acf3..70e8dc8`, with particular attention to source setup/lifecycle,
   settings transfer, background recovery, audio, history, and automation transport changes.
 - Pulled SSApp main: already current. Fast-forwarded the sibling Social Stream beta checkout
@@ -88,8 +91,47 @@ pruning regression, dependency alignment, and diff whitespace checks.
 Intel was exercised through Rosetta on Apple Silicon, not on physical Intel hardware.
 Live authenticated accounts, physical microphones/printers, and a real OBS custom dock were
 not validated here. External-service tests used deterministic fixtures and local relays.
-Final signed-app checks will be recorded on completion.
+Final signed-app results are recorded below.
+
+Known prerelease issue: an additional control-interface stress test rapidly changed all fourteen
+languages (150 ms apart), switched Sessions/Sources, reloaded, and repeated. Signed ARM
+43.4.1 crashed during the second cycle with SIGTRAP in V8. Four full navigation cycles
+using ordinary Playwright UI actions passed, as did standard packaged feature tests.
+This remaining stress-case crash is not claimed fixed; it is disclosed in the release notes.
+The 43.4.1 pin resolved the earlier repeatable standard-navigation failure, not every stress case.
 
 Logs and cleanup inventory: `/tmp/ssapp-mac-0426`. Individual test logs identify isolated
 profile directories containing JSON reports and screenshots. Generated fallback files were
 updated only by the build script, not manually inspected or edited.
+
+## Final signed artifacts
+
+- Both apps: v0.4.26, Electron 43.4.1, matching main.js SHA-256
+  `d84713825277c72f6669d0e7da6116291770e532c3c294122b0b4706e67a4550`.
+- Both architectures passed final navigation/localization/reload, two real local TTS requests,
+  and all ten offline asset checks. Apple Silicon additionally passed source mirrors and
+  rich/text-only emote capture, including blocked libraries and reloads.
+- Four consecutive signed ARM navigation/localization/reload cycles passed through UI actions.
+- Signed ARM comparison build also passed real Whisper voice commands and shared-control workflows.
+- Both apps and DMGs have accepted Apple notarization, validated stapled tickets, and Gatekeeper
+  acceptance as Notarized Developer ID. Both DMGs passed hdiutil verification and both ZIPs
+  passed archive integrity checks. DMGs were explicitly signed before their final submissions.
+
+Final DMG notarization submissions:
+
+- `38a0a1fc-09d7-452c-b495-aaa0df213fa8`: Accepted.
+
+- `e215c44e-b065-4076-a764-f7b0e502be19`: Accepted.
+
+Final artifact SHA-256 hashes:
+
+```text
+4e695cbba491ff5905e3405fdc077fe7a5b3d0635ae303a7aa0eba7a31b9ee64  dist/socialstreamninja_mac_v0.4.26_arm64.dmg
+e02768a0a448de7adefa2249749abba7ab323a4d0487f459e6fcddc4ea4b7786  dist/socialstreamninja_mac_v0.4.26_arm64.zip
+6a27f6479276a227616cbe2e3c5a69fd8f6f8dca930d2c7daf82735d4d11c325  dist/socialstreamninja_mac_v0.4.26_x64.dmg
+d5a1d598d93addb2fa86ddf7ea70d27256363ea544f7f3c21e1c6326b4ae0b3c  dist/socialstreamninja_mac_v0.4.26_x64.zip
+```
+
+Publication preserved all five existing Windows/Linux assets and added the four Mac downloads.
+Release notes include the Mac capture/mute fixes and the remaining language-switch stress issue.
+After rebuilding and clearing disposable download caches, approximately 5.7 GiB remained free.
