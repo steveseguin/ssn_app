@@ -125,6 +125,7 @@
     "url": "https://github.com/steveseguin/ssn_app.git"
   },
   "build": {
+    "electronVersion": "43.4.1",
     "appId": "socialstream.electron",
     "productName": "socialstream",
     "npmRebuild": false,
