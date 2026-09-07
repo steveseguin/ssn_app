@@ -56,6 +56,12 @@ async function run() {
 			assert.strictEqual(await page.locator(`[data-group-id="${groupId}"] [data-group-mute]`).getAttribute('aria-pressed'), String(muted));
 			assert.deepStrictEqual(audio.map(row => row.muted), [muted, muted, false], 'Group mute updated settings but not the running capture pages.');
 		}
+		// Reloads and delayed injection must retain the last group audio choice.
+		for (const capture of app.windows().filter(window => window.url().startsWith(url))) {
+			await capture.reload({ waitUntil: 'load' });
+		}
+		await page.waitForTimeout(8500);
+		assert.deepStrictEqual((await readAudio()).map(row => row.muted), [true, true, false], 'Reload restored stale startup mute settings.');
 		await page.evaluate(async () => {
 			for (const source of stateManager.getSources()) await stopThis(document.querySelector(`[data-source-id="${source.id}"]`));
 		});

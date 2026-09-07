@@ -15073,6 +15073,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (view && view.webContents) {
                 try {
                     view.webContents.setAudioMuted(!!args.muteWindow);
+                    // Reload and delayed source injection reuse this configuration.
+                    // Keep them from restoring the mute state from window creation.
+                    if (view.args) view.args.muted = !!args.muteWindow;
                     view.webContents.send("sendToTab", {
                         muteWindow: !!args.muteWindow
                     });
