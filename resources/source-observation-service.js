@@ -317,7 +317,28 @@ const INTERACTION_SCRIPT = `(${function interactWithPage(request) {
 		element = element.children[index];
 	}
 	if (!element || element.tagName.toLowerCase() !== request.expected.tag) return { ok: false, code: 'STALE_PAGE_REF' };
-	const currentName = clean(element.getAttribute('aria-label') || element.innerText || element.textContent || element.getAttribute('placeholder'));
+	// Match snapshot naming precedence: a label may intentionally differ from
+	// an input's placeholder (for example Twitch's chat-message field).
+	const nameFor = element => {
+		const labelledBy = clean(element.getAttribute('aria-labelledby')).slice(0, 200);
+		if (labelledBy) {
+			const label = labelledBy.split(/\s+/).map(id => document.getElementById(id)?.textContent || '').join(' ');
+			if (clean(label)) return clean(label);
+		}
+		const ownLabel = clean(element.getAttribute('aria-label'));
+		if (ownLabel) return ownLabel;
+		if (element.id) {
+			try {
+				const label = document.querySelector('label[for="' + CSS.escape(element.id) + '"]');
+				if (label && clean(label.textContent)) return clean(label.textContent);
+			} catch (_) { }
+		}
+		if (element.matches('input,textarea,select') || element.isContentEditable) {
+			return clean(element.getAttribute('placeholder') || element.getAttribute('title'));
+		}
+		return clean(element.innerText || element.textContent || element.getAttribute('title'));
+	};
+	const currentName = nameFor(element);
 	if (request.expected.name && currentName && request.expected.name !== currentName) return { ok: false, code: 'STALE_PAGE_REF' };
 	if (element.disabled || element.getAttribute('aria-disabled') === 'true') return { ok: false, code: 'ELEMENT_DISABLED' };
 	if (request.action === 'click') {

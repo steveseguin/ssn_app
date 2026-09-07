@@ -265,7 +265,7 @@ async function withTimeout(promise, timeoutMs, message) {
 
 function startMcpSession(port) {
 	const child = spawn(packagedApp || process.execPath, packagedApp
-		? ['--ssapp-mcp', ...(process.platform === 'linux' ? ['--ozone-platform=headless'] : [])]
+		? ['--ssapp-mcp', ...(process.platform === 'linux' ? ['--ozone-platform=headless', ...(process.env.SSAPP_TEST_NO_SANDBOX === '1' ? ['--no-sandbox'] : [])] : [])]
 		: [path.join(repoRoot, 'resources', 'ssapp-mcp.js')], {
 		cwd: repoRoot,
 		env: {

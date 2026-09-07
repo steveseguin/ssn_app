@@ -186,7 +186,7 @@ async function createFixtureServer() {
     <button id="increment" aria-label="Increase fixture count">Increase</button>
     <output id="count" aria-live="polite">Count 0</output>
     <label for="safe-input">Safe reply text</label>
-    <input id="safe-input" type="text">
+    <input id="safe-input" type="text" placeholder="Different placeholder from the label">
     <output id="typed" aria-live="polite">Typed nothing</output>
     <output id="last-key" aria-live="polite">Key none</output>
     <a href="#details">Fixture details</a>

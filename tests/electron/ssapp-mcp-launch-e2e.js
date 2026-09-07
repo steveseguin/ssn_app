@@ -12,6 +12,7 @@ const packagedBinary = String(process.env.SSAPP_MCP_BINARY || '').trim();
 const command = packagedBinary || require('electron');
 const args = packagedBinary ? ['--ssapp-mcp'] : [repoRoot, '--ssapp-mcp'];
 if (process.platform === 'linux') args.push('--ozone-platform=headless');
+if (process.platform === 'linux' && process.env.SSAPP_TEST_NO_SANDBOX === '1') args.push('--no-sandbox');
 
 function getFreePort() {
 	return new Promise((resolve, reject) => {

@@ -25,7 +25,7 @@ async function freePort() {
 function startAdapter(port) {
 	const binary = process.env.SSAPP_TEST_APP;
 	const child = spawn(binary || process.execPath,
-		binary ? ['--ssapp-mcp', ...(process.platform === 'linux' ? ['--ozone-platform=headless'] : [])] : [path.join(root, 'resources/ssapp-mcp.js')], {
+		binary ? ['--ssapp-mcp', ...(process.platform === 'linux' ? ['--ozone-platform=headless', ...(process.env.SSAPP_TEST_NO_SANDBOX === '1' ? ['--no-sandbox'] : [])] : [])] : [path.join(root, 'resources/ssapp-mcp.js')], {
 			env: { ...process.env, SSAPP_CONTROL_URL: `http://127.0.0.1:${port}`, SSAPP_MCP_REQUEST_TIMEOUT_MS: '35000' },
 			stdio: ['pipe', 'pipe', 'pipe'],
 		});
