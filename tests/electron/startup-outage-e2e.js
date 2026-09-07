@@ -22,6 +22,18 @@ async function run() {
 			for (const phase of (boot === 'fresh' ? ['offline', 'online', 'partial', 'stalled'] : ['offline'])) {
 				await app.evaluate((_, phase) => { global.__outage.phase = phase; if (phase !== 'offline') global.__outage.requests = []; }, phase);
 				if (phase !== 'offline') await main.reload({ waitUntil: 'domcontentloaded' });
+				if (['partial', 'stalled'].includes(phase)) {
+					await main.waitForFunction(async () => {
+						const frame = document.getElementById('frame2');
+						if (!frame.src.startsWith('https:')) return false;
+						const state = await ipcRenderer.invoke('socialstream:background-dependencies', frame.src);
+						return state?.loader?.status === 'failed';
+					}, null, { timeout: 65000 });
+					await main.locator('[data-page="event-flow-editor"]').click();
+					await main.locator('#background-load-retry').waitFor({ state: 'visible' });
+					await app.evaluate(() => { global.__outage.phase = 'online'; });
+					await main.locator('#background-load-retry').click();
+				}
 				let background;
 				for (let attempt = 0; attempt < 180; attempt++) {
 					background = main.frames().find(f => f.url().includes('/background.html'));
@@ -33,7 +45,7 @@ async function run() {
 				assert.strictEqual(state.room, room, 'session persists');
 				assert.ok(state.ready, 'background initialized');
 				assert.strictEqual(state.sanitizer, 'function', 'sanitizer ready');
-				assert.ok(background.url().startsWith(phase === 'online' ? 'https:' : 'file:'), phase + ': correct remote/bundled path');
+				assert.ok(background.url().startsWith(phase === 'offline' ? 'file:' : 'https:'), phase + ': correct remote/bundled path');
 				const settledUrl = background.url();
 				await delay(2000);
 				assert.strictEqual(background.url(), settledUrl, 'no repeated fallback reload');

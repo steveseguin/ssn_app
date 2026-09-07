@@ -335,6 +335,7 @@ async function readSocialStreamJson(relativePath, options = {}) {
 }
 
 const ssappFallbackBridge = {
+	fetchBackgroundScript: (relativePath) => ipcRenderer.invoke('socialstream:fetch-background-script', relativePath),
 	resolveUrl: resolveSocialStreamUrl,
 	readFile: readSocialStreamFile,
 	readJson: readSocialStreamJson,
@@ -343,6 +344,29 @@ const ssappFallbackBridge = {
 		return !!(result && result.url);
 	}
 };
+
+// The static loader tag itself can be rejected by nosniff or receive an outage
+// page. DOMContentLoaded waits for that non-async tag, so this cannot race a
+// still-downloading original loader and execute it twice.
+document.addEventListener('DOMContentLoaded', async () => {
+	if (location.protocol !== 'https:'
+		|| !['cache.socialstream.ninja', 'socialstream.ninja', 'beta.socialstream.ninja'].includes(location.hostname)
+		|| !/^\/(?:beta\/)?background\.html$/.test(location.pathname)
+		|| typeof window.loadScriptsInOrder === 'function') return;
+	window.ssappBackgroundLoadState = { status: 'loading', currentScript: './loader.js', failures: [] };
+	try {
+		const result = await ssappFallbackBridge.fetchBackgroundScript('./loader.js');
+		const script = document.createElement('script');
+		const sourceUrl = new URL('./loader.js', location.href).href;
+		Object.defineProperty(script, 'src', { value: sourceUrl });
+		script.textContent = result.text + '\n;document.currentScript.dataset.ssappExecuted = "1";\n//# sourceURL=' + sourceUrl;
+		document.body.appendChild(script);
+		if (script.dataset.ssappExecuted !== '1') throw new Error('Background loader execution failed');
+	} catch (error) {
+		console.error('[Background] Loader recovery failed:', error);
+		window.ssappBackgroundLoadState = { status: 'failed', currentScript: './loader.js', failures: [{ script: './loader.js', error: error.message }] };
+	}
+});
 
 const ssappEnvironmentBridge = {
 	get: () => environmentPromise,

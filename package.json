@@ -106,6 +106,8 @@
     "test:source-mirrors:e2e": "node tests/electron/source-mirrors-e2e.js",
     "test:emotes:e2e": "node tests/electron/emote-sanitizer-e2e.js && node tests/electron/emote-sanitizer-e2e.js --text-only",
     "test:startup-outage:e2e": "node tests/electron/startup-outage-e2e.js",
+    "test:background-recovery:e2e": "node tests/electron/background-script-recovery-e2e.js",
+    "test:background-mime:e2e": "node tests/electron/background-mime-e2e.js",
     "prebuild": "npm run check:submodules && npm run update:fallback",
     "prebuild:win32": "npm run clean && npm run check:submodules && npm run update:fallback && node -e \"setTimeout(() => {}, 5000)\"",
     "build:win32": "electron-builder --win",

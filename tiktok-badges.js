@@ -57,10 +57,24 @@ function normalizeTikTokImageUrl(value, seen) {
     if (typeof value === 'string') {
         const trimmed = value.trim();
         if (!trimmed) return null;
-        if (trimmed.startsWith('//')) {
-            return `https:${trimmed}`;
+        if (/^data:image\//i.test(trimmed) || /^blob:https?:\/\//i.test(trimmed)) return trimmed;
+
+        let candidate = trimmed;
+        if (candidate.startsWith('//')) {
+            candidate = `https:${candidate}`;
+        } else if (/^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?\/.+/i.test(candidate)) {
+            candidate = `https://${candidate}`;
         }
-        return trimmed;
+        // A pathname or TikTok asset ID has no CDN origin. Skip it so callers
+        // can try another URL or avatar size instead of emitting a broken src.
+        if (!/^https?:\/\//i.test(candidate) || /\s/.test(candidate)) return null;
+        try {
+            const parsed = new URL(candidate);
+            if (!parsed.hostname || parsed.username || parsed.password) return null;
+            return candidate; // Preserve signed query strings exactly.
+        } catch (_) {
+            return null;
+        }
     }
 
     if (typeof value === 'number' || typeof value === 'boolean') {
@@ -73,10 +87,11 @@ function normalizeTikTokImageUrl(value, seen) {
         seen.add(value);
 
         if (typeof value.href === 'string') {
-            return normalizeTikTokImageUrl(value.href, seen);
+            const resolved = normalizeTikTokImageUrl(value.href, seen);
+            if (resolved) return resolved;
         }
 
-        const directKeys = ['url', 'uri', 'src', 'mUri'];
+        const directKeys = ['url', 'src'];
         for (const key of directKeys) {
             if (Object.prototype.hasOwnProperty.call(value, key)) {
                 const resolved = normalizeTikTokImageUrl(value[key], seen);
@@ -87,6 +102,15 @@ function normalizeTikTokImageUrl(value, seen) {
         const listKeys = ['urlList', 'urls', 'url_list', 'uriList', 'uri_list', 'iconList', 'icon_list', 'imageList', 'image_list'];
         for (const key of listKeys) {
             if (Array.isArray(value[key])) {
+                const resolved = normalizeTikTokImageUrl(value[key], seen);
+                if (resolved) return resolved;
+            }
+        }
+
+        // TikTok's decoded images use uri for an internal asset ID, while
+        // urlList contains the signed CDN URLs that browsers can actually load.
+        for (const key of ['uri', 'mUri']) {
+            if (Object.prototype.hasOwnProperty.call(value, key)) {
                 const resolved = normalizeTikTokImageUrl(value[key], seen);
                 if (resolved) return resolved;
             }

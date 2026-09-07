@@ -214,6 +214,10 @@
         </div>
 
         <div id="dashboard-page" style="display:none;">
+            <div id="background-load-status" role="status" hidden style="padding:12px;background:#39332a;color:#fff;">
+                <span id="background-load-message"></span>
+                <button id="background-load-retry" type="button" hidden>Retry loading</button>
+            </div>
             <iframe id="frame2" class="loading" style="height:100%;width:100%" aria-hidden="true"
                 allow="autoplay *; camera *; clipboard-write *; encrypted-media *; fullscreen *; geolocation *; microphone *; midi *; usb *"
                 title="Background Service Loader" data-i18n-title="iframe.background.title"></iframe>
@@ -6246,7 +6250,7 @@
                             <strong style="color: #f8fafc;">Need to reply to chat?</strong> → Use <strong>Standard</strong> mode and sign in first.<br>
                             <strong style="color: #f8fafc;">Standard not working?</strong> → Try <strong>TikTok WS</strong> with <strong>Local Signer</strong> for replies.<br>
                             <strong style="color: #f8fafc;">Everything failing?</strong> → Try <strong>Euler Proxy</strong> or <strong>Euler Signing</strong> with an API key.<br>
-                            <strong style="color: #f8fafc;">Need a backup source?</strong> → Use <strong>TikFinity OBS Dock</strong> in <strong>Other chat sites</strong> if TikTok keeps missing chat.
+                            <strong style="color: #f8fafc;">Need a backup source?</strong> → Use <strong>TikFinity OBS Dock</strong> in <strong>Add other source</strong> if TikTok keeps missing chat.
                         </div>
                     </div>
 
@@ -6285,7 +6289,8 @@
                             <span style="font-size: 11px; background: rgba(168,85,247,0.2); color: #e9d5ff; padding: 2px 8px; border-radius: 4px;">Other Site Source</span>
                         </div>
                         <div style="color: #94a3b8; font-size: 12px; line-height: 1.6; margin-top: 6px;">
-                            If TikTok modes keep dropping or missing messages, open TikFinity, go to <strong>Overlay -> OBS Docks</strong>, set a dock to chat, copy its URL, and paste it into <strong>Other chat sites</strong> in SSN. Keep TikFinity open while you are live. This is a backup source, not a reply mode.
+                            If direct TikTok connections fail or your network is blocked by TikTok, try a TikFinity Activity Feed URL in <strong>Add other source</strong>. Keep TikFinity open and connected. This fallback receives chat and events; it does not send replies.
+                            <a href="https://socialstream.ninja/docs/tikfinity-setup.html" onclick="window.open(this.href, '_blank'); return false;" style="display: inline-block; margin-top: 8px; color: #c4b5fd; text-decoration: underline;">Set up TikFinity with SSN (screenshot guide) &rarr;</a>
                         </div>
                     </div>
 
@@ -6340,7 +6345,7 @@
                             <strong>Standard mode not working?</strong> → Click <strong>👁️ Show capture page</strong> to check for CAPTCHA or sign-in. If nothing appears, try <strong>🔄 Reload</strong>.<br>
                             <strong>WebSocket keeps failing?</strong> → Try a different signing provider, or switch to Polling.<br>
                             <strong>Getting blocked/throttled?</strong> → Close other TikTok tabs/apps. Wait a few minutes and retry.<br>
-                            <strong>Still missing chat?</strong> → Try a <strong>TikFinity OBS Dock</strong> URL in <strong>Other chat sites</strong> and keep TikFinity open.<br>
+                            <strong>Still missing chat?</strong> → Try a <strong>TikFinity OBS Dock</strong> URL in <strong>Add other source</strong> and keep TikFinity open.<br>
                             <strong>Need replies but nothing works?</strong> → Standard (with sign-in) or Local Signer are your options.
                         </div>
                     </div>
@@ -6583,6 +6588,10 @@
                 <div class="provider-help-text" style="font-size: 11px; color: #94a3b8; line-height: 1.35; margin-top: 8px; min-height: 2.8em;"></div>
                 <div class="mode-info">
                     <span class="info-icon" role="button" tabindex="0" aria-label="TikTok connection modes help" style="cursor: pointer;" title="Open TikTok connection mode help" onclick="showTikTokConnectionModesHelpModal(event)" onkeydown="if (event.key === 'Enter' || event.key === ' ') showTikTokConnectionModesHelpModal(event)">ℹ️</span>
+                </div>
+                <div class="tiktok-fallback-help" style="flex: 0 0 100%; font-size: 12px; line-height: 1.5; color: #cbd5e1;">
+                    TikTok still not connecting?
+                    <a href="https://socialstream.ninja/docs/tikfinity-setup.html" onclick="event.stopPropagation(); window.open(this.href, '_blank'); return false;" style="color: #c4b5fd; text-decoration: underline;">Set up TikFinity fallback &rarr;</a>
                 </div>`;
                     controlPanel.appendChild(modeSelector);
                 }
@@ -14453,38 +14462,45 @@
                 clearTimeout(timer);
                 const currentGeneration = ++generation;
                 const originalUrl = frame.src;
+                const started = Date.now();
+                const status = document.getElementById('background-load-status');
+                const message = document.getElementById('background-load-message');
+                const retry = document.getElementById('background-load-retry');
+                if (status) status.hidden = true;
                 if (!/^https?:/.test(originalUrl)) return;
-                const deadline = Date.now() + 15000;
+                if (retry) retry.onclick = () => { frame.src = originalUrl; };
+                let lastError = '';
                 const check = async () => {
                     if (generation !== currentGeneration || frame.src !== originalUrl) return;
                     let backgroundLoaded = false;
                     let sanitizerLoaded = false;
+                    let loader = null;
                     try {
                         const dependencies = await ipcRenderer.invoke('socialstream:background-dependencies', originalUrl);
                         backgroundLoaded = dependencies?.backgroundLoaded === true;
                         sanitizerLoaded = dependencies?.sanitizerLoaded === true;
-                    } catch (_) { }
-                    if (backgroundLoaded && sanitizerLoaded) return;
-                    if (!backgroundLoaded && Date.now() < deadline) {
-                        timer = setTimeout(check, 500);
+                        loader = dependencies?.loader;
+                    } catch (error) {
+                        if (lastError !== error.message) console.warn('[Background] Readiness check failed:', error);
+                        lastError = error.message;
+                    }
+                    if (generation !== currentGeneration || frame.src !== originalUrl) return;
+                    if (backgroundLoaded && sanitizerLoaded && (!loader || loader.status === 'ready')) {
+                        if (status) status.hidden = true;
                         return;
                     }
-                    // Reload the complete bundle, avoiding a mix of remote and
-                    // bundled script versions after a partial site outage.
-                    try {
-                        const fallback = await resolveSocialStreamPage('background.html', {
-                            versionParam: 'v=2', forceLocal: true,
-                            extraParams: getLanguageExtraParams().concat(window.initialEditorView ? ['view=editor'] : [])
-                        });
-                        if (generation !== currentGeneration || frame.src !== originalUrl) return;
-                        if (fallback && fallback.url && fallback.url.startsWith('file:')) {
-                            frame.dataset.ssappOrigin = fallback.origin;
-                            frame.src = fallback.url;
-                            Toast.warning('Background Fallback', 'Using the offline background. Online Event Flows stay saved separately; restart when connected to access them.');
-                        }
-                    } catch (error) {
-                        console.error('Background dependency recovery failed:', error);
+                    const failed = loader?.status === 'failed' || (!loader && Date.now() - started >= 60000);
+                    if (failed || Date.now() - started >= 15000) {
+                        // A slow or failed script must never move the user to a
+                        // different origin/IndexedDB store or discard the editor.
+                        if (status) status.hidden = false;
+                        if (message) message.textContent = failed
+                            ? 'The background could not finish loading. Your saved Event Flows have not been moved or deleted. '
+                            : 'The background is taking longer to load. Your saved Event Flows stay here. ';
+                        if (retry) retry.hidden = !failed && Date.now() - started < 60000;
                     }
+                    if (loader?.status === 'failed') return;
+                    timer = setTimeout(check, 500);
                 };
                 check();
             };

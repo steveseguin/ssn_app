@@ -32,7 +32,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         console.log('Settled frame',await main.evaluate(()=>document.getElementById('frame2').src));
         assert(remote.url().startsWith('https:'),'Healthy remote background stays remote');
         const before=await remote.evaluate(()=>({url:location.href,flows:JSON.parse(JSON.stringify(eventFlowSystem.flows))}));
-        await app.evaluate(()=>global.__outage.phase='partial');
+        await app.evaluate(()=>global.__outage.phase='offline');
         await main.reload({waitUntil:'domcontentloaded'});
         const local=await background('file:');
         const after=await local.evaluate(()=>({url:location.href,flows:eventFlowSystem.flows.map(f=>f.id)}));

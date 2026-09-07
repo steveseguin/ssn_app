@@ -2,6 +2,7 @@
 
 const assert = require('assert');
 const { __test } = require('../../tiktok/connection-manager.js');
+const { normalizeTikTokImageUrl } = require('../../tiktok-badges.js');
 
 function countStickerTags(text) {
   if (typeof text !== 'string') return 0;
@@ -10,6 +11,40 @@ function countStickerTags(text) {
 }
 
 function run() {
+  {
+    // Live v3 payload shape: uri is an asset ID, not a browser-loadable URL.
+    const avatarUrl = 'https://cdn.example.com/avatar.webp?x-expires=1788966000&x-signature=a%2Fb%3D';
+    const message = __test.composeTikTokChatMessage({
+      content: 'hello',
+      user: { avatarThumb: { uri: '100x100/tos-useast8-avt-0068-tx2/avatar', urlList: [avatarUrl] } }
+    });
+    assert.strictEqual(message.chatimg, avatarUrl, 'v3 avatars must use the signed URL, preserving its query');
+
+    const legacyMessage = __test.composeTikTokChatMessage({
+      comment: 'hello', profilePictureUrl: avatarUrl
+    });
+    assert.strictEqual(legacyMessage.chatimg, avatarUrl, 'legacy avatar URLs must remain supported');
+
+    const uriMessage = __test.composeTikTokChatMessage({
+      content: 'hello', user: { avatarThumb: { uri: avatarUrl } }
+    });
+    assert.strictEqual(uriMessage.chatimg, avatarUrl, 'URI-only image payloads must remain supported');
+
+    for (const candidate of ['http://cdn.example.com/avatar.png', '//cdn.example.com/avatar.png', 'cdn.example.com/avatar.png']) {
+      const expected = candidate.startsWith('http:') ? candidate : 'https://cdn.example.com/avatar.png';
+      assert.strictEqual(normalizeTikTokImageUrl(candidate), expected);
+    }
+    for (const candidate of ['/avatar.png', 'avatar.png', '100x100/tos-useast8/avatar', 'javascript:alert(1)']) {
+      assert.strictEqual(normalizeTikTokImageUrl(candidate), null, 'asset paths and non-image schemes are not usable URLs');
+    }
+    assert.strictEqual(normalizeTikTokImageUrl({ href: '/avatar.png', urlList: ['', '/asset', avatarUrl] }), avatarUrl);
+    const fallbackMessage = __test.composeTikTokChatMessage({
+      content: 'hello',
+      user: { avatarThumb: { uri: '100x100/internal-id' }, avatarLarge: { urlList: [avatarUrl] } }
+    });
+    assert.strictEqual(fallbackMessage.chatimg, avatarUrl, 'an unusable thumbnail must fall back to another avatar size');
+  }
+
   {
     const message = __test.composeTikTokChatMessage({ content: 'hello from v3' });
     assert.strictEqual(message.chatmessage, 'hello from v3', 'v3 content should populate chat text');

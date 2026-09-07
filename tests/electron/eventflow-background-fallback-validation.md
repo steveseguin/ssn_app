@@ -1,5 +1,67 @@
 # Background fallback / Event Flow persistence — September 7, 2026
 
+## Follow-up: slow downloads, MIME errors, and mirror recovery
+
+The earlier 0.4.26 fix corrected the cross-origin readiness check, but retained a
+15-second deadline that could still replace a slow online background with a
+different offline IndexedDB store. A local Electron reproduction delayed a
+successful script response for 20 seconds: the monitored frame changed to file://
+at 16 seconds, while an otherwise identical unmonitored frame completed online.
+This reproduces a remaining cause; it does not identify the reporter's exact
+network failure.
+
+The new behavior preserves the selected background address on dependency failures.
+SSApp downloads complete scripts through its own session, tries cache, hosted,
+then GitHub mirrors, and parses the JavaScript before executing it once. MIME
+labels and redirected filename extensions do not decide whether a script is
+valid. Empty responses, HTML/JSON error bodies, syntax errors, HTTP failures,
+and stalled headers/bodies do not get executed. Each attempt is bounded to 12
+seconds, including body download. After all mirrors fail the editor displays
+Retry loading, without switching databases. A runtime execution failure stops
+initialization and is not automatically re-executed. Initial offline startup
+still supports the existing packaged background.
+
+The background HTML/loader MIME correction is narrowly limited to those two
+bootstrap resources in the main app window. A rejected/missing loader also has
+a validated recovery path. Settings initialization runs once after asynchronous
+script loading, including compatibility with an older cached background script.
+
+Functional verification in isolated real Electron sessions:
+
+- `npm run test:background-recovery:e2e`: 16 scenarios covering wrong MIME,
+  failed bootstrap, invalid bodies, GitHub-only recovery, redirected extension,
+  slow responses, stalled bodies, complete outages, and execution failures.
+  Full active/inactive flow graphs and the session ID survive; only the active
+  flow executes, once. Late responses do not execute twice. Retry restores the
+  same editor URL and saved graphs.
+- `npm run test:background-mime:e2e`: actual local TLS/HTTP proxy responses,
+  exercising Electron's real response-header hook with binary MIME labels on
+  background.html and loader.js. Requires OpenSSL for the disposable test
+  certificate; certificate bypass is restricted to this isolated test launch.
+- `node tests/electron/startup-outage-e2e.js`: fresh offline, online, partial
+  failure/retry, stalled failure/retry, and offline restart; real source-window
+  capture delivers each message once.
+- `node tests/electron/eventflow-background-fallback-e2e.js`: online stability,
+  true offline startup, reconnect, and saved-flow restart persistence.
+- `node tests/electron/emote-sanitizer-e2e.js`: current local source initialization,
+  rich chat rendering, blocked sanitizer dependency, and reload (18 messages).
+- Explicit live-asset run (`SSAPP_TEST_LIVE_ASSETS=1`,
+  `SSAPP_RECOVERY_PHASES=live-assets`) passed against the public cache server in
+  SSApp, preserving both flows and remaining online beyond 20 seconds. Other
+  services/channels were blocked. Public HTML/JS response headers were correct
+  when checked; this does not establish historical server behavior.
+
+Evidence under `%TEMP%`: `ssapp-script-recovery-4WFR11` (full graph matrix),
+`ssapp-script-recovery-BbssOS` (additional MIME/bootstrap outage cases),
+`ssapp-background-mime-ZaICLX` (TLS/header checks),
+`ssapp-startup-outage-KIB6nc`, `ssapp-flow-fallback-YNqsbE`,
+`ssapp-emote-sanitizer-TqUYSF`, and `ssapp-script-recovery-mtf0ws` (live assets).
+Recovered graph screenshot: `ssapp-script-recovery-znwOmQ/recovered-editor.png`.
+
+These are local changes in ssapp and the primary social_stream checkout; no
+release or remote deployment was performed. The earlier validation below is
+historical and describes the superseded partial-outage fallback behavior.
+
 Reproduced the v0.4.25 dependency monitor switching a healthy HTTPS background to the file fallback after about 15 seconds. Both processIncomingMessage and filterXSS existed in the background. The parent file:// window could not read the HTTPS frame's Location because of origin isolation; the monitor caught that security error and incorrectly classified both dependencies as missing.
 
 The monitor now requests the two readiness booleans through a main-process handler restricted to the main app frame and its selected child frame. It does not relax browser security or execute caller-provided JavaScript. Genuine dependency failures still select the complete offline bundle. The offline warning now explains that online Event Flows remain saved separately.

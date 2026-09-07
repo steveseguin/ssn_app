@@ -4273,7 +4273,20 @@ ipcMain.handle('socialstream:background-dependencies', async (event, expectedUrl
     // healthy HTTPS background directly because of browser origin isolation.
     const frame = mainWindow.webContents.mainFrame.frames.find(child => child.url === expectedUrl);
     if (!frame) return null;
-    return await frame.executeJavaScript('({backgroundLoaded: typeof window.processIncomingMessage === "function", sanitizerLoaded: typeof window.filterXSS === "function"})');
+    return await frame.executeJavaScript('({backgroundLoaded: typeof window.processIncomingMessage === "function", sanitizerLoaded: typeof window.filterXSS === "function", loader: window.ssappBackgroundLoadState || null})');
+});
+
+ipcMain.handle('socialstream:fetch-background-script', async (event, relativePath) => {
+    const frame = event.senderFrame;
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents
+        || !frame || !mainWindow.webContents.mainFrame.frames.includes(frame)
+        || !matchesSocialStreamPagePath(frame.url, 'background') || !isSocialStreamRemoteUrl(frame.url)) {
+        throw new Error('Script recovery requires the app background frame.');
+    }
+    const target = new URL(relativePath, frame.url);
+    if (target.origin !== new URL(frame.url).origin) throw new Error('Background scripts must use their own source origin.');
+    return require('./resources/background-script-loader').fetchBackgroundScript(target.href,
+        (url, options) => event.sender.session.fetch(url, options));
 });
 
 ipcMain.handle('socialstream:resolve-file-url', async (_event, relativePath, options = {}) => {
@@ -9935,6 +9948,23 @@ async function createWindow(args, reuse = false, mainApp = false) {
     mainWindow.args = args; // storing settings
     if (mainWindow && mainWindow.webContents) {
         mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+            // Only normalize the two bootstrap resources in our own app window.
+            // The HTML is checked by resolveSocialStreamPage before navigation;
+            // subsequent scripts are downloaded and parsed by the recovery bridge.
+            if (mainWindow && !mainWindow.isDestroyed() && details.webContentsId === mainWindow.webContents.id && details.statusCode === 200
+                && isSocialStreamRemoteUrl(details.url)) {
+                const resourcePath = getUrlPathForMatch(details.url);
+                const mime = details.resourceType === 'subFrame' && /^\/(?:beta\/)?background\.html$/.test(resourcePath)
+                    ? 'text/html; charset=utf-8'
+                    : details.resourceType === 'script' && /^\/(?:beta\/)?loader\.js$/.test(resourcePath)
+                        ? 'application/javascript; charset=utf-8' : null;
+                if (mime) {
+                    for (const key of Object.keys(details.responseHeaders)) {
+                        if (key.toLowerCase() === 'content-type') delete details.responseHeaders[key];
+                    }
+                    details.responseHeaders['Content-Type'] = [mime];
+                }
+            }
             if (details.responseHeaders["X-Frame-Options"]) {
                 delete details.responseHeaders["X-Frame-Options"];
             } else if (details.responseHeaders["x-frame-options"]) {

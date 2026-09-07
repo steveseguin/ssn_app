@@ -1688,7 +1688,7 @@ function extractTikTokIdentity(data = {}) {
     ], cleanVisibleString);
     const profilePictureUrl = pickFirstValue(
         sources,
-        ['profilePictureUrl', 'avatarThumb', 'avatarMedium', 'avatarLarger', 'avatarUrl', 'profilePicture'],
+        ['profilePictureUrl', 'avatarThumb', 'avatarMedium', 'avatarLarge', 'avatarLarger', 'avatarUrl', 'profilePicture'],
         normalizeTikTokImageUrl
     );
 
