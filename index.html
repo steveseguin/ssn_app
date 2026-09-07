@@ -14442,10 +14442,9 @@
                     let backgroundLoaded = false;
                     let sanitizerLoaded = false;
                     try {
-                        if (frame.contentWindow.location.href === originalUrl) {
-                            backgroundLoaded = typeof frame.contentWindow.processIncomingMessage === 'function';
-                            sanitizerLoaded = typeof frame.contentWindow.filterXSS === 'function';
-                        }
+                        const dependencies = await ipcRenderer.invoke('socialstream:background-dependencies', originalUrl);
+                        backgroundLoaded = dependencies?.backgroundLoaded === true;
+                        sanitizerLoaded = dependencies?.sanitizerLoaded === true;
                     } catch (_) { }
                     if (backgroundLoaded && sanitizerLoaded) return;
                     if (!backgroundLoaded && Date.now() < deadline) {
@@ -14463,7 +14462,7 @@
                         if (fallback && fallback.url && fallback.url.startsWith('file:')) {
                             frame.dataset.ssappOrigin = fallback.origin;
                             frame.src = fallback.url;
-                            Toast.warning('Background Fallback', 'A required script failed to load. Using the bundled background service.');
+                            Toast.warning('Background Fallback', 'Using the offline background. Online Event Flows stay saved separately; restart when connected to access them.');
                         }
                     } catch (error) {
                         console.error('Background dependency recovery failed:', error);
@@ -14511,7 +14510,7 @@
                         frame2.src = fallback.url;
                         frame2.dataset.ssappOrigin = fallback.origin;
                         frame2.classList.add('loading');
-                        Toast.warning('Background Fallback', 'Loaded local background service.');
+                        Toast.warning('Background Fallback', 'Using the offline background. Online Event Flows stay saved separately; restart when connected to access them.');
                         return true;
                     } else {
                         Toast.error('Background Error', 'Could not load background service.');
@@ -14530,7 +14529,7 @@
                         frame2.src = fallback.url;
                         frame2.dataset.ssappOrigin = fallback.origin;
                         frame2.classList.add('loading');
-                        Toast.warning('Background Fallback', 'Loaded local background service.');
+                        Toast.warning('Background Fallback', 'Using the offline background. Online Event Flows stay saved separately; restart when connected to access them.');
                         return true;
                     } else {
                         Toast.error('Background Error', 'Could not load background service.');

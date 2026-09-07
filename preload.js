@@ -806,6 +806,14 @@ function configureContextBridge(){
 			return await ipcRenderer.invoke('stt:get-capabilities');
 		  },
 
+		  voiceControl: (action, options) => ipcRenderer.invoke('voice:control', action, options),
+		  syncVoiceCommands: commands => ipcRenderer.invoke('voice:sync', commands),
+		  voicePlayback: active => ipcRenderer.invoke('voice:playback', !!active),
+		  onVoiceCommand: callback => {
+			if (typeof callback !== 'function') return;
+			ipcRenderer.on('voice:command', (_event, payload) => callback(payload));
+		  },
+
 		  transcribeAudio,
 
 		  getSttDiagnostics: async () => {
@@ -1163,6 +1171,13 @@ try {
 				return await ipcRenderer.invoke('stt:get-capabilities');
 			},
 
+		  voiceControl: (action, options) => ipcRenderer.invoke('voice:control', action, options),
+		  syncVoiceCommands: commands => ipcRenderer.invoke('voice:sync', commands),
+		  voicePlayback: active => ipcRenderer.invoke('voice:playback', !!active),
+		  onVoiceCommand: callback => {
+			if (typeof callback !== 'function') return;
+			ipcRenderer.on('voice:command', (_event, payload) => callback(payload));
+          },
 			transcribeAudio,
 
 			getSttDiagnostics: async () => {

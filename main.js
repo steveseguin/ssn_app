@@ -4263,6 +4263,19 @@ async function resolveBundledSocialStreamRoot(branch = 'main') {
     return null;
 }
 
+ipcMain.handle('socialstream:background-dependencies', async (event, expectedUrl) => {
+    if (!mainWindow || mainWindow.isDestroyed()
+        || event.sender !== mainWindow.webContents
+        || event.senderFrame !== mainWindow.webContents.mainFrame) {
+        throw new Error('Background checks require the main app window.');
+    }
+    // Read only the selected child frame. The file:// app UI cannot inspect a
+    // healthy HTTPS background directly because of browser origin isolation.
+    const frame = mainWindow.webContents.mainFrame.frames.find(child => child.url === expectedUrl);
+    if (!frame) return null;
+    return await frame.executeJavaScript('({backgroundLoaded: typeof window.processIncomingMessage === "function", sanitizerLoaded: typeof window.filterXSS === "function"})');
+});
+
 ipcMain.handle('socialstream:resolve-file-url', async (_event, relativePath, options = {}) => {
     try {
         const descriptor = await locateBundledSocialStreamFile(options.branch || 'main', relativePath);
@@ -17802,6 +17815,30 @@ function shutdownSttWorker() {
         } catch (_) { }
     }
 }
+
+// Voice control uses its own private capture window; the cohost STT boundary stays intact.
+function trustedVoicePage(event, names, allowFrame = false) {
+    if (!event.senderFrame || (!allowFrame && event.senderFrame !== event.sender.mainFrame)) return false;
+    try {
+        const url = new URL(event.senderFrame.url);
+        if (!names.some(name => matchesSocialStreamPagePath(url.href, name))) return false;
+        if (isSocialStreamRemoteUrl(url.href)) return true;
+        if (url.protocol !== 'file:') return false;
+        const root = Argv.filesource ? path.resolve(fsPathFromMaybeFileUrl(Argv.filesource)) : __dirname;
+        const file = require('url').fileURLToPath(url);
+        return names.some(name => path.resolve(file) === path.join(root, name + '.html'));
+    } catch (_) { return false; }
+}
+const nativeVoiceWhisper = require('./voice-native-whisper')({ app });
+const voiceControlService = require('./voice-control-service')({
+    app, BrowserWindow, ipcMain,
+    isControl: event => trustedVoicePage(event, ['voice-control']),
+    isBackground: event => !!mainWindow && event.sender === mainWindow.webContents && trustedVoicePage(event, ['background'], true),
+    isSpeechPage: event => trustedVoicePage(event, ['cohost', 'actions', 'tts', 'dock', 'background'], true),
+    sourceRoot: () => Argv.filesource ? path.resolve(fsPathFromMaybeFileUrl(Argv.filesource)) : null,
+    cancelTranscription: () => nativeVoiceWhisper.stop(),
+    transcribe: (sender, audio) => nativeVoiceWhisper.supported ? nativeVoiceWhisper.transcribe(audio) : enqueueSttRequest(sender, normalizeSttAudioPayload({audio, sampleRate:16000}))
+});
 
 ipcMain.handle('stt:get-capabilities', async (event) => {
     assertTrustedSttSender(event);
