@@ -66,6 +66,35 @@ const report = { checks: [], live: [] };
             assert.equal(await main.evaluate(target => stateManager.getSources().find(s => s.target === target).url, target), expected);
         }
         report.checks.push('One Bilibili button, both choices route correctly, wrong-site inputs rejected (URL mapping only; no live Bilibili capture claimed)');
+        // Exercise source creation with pasted URLs in the running renderer.
+        for (const [target, input, expected] of [
+            ['picarto', 'https://picarto.tv/HuckleberryBleu', 'https://picarto.tv/chatpopout/HuckleberryBleu/public'],
+            ['mixcloud', 'www.mixcloud.com/live/MissBlu6/chat/', 'https://www.mixcloud.com/live/MissBlu6/chat/'],
+            ['twitcasting', 'https://twitcasting.tv/TJ_Ajianking', 'https://twitcasting.tv/TJ_Ajianking'],
+            ['younow', 'https://www.younow.com/FabbyFlorez99', 'https://www.younow.com/FabbyFlorez99'],
+            ['chzzk', 'https://chzzk.naver.com/live/4de764d9dad3b25602284be6db3ac647/chat', 'https://chzzk.naver.com/live/4de764d9dad3b25602284be6db3ac647/chat'],
+            ['nimo', 'https://www.nimo.tv/live/1563885463', 'https://www.nimo.tv/popout/chat/1563885463'],
+            ['sooplive', 'https://play.sooplive.com/bigfishtv/296940097?vtype=chat', 'https://play.sooplive.com/bigfishtv/'],
+            ['beamstream', 'https://beamstream.gg/spooky-boogy/chat', 'https://beamstream.gg/spooky-boogy/chat'],
+            ['velora', 'https://velora.tv/electriccyder', 'https://velora.tv/electriccyder'],
+            ['x', 'https://twitter.com/NASA', 'https://x.com/NASA/livechat'],
+            ['arenasocial', 'https://arena.social/live/example', 'https://arena.social/live/example']
+        ]) {
+            await main.evaluate(async ({target, input}) => newSource(target, input, false, {connectionMode: 'classic'}), {target, input});
+            const source = await main.evaluate(url => stateManager.getSources().find(s => s.url === url), expected);
+            assert(source, target + ' pasted URL was not normalized');
+            assert(!source.username.includes('/'), target + ' saved a URL as the handle');
+        }
+        const invalidCount = await main.evaluate(async () => {
+            const before = stateManager.getSources().length;
+            await newSource('mixcloud', 'https://example.com/channel');
+            await newSource('picarto', 'https://picarto.tv/');
+            return stateManager.getSources().length - before;
+        });
+        assert.equal(invalidCount, 0);
+        assert.equal(await main.evaluate(() => parseNamedSourceInput('vkvideo', 'https://live.vkvideo.ru/absatzmedia/stream/sl_236688').url), 'https://live.vkvideo.ru/absatzmedia/only-chat');
+        await shot('pasted-url-sources');
+        report.checks.push('Pasted URLs create correct source rows for eleven platforms; invalid URLs rejected; VK stream links accepted');
         if (process.env.SOURCE_SETUP_UI_ONLY === '1') {
             await main.locator('[data-source-type="loco"]').click();
             await main.locator('#source-setup-input').fill('https://example.com/streamers/name');

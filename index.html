@@ -3682,6 +3682,13 @@
             const invalidTwitchSourceMessage = 'Enter a Twitch username or Twitch channel/chat URL.';
             let partiSourceInfo = null;
 
+            try {
+                username = normalizeSimpleSourceInput(target, username);
+            } catch (error) {
+                if (!startup) Toast.warning(translate('toast.invalidusername'), error.message);
+                return;
+            }
+
             if (username) {
                 // Clean up username based on platform requirements
                 // For YouTube: Keep @ for handles, UC for channels, c/ for custom channels

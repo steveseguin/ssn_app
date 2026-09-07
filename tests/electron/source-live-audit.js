@@ -54,7 +54,8 @@ const report = { started: new Date().toISOString(), mode: 'Standard capture, iso
                 try {
                     const previous = new Set(app.windows());
                     await main.evaluate(async test => {
-                        if (test.videoId) await newSourceVideoID(test.target, test.videoId, false, { connectionMode: 'classic' });
+                        if (test.input) await newSource(test.target, test.input, false, { connectionMode: 'classic' });
+                        else if (test.videoId) await newSourceVideoID(test.target, test.videoId, false, { connectionMode: 'classic' });
                         else await newOtherSource(test.target, test.url, false, { username: 'Audit ' + test.target, connectionMode: 'classic', sourceFile: test.sourceFile || 'sources/' + test.target + '.js' });
                     }, test);
                     entry.source = await main.evaluate(test => stateManager.getSources().find(s => test.videoId ? s.target === test.target && s.videoId === test.videoId : s.url === test.url), test);

@@ -1,17 +1,52 @@
 'use strict';
 
+// Extract handles only from known channel/watch/chat routes for this platform.
+// Leave the specialized YouTube, Rumble and authenticated connectors to their
+// existing parsers. A URL from another site must not become a username.
+function normalizeSimpleSourceInput(target, value) {
+    const routes = {
+        velora: [/^(?:www\.)?velora\.tv$/, /^\/([^/]+)\/?$/],
+        picarto: [/^(?:www\.)?picarto\.tv$/, /^\/(?:chatpopout\/)?([^/]+)(?:\/public)?\/?$/],
+        mixcloud: [/^(?:www\.)?mixcloud\.com$/, /^\/(?:live\/)?([^/]+)(?:\/chat)?\/?$/],
+        twitcasting: [/^(?:www\.)?twitcasting\.tv$/, /^\/([^/]+)(?:\/broadcaster)?\/?$/],
+        younow: [/^(?:www\.)?younow\.com$/, /^\/([^/]+)\/?$/],
+        chzzk: [/^chzzk\.naver\.com$/, /^\/(?:live\/)?([a-fA-F0-9]{32})(?:\/chat)?\/?$/],
+        nimo: [/^(?:www\.)?nimo\.tv$/, /^\/(?:popout\/chat\/|live\/)?([^/]+)\/?$/],
+        sooplive: [/^play\.sooplive\.com$/, /^\/([^/]+)(?:\/\d+)?\/?$/],
+        beamstream: [/^(?:www\.)?beamstream\.gg$/, /^\/([^/]+)(?:\/chat)?\/?$/],
+        x: [/^(?:www\.)?(?:x\.com|twitter\.com)$/, /^\/([^/]+)(?:\/livechat)?\/?$/],
+        arenasocial: [/^(?:www\.)?arena\.social$/, /^\/(?:live\/)?([^/]+)\/?$/]
+    };
+    const route = routes[target];
+    if (!route) return value;
+    let handle = String(value || '').trim().replace(/^@+/, '');
+    if (/^(?:https?:\/\/|www\.)/i.test(handle) || handle.includes('/') || route[0].test(handle.toLowerCase())) {
+        let url;
+        try { url = new URL(/^https?:\/\//i.test(handle) ? handle : 'https://' + handle); } catch (_) { }
+        const match = url && !url.username && !url.password && !url.port &&
+            /^https?:$/.test(url.protocol) && route[0].test(url.hostname) && url.pathname.match(route[1]);
+        if (!match) throw new Error('Enter a channel handle or a channel/chat URL from the selected site.');
+        try { handle = decodeURIComponent(match[1]); } catch (_) { handle = ''; }
+    }
+    const pattern = target === 'twitcasting' ? /^[\w.:-]+$/ : /^[\w.-]+$/;
+    if (!pattern.test(handle) || /^(?:\.+|live|chat|explore|discover|login|signup)$/i.test(handle)) {
+        throw new Error('Enter the channel handle from its URL, not a home page or video link.');
+    }
+    return handle;
+}
+
 // Public channel routes verified in SSApp's source windows. These are channel
 // identifiers, not display names; never append an unparsed URL to a route.
 function parseNamedSourceInput(target, value) {
     const definitions = {
         bigo: { hosts: ['www.bigo.tv', 'bigo.tv'], path: /^\/(?:user\/|[a-z]{2}\/)?([^/]+)\/?$/, base: 'https://www.bigo.tv/', suffix: '' },
         loco: { hosts: ['loco.com', 'www.loco.com', 'loco.gg', 'www.loco.gg'], path: /^\/(?:chat\/)?streamers\/([^/]+)\/?$/, base: 'https://loco.com/chat/streamers/', suffix: '' },
-        vkvideo: { hosts: ['live.vkvideo.ru', 'live.vkplay.ru', 'vkplay.live'], path: /^\/([^/]+)(?:\/only-chat)?\/?$/, base: 'https://live.vkvideo.ru/', suffix: '/only-chat' }
+        vkvideo: { hosts: ['live.vkvideo.ru', 'live.vkplay.ru', 'vkplay.live'], path: /^\/([^/]+)(?:\/only-chat|\/stream\/sl_\d+)?\/?$/, base: 'https://live.vkvideo.ru/', suffix: '/only-chat' }
     };
     const definition = definitions[target];
     if (!definition) throw new Error('Choose a supported platform.');
     let username = String(value || '').trim().replace(/^@/, '');
-    if (/^(?:https?:\/\/|www\.)/i.test(username) || username.includes('/')) {
+    if (/^(?:https?:\/\/|www\.)/i.test(username) || username.includes('/') || definition.hosts.includes(username.toLowerCase())) {
         let url;
         try { url = new URL(/^https?:\/\//i.test(username) ? username : 'https://' + username); } catch (_) { }
         if (!url || !['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.port || !definition.hosts.includes(url.hostname)) {
