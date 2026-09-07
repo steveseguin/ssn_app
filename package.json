@@ -157,6 +157,8 @@
       "transfer-restore-runner.js",
       "websocket-monitor.js",
       "youtube.js",
+      "ebay.js",
+      "source-setup.js",
       "discord.js",
       "tiktok-auth.js",
       "tiktok-badges.js",

@@ -139,10 +139,6 @@
                             src="https://cache.socialstream.ninja/sources/images/kick.png" class="icon" />Kick</button></span>
                 <span><button onclick="showDiscordAddSourcePrompt();" data-source-type="discord"><img
                             src="https://cache.socialstream.ninja/sources/images/discord.png" class="icon" />Discord</button></span>
-                <span><button onclick="newSourcePrompt('vpzone');" data-source-type="vpzone"><img
-                            src="https://cache.socialstream.ninja/sources/images/vpzone.png" class="icon" />VPZONE</button></span>
-                <span><button onclick="newSourcePrompt('velora');" data-source-type="velora"><img
-                            src="https://velora.tv/favicon.ico" class="icon" />Velora</button></span>
                 <span><button onclick="newSourcePrompt('instagramlive');" data-source-type="instagram"><img
                             src="https://cache.socialstream.ninja/sources/images/instagramlive.png"
                             class="icon" />Instagram Live</button></span>
@@ -150,8 +146,6 @@
                             src="https://cache.socialstream.ninja/sources/images/facebook.png" class="icon" />Facebook</button></span>
                 <span><button onclick="newSourcePrompt('tiktok');" data-source-type="tiktok"><img
                             src="https://cache.socialstream.ninja/sources/images/tiktok.png" class="icon" />TikTok</button></span>
-                <span><button onclick="newSourcePrompt('picarto');"><img
-                            src="https://cache.socialstream.ninja/sources/images/picarto.png" class="icon" />Picarto</button></span>
                 <span><button onclick="newSourcePrompt('x');"><img src="https://cache.socialstream.ninja/sources/images/x.png"
                             class="icon" />X.com</button></span>
                 <span><button onclick="newSourcePrompt('mixcloud');"><img
@@ -176,15 +170,27 @@
                             src="https://cache.socialstream.ninja/sources/images/arenasocial.png" class="icon" />Arena Social</button></span>
                 <span class="hidden"><button onclick="newSourcePrompt('pilled');"><img
                             src="https://cache.socialstream.ninja/sources/images/pilled.png" class="icon" />Pilled</button></span>
-                <span><button onclick="newSourcePrompt('bilibilicom');"><img
-                            src="https://cache.socialstream.ninja/sources/images/bilibili.png" class="icon" />BiliBili.com</button></span>
-                <span><button onclick="newSourcePrompt('bilibilitv');"><img
-                            src="https://cache.socialstream.ninja/sources/images/bilibili.png" class="icon" />BiliBili.tv</button></span>
+                <span><button onclick="showBilibiliSourceSetup();" data-source-type="bilibili"><img
+                            src="https://cache.socialstream.ninja/sources/images/bilibili.png" class="icon" />Bilibili</button></span>
+                <span><button onclick="showNamedSourceSetup('bigo');" data-source-type="bigo"><img
+                            src="https://cache.socialstream.ninja/sources/images/bigo.png" class="icon" />BIGO Live</button></span>
+                <span><button onclick="showNamedSourceSetup('loco');" data-source-type="loco"><img
+                            src="https://cache.socialstream.ninja/sources/images/loco.png" class="icon" />Loco</button></span>
+                <span><button onclick="showNamedSourceSetup('vkvideo');" data-source-type="vkvideo"><img
+                            src="https://cache.socialstream.ninja/sources/images/vkvideo.png" class="icon" />VK Video Live</button></span>
+                <span><button onclick="showEbayAddSourcePrompt();" data-source-type="ebay"><img
+                            src="https://cache.socialstream.ninja/sources/images/ebay.png" class="icon" />eBay Live</button></span>
+                <span><button onclick="newSourcePrompt('vpzone');" data-source-type="vpzone"><img
+                            src="https://cache.socialstream.ninja/sources/images/vpzone.png" class="icon" />VPZONE</button></span>
+                <span><button onclick="newSourcePrompt('velora');" data-source-type="velora"><img
+                            src="https://velora.tv/favicon.ico" class="icon" />Velora</button></span>
+                <span><button onclick="newSourcePrompt('picarto');"><img
+                            src="https://cache.socialstream.ninja/sources/images/picarto.png" class="icon" />Picarto</button></span>
                 <span><button onclick="newOtherSourcePrompt('peertube');"><img
                             src="https://cache.socialstream.ninja/sources/images/peertube.png" class="icon" />Peertube</button></span>
                 <span><button title="Add a chat source that isn't listed by providing the chat URL"
                         onclick="newOtherSourcePrompt();" data-source-type="other"><img
-                            src="https://cache.socialstream.ninja/sources/images/unknown.png" class="icon" />Other</button></span>
+                            src="https://cache.socialstream.ninja/sources/images/unknown.png" class="icon" />Add other source</button></span>
             </div>
 
             <div id="sources" style="right:calc(max(35%, 400px))">
@@ -325,6 +331,9 @@
         <div class="settings-menu">
             <div class="settings-menu-section">
                 <div class="settings-menu-header">Additional Controls</div>
+                <div class="settings-menu-item hidden" onclick="chooseEbaySourceStream(this)" data-ebay-choose-stream>
+                    Choose another eBay Live stream
+                </div>
                 <div class="settings-menu-item" onclick="clearThis(this)" data-clearcache>
                     🧹 Clear cache & storage
                 </div>
@@ -766,6 +775,8 @@
     <script type="text/javascript" src="manifest.js"></script>
     <script type="text/javascript" src="thumbnail.js"></script>
     <script type="text/javascript" src="youtube.js"></script>
+    <script type="text/javascript" src="ebay.js"></script>
+    <script type="text/javascript" src="source-setup.js"></script>
     <script type="text/javascript" src="discord.js"></script>
     <!-- Temporarily disabled performance monitor to fix loading issue -->
     <!-- <script type="text/javascript" src="performance-monitor.js"></script> -->
@@ -1957,6 +1968,7 @@
 
             // Update data-target attribute
             element.dataset.target = source.target;
+            element.querySelector('[data-ebay-choose-stream]')?.classList.toggle('hidden', source.target !== 'ebay');
 
             element.querySelector("[data-sourceicon]").src = getSourceIconUrl(source.target);
             element.querySelector("[data-sourceicon]").title = source.target || "unknown";
@@ -3604,8 +3616,7 @@
             return url;
         }
 
-        async function newOtherSourcePrompt(target = "") {
-            let URL = window.prompt("Enter the full URL for the source:");
+        async function addOtherSourceFromUrl(target, URL) {
             if (URL) {
                 URL = URL.trim();
                 // If no scheme provided, default to https://
@@ -15175,7 +15186,7 @@
                 'source.instagram': 'Instagram Live',
                 'source.facebook': 'Facebook',
                 'source.tiktok': 'TikTok',
-                'source.other': 'Other',
+                'source.other': 'Add other source',
 
                 // App info
                 'app.title': 'Social Stream Ninja Standalone',
