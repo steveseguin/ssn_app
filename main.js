@@ -8778,7 +8778,8 @@ function stealthHideView(view) {
         // Avoid taskbar clutter while hidden
         try { view.setSkipTaskbar(true); } catch (_) { }
 
-        // Linux gets a real hide() rather than the off-screen parking used elsewhere.
+        // Linux and macOS use native hide(). macOS also clamps parked windows
+        // back onto the screen, leaving a visible capture window.
         // Window managers clamp far-off-screen coordinates back towards the desktop
         // (leaving a visible sliver), and Wayland forbids programmatic positioning
         // outright, so parking cannot work here. Minimizing was the previous fallback but
@@ -8793,7 +8794,7 @@ function stealthHideView(view) {
         //
         // Measured on Electron 38 and 43 (X11 + Wayland): a hidden source window keeps
         // visibilityState "visible", keeps timers at full rate, and keeps rendering.
-        if (process.platform === 'linux') {
+        if (process.platform === 'linux' || process.platform === 'darwin') {
             try { installFramePump(view.webContents); } catch (_) { }
 
             let hidden = false;
@@ -8817,7 +8818,7 @@ function stealthHideView(view) {
             return hidden;
         }
 
-        // Windows and macOS keep the window mapped and park it outside the virtual desktop,
+        // Windows keeps the window mapped and parks it outside the virtual desktop,
         // rather than using the real hide() that Linux now uses. Deliberate: parking works
         // on these platforms (they allow arbitrary window coordinates, unlike Linux window
         // managers, which clamp them back towards the desktop) and a parked window keeps
@@ -8844,8 +8845,8 @@ function stealthShowView(view, options = {}) {
         const previousBounds = view.__prevBounds && typeof view.__prevBounds.x === 'number'
             ? view.__prevBounds
             : null;
-        if (process.platform === 'linux') {
-            const wayland = isWaylandSession();
+        if (process.platform === 'linux' || process.platform === 'darwin') {
+            const wayland = process.platform === 'linux' && isWaylandSession();
 
             // Wayland prohibits programmatic positioning, so replaying stored bounds there
             // does nothing useful and can confuse the compositor's own placement.
