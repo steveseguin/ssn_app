@@ -7,6 +7,7 @@ const fsp = fs.promises;
 const path = require("path");
 const os = require("os");
 const { pathToFileURL, fileURLToPath } = require("url");
+const { getSocialStreamSourceUrls } = require('./resources/social-stream-source-mirrors');
 const {
     cleanVisibleString,
     firstNonEmptyVisibleString,
@@ -4025,26 +4026,24 @@ async function loadBundledSocialStream(branch, relativePath) {
 }
 
 async function fetchWithTimeout(url, timeoutMs = SOCIAL_STREAM_REMOTE_TIMEOUT_MS) {
-    const fetchPromise = fetch(url, { cache: 'no-store' });
+    const controller = new AbortController();
+    const fetchPromise = (async () => {
+        const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+        if (!response) throw new Error('No response received');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return { text: await response.text() };
+    })();
     let timeoutId;
     const timeoutPromise = new Promise((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(`Request timed out after ${timeoutMs} ms`)), timeoutMs);
+        timeoutId = setTimeout(() => {
+            reject(new Error(`Request timed out after ${timeoutMs} ms`));
+            controller.abort();
+        }, timeoutMs);
     });
     try {
-        const response = await Promise.race([fetchPromise, timeoutPromise]);
+        return await Promise.race([fetchPromise, timeoutPromise]);
+    } finally {
         clearTimeout(timeoutId);
-        if (!response) {
-            throw new Error('No response received');
-        }
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-        const text = await response.text();
-        return { text };
-    } catch (error) {
-        fetchPromise.catch(() => { }); // Prevent unhandled rejection if timeout wins
-        clearTimeout(timeoutId);
-        throw error;
     }
 }
 
@@ -4079,9 +4078,11 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
         let remoteError = null;
         let cachePath = null;
 
-        if (remoteUrl) {
+        const remoteCandidates = remoteUrl ? getSocialStreamSourceUrls(remoteUrl) : [];
+        const candidateTimeout = Math.max(1000, Math.ceil((options.timeoutMs || SOCIAL_STREAM_REMOTE_TIMEOUT_MS) / Math.max(1, remoteCandidates.length)));
+        for (const candidateUrl of remoteCandidates) {
             try {
-                const { text } = await fetchWithTimeout(remoteUrl, options.timeoutMs || SOCIAL_STREAM_REMOTE_TIMEOUT_MS);
+                const { text } = await fetchWithTimeout(candidateUrl, candidateTimeout);
                 validateSocialStreamSourceText(text, relativePath, remoteUrl);
                 if (relativePath) {
                     try {
@@ -4097,11 +4098,11 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
                 return {
                     text,
                     origin: 'remote',
-                    meta: { url: remoteUrl }
+                    meta: { url: candidateUrl }
                 };
             } catch (error) {
                 remoteError = error;
-                reporter.report('remote_load_error', error, { url: remoteUrl, branch, relativePath });
+                reporter.report('remote_load_error', error, { url: candidateUrl, branch, relativePath });
             }
         }
 
@@ -4111,6 +4112,7 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
                 if (cachePath) {
                     const cachedText = await readTextIfExists(cachePath);
                     if (typeof cachedText === 'string') {
+                        validateSocialStreamSourceText(cachedText, relativePath, remoteUrl);
                         return {
                             text: cachedText,
                             origin: 'cache',
@@ -4134,6 +4136,7 @@ async function loadSocialStreamSource(remoteUrl, options = {}) {
                 }
             }
             if (bundled && typeof bundled.text === 'string') {
+                validateSocialStreamSourceText(bundled.text, relativePath, remoteUrl);
                 const remoteReason = remoteError ? (remoteError.message || String(remoteError)) : null;
                 const meta = {
                     path: bundled.path,
@@ -4259,6 +4262,32 @@ async function resolveBundledSocialStreamRoot(branch = 'main') {
     }
     return null;
 }
+
+ipcMain.handle('socialstream:background-dependencies', async (event, expectedUrl) => {
+    if (!mainWindow || mainWindow.isDestroyed()
+        || event.sender !== mainWindow.webContents
+        || event.senderFrame !== mainWindow.webContents.mainFrame) {
+        throw new Error('Background checks require the main app window.');
+    }
+    // Read only the selected child frame. The file:// app UI cannot inspect a
+    // healthy HTTPS background directly because of browser origin isolation.
+    const frame = mainWindow.webContents.mainFrame.frames.find(child => child.url === expectedUrl);
+    if (!frame) return null;
+    return await frame.executeJavaScript('({backgroundLoaded: typeof window.processIncomingMessage === "function", sanitizerLoaded: typeof window.filterXSS === "function", loader: window.ssappBackgroundLoadState || null})');
+});
+
+ipcMain.handle('socialstream:fetch-background-script', async (event, relativePath) => {
+    const frame = event.senderFrame;
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents
+        || !frame || !mainWindow.webContents.mainFrame.frames.includes(frame)
+        || !matchesSocialStreamPagePath(frame.url, 'background') || !isSocialStreamRemoteUrl(frame.url)) {
+        throw new Error('Script recovery requires the app background frame.');
+    }
+    const target = new URL(relativePath, frame.url);
+    if (target.origin !== new URL(frame.url).origin) throw new Error('Background scripts must use their own source origin.');
+    return require('./resources/background-script-loader').fetchBackgroundScript(target.href,
+        (url, options) => event.sender.session.fetch(url, options));
+});
 
 ipcMain.handle('socialstream:resolve-file-url', async (_event, relativePath, options = {}) => {
     try {
@@ -8762,7 +8791,8 @@ function stealthHideView(view) {
         // Avoid taskbar clutter while hidden
         try { view.setSkipTaskbar(true); } catch (_) { }
 
-        // Linux gets a real hide() rather than the off-screen parking used elsewhere.
+        // Linux and macOS use native hide(). macOS also clamps parked windows
+        // back onto the screen, leaving a visible capture window.
         // Window managers clamp far-off-screen coordinates back towards the desktop
         // (leaving a visible sliver), and Wayland forbids programmatic positioning
         // outright, so parking cannot work here. Minimizing was the previous fallback but
@@ -8777,7 +8807,7 @@ function stealthHideView(view) {
         //
         // Measured on Electron 38 and 43 (X11 + Wayland): a hidden source window keeps
         // visibilityState "visible", keeps timers at full rate, and keeps rendering.
-        if (process.platform === 'linux') {
+        if (process.platform === 'linux' || process.platform === 'darwin') {
             try { installFramePump(view.webContents); } catch (_) { }
 
             let hidden = false;
@@ -8801,7 +8831,7 @@ function stealthHideView(view) {
             return hidden;
         }
 
-        // Windows and macOS keep the window mapped and park it outside the virtual desktop,
+        // Windows keeps the window mapped and parks it outside the virtual desktop,
         // rather than using the real hide() that Linux now uses. Deliberate: parking works
         // on these platforms (they allow arbitrary window coordinates, unlike Linux window
         // managers, which clamp them back towards the desktop) and a parked window keeps
@@ -8828,8 +8858,8 @@ function stealthShowView(view, options = {}) {
         const previousBounds = view.__prevBounds && typeof view.__prevBounds.x === 'number'
             ? view.__prevBounds
             : null;
-        if (process.platform === 'linux') {
-            const wayland = isWaylandSession();
+        if (process.platform === 'linux' || process.platform === 'darwin') {
+            const wayland = process.platform === 'linux' && isWaylandSession();
 
             // Wayland prohibits programmatic positioning, so replaying stored bounds there
             // does nothing useful and can confuse the compositor's own placement.
@@ -9918,6 +9948,23 @@ async function createWindow(args, reuse = false, mainApp = false) {
     mainWindow.args = args; // storing settings
     if (mainWindow && mainWindow.webContents) {
         mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+            // Only normalize the two bootstrap resources in our own app window.
+            // The HTML is checked by resolveSocialStreamPage before navigation;
+            // subsequent scripts are downloaded and parsed by the recovery bridge.
+            if (mainWindow && !mainWindow.isDestroyed() && details.webContentsId === mainWindow.webContents.id && details.statusCode === 200
+                && isSocialStreamRemoteUrl(details.url)) {
+                const resourcePath = getUrlPathForMatch(details.url);
+                const mime = details.resourceType === 'subFrame' && /^\/(?:beta\/)?background\.html$/.test(resourcePath)
+                    ? 'text/html; charset=utf-8'
+                    : details.resourceType === 'script' && /^\/(?:beta\/)?loader\.js$/.test(resourcePath)
+                        ? 'application/javascript; charset=utf-8' : null;
+                if (mime) {
+                    for (const key of Object.keys(details.responseHeaders)) {
+                        if (key.toLowerCase() === 'content-type') delete details.responseHeaders[key];
+                    }
+                    details.responseHeaders['Content-Type'] = [mime];
+                }
+            }
             if (details.responseHeaders["X-Frame-Options"]) {
                 delete details.responseHeaders["X-Frame-Options"];
             } else if (details.responseHeaders["x-frame-options"]) {
@@ -15057,6 +15104,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             if (view && view.webContents) {
                 try {
                     view.webContents.setAudioMuted(!!args.muteWindow);
+                    // Reload and delayed source injection reuse this configuration.
+                    // Keep them from restoring the mute state from window creation.
+                    if (view.args) view.args.muted = !!args.muteWindow;
                     view.webContents.send("sendToTab", {
                         muteWindow: !!args.muteWindow
                     });
@@ -17799,6 +17849,30 @@ function shutdownSttWorker() {
         } catch (_) { }
     }
 }
+
+// Voice control uses its own private capture window; the cohost STT boundary stays intact.
+function trustedVoicePage(event, names, allowFrame = false) {
+    if (!event.senderFrame || (!allowFrame && event.senderFrame !== event.sender.mainFrame)) return false;
+    try {
+        const url = new URL(event.senderFrame.url);
+        if (!names.some(name => matchesSocialStreamPagePath(url.href, name))) return false;
+        if (isSocialStreamRemoteUrl(url.href)) return true;
+        if (url.protocol !== 'file:') return false;
+        const root = Argv.filesource ? path.resolve(fsPathFromMaybeFileUrl(Argv.filesource)) : __dirname;
+        const file = require('url').fileURLToPath(url);
+        return names.some(name => path.resolve(file) === path.join(root, name + '.html'));
+    } catch (_) { return false; }
+}
+const nativeVoiceWhisper = require('./voice-native-whisper')({ app });
+const voiceControlService = require('./voice-control-service')({
+    app, BrowserWindow, ipcMain,
+    isControl: event => trustedVoicePage(event, ['voice-control']),
+    isBackground: event => !!mainWindow && event.sender === mainWindow.webContents && trustedVoicePage(event, ['background'], true),
+    isSpeechPage: event => trustedVoicePage(event, ['cohost', 'actions', 'tts', 'dock', 'background'], true),
+    sourceRoot: () => Argv.filesource ? path.resolve(fsPathFromMaybeFileUrl(Argv.filesource)) : null,
+    cancelTranscription: () => nativeVoiceWhisper.stop(),
+    transcribe: (sender, audio) => nativeVoiceWhisper.supported ? nativeVoiceWhisper.transcribe(audio) : enqueueSttRequest(sender, normalizeSttAudioPayload({audio, sampleRate:16000}))
+});
 
 ipcMain.handle('stt:get-capabilities', async (event) => {
     assertTrustedSttSender(event);

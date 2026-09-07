@@ -141,7 +141,7 @@ async function instantiateFunction(functionSource, contextValues, functionName) 
 
 async function testSetupIframeSource(indexSource) {
 	const fnSource = extractFunctionSource(indexSource, 'setupIframeSource');
-	const setupGlobals = { getLanguageExtraParams: () => [] };
+	const setupGlobals = { getLanguageExtraParams: () => [], monitorBackgroundDependencies: () => {} };
 
 	const successFrame = createFrame();
 	const successToast = createToastRecorder();

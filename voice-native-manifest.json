@@ -1,0 +1,22 @@
+{
+  "runtimeVersion": "b4938",
+  "runtimeUrl": "https://github.com/ggml-org/whisper.cpp/releases/download/b4938/whisper-bin-x64.zip",
+  "runtimeSha256": "c2a4b60edb11f7e11a9191ffb50929535527d4d91c9903dbe3e554583bbbc63d",
+  "modelUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin",
+  "modelSha256": "c77c5766f1cef09b6b7d47f21b546cbddd4157886b3b5d6d4f709e91e66c7c2b",
+  "files": {
+    "whisper-cli.exe": "800a0fd754afa75e109c7248286ad735670fb6b23d92ca5d12604647ef638a65",
+    "whisper.dll": "0a29e5824c7495185b833ad07df7ab9cadf130a9be848f967c6b88aeca971566",
+    "ggml.dll": "4e77ead4ecc32324f9432acb06ee71444708880ca6780c918baa6903389ba257",
+    "ggml-base.dll": "cb1dfa532b8bf14c3cd54d8bd7ef12b8d07d3f7d85dbef01c135c1475e08ed38",
+    "ggml-cpu-alderlake.dll": "660886106a61537002c52cf0c7021bc8a8060174cc802ed650b9bfb77eb9183a",
+    "ggml-cpu-cannonlake.dll": "aab6d7e3c1707bd7cbb4da2061fd59fee5d6e3f4fe71606ab1a43ac814f1d89f",
+    "ggml-cpu-cascadelake.dll": "bef920f38f26432fa456ad7beda8a35b11d8719d10d198c08e61d1bc33c0ba40",
+    "ggml-cpu-haswell.dll": "f52a4824868b8d9ac48f814edeb4f7382e28371f093ef6e115077fb7125bf830",
+    "ggml-cpu-icelake.dll": "161baa9fb0061df74d0f0d83339a68890b2be1ba22b6b406d9a0ea23dbf89628",
+    "ggml-cpu-sandybridge.dll": "e5cb5b8ecbc52ffc05d54f8456db41eb17036bb6848592f7df8666f0ade12cdb",
+    "ggml-cpu-skylakex.dll": "4784b7f45e7b5199981e7ba8c391cd1b5d4aa74413a0929cfd0a6d909098c30e",
+    "ggml-cpu-sse42.dll": "674320166d86f18573f8e0e99efcdb90cfa6b7b05b42d9465976ef5e70e5e4a3",
+    "ggml-cpu-x64.dll": "ffc1938f2ce3b52cef0e0935c6ce953bb5cc5593757ea55872ae4c4ee8bd577a"
+  }
+}

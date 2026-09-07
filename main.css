@@ -3641,3 +3641,32 @@ input:checked + .slider:before {
     flex-direction: column;
   }
 }
+/* eBay Live setup and explicit event selection. */
+.ebay-setup { width: min(620px, calc(100vw - 48px)); max-height: calc(100vh - 64px); overflow-y: auto; box-sizing: border-box; }
+.ebay-setup label { display: block; margin: 12px 0 6px; }
+.ebay-setup input { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-deep); color: var(--text-primary); }
+.ebay-setup select { width: auto; }
+.ebay-id-type { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+.ebay-id-type label { margin: 0; }
+.ebay-help { font-size: 0.9em; opacity: 0.8; line-height: 1.5; }
+.ebay-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.ebay-setup [hidden] { display: none !important; }
+.modal-content .ebay-event { display: flex; align-items: center; width: 100%; box-sizing: border-box; gap: 14px; padding: 12px; margin: 8px 0; text-align: left; white-space: normal; background: var(--bg-raised); border-color: var(--border-default); }
+.modal-content .ebay-event:hover { background: var(--bg-hover); border-color: var(--accent); }
+.ebay-event img { width: 64px; height: 80px; object-fit: cover; border-radius: 6px; flex-shrink: 0; }
+.ebay-event > span { min-width: 0; }
+.ebay-event strong, .ebay-event span span { display: block; overflow-wrap: anywhere; }
+.ebay-event span span { margin-top: 6px; font-size: 0.85em; opacity: 0.8; }
+
+/* Guided source setup, using the existing accessible modal shell. */
+.source-setup { width: min(620px, calc(100vw - 48px)); max-height: calc(100vh - 64px); overflow-y: auto; box-sizing: border-box; }
+.source-setup p, .source-setup li { line-height: 1.5; }
+.source-setup label { display: block; margin: 12px 0 6px; }
+.source-setup input, .source-setup select { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-deep); color: var(--text-primary); }
+.source-setup a { color: var(--accent); text-decoration: underline; }
+.source-setup-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+#source-setup-error { color: var(--danger, #ff8585); }
+
+.source-setup-help { margin-top: 18px; }
+.source-setup-help summary { cursor: pointer; color: var(--text-secondary); }
+.source-setup-help p { font-size: 0.9em; }

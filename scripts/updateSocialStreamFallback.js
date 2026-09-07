@@ -2,6 +2,7 @@ const fs = require('fs-extra');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { checkFallbackDependencies } = require('./check-fallback-dependencies');
 
 const REPO_URL = process.env.SSN_SOCIALSTREAM_REPO || 'https://github.com/steveseguin/social_stream.git';
 const BRANCH = process.env.SSN_SOCIALSTREAM_BRANCH || 'main';
@@ -33,6 +34,9 @@ const BASE_PATTERNS = [
     '/providers/**',
     '/settings/**',
     '/shared/**',
+    '/games/**',
+    '/themes/**',
+    '/img/**',
     '/sources/**',
     '/translations/**',
     '/thirdparty/NotoColorEmoji.ttf',
@@ -52,7 +56,20 @@ const BASE_PATTERNS = [
     '/thirdparty/buttons.js',
     '/thirdparty/index.umd.min.js',
     '/thirdparty/marked.umd.min.js',
-    '/thirdparty/mitm.html'
+    '/thirdparty/mitm.html',
+    '/thirdparty/pako.min.js',
+    '/thirdparty/qrcode.min.js',
+    '/thirdparty/jszip.min.js',
+    '/thirdparty/matter.min.js',
+    '/thirdparty/topojson-client.min.js',
+    '/thirdparty/iso-3166.json',
+    '/thirdparty/world-110m.json',
+    '/thirdparty/map/**',
+    '/thirdparty/html2canvas.min.js',
+    '/thirdparty/three.global.min.js',
+    '/thirdparty/bootstrap.min.css',
+    '/thirdparty/bokeh-canvas.js',
+    '/thirdparty/transformersjs/**'
 ];
 
 const TTS_PATTERNS = [
@@ -170,6 +187,8 @@ function updateFallback() {
             runGit(['-C', sourceRoot, 'sparse-checkout', 'set', ...sparsePatterns]);
         }
 
+        const dependencyCheck = checkFallbackDependencies(sourceRoot, sparsePatterns, INCLUDE_TTS ? [] : TTS_PATTERNS);
+        console.log(`[fallback] Dependency check passed (${dependencyCheck.checkedFiles} selected files).`);
         console.log('[fallback] Included patterns:');
         for (const pattern of sparsePatterns) {
             console.log(`  - ${pattern}`);
@@ -216,4 +235,13 @@ function updateFallback() {
     }
 }
 
-updateFallback();
+if (require.main === module) {
+    if (process.argv.includes('--check')) {
+        const sourceRoot = LOCAL_SOURCE || path.resolve(__dirname, '../../social_stream');
+        const result = checkFallbackDependencies(sourceRoot, normalizePatterns(BASE_PATTERNS, EXTRA_PATTERNS).concat(INCLUDE_TTS ? TTS_PATTERNS : []), INCLUDE_TTS ? [] : TTS_PATTERNS);
+        console.log(`[fallback] Dependency check passed (${result.checkedFiles} selected files).`);
+    } else {
+        updateFallback();
+    }
+}
+module.exports = { BASE_PATTERNS, TTS_PATTERNS, copyLocalFallback, normalizePatterns };

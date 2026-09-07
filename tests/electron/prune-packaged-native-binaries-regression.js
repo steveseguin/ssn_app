@@ -9,8 +9,8 @@ const path = require('path');
 
 const prunePackagedNativeBinaries = require('../../scripts/prunePackagedNativeBinaries');
 
-function createRuntimeTree(appOutDir) {
-	const nodeModulesRoot = path.join(appOutDir, 'resources', 'app.asar.unpacked', 'node_modules');
+function createRuntimeTree(appOutDir, resourcesDir = path.join(appOutDir, 'resources')) {
+	const nodeModulesRoot = path.join(resourcesDir, 'app.asar.unpacked', 'node_modules');
 	const roots = [
 		path.join(nodeModulesRoot, 'onnxruntime-node', 'bin', 'napi-v3'),
 		path.join(nodeModulesRoot, 'kokoro-js', 'node_modules', 'onnxruntime-node', 'bin', 'napi-v3'),
@@ -35,8 +35,12 @@ function createRuntimeTree(appOutDir) {
 async function verifyTarget(platformName, arch, expectedArch) {
 	const appOutDir = fs.mkdtempSync(path.join(os.tmpdir(), `ssapp-prune-${platformName}-`));
 	try {
-		const roots = createRuntimeTree(appOutDir);
-		await prunePackagedNativeBinaries({ electronPlatformName: platformName, arch, appOutDir });
+		const resourcesDir = platformName === 'darwin'
+			? path.join(appOutDir, 'socialstream.app', 'Contents', 'Resources')
+			: path.join(appOutDir, 'resources');
+		const roots = createRuntimeTree(appOutDir, resourcesDir);
+		await prunePackagedNativeBinaries({ electronPlatformName: platformName, arch, appOutDir,
+			packager: { getResourcesDir: () => resourcesDir } });
 		for (const root of roots) {
 			assert.strictEqual(fs.existsSync(path.join(root, platformName, expectedArch, 'runtime.node')), true);
 			for (const otherPlatform of ['win32', 'linux', 'darwin']) {

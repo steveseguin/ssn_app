@@ -22,7 +22,10 @@ module.exports = async function prunePackagedNativeBinaries(context) {
 
   const archName = ARCH_NAMES[context.arch] || String(context.arch || '');
   if (!['x64', 'arm64'].includes(archName)) return;
-  const nodeModulesRoot = path.join(context.appOutDir, 'resources', 'app.asar.unpacked', 'node_modules');
+  const resourcesDir = context.packager?.getResourcesDir
+    ? context.packager.getResourcesDir(context.appOutDir)
+    : path.join(context.appOutDir, 'resources');
+  const nodeModulesRoot = path.join(resourcesDir, 'app.asar.unpacked', 'node_modules');
   const onnxRoots = [
     path.join(nodeModulesRoot, 'onnxruntime-node', 'bin', 'napi-v3'),
     path.join(nodeModulesRoot, 'kokoro-js', 'node_modules', 'onnxruntime-node', 'bin', 'napi-v3'),
