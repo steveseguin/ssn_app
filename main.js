@@ -4263,6 +4263,62 @@ async function resolveBundledSocialStreamRoot(branch = 'main') {
     return null;
 }
 
+async function getBackgroundDiagnostics(expectedUrl) {
+    if (!mainWindow || mainWindow.isDestroyed()) return null;
+    const frame = mainWindow.webContents.mainFrame.frames.find(child => expectedUrl
+        ? child.url === expectedUrl && matchesSocialStreamPagePath(child.url, 'background')
+        : matchesSocialStreamPagePath(child.url, 'background'));
+    if (!frame) return null;
+    const dependencies = await frame.executeJavaScript(`(() => {
+        let customScripts = {};
+        try {
+            customScripts = {
+                enabled: typeof settings !== 'undefined' && !!settings.customJsEnabled,
+                uploaded: !!localStorage.getItem('customJavaScript'),
+                functionLoaded: typeof window.customUserFunction === 'function'
+            };
+        } catch (_) {}
+        return { backgroundLoaded: typeof window.processIncomingMessage === 'function',
+            sanitizerLoaded: typeof window.filterXSS === 'function',
+            loader: window.ssappBackgroundLoadState || null, customScripts };
+    })()`);
+    return { ...dependencies, url: frame.url };
+}
+
+function backgroundReportContext(dependencies) {
+    if (!dependencies) return null;
+    // Page query strings can contain session IDs/passwords. Keep only the
+    // resource address, and bound error text supplied by the remote loader.
+    const clean = value => String(value || '').replace(/[?#][^\s;"'<>)]*/g, '').slice(0, 2000);
+    return {
+        url: clean(dependencies.url),
+        backgroundLoaded: dependencies.backgroundLoaded === true,
+        sanitizerLoaded: dependencies.sanitizerLoaded === true,
+        customScripts: {
+            enabled: dependencies.customScripts?.enabled === true,
+            uploaded: dependencies.customScripts?.uploaded === true,
+            functionLoaded: dependencies.customScripts?.functionLoaded === true,
+            localFileConfigured: !!getStoredCustomJsFilePath()
+        },
+        loader: dependencies.loader ? {
+            status: clean(dependencies.loader.status),
+            currentScript: clean(dependencies.loader.currentScript),
+            failures: Array.isArray(dependencies.loader.failures)
+                ? dependencies.loader.failures.slice(0, 30).map(failure => ({
+                    script: clean(failure?.script), error: clean(failure?.error)
+                })) : []
+        } : null
+    };
+}
+
+async function getBackgroundReportContext() {
+    try {
+        return backgroundReportContext(await getBackgroundDiagnostics());
+    } catch (error) {
+        return { error: 'Background diagnostics unavailable' };
+    }
+}
+
 ipcMain.handle('socialstream:background-dependencies', async (event, expectedUrl) => {
     if (!mainWindow || mainWindow.isDestroyed()
         || event.sender !== mainWindow.webContents
@@ -4271,9 +4327,11 @@ ipcMain.handle('socialstream:background-dependencies', async (event, expectedUrl
     }
     // Read only the selected child frame. The file:// app UI cannot inspect a
     // healthy HTTPS background directly because of browser origin isolation.
-    const frame = mainWindow.webContents.mainFrame.frames.find(child => child.url === expectedUrl);
-    if (!frame) return null;
-    return await frame.executeJavaScript('({backgroundLoaded: typeof window.processIncomingMessage === "function", sanitizerLoaded: typeof window.filterXSS === "function", loader: window.ssappBackgroundLoadState || null})');
+    const dependencies = await getBackgroundDiagnostics(expectedUrl);
+    if (dependencies?.loader?.status === 'failed') {
+        reporter.report('background_load_failed', 'Background initialization failed', backgroundReportContext(dependencies));
+    }
+    return dependencies;
 });
 
 ipcMain.handle('socialstream:fetch-background-script', async (event, relativePath) => {
@@ -19237,6 +19295,7 @@ async function sendErrorReportingEnabledSnapshot() {
             {
                 trigger: 'enable_error_reporting',
                 platform: process.platform,
+                backgroundDiagnostics: await getBackgroundReportContext(),
                 tiktokDiagnostics: getTikTokDiagnosticReportContext(),
                 llmDiagnostics: llmRequestDiagnostics.getRecent()
             }
@@ -19300,6 +19359,7 @@ async function promptAndSendManualIssueReport() {
                 trigger: 'manual_issue_report',
                 description: cleanedDescription,
                 platform: process.platform,
+                backgroundDiagnostics: await getBackgroundReportContext(),
                 tiktokDiagnostics: getTikTokDiagnosticReportContext(),
                 llmDiagnostics: llmRequestDiagnostics.getRecent()
             }

@@ -17,6 +17,20 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
     const report = [];
     try {
         const main = await app.firstWindow();
+        // Exercise the real reporter but capture its HTTP upload locally; tests
+        // must never submit synthetic reports to the production logger.
+        await app.evaluate(() => {
+            global.__backgroundReports = [];
+            const originalFetch = global.fetch;
+            global.fetch = (url, options) => {
+                if (String(url) === 'https://ssapp-error-logger.vdo.workers.dev/log') {
+                    global.__backgroundReports.push(JSON.parse(options.body));
+                    return Promise.resolve(new Response('ok'));
+                }
+                return originalFetch(url, options);
+            };
+        });
+        let reportingChecked = false;
         await main.waitForFunction(() => document.getElementById('frame2').src.startsWith('file:'));
         async function load(phase) {
             await app.evaluate((_, phase) => { global.__outage.phase = phase; global.__outage.requests = []; }, phase);
@@ -62,6 +76,46 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
                 assert.equal(frame.url(), selectedUrl, phase + ': failure must preserve original database origin');
                 const requests = await app.evaluate((_, phase) => global.__outage.requests.filter(url => url.includes(phase === 'loader-outage' ? '/loader.js' : '/libs/objects.js')), phase);
                 assert.equal(requests.length, phase === 'runtime' ? 1 : phase === 'loader-outage' ? 4 : 3, 'Each mirror is attempted once; execution errors are not re-executed');
+                if (!reportingChecked) {
+                    assert.equal(await app.evaluate(() => global.__backgroundReports.length), 0, 'Opted-out users send no reports');
+                    await app.evaluate(({ app }) => process.mainModule.require(app.getAppPath() + '/error-reporter').enable());
+                    await main.evaluate(() => ipcRenderer.invoke('socialstream:background-dependencies', document.getElementById('frame2').src));
+                    const reports = await app.evaluate(() => global.__backgroundReports);
+                    assert.equal(reports.length, 1, 'Failure is uploaded after opt-in');
+                    assert.equal(reports[0].type, 'background_load_failed');
+                    assert.equal(reports[0].context.loader.status, 'failed');
+                    assert(reports[0].context.loader.failures[0].script, 'Failed script is included');
+                    assert(reports[0].context.loader.failures[0].error, 'Failure reason is included');
+                    if (phase === 'partial') assert(reports[0].context.loader.failures[0].error.includes('HTTP 503'));
+                    if (phase === 'runtime') assert(reports[0].context.loader.failures[0].error.includes('Intentional script execution failure'));
+                    assert(!reports[0].context.url.includes('?'), 'Background URL query is excluded');
+                    assert.equal(typeof reports[0].context.customScripts.localFileConfigured, 'boolean');
+                    await main.evaluate(() => ipcRenderer.invoke('socialstream:background-dependencies', document.getElementById('frame2').src));
+                    assert.equal(await app.evaluate(() => global.__backgroundReports.length), 1, 'Repeated checks are rate limited');
+                    await app.evaluate(async ({ Menu, dialog }) => {
+                        const find = menu => {
+                            for (const item of menu.items) {
+                                if (item.label === 'Enable automatic bug reports') return item;
+                                const child = item.submenu && find(item.submenu);
+                                if (child) return child;
+                            }
+                        };
+                        const item = find(Menu.getApplicationMenu());
+                        const originalDialog = dialog.showMessageBox;
+                        dialog.showMessageBox = async () => ({ response: 0 });
+                        try { item.checked = false; item.click(item); }
+                        finally { dialog.showMessageBox = originalDialog; }
+                    });
+                    for (let attempt = 0; attempt < 50; attempt++) {
+                        if (await app.evaluate(() => global.__backgroundReports.some(report => report.type === 'diagnostic_snapshot'))) break;
+                        await delay(100);
+                    }
+                    const snapshot = await app.evaluate(() => global.__backgroundReports.find(report => report.type === 'diagnostic_snapshot'));
+                    assert(snapshot, 'Enabling reporting sends the existing failure in its snapshot');
+                    assert.deepStrictEqual(snapshot.context.backgroundDiagnostics.loader, reports[0].context.loader);
+                    await app.evaluate(({ app }) => process.mainModule.require(app.getAppPath() + '/error-reporter').disable());
+                    reportingChecked = true;
+                }
                 await app.evaluate(() => { global.__outage.phase = 'online'; });
                 await main.locator('#background-load-retry').click();
                 await ready(frame);

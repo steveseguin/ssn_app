@@ -1,5 +1,22 @@
 'use strict';
 
+const { execFile } = require('child_process');
+
+// Electron's PrinterInfo omits the driver's imageable width. In particular,
+// POS-58 reports 58 mm stock but a 384-dot (47.9 mm) print head.
+async function getPrintableWidthMicrons(printerName) {
+	if (process.platform !== 'win32' || !printerName) return 0;
+	const script = "Add-Type -AssemblyName System.Drawing; $receiptDoc = New-Object System.Drawing.Printing.PrintDocument; try { $receiptDoc.PrinterSettings.PrinterName = $env:SSAPP_RECEIPT_PRINTER; if ($receiptDoc.PrinterSettings.IsValid) { [math]::Round($receiptDoc.DefaultPageSettings.PrintableArea.Width * 254) } } finally { $receiptDoc.Dispose() }";
+	return new Promise((resolve) => {
+		execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+			windowsHide: true, timeout: 5000, env: { ...process.env, SSAPP_RECEIPT_PRINTER: printerName },
+		}, (error, stdout) => {
+			const width = Number(String(stdout || '').trim());
+			resolve(!error && Number.isFinite(width) && width >= MIN_WIDTH_MICRONS && width <= MAX_WIDTH_MICRONS ? width : 0);
+		});
+	});
+}
+
 const DEFAULT_WIDTH_MICRONS = 58000;
 const MIN_WIDTH_MICRONS = 20000;
 const MAX_WIDTH_MICRONS = 120000;
@@ -84,7 +101,7 @@ function buildPrintDocument(htmlContent, options) {
 	<meta charset="utf-8">
 	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline'">
 	<style>
-		@page { size: ${widthMm}mm ${heightRule}; margin: 0; }
+		@page { size: ${widthMm}mm ${heightRule}; }
 		html, body { width: 100%; margin: 0; padding: 0; }
 		body {
 			box-sizing: border-box;
@@ -185,6 +202,12 @@ class ElectronThermalPrinter {
 				selectedPrinter = printers.find((printer) => printer.isDefault) || null;
 			}
 
+			const printableWidth = options.marginType === 'printableArea'
+				? await getPrintableWidthMicrons(selectedPrinter && selectedPrinter.name) : 0;
+			const layoutWidthMicrons = Math.min(options.widthMicrons, printableWidth || options.widthMicrons);
+			// Measure after wrapping at the actual print width, not the helper window's
+			// much wider viewport. Keep this width in print media too, inside driver margins.
+			await printWindow.webContents.executeJavaScript(`document.getElementById('ssapp-thermal-print-root').style.width = '${layoutWidthMicrons / 1000}mm'; document.getElementById('ssapp-thermal-print-root').style.maxWidth = '100%'`);
 			const contentHeightPx = await printWindow.webContents.executeJavaScript(`Math.max(
 				document.getElementById('ssapp-thermal-print-root').scrollHeight,
 				document.getElementById('ssapp-thermal-print-root').getBoundingClientRect().height
@@ -232,6 +255,7 @@ class ElectronThermalPrinter {
 				success: true,
 				printerName: selectedPrinter && selectedPrinter.name ? selectedPrinter.name : '',
 				widthMicrons: options.widthMicrons,
+				printableWidthMicrons: layoutWidthMicrons,
 				heightMicrons: pageHeightMicrons,
 				marginType: options.marginType,
 				margins: {
