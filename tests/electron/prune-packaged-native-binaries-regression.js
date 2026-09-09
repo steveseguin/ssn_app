@@ -9,6 +9,29 @@ const path = require('path');
 
 const prunePackagedNativeBinaries = require('../../scripts/prunePackagedNativeBinaries');
 
+async function createSharpArchive(resourcesDir, arch, mismatch = null) {
+	const source = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-sharp-fixture-'));
+	try {
+		const packages = {
+			sharp: { version: '0.35.4', optionalDependencies: {
+				[`@img/sharp-darwin-${arch}`]: '0.35.4',
+				[`@img/sharp-libvips-darwin-${arch}`]: '1.3.3',
+			} },
+			[`@img/sharp-darwin-${arch}`]: { version: mismatch === 'binding' ? '0.35.3' : '0.35.4' },
+			[`@img/sharp-libvips-darwin-${arch}`]: { version: mismatch === 'libvips' ? '1.3.2' : '1.3.3' },
+		};
+		if (mismatch === 'missing') delete packages[`@img/sharp-libvips-darwin-${arch}`];
+		for (const [name, data] of Object.entries(packages)) {
+			const directory = path.join(source, 'node_modules', name);
+			fs.mkdirSync(directory, { recursive: true });
+			fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify(data));
+		}
+		await require('@electron/asar').createPackage(source, path.join(resourcesDir, 'app.asar'));
+	} finally {
+		fs.rmSync(source, { recursive: true });
+	}
+}
+
 function createRuntimeTree(appOutDir, resourcesDir = path.join(appOutDir, 'resources')) {
 	const nodeModulesRoot = path.join(resourcesDir, 'app.asar.unpacked', 'node_modules');
 	const roots = [
@@ -39,6 +62,7 @@ async function verifyTarget(platformName, arch, expectedArch) {
 			? path.join(appOutDir, 'socialstream.app', 'Contents', 'Resources')
 			: path.join(appOutDir, 'resources');
 		const roots = createRuntimeTree(appOutDir, resourcesDir);
+		if (platformName === 'darwin') await createSharpArchive(resourcesDir, expectedArch);
 		await prunePackagedNativeBinaries({ electronPlatformName: platformName, arch, appOutDir,
 			packager: { getResourcesDir: () => resourcesDir } });
 		for (const root of roots) {
@@ -79,6 +103,15 @@ async function verifyMissingRequiredRuntimeFailsSafe() {
 	await verifyTarget('linux', 1, 'x64');
 	await verifyTarget('darwin', 3, 'arm64');
 	await verifyMissingRequiredRuntimeFailsSafe();
+	for (const mismatch of ['binding', 'libvips', 'missing']) {
+		const resourcesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-sharp-reject-'));
+		try {
+			await createSharpArchive(resourcesDir, 'x64', mismatch);
+			assert.throws(() => prunePackagedNativeBinaries.validateMacSharp(resourcesDir, 'x64'), /expected .*found/);
+		} finally {
+			fs.rmSync(resourcesDir, { recursive: true });
+		}
+	}
 	console.log('Packaged native runtime pruning regression checks passed.');
 })().catch(error => {
 	console.error(error);

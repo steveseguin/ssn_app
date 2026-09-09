@@ -65,3 +65,17 @@ All original functional assertions remain; production behavior is unchanged.
 
 Logs, screenshots, install-test scripts, and isolated-profile references are in
 `/tmp/ssapp-mac-0428`. Generated fallback files were updated only by the build updater.
+
+## Native dependency correction
+
+The first signed Intel candidate reported Sharp 0.35.4 but loaded libheif 1.23.1 from
+older cross-architecture native packages. The ARM candidate loaded patched libheif 1.23.2.
+Updated the four local Mac native packages to Sharp 0.35.4/libvips package 1.3.3, matching
+Sharp's declared requirements, and updated the ignored local mac.sh installer pins.
+No credentials were committed. The Intel candidate is being rebuilt before publication.
+
+The Mac packaging hook now rejects missing or mismatched native binding/libvips packages
+before signing. It rejected the original Intel candidate and accepted the ARM candidate.
+Regression cases cover a stale binding, stale libvips, and a missing runtime dependency.
+The GitHub alert that prompted this check is recorded against sso-worker's development
+lockfile; desktop runtime versions were checked separately rather than inferred from it.
