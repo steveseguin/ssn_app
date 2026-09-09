@@ -45,7 +45,7 @@ const disabled = process.env.SIGNIN_ORIGIN_TEST_DISABLED === '1';
             if (!result) throw new Error('VK sign-in did not create a window');
         }, sourceId);
         const signinPage = await opened;
-        await signinPage.waitForURL('https://live.vkvideo.ru/');
+        await signinPage.waitForURL('https://live.vkvideo.ru/', { waitUntil: 'domcontentloaded' });
         for (let attempt = 0; attempt < 2; attempt++) {
             const loginResponse = main.context().waitForEvent('response', {
                 predicate: response => /^https:\/\/login\.vk\.(ru|com)\//.test(response.url())
@@ -56,7 +56,7 @@ const disabled = process.env.SIGNIN_ORIGIN_TEST_DISABLED === '1';
             popupOpened.catch(() => {});
             await signinPage.getByRole('button', { name: /^(\u0412\u043e\u0439\u0442\u0438|Log in|Sign in)$/i }).click();
             const popup = await popupOpened;
-            await popup.waitForURL(/https:\/\/id\.vk\.(ru|com)\/auth/);
+            await popup.waitForURL(/https:\/\/id\.vk\.(ru|com)\/auth/, { waitUntil: 'domcontentloaded' });
             const response = await loginResponse;
             const headers = await response.request().allHeaders();
             if (disabled) {

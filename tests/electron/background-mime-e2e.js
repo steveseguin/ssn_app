@@ -11,6 +11,7 @@ const https = require('https');
 const net = require('net');
 const { execFileSync } = require('child_process');
 const { _electron } = require('playwright-core');
+// Hidden background frames can stop animation frames on macOS; poll readiness by timer.
 const root = path.resolve(__dirname, '../..');
 const site = path.resolve(root, '../social_stream');
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
@@ -71,9 +72,15 @@ const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', ()
                 if (!src.startsWith('https:')) return false;
                 const state = await ipcRenderer.invoke('socialstream:background-dependencies', src);
                 return state?.loader?.status === 'ready';
-            }, null, { timeout: 45000 });
-            const frame = main.frames().find(f => f.url().startsWith('https:') && f.url().includes('/background.html'));
-            await frame.waitForFunction(() => typeof streamID === 'string' && window.ssappBackgroundLoadState?.status === 'ready' && window.eventFlowSystem?.db, null, { timeout: 45000 });
+            }, null, { polling: 100, timeout: 45000 });
+            let frame;
+            for (let attempt = 0; attempt < 100; attempt++) {
+                frame = main.frames().find(f => f.url().startsWith('https:') && f.url().includes('/background.html'));
+                if (frame) break;
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            assert(frame, 'The ready background frame must attach to the browser test connection');
+            await frame.waitForFunction(() => typeof streamID === 'string' && window.ssappBackgroundLoadState?.status === 'ready' && window.eventFlowSystem?.db, null, { polling: 100, timeout: 45000 });
             assert.equal(await frame.evaluate(() => streamID), 'mimefixture');
             assert.equal(await frame.evaluate(() => document.contentType), 'text/html');
             await main.locator('[data-page="event-flow-editor"]').click();

@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { _electron } = require('playwright-core');
+// Hidden background frames can stop animation frames on macOS; poll readiness by timer.
 const root = path.resolve(__dirname, '../..');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -47,7 +48,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         }
         async function ready(frame) {
             await frame.waitForFunction(() => (!window.ssappBackgroundLoadState || window.ssappBackgroundLoadState.status === 'ready')
-                && typeof window.processIncomingMessage === 'function' && typeof window.filterXSS === 'function' && window.eventFlowSystem?.db, null, { timeout: 60000 });
+                && typeof window.processIncomingMessage === 'function' && typeof window.filterXSS === 'function' && window.eventFlowSystem?.db, null, { polling: 100, timeout: 60000 });
         }
         let frame = await load('online');
         await ready(frame);
@@ -70,7 +71,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
             assert.equal(new URL(selectedUrl).origin, new URL(url).origin);
             const failed = ['partial', 'runtime', 'slow', 'loader-outage'].includes(phase);
             if (failed) {
-                await frame.waitForFunction(() => window.ssappBackgroundLoadState?.status === 'failed', null, { timeout: 65000 });
+                await frame.waitForFunction(() => window.ssappBackgroundLoadState?.status === 'failed', null, { polling: 100, timeout: 65000 });
                 await main.locator('[data-page="event-flow-editor"]').click();
                 await main.locator('#background-load-retry').waitFor({ state: 'visible' });
                 assert.equal(frame.url(), selectedUrl, phase + ': failure must preserve original database origin');
