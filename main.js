@@ -8,6 +8,7 @@ const path = require("path");
 const os = require("os");
 const { pathToFileURL, fileURLToPath } = require("url");
 const { getSocialStreamSourceUrls } = require('./resources/social-stream-source-mirrors');
+const { normalizeMissingOriginRule, applyMissingOriginRule } = require('./resources/signin-origin-rule');
 const {
     cleanVisibleString,
     firstNonEmptyVisibleString,
@@ -7485,6 +7486,7 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
 
     const hooks = {
         passkeyBlockWebContentsIds: new Set(),
+        signInOriginRulesByWebContentsId: new Map(),
         headerOverrideByWebContentsId: new Map()
     };
 
@@ -7515,6 +7517,11 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
             try {
                 const webContentsId = typeof details?.webContentsId === 'number' ? details.webContentsId : null;
                 if (webContentsId !== null) {
+                    const originRule = hooks.signInOriginRulesByWebContentsId.get(webContentsId);
+                    if (originRule) {
+                        const pageUrl = details.frame?.url || electron.webContents.fromId(webContentsId)?.getURL();
+                        applyMissingOriginRule(requestHeaders, details, pageUrl, originRule);
+                    }
                     const override = hooks.headerOverrideByWebContentsId.get(webContentsId);
                     if (override) {
                         if (override.origin) {
@@ -7540,6 +7547,19 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
 
     activatedWindowSessionHooks.set(ses, hooks);
     return hooks;
+}
+
+function trackSignInOriginRule(view, rule) {
+    if (isBrowserViewDestroyed(view)) return;
+    const wc = view.webContents;
+    const hooks = getOrCreateActivatedWindowSessionHooks(wc.session);
+    if (!hooks || hooks.signInOriginRulesByWebContentsId.has(wc.id)) return;
+    const id = wc.id;
+    hooks.signInOriginRulesByWebContentsId.set(id, rule);
+    wc.once('destroyed', () => hooks.signInOriginRulesByWebContentsId.delete(id));
+    if (rule.includePopups) {
+        wc.on('did-create-window', popup => trackSignInOriginRule(popup, rule));
+    }
 }
 
 function registerClientHintFiltering(ses, webContentsId, shouldFilter = () => true, options = {}) {
@@ -12809,6 +12829,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             browserViews[view.tabID] = view;
             if (sourceObservationService) sourceObservationService.trackView(view);
             const releaseSignInWindowSessionHooks = registerActivatedWindowSessionHooks(view, args);
+            // Read only the explicit source setting; global defaults must not enable this.
+            const originRule = normalizeMissingOriginRule(args.configs?.[args.platform]?.signin?.fillMissingOrigin);
+            if (originRule) trackSignInOriginRule(view, originRule);
             let releaseSignInClientHintFiltering = () => { };
 
 

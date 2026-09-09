@@ -19,6 +19,14 @@ Electron desktop application for aggregating social media live stream chat. Comm
 - When Steve asks to remember an instruction, save it into the relevant instruction file or memory mechanism when possible; do not merely say it will be kept in mind.
 - If Steve says "remember", treat it as a request to persist the instruction. Check for writable instruction targets, especially the repo `AGENTS.md` for project-specific behavior and `C:\Users\steve\.codex\AGENTS.md` for global behavior. Update the most appropriate file, or both when the instruction applies globally and to the current repo. Do not say memory tools are unavailable unless no writable instruction or memory target exists after checking.
 
+## Platform Fix Scope (CRITICAL)
+
+- Fixes for one source must affect only that source. Prefer its existing settings in `C:\Users\steve\Code\social_stream\settings\config*.json`; when those cannot express the fix, use source-specific code with explicit platform/window/request guards.
+- Never remove or alter `app.commandLine.appendSwitch('--disable-web-security', 'false')` without Steve's explicit approval for that exact change. It is an intentional compatibility setting. A site working after its removal is not evidence that the rest of SSApp remains compatible.
+- Do not change app-wide Electron flags, security defaults, preload behavior, headers, sessions, or shared navigation behavior to fix one source without Steve approving that broader scope first. This includes temporary diagnostic edits in the main checkout.
+- Before editing, identify the full behavioral scope. A change in `main.js` is acceptable when narrowly gated; a global behavior change is not authorized by a platform-specific bug report.
+- Before finishing, review the diff and verify that unrelated sources, windows, and requests retain their existing behavior. Passing a source test or general capture test does not establish that other platforms' authentication flows are unaffected.
+
 ## Source Of Truth
 
 - Social Stream source edits must be made in `C:\Users\steve\Code\social_stream`.
