@@ -24,6 +24,8 @@ async function run() {
 	try {
 		const page = await app.firstWindow();
 		await page.waitForFunction(() => window.stateManager?.initialized, null, { polling: 100 });
+		// Initial page restoration is deferred until after state initialization.
+		await page.waitForFunction(() => document.querySelector('[data-page="streams"]')?.getAttribute('aria-current') === 'page', null, { polling: 100 });
 		await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(900, 800));
 		const toggle = page.locator('.menu-toggle');
 		const menu = page.locator('#navigation-links');

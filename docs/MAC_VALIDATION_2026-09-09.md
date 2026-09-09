@@ -50,6 +50,8 @@ showed a ready loader, open Event Flow database, and both saved flows present. P
 default animation-frame polling had stopped in the hidden frame on macOS. The checked-in
 recovery tests now poll readiness by timer. The HTTPS test also waits for browser-frame
 attachment, and the VK test waits for DOM readiness rather than every third-party resource.
+The navigation suite also waits for deferred initial page restoration before clicking
+through the menu; its earlier clicks could race the startup Sources-page restore.
 All original functional assertions remain; production behavior is unchanged.
 
 ## Limits and evidence
