@@ -264,6 +264,12 @@ async function run() {
                 await page.goto(base + 'combine.html', { waitUntil: 'domcontentloaded' });
                 await page.locator('.url-input').nth(0).fill(base + 'dock.html' + query + '&server2');
                 await page.locator('.url-input').nth(1).fill(base + 'actions.html' + query);
+                const editable = await page.locator('#edit-link').getAttribute('href');
+                await page.goto(editable, { waitUntil: 'domcontentloaded' });
+                const editedActionUrl = base + 'actions.html' + query + '&scale=95';
+                await page.locator('.url-input').nth(1).fill(editedActionUrl);
+                await page.reload({ waitUntil: 'domcontentloaded' });
+                assert.equal(await page.locator('.url-input').nth(1).inputValue(), editedActionUrl, 'Reload keeps edits to a shared layout');
                 await page.locator('#preview-button').click();
                 assert.equal(await page.locator('#preview-stage iframe').count(), 2);
                 await page.locator('#show-qr').click();
