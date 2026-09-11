@@ -17,6 +17,10 @@ function installTransport(target) {
 		const state = global.__outage;
 		state.requests.push(url.href);
 		if (state.phase === 'offline') return new Response('', { status: 503 });
+		if (process.env.SSAPP_TEST_LIVE_WEBRTC === '1' &&
+			['vdo.socialstream.ninja', 'vdo.ninja'].includes(url.hostname)) {
+			return target.fetch(request, { bypassCustomProtocolHandlers: true });
+		}
 		if (!['socialstream.ninja', 'beta.socialstream.ninja', 'cache.socialstream.ninja', 'raw.githubusercontent.com'].includes(url.hostname)) return new Response('', { status: 503 });
 		// Explicit opt-in diagnostic only; ordinary regression runs never contact
 		// live services or channels. Uses the actual app session/network stack.
