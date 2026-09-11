@@ -416,6 +416,101 @@ async function run() {
             } finally { receivers.forEach(receiver => receiver.socket.terminate()); }
         }
 
+        if (process.env.SSAPP_LOCAL_TRANSPORT_REVIEW === '1') {
+            report.transportReview = {};
+            const leaderboardUrl = new URL(await popup.evaluate(() => document.getElementById('leaderboard').raw));
+            leaderboardUrl.searchParams.set('rankby', 'messages');
+            leaderboardUrl.searchParams.set('showscore', '');
+            leaderboardUrl.searchParams.set('persistdata', '');
+            await page.goto(leaderboardUrl.href, { waitUntil: 'domcontentloaded' });
+            await delay(1500);
+            for (let index = 0; index < 3; index++) {
+                await capture('Leaderboard message ' + index, 'Leaderboard Viewer');
+                await delay(450);
+            }
+            await page.waitForFunction(() => Array.from(document.querySelectorAll('.leaderboard-item')).some(item =>
+                item.textContent.includes('Leaderboard Viewer') && item.querySelector('.score-number')?.textContent.trim() === '3'));
+            await page.reload({ waitUntil: 'domcontentloaded' });
+            await page.getByText('Leaderboard Viewer', { exact: true }).waitFor();
+            assert.equal((await page.locator('.score-number').first().textContent()).trim(), '3');
+            const acceptReset = dialog => dialog.accept();
+            main.on('dialog', acceptReset);
+            try {
+                await popup.evaluate(() => document.getElementById('resetLeaderboard').click());
+                await page.waitForFunction(() => !document.querySelector('.leaderboard-item'));
+            } finally { main.off('dialog', acceptReset); }
+            await page.reload({ waitUntil: 'domcontentloaded' });
+            assert.equal(await page.locator('.leaderboard-item').count(), 0, 'Reset also clears persisted leaderboard entries');
+            await delay(1000);
+            await capture('After reset', 'Leaderboard Viewer');
+            await page.waitForFunction(() => document.querySelector('.score-number')?.textContent.trim() === '1');
+            report.transportReview.leaderboard = { url: leaderboardUrl.href, capturedCount: 3, reload: true, resetPersisted: true, postResetCount: 1 };
+            console.log('PASS local leaderboard: real chat count, reload, popup reset and fresh count');
+
+            // These pages explicitly retain their legacy bridge for controls or
+            // snapshots. Record actual behavior without changing that contract.
+            await popup.locator('#creditsTriggerModeSelect').selectOption('background', { force: true });
+            await background.waitForFunction(() => isBackgroundCreditsModeEnabled(), null, { polling: 100 });
+            await capture('Collected while credits closed', 'Background Credits Viewer');
+            await background.waitForFunction(() => Array.from(backgroundCreditsUsers.values()).some(user => user.name === 'Background Credits Viewer'), null, { polling: 100 });
+            const creditsUrl = await popup.evaluate(() => document.getElementById('credits').raw);
+            await page.goto(creditsUrl, { waitUntil: 'domcontentloaded' });
+            await delay(1500);
+            await popup.evaluate(() => document.getElementById('creditsStartBtn').click());
+            await delay(5500);
+            report.transportReview.credits = { url: creditsUrl, backgroundCollection: true,
+                startRendered: await page.locator('#credits-content').textContent().then(text => text.includes('Background Credits Viewer')),
+                compatibility: await page.evaluate(() => TRANSPORT_CAPABILITIES) };
+            await popup.evaluate(() => document.getElementById('creditsBackgroundTestBtn').click());
+            await popup.waitForFunction(() => !document.getElementById('creditsBackgroundTestBtn').textContent.includes('Testing...'), null, { polling: 100 });
+            report.transportReview.credits.testStatus = await popup.locator('#creditsBackgroundTestBtn').textContent();
+            console.log('OBSERVED credits: ' + JSON.stringify(report.transportReview.credits));
+
+            await popup.locator('#pollQuestion').fill('Local review question', { force: true });
+            await popup.locator('#pollQuestion').dispatchEvent('change');
+            await popup.locator('#pollType').selectOption('yesno', { force: true });
+            await popup.evaluate(() => { const input = document.querySelector('input[data-setting="pollEnabled"]'); if (!input.checked) input.click(); });
+            const pollUrl = new URL(await popup.evaluate(() => document.getElementById('poll').raw));
+            await page.goto(pollUrl.href, { waitUntil: 'domcontentloaded' });
+            await delay(2000);
+            report.transportReview.poll = { generated: pollUrl.href, generatedTitle: await page.locator('#poll-title').textContent(),
+                compatibility: await page.evaluate(() => TRANSPORT_CAPABILITIES) };
+            for (const [key, value] of Object.entries({ pollType: 'yesno', pollOptions: 'Yes,No', pollQuestion: 'Local review question', pollEnabled: '1', pollTally: '' })) pollUrl.searchParams.set(key, value);
+            await page.goto(pollUrl.href, { waitUntil: 'domcontentloaded' });
+            await delay(1500);
+            await capture('yes', 'Poll Viewer One');
+            await capture('yes', 'Poll Viewer Two');
+            await page.getByText('2 votes', { exact: true }).waitFor();
+            report.transportReview.poll.urlConfiguredVotes = 2;
+            await popup.evaluate(() => document.querySelector('[data-action="closepoll"]').click());
+            await delay(2000);
+            report.transportReview.poll.popupClosed = await page.evaluate(() => settings.pollClosed);
+            await capture('no', 'Poll Viewer Three');
+            await delay(1000);
+            report.transportReview.poll.talliesAfterClose = await page.locator('.option-tally').allTextContents();
+            console.log('OBSERVED poll: ' + JSON.stringify(report.transportReview.poll));
+
+            await popup.evaluate(() => { const input = document.querySelector('input[data-setting="hypemode"]'); if (!input.checked) input.click(); });
+            await background.waitForFunction(() => settings.hypemode, null, { polling: 100 });
+            const hypeUrl = await popup.evaluate(() => document.getElementById('hypemeter').raw);
+            await page.goto(hypeUrl, { waitUntil: 'domcontentloaded' });
+            await delay(1500);
+            await capture('Hype review message', 'Hype Viewer');
+            await delay(11000);
+            const hypeToken = 'hype-review-' + Date.now();
+            const hypeReply = new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => { publisher.off('message', receive); reject(new Error('No local Hype API snapshot')); }, 5000);
+                function receive(data) { const packet = JSON.parse(data.toString()); if (packet.callback?.get === hypeToken) {
+                    clearTimeout(timeout); publisher.off('message', receive); resolve(packet.callback.result);
+                } }
+                publisher.on('message', receive);
+            });
+            publisher.send(JSON.stringify({ action: 'getHype', get: hypeToken }));
+            report.transportReview.hype = { url: hypeUrl, apiSnapshot: await hypeReply,
+                displayedSources: await page.locator('#hype .sourceStatHolder').count(), compatibility: await page.evaluate(() => TRANSPORT_CAPABILITIES) };
+            console.log('OBSERVED hype: ' + JSON.stringify(report.transportReview.hype));
+        }
+
         if (process.env.SSAPP_LOCAL_GAME_WORKFLOWS === '1' || process.env.SSAPP_LOCAL_CONTROL_WORKFLOWS === '1') {
             // Test page-owned callback routing and the unchanged room/channel boundaries.
             const receivers = [];
