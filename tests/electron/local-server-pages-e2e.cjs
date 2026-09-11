@@ -33,6 +33,7 @@ async function run() {
     fs.writeFileSync(wrapper, `require(${JSON.stringify(path.join(__dirname, 'outage-bootstrap.js'))});global.__outage.phase='online';`);
     const launch = (initial) => _electron.launch({ executablePath: require('electron'), cwd: root,
         args: [wrapper, '--multiinstance', '--no-hwa', ...(initial ? [`--ssapp-local-server-port=${port}`] : []),
+            ...(process.env.SSAPP_LOCAL_MEDIA_WORKFLOWS === '1' ? ['--filesource', pathToFileURL(path.resolve(root, '../social_stream') + path.sep).href] : []),
             '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost'],
         env: { ...process.env, SSAPP_USER_DATA_DIR: output, SSAPP_PREFER_LOCAL_ASSETS: '0', SSAPP_DIAGNOSTICS_SAFE_GPU: '1' }, timeout: 60000 });
     let app = await launch(true);
@@ -164,7 +165,7 @@ async function run() {
             assert.equal(await page.getByText('Flow action LocalFlow-QA ' + label, { exact: true }).count(), 1, 'One action per captured message');
             assert.equal(await page.getByText('Inactive flow must stay off', { exact: true }).count(), 0);
         }
-        if (process.env.SSAPP_LOCAL_LIFECYCLE === '1') {
+        if (process.env.SSAPP_LOCAL_LIFECYCLE === '1' || process.env.SSAPP_LOCAL_ROUTING_WORKFLOWS === '1') {
             await background.evaluate(async () => {
                 const flow = { id: 'local-active-flow', name: 'Captured chat action', active: true,
                     nodes: [
@@ -293,6 +294,169 @@ async function run() {
                 report.combinedLocalPages = true;
                 console.log('PASS combined local chat/actions, generated link, QR creation and reload');
             }
+        }
+
+        if (process.env.SSAPP_LOCAL_ROUTING_WORKFLOWS === '1') {
+            async function setRoutes(names) {
+                await popup.evaluate(names => {
+                    for (const name of ['socketserver', 'server2', 'server3']) {
+                        const input = document.querySelector('input[data-setting="' + name + '"], input[data-both="' + name + '"]');
+                        if (!input) throw new Error('Missing route setting: ' + name);
+                        if (input.checked !== names.includes(name)) input.click();
+                    }
+                }, names);
+                await delay(1500);
+                await background.waitForFunction(names => ['socketserver', 'server2', 'server3'].every(name => !!settings[name] === names.includes(name)), names, { polling: 100 });
+            }
+            await background.evaluate(async () => {
+                for (const [id, command, actionType, config] of [
+                    ['local-media-flow', 'LocalMedia-QA', 'playTenorGiphy', { sourceType: 'url', mediaUrl: 'https://socialstream.ninja/icons/logo.svg', mediaType: 'image', useLayer: true, duration: 0 }],
+                    ['local-clear-flow', 'LocalClear-QA', 'clearLayer', { layer: 'all' }]
+                ]) await eventFlowSystem.saveFlow({ id, name: id, active: true,
+                    nodes: [{ id: 'trigger', type: 'trigger', triggerType: 'messageContains', config: { text: command } },
+                        { id: 'action', type: 'action', actionType, config }], connections: [{ from: 'trigger', to: 'action' }] });
+            });
+            report.singleRoutes = [];
+            for (const names of [['server2'], ['socketserver'], ['server3']]) {
+                await setRoutes(names);
+                const generated = await popup.evaluate(() => document.getElementById('flowactions').raw);
+                const row = { routes: names, generated };
+                report.singleRoutes.push(row);
+                await page.goto(generated, { waitUntil: 'domcontentloaded' });
+                await delay(1500);
+                await capture('LocalFlow-QA ' + names[0]);
+                await page.getByText('Flow action LocalFlow-QA ' + names[0], { exact: true }).waitFor();
+                await capture('LocalMedia-QA ' + names[0]);
+                await page.waitForFunction(() => Array.from(document.images).some(img => img.src === 'https://socialstream.ninja/icons/logo.svg' && img.naturalWidth > 0));
+                await capture('LocalClear-QA ' + names[0]);
+                await page.waitForFunction(() => !Array.from(document.images).some(img => img.src === 'https://socialstream.ninja/icons/logo.svg'));
+                row.textMediaAndClear = true;
+                console.log('PASS generated Flow Actions link with only ' + names[0]);
+            }
+            await setRoutes(['socketserver', 'server2', 'server3']);
+
+            await main.locator('a[data-page="event-flow-editor"]').click();
+            await background.waitForFunction(() => window.flowEditor, null, { polling: 100 });
+            report.embeddedLocalMedia = await background.evaluate(async () => {
+                const api = flowEditor.getLocalMediaApi();
+                let status;
+                try { status = api ? await api.status() : 'No local media bridge'; } catch (error) { status = error.message; }
+                return { hasApi: !!api, session: flowEditor.getCurrentSessionId(), search: flowEditor.getCurrentFlowActionsSearch(), status };
+            });
+            assert.equal(report.embeddedLocalMedia.session, room, 'Embedded editor uses the active app session');
+            assert.equal(report.embeddedLocalMedia.status.running, true, 'Media service remains independent of relay routing');
+            if (process.env.SSAPP_LOCAL_MEDIA_WORKFLOWS === '1') {
+                const fixtureImage = path.join(output, 'local-media.svg');
+                fs.writeFileSync(fixtureImage, '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="orange"/></svg>');
+                // Supply only the native picker result. File registration, IPC,
+                // editor controls, persistence, HTTP serving and playback stay real.
+                await app.evaluate(({ dialog }, fixtureImage) => {
+                    const original = dialog.showOpenDialog;
+                    dialog.showOpenDialog = async () => {
+                        dialog.showOpenDialog = original;
+                        return { canceled: false, filePaths: [fixtureImage] };
+                    };
+                }, fixtureImage);
+                await background.evaluate(() => {
+                    const node = { id: 'action', type: 'action', actionType: 'playTenorGiphy',
+                        config: { sourceType: 'url', mediaUrl: '', mediaType: 'image', useLayer: true, duration: 0 } };
+                    flowEditor.currentFlow = { id: 'local-file-flow', name: 'Local file capture', active: true,
+                        nodes: [{ id: 'trigger', type: 'trigger', triggerType: 'messageContains', config: { text: 'LocalFile-QA ' } }, node],
+                        connections: [{ from: 'trigger', to: 'action' }] };
+                    flowEditor.showNodeProperties(node);
+                    // Observe the copy request without replacing the user's OS clipboard.
+                    navigator.clipboard.writeText = async text => { window.__copiedLocalFlowUrl = text; };
+                });
+                await background.locator('#chooseLocalMediaBtn').click();
+                await background.waitForFunction(() => flowEditor.currentFlow.nodes[1].config.localAssetId, null, { polling: 100 });
+                await background.evaluate(async () => eventFlowSystem.saveFlow(flowEditor.currentFlow));
+                await background.locator('#copyLocalFlowActionsUrlBtn').click();
+                await background.waitForFunction(() => window.__copiedLocalFlowUrl, null, { polling: 100 });
+                const copied = await background.evaluate(() => window.__copiedLocalFlowUrl);
+                report.copiedLocalMedia = { url: copied };
+                const copiedUrl = new URL(copied);
+                assert.equal(copiedUrl.searchParams.get('session'), room, 'Copied OBS link keeps the app session');
+                assert.equal(copiedUrl.searchParams.get('localserverport'), String(port));
+                assert(copiedUrl.searchParams.has('localserver'));
+                const assetId = await background.evaluate(() => flowEditor.currentFlow.nodes[1].config.localAssetId);
+                await page.goto(copied, { waitUntil: 'domcontentloaded' });
+                await delay(1500);
+                await capture('LocalFile-QA copied-obs-link');
+                await page.waitForFunction(assetId => Array.from(document.images).some(img => img.src.includes('/media/' + assetId) && img.naturalWidth === 80), assetId);
+                await capture('LocalClear-QA copied-obs-link');
+                await page.waitForFunction(assetId => !Array.from(document.images).some(img => img.src.includes('/media/' + assetId)), assetId);
+                report.copiedLocalMedia.capturedFilePlaybackAndClear = true;
+                console.log('PASS embedded Local Media picker, copied OBS link, captured-chat file playback and clear');
+            }
+
+            const game = await createWindow('about:blank');
+            const featured = await createWindow('about:blank');
+            function trackJoins(target) {
+                const state = { joins: 0, navigations: 0, endpoints: [], relayEndpoints: [] };
+                target.on('framenavigated', frame => { if (frame === target.mainFrame()) state.navigations++; });
+                target.on('websocket', socket => {
+                    state.endpoints.push(socket.url());
+                    socket.on('framesent', event => { try {
+                        if (JSON.parse(event.payload).join === room) { state.joins++; state.relayEndpoints.push(socket.url()); }
+                    } catch (_) {} });
+                });
+                return state;
+            }
+            const gameJoins = trackJoins(game), featuredJoins = trackJoins(featured), actionJoins = trackJoins(page);
+            await popup.locator('#games-preset-select').selectOption('games/memoryparade.html', { force: true });
+            await game.goto(await popup.evaluate(() => document.getElementById('games').raw), { waitUntil: 'domcontentloaded' });
+            await featured.goto(`https://socialstream.ninja/themes/featured-styles/featured-modern.html?session=${room}&server2&localserver&localserverport=${port}`, { waitUntil: 'domcontentloaded' });
+            await page.goto(await popup.evaluate(() => document.getElementById('flowactions').raw), { waitUntil: 'domcontentloaded' });
+            async function waitForJoins(previous) {
+                for (let n = 0; n < 150; n++) {
+                    if ([gameJoins, featuredJoins, actionJoins].every((state, i) => state.joins > previous[i])) return;
+                    await delay(100);
+                }
+                throw new Error('An existing page did not reconnect: ' + JSON.stringify({ gameJoins, featuredJoins, actionJoins }));
+            }
+            await waitForJoins([0, 0, 0]);
+            for (let cycle = 1; cycle <= 3; cycle++) {
+                const before = [gameJoins.joins, featuredJoins.joins, actionJoins.joins];
+                for (const prefix of ['Stop Local Server', 'Enable Local Server']) {
+                    await app.evaluate(({ Menu }, prefix) => {
+                        function find(menu) {
+                            for (const item of menu.items) {
+                                if (item.label.startsWith(prefix)) return item;
+                                if (item.submenu) { const result = find(item.submenu); if (result) return result; }
+                            }
+                        }
+                        const item = find(Menu.getApplicationMenu());
+                        if (!item) throw new Error('Missing local server menu command');
+                        item.click(item);
+                    }, prefix);
+                    await delay(1200);
+                }
+                await waitForJoins(before);
+                background = await findFrame('background');
+                await background.waitForFunction(() => new URLSearchParams(location.search).has('localserver')
+                    && window.ssappBackgroundLoadState?.status === 'ready' && socketserverDock?.readyState === 1,
+                null, { polling: 100 });
+                popup = await findFrame('popup');
+                await capture('!ready', 'Reconnect Viewer ' + cycle);
+                await game.waitForFunction(name => document.body.innerText.includes(name), 'Reconnect Viewer ' + cycle);
+                await featured.waitForFunction(name => document.body.innerText.toLowerCase().includes(name), 'reconnect viewer ' + cycle);
+                await capture('LocalFlow-QA reconnect-' + cycle);
+                await page.getByText('Flow action LocalFlow-QA reconnect-' + cycle, { exact: true }).waitFor();
+                await delay(500);
+                assert.equal(await page.getByText('Flow action LocalFlow-QA reconnect-' + cycle, { exact: true }).count(), 1);
+                console.log('PASS existing game, featured template and action page reconnect ' + cycle);
+            }
+            assert.equal(await game.locator('#participants').textContent(), '3', 'Game state survives every reconnect');
+            report.existingPageReconnects = { cycles: 3, gameJoins, featuredJoins, actionJoins, gameStatePreserved: true };
+            for (const state of [gameJoins, featuredJoins, actionJoins]) {
+                assert.equal(state.navigations, 1, 'Reconnecting does not reload the page');
+                assert(state.relayEndpoints.every(url => url === `ws://127.0.0.1:${port}/` || url === `ws://127.0.0.1:${port}`), JSON.stringify(state));
+            }
+            publisher.terminate();
+            publisher = new WebSocket(`ws://127.0.0.1:${port}`);
+            await new Promise((resolve, reject) => { publisher.once('open', resolve); publisher.once('error', reject); });
+            publisher.send(JSON.stringify({ join: room, out: 1, in: 2 }));
+            assert.deepEqual(errors, [], 'Routing workflows produce no page errors');
         }
 
         if (process.env.SSAPP_LOCAL_LIFECYCLE === '1') {
