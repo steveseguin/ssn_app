@@ -3462,7 +3462,8 @@ const USER_SESSION_PERSISTED_STORE_KEYS = [
     'cachedStateBackupTime',
     'localStorageBackup',
     'localStorageBackupTime',
-    'pendingImport'
+    'pendingImport',
+    'legacySettingsMigration'
 ];
 const PENDING_USER_SESSION_PARTITION_CLEANUP_KEY = 'pendingUserSessionPartitionCleanup';
 
@@ -3508,7 +3509,7 @@ function clearUserSessionPersistence(sessionName) {
     });
 
     const paths = getSavedSyncPaths(sessionName);
-    [paths.mainPath, paths.tmpPath, paths.bakPath].forEach((filePath) => {
+    [paths.mainPath, paths.tmpPath, paths.bakPath, `${paths.mainPath}.before-legacy-recovery`].forEach((filePath) => {
         try {
             if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
         } catch (error) {
@@ -7219,10 +7220,12 @@ class WebSocketServer {
                         } else {
                             this.callback[msg.callback.get].resolve("null");
                         }
+                        return;
                     }
-                    return;
                 }
 
+                // Replies owned by page clients still need normal room/channel
+                // delivery; only the relay's own pending calls are consumed above.
                 const outChannel = msg.out || out;
 
                 this.server.clients.forEach(client => {
@@ -9106,15 +9109,35 @@ ipcMain.handle('getSessions', () => {
     };
 });
 
+// The main page calls this before its source-list code can replace the old
+// localStorage settings mirror. Source windows and subframes cannot request it.
+ipcMain.on('user-session:recover-legacy-settings', (event, localStorageData) => {
+    let recovered = false;
+    try {
+        if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents
+            || event.senderFrame !== mainWindow.webContents.mainFrame
+            || fileURLToPath(event.senderFrame.url) !== path.join(__dirname, 'index.html')) return;
+        recovered = recoverLegacyUserSessionSettings(localStorageData);
+    } catch (error) {
+        console.warn('[User Sessions] Legacy settings recovery skipped:', error?.message || error);
+    } finally {
+        event.returnValue = recovered;
+    }
+});
+
 ipcMain.handle('createSession', (event, sessionData) => {
     const sessions = store.get('sessions', {});
     const sessionId = sessionData.id || `session-${Date.now()}`;
+    const isNewSession = !Object.prototype.hasOwnProperty.call(sessions, sessionId);
     sessions[sessionId] = {
         name: sessionData.name,
         description: sessionData.description || '',
         created: Date.now()
     };
     store.set('sessions', sessions);
+    if (isNewSession && sessionId !== 'default') {
+        setUserSessionStoreValue('legacySettingsMigration', { version: 1, outcome: 'new-session' }, sessionId);
+    }
     return {
         success: true,
         sessionId
@@ -16621,6 +16644,110 @@ function getSavedSyncPaths(sessionName = currentSessionName) {
 		tmpPath: `${mainPath}.tmp`,
 		bakPath: `${mainPath}.bak`
 	};
+}
+
+function isLegacyUserSessionSettingsPlaceholder(settings) {
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return false;
+    if (!Array.isArray(settings.urls) || !Array.isArray(settings.groups)) return false;
+    const emptyDefaults = new Set(['botReply', 'chatCommand', 'timedMessage', 'midiCommand']);
+    return Object.entries(settings).every(([key, value]) => key === 'urls' || key === 'groups'
+        || (emptyDefaults.has(key) && Array.isArray(value) && value.length === 0));
+}
+
+function hasUserSessionChatSettings(settings) {
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return false;
+    const emptyDefaults = new Set(['botReply', 'chatCommand', 'timedMessage', 'midiCommand']);
+    return Object.entries(settings).some(([key, value]) => {
+        if ((key === 'urls' || key === 'groups') && Array.isArray(value)) return false;
+        return !emptyDefaults.has(key) || !Array.isArray(value) || value.length > 0;
+    });
+}
+
+/**
+ * Recover settings saved before named User Sessions had separate settings files.
+ * A partition's own saved room/password must match; a current setting (even a
+ * false value) blocks recovery. Never use the shared file as a general fallback.
+ */
+function recoverLegacyUserSessionSettings(localStorageData) {
+    if (currentSessionName === 'default' || shouldSuppressCurrentUserSessionPersistence()
+        || !cachedStateReady || getUserSessionStoreValue('legacySettingsMigration')
+        || getUserSessionStoreValue('pendingImport')) return false;
+
+    const finish = (outcome) => {
+        setUserSessionStoreValue('legacySettingsMigration', { version: 1, outcome });
+        return false;
+    };
+    const scopedPaths = getSavedSyncPaths();
+    const scopedCandidates = collectCachedStateCandidates();
+    const scopedStates = [cachedState, ...scopedCandidates.map(candidate => candidate.state)];
+    if (scopedStates.some(state => hasUserSessionChatSettings(state.settings))) return finish('existing-settings');
+
+    const hasScopedPersistence = [scopedPaths.mainPath, scopedPaths.tmpPath, scopedPaths.bakPath].some(file => fs.existsSync(file))
+        || USER_SESSION_PERSISTED_STORE_KEYS.some(key => getUserSessionStoreValue(key) !== undefined);
+    // Empty/cleared settings alone are not evidence of this bug. Only repair the
+    // source-list placeholder produced by the broken upgrade, or a first upgrade.
+    if (hasScopedPersistence && !scopedStates.some(state => isLegacyUserSessionSettingsPlaceholder(state.settings))) {
+        return finish('no-upgrade-placeholder');
+    }
+    const localState = parseCachedStateFromLocalStorageRecord(localStorageData);
+    const room = normalizeStreamIdValue(localState?.streamID);
+    if (!room) return finish('no-session-identity');
+    const aliasRoom = normalizeStreamIdValue(localStorageData.ssninja_stream_id);
+    if (aliasRoom && aliasRoom !== room) return finish('conflicting-session-identity');
+    const password = normalizePasswordValue(localState.password);
+    if (scopedStates.some(state => {
+        const scopedRoom = normalizeStreamIdValue(state.streamID);
+        return (scopedRoom && scopedRoom !== room)
+            || (Object.prototype.hasOwnProperty.call(state, 'password') && normalizePasswordValue(state.password) !== password);
+    })) return finish('conflicting-session-identity');
+
+    let source = 'session-localStorage';
+    let recoveredSettings = localState.settings;
+    if (!hasUserSessionChatSettings(recoveredSettings)) {
+        const legacy = readCachedStateFileCandidate(getSavedSyncPaths('default').mainPath, 'legacy shared settings');
+        if (!legacy || normalizeStreamIdValue(legacy.state.streamID) !== room
+            || normalizePasswordValue(legacy.state.password) !== password
+            || !hasUserSessionChatSettings(legacy.state.settings)) return finish('no-matching-legacy-settings');
+        source = 'legacy-shared-file';
+        recoveredSettings = legacy.state.settings;
+    }
+
+    // Keep a separate, never-overwritten copy of the target's state and backups.
+    // The original shared file is read only and remains available for downgrade.
+    const backupPath = `${scopedPaths.mainPath}.before-legacy-recovery`;
+    const backup = {
+        version: 1,
+        session: currentSessionName,
+        savedAt: new Date().toISOString(),
+        cachedState,
+        files: {},
+        store: {}
+    };
+    for (const file of [scopedPaths.mainPath, scopedPaths.tmpPath, scopedPaths.bakPath]) {
+        if (fs.existsSync(file)) backup.files[path.basename(file)] = fs.readFileSync(file, 'utf8');
+    }
+    for (const key of USER_SESSION_PERSISTED_STORE_KEYS) {
+        const value = getUserSessionStoreValue(key);
+        if (value !== undefined) backup.store[key] = value;
+    }
+    try {
+        fs.writeFileSync(backupPath, JSON.stringify(backup), { flag: 'wx' });
+    } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        // An interrupted attempt may have saved its backup before persisting
+        // the recovered settings. Reuse that backup without ever replacing it.
+        const previous = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+        if (previous.version !== 1 || previous.session !== currentSessionName
+            || !previous.files || !previous.store || !previous.cachedState) throw error;
+    }
+
+    const next = { ...localState, ...cachedState, settings: recoveredSettings };
+    const result = persistCachedStateSafely(next, { reason: 'legacy-user-session-migration' });
+    if (!result.saved) return false;
+    updateLocalStorageBackup(buildLocalStorageMirrorPayload(next));
+    setUserSessionStoreValue('legacySettingsMigration', { version: 1, outcome: 'recovered', source });
+    console.log('[User Sessions] Recovered settings for the active named session.');
+    return true;
 }
 
 function getCachedStateSettingsKeyCount(state) {

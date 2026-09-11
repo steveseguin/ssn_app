@@ -8,6 +8,18 @@
         content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=yes" />
     <meta http-equiv="Content-Security-Policy"
         content="script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; worker-src 'self' 'unsafe-inline' 'unsafe-eval' blob:;" />
+    <script>
+        // Read this partition's legacy settings before source-list initialization.
+        // Recovery is checked once and is restricted to this main app page.
+        try {
+            const legacySessionStorage = {};
+            for (const key of ['settings', 'streamID', 'ssninja_stream_id', 'password', 'state', 'ssninja_state']) {
+                const value = localStorage.getItem(key);
+                if (value !== null) legacySessionStorage[key] = value;
+            }
+            require('electron').ipcRenderer.sendSync('user-session:recover-legacy-settings', legacySessionStorage);
+        } catch (_) { }
+    </script>
     <link rel="stylesheet" type="text/css" href="main.css" />
     <script src="resources/social_stream_fallback/main/thirdparty/vdoninja-sdk.js"></script>
     <script>
@@ -983,6 +995,31 @@
                 return input;
             }
             return (input.endsWith('/') || input.endsWith('\\')) ? input : `${input}/`;
+        }
+
+        function updateFrameLocalServerConnection(frame) {
+            if (!frame || !frame.getAttribute('src')) return false;
+            try {
+                const url = new URL(frame.src);
+                if (!/\/(background|popup)\.html$/.test(url.pathname)) return false;
+                // A relay toggle must not reselect a website mirror/database.
+                // Keep every other parameter and the already selected origin.
+                if (localServer) {
+                    url.searchParams.set('localserver', '');
+                    if (localWebSocketPort !== 3000) url.searchParams.set('localserverport', String(localWebSocketPort));
+                    else url.searchParams.delete('localserverport');
+                } else {
+                    url.searchParams.delete('localserver');
+                    url.searchParams.delete('localserverport');
+                }
+                if (frame.src !== url.href) {
+                    if (frame.id === 'frame1') postLanguageToPopupFrameAfterLoad(frame);
+                    frame.src = url.href;
+                }
+                return true;
+            } catch (_) {
+                return false;
+            }
         }
 
         function getDevSocialStreamBase() {
@@ -13136,8 +13173,9 @@
                             localWebSocketPort = normalizeLocalWebSocketPort(args[1].port);
                         }
                         if (cachedSsappEnvironment) cachedSsappEnvironment.localWebSocketEnabled = true;
+                        if (cachedSsappEnvironment) cachedSsappEnvironment.localWebSocketPort = localWebSocketPort;
                         localServer = "&localserver";
-                        await setupIframeSource();
+                        if (!updateFrameLocalServerConnection(document.getElementById('frame2'))) await setupIframeSource();
                     } else if (args[0] == "serverStopped") {
                         console.log("serverStopped");
                         if (args[1] && args[1].port !== undefined) {
@@ -13145,12 +13183,15 @@
                         }
                         if (cachedSsappEnvironment) cachedSsappEnvironment.localWebSocketEnabled = false;
                         localServer = "";
-                        await setupIframeSource();
+                        if (!updateFrameLocalServerConnection(document.getElementById('frame2'))) await setupIframeSource();
                     } else if (args[0] == "serverPortChanged") {
                         if (args[1] && args[1].port !== undefined) {
                             localWebSocketPort = normalizeLocalWebSocketPort(args[1].port);
                         }
+                        if (cachedSsappEnvironment) cachedSsappEnvironment.localWebSocketPort = localWebSocketPort;
                     }
+                    if (['serverStarted', 'serverStopped', 'serverPortChanged'].includes(args[0])
+                        && updateFrameLocalServerConnection(document.getElementById('frame1'))) return;
                     let expectedFrame1Src = "";
                     try {
                         const resolved = await resolveSocialStreamPage('popup.html', {

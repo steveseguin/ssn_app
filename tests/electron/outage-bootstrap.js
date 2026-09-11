@@ -45,7 +45,7 @@ function installTransport(target) {
 		}
 		const file = path.resolve(site, relative);
 		if (!file.startsWith(site + path.sep)) return new Response('', { status: 404 });
-		const types = { '.html': 'text/html', '.js': 'application/javascript', '.json': 'application/json', '.css': 'text/css', '.svg': 'image/svg+xml' };
+		const types = { '.html': 'text/html', '.js': 'application/javascript', '.cjs': 'application/javascript', '.json': 'application/json', '.css': 'text/css', '.svg': 'image/svg+xml' };
 		let body;
 		if (process.env.SSAPP_TEST_SERVE_BUNDLE !== '1' && fs.existsSync(site)) {
 			if (fs.existsSync(file) && fs.statSync(file).isFile()) body = fs.readFileSync(file);

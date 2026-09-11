@@ -13,7 +13,8 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-script-recovery-'));
     fs.writeFileSync(path.join(profile, 'savedSync.json'), JSON.stringify({ streamID: 'scriptrecovery', password: 'false', state: false, settings: {}, wsServer: false }));
     const app = await _electron.launch({ executablePath: require('electron'), cwd: root,
-        args: [path.join(__dirname, 'outage-bootstrap.js'), '--multiinstance', '--no-hwa'],
+        args: [path.join(__dirname, 'outage-bootstrap.js'), '--multiinstance', '--no-hwa',
+            ...(process.env.SSAPP_TEST_LIVE_ASSETS === '1' ? [] : ['--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost'])],
         env: { ...process.env, SSAPP_USER_DATA_DIR: profile, SSAPP_PREFER_LOCAL_ASSETS: '0' } });
     const report = [];
     try {
