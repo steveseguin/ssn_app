@@ -214,7 +214,7 @@ async function run() {
             assert.equal(await page.getByText('Flow action LocalFlow-QA ' + label, { exact: true }).count(), 1, 'One action per captured message');
             assert.equal(await page.getByText('Inactive flow must stay off', { exact: true }).count(), 0);
         }
-        if (process.env.SSAPP_LOCAL_LIFECYCLE === '1' || process.env.SSAPP_LOCAL_ROUTING_WORKFLOWS === '1' || process.env.SSAPP_LOCAL_PORT_CONFLICT === '1') {
+        if (process.env.SSAPP_LOCAL_LIFECYCLE === '1' || process.env.SSAPP_LOCAL_ROUTING_WORKFLOWS === '1' || process.env.SSAPP_LOCAL_PORT_CONFLICT === '1' || process.env.SSAPP_LOCAL_SESSION_CHANGE === '1') {
             await background.evaluate(async () => {
                 const flow = { id: 'local-active-flow', name: 'Captured chat action', active: true,
                     nodes: [
@@ -231,6 +231,189 @@ async function run() {
             // The message template preserves the full trigger text.
             await checkFlowAction('initial');
             report.flowActionBeforeChanges = true;
+        }
+
+        if (process.env.SSAPP_LOCAL_GIVEAWAY_WORKFLOWS === '1') {
+            async function giveawayButton(action) {
+                await popup.locator('[data-giveaway-action="' + action + '"]:enabled').waitFor({ state: 'attached' });
+                await popup.evaluate(action => document.querySelector('[data-giveaway-action="' + action + '"]').click(), action);
+                await popup.waitForFunction(() => !document.querySelector('[data-giveaway-action]').disabled, null, { polling: 100 });
+            }
+            await giveawayButton('startgiveaway');
+            await popup.waitForFunction(() => document.getElementById('giveaway-control-status').textContent.includes('Entries open'), null, { polling: 100 });
+            const generated = await popup.evaluate(() => document.getElementById('giveaway').raw);
+            report.managedGiveaway = { generated };
+            await page.goto(generated, { waitUntil: 'domcontentloaded' });
+            await page.getByText('0 eligible entries', { exact: true }).waitFor();
+            await capture('!enter', 'State Viewer One');
+            await page.getByText('1 eligible entry', { exact: true }).waitFor();
+            await capture('!enter', 'State Viewer Two');
+            await page.getByText('2 eligible entries', { exact: true }).waitFor();
+            await page.reload({ waitUntil: 'domcontentloaded' });
+            await page.getByText('2 eligible entries', { exact: true }).waitFor();
+            await giveawayButton('closegiveaway');
+            await page.getByText('Entries closed', { exact: true }).waitFor();
+            await giveawayButton('drawgiveaway');
+            await page.waitForFunction(() => /State Viewer (One|Two) wins!/.test(document.querySelector('.giveaway-result')?.textContent || ''));
+            const winner = await page.locator('.giveaway-result').textContent();
+            const apiUrl = new URL(generated);
+            apiUrl.searchParams.delete('server2');
+            apiUrl.searchParams.delete('server3');
+            apiUrl.searchParams.set('server', '');
+            const second = await createWindow(apiUrl.href);
+            await second.waitForLoadState('domcontentloaded');
+            await second.getByText(winner, { exact: true }).waitFor();
+            await giveawayButton('resetgiveaway');
+            for (const display of [page, second]) {
+                await display.getByText('0 eligible entries', { exact: true }).waitFor();
+                assert.equal(await display.locator('.giveaway-result').textContent(), 'Good luck!');
+            }
+            report.managedGiveaway.snapshotAfterReload = true;
+            report.managedGiveaway.apiSnapshotAndReset = true;
+            const manageWindow = app.waitForEvent('window');
+            await popup.evaluate(() => document.getElementById('giveaway-manage').click());
+            const manager = await manageWindow;
+            await manager.waitForLoadState('domcontentloaded');
+            report.managedGiveaway.manager = await manager.evaluate(() => ({ url: location.href, status: document.getElementById('status').textContent,
+                native: typeof chrome !== 'undefined' && typeof chrome.runtime?.sendMessage, appBridge: typeof window.ninjafy?.sendMessage }));
+            console.log('Giveaway manager: ' + JSON.stringify(report.managedGiveaway.manager));
+            await manager.waitForFunction(() => document.getElementById('status').textContent.includes('default:'));
+            await manager.locator('#history-refresh').click();
+            await manager.getByText(winner.replace(' wins!', ''), { exact: true }).waitFor();
+            report.managedGiveaway.managerHistory = true;
+            await manager.locator('[data-action="startgiveaway"]').click();
+            await page.getByText('Type !enter to enter', { exact: true }).waitFor();
+            await capture('!enter', 'Manager Viewer');
+            await page.getByText('1 eligible entry', { exact: true }).waitFor();
+            await manager.locator('#entries-refresh').click();
+            await manager.getByText('Remove and refund', { exact: true }).waitFor();
+            assert.match(await manager.locator('#entries').textContent(), /Manager Viewer/);
+            await manager.getByText('Remove and refund', { exact: true }).click();
+            await page.getByText('0 eligible entries', { exact: true }).waitFor();
+            await manager.locator('[data-action="closegiveaway"]').click();
+            await page.getByText('Entries closed', { exact: true }).waitFor();
+            report.managedGiveaway.managerControls = true;
+            console.log('PASS managed giveaway: entries, reload, draw, reset, manager history, open/remove/close');
+            report.managedGiveaway.explicitRelays = [];
+            const unusedPort = await freePort();
+            for (const parameter of ['server2', 'server']) {
+                const overridden = new URL(generated);
+                overridden.searchParams.set(parameter, `ws://127.0.0.1:${port}`);
+                overridden.searchParams.set('localserverport', String(unusedPort));
+                await second.goto(overridden.href, { waitUntil: 'domcontentloaded' });
+                await second.getByText('0 eligible entries', { exact: true }).waitFor();
+                await manager.locator('[data-action="startgiveaway"]').click();
+                await second.getByText('Type !enter to enter', { exact: true }).waitFor();
+                await capture('!enter', 'Override Viewer ' + parameter);
+                await second.getByText('1 eligible entry', { exact: true }).waitFor();
+                await manager.locator('[data-action="resetgiveaway"]').click();
+                await second.getByText('0 eligible entries', { exact: true }).waitFor();
+                report.managedGiveaway.explicitRelays.push(parameter);
+                console.log('PASS managed giveaway explicit relay: ' + parameter);
+            }
+            const managerOrigin = await manager.evaluate(() => performance.timeOrigin);
+            let managerJoins = 0;
+            manager.on('websocket', socket => socket.on('framesent', event => {
+                try { if (JSON.parse(event.payload).join === room) managerJoins++; } catch (_) {}
+            }));
+            for (let cycle = 1; cycle <= 2; cycle++) {
+                for (const prefix of ['Stop Local Server', 'Enable Local Server']) {
+                    await app.evaluate(({ Menu }, prefix) => {
+                        function find(menu) {
+                            for (const item of menu.items) {
+                                if (item.label.startsWith(prefix)) return item;
+                                if (item.submenu) { const result = find(item.submenu); if (result) return result; }
+                            }
+                        }
+                        const item = find(Menu.getApplicationMenu());
+                        if (!item) throw new Error('Missing local server menu command');
+                        item.click(item);
+                    }, prefix);
+                    await delay(1500);
+                }
+                background = await findFrame('background');
+                popup = await findFrame('popup');
+                await background.waitForFunction(() => ssappBackgroundLoadState?.status === 'ready' && socketserver?.readyState === 1, null, { polling: 100 });
+                await manager.waitForFunction(() => document.getElementById('status').textContent.includes('default:'));
+                await manager.locator('[data-action="startgiveaway"]').click();
+                await page.getByText('Type !enter to enter', { exact: true }).waitFor();
+                await capture('!enter', 'Reconnected Manager Viewer ' + cycle);
+                await page.getByText('1 eligible entry', { exact: true }).waitFor();
+                await manager.locator('[data-action="resetgiveaway"]').click();
+                await page.getByText('0 eligible entries', { exact: true }).waitFor();
+                assert.equal(await manager.evaluate(() => performance.timeOrigin), managerOrigin, 'Manager reconnects without reloading');
+                console.log('PASS giveaway manager reconnect ' + cycle);
+            }
+            assert(managerJoins >= 2, 'Manager joined again after both relay restarts');
+            report.managedGiveaway.reconnects = managerJoins;
+            await popup.evaluate(() => document.querySelector('input[data-setting="socketserver"]').click());
+            await background.waitForFunction(() => !settings.socketserver, null, { polling: 100 });
+            await manager.locator('#refresh').click();
+            await manager.getByText(/Enable remote API control of extension/).waitFor();
+            await popup.evaluate(() => document.querySelector('input[data-setting="socketserver"]').click());
+            await background.waitForFunction(() => settings.socketserver && socketserver?.readyState === 1, null, { polling: 100 });
+            await manager.locator('#refresh').click();
+            await manager.waitForFunction(() => document.getElementById('status').textContent.includes('default:'));
+            report.managedGiveaway.disabledApiRecovery = true;
+            await second.close();
+            await manager.close();
+        }
+
+        if (process.env.SSAPP_LOCAL_SESSION_CHANGE === '1') {
+            const secondRoom = room + '_b';
+            const receivers = [];
+            report.sessionChanges = [];
+            try {
+                for (const receiverRoom of [room, secondRoom]) {
+                    const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+                    await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+                    const packets = [];
+                    socket.on('message', data => { packets.push(JSON.parse(data.toString())); });
+                    socket.send(JSON.stringify({ join: receiverRoom, out: 3, in: 4 }));
+                    receivers.push({ room: receiverRoom, socket, packets });
+                }
+                const game = await createWindow('about:blank');
+                for (const [index, nextRoom] of [secondRoom, room].entries()) {
+                    await popup.evaluate(value => {
+                        const input = document.getElementById('sessionid');
+                        input.value = value;
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                    }, nextRoom);
+                    await background.waitForFunction(value => streamID === value, nextRoom, { polling: 100 });
+                    await popup.waitForFunction(value => new URL(document.getElementById('games').raw).searchParams.get('session') === value, nextRoom, { polling: 100 });
+                    await popup.locator('#games-preset-select').selectOption('games/memoryparade.html', { force: true });
+                    const gameUrl = await popup.evaluate(() => document.getElementById('games').raw);
+                    await game.goto(gameUrl, { waitUntil: 'domcontentloaded' });
+                    await delay(1500);
+                    const viewer = 'Session Switch Viewer ' + index;
+                    await capture('!ready', viewer);
+                    await delay(1200);
+                    const row = { room: nextRoom, gameUrl, destinations: receivers.map(receiver => ({ room: receiver.room,
+                        messages: receiver.packets.filter(packet => packet.chatname === viewer).length })) };
+                    report.sessionChanges.push(row);
+                    assert.equal(row.destinations.find(dest => dest.room !== nextRoom).messages, 0, 'Captured chat must leave the previous local session');
+                    await game.waitForFunction(() => document.getElementById('participants').textContent === '1');
+                    await page.goto(await popup.evaluate(() => document.getElementById('flowactions').raw), { waitUntil: 'domcontentloaded' });
+                    await delay(1200);
+                    await capture('LocalFlow-QA session-' + index);
+                    await page.getByText('Flow action LocalFlow-QA session-' + index, { exact: true }).waitFor();
+                    const api = new WebSocket(`ws://127.0.0.1:${port}`);
+                    try {
+                        await new Promise((resolve, reject) => { api.once('open', resolve); api.once('error', reject); });
+                        api.send(JSON.stringify({ join: nextRoom, out: 1, in: 2 }));
+                        const token = 'session-timer-' + index;
+                        const reply = new Promise((resolve, reject) => {
+                            const timeout = setTimeout(() => reject(new Error('API receiver stayed in the previous session')), 5000);
+                            api.on('message', data => { if (JSON.parse(data.toString()).callback?.get === token) { clearTimeout(timeout); resolve(); } });
+                        });
+                        api.send(JSON.stringify({ action: 'gettimerstate', get: token }));
+                        await reply;
+                    } finally { api.terminate(); }
+                    row.gameActionAndApiPassed = true;
+                    console.log('PASS local session change: ' + nextRoom);
+                }
+                await game.close();
+            } finally { receivers.forEach(receiver => receiver.socket.terminate()); }
         }
 
         if (process.env.SSAPP_LOCAL_GAME_WORKFLOWS === '1' || process.env.SSAPP_LOCAL_CONTROL_WORKFLOWS === '1') {
