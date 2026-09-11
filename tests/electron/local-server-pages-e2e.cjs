@@ -60,7 +60,7 @@ async function run() {
         publisher.send(JSON.stringify({ join: room, out: 1, in: 2 }));
         async function createWindow(url, options = {}) {
             const pendingWindow = app.waitForEvent('window');
-            await main.evaluate(options => ipcRenderer.sendSync('createWindow', options), { url, visible: true, ...options });
+            await main.evaluate(options => ipcRenderer.sendSync('createWindow', options), { url, visible: true, size: { width: 1100, height: 800 }, ...options });
             return pendingWindow;
         }
         const sourceUrl = pathToFileURL(path.join(__dirname, 'fixtures/hidden-capture.html')).href + '?platform=youtube&manual=1';
@@ -156,6 +156,55 @@ async function run() {
         report.timerCallback = await response;
         console.log('PASS local API timer callback');
 
+        if (process.env.SSAPP_LOCAL_RELAY_OVERRIDE === '1') {
+            const unusedPort = await freePort();
+            report.explicitGameRelay = [];
+            for (const parameter of ['server', 'server2']) {
+                await popup.locator('#games-preset-select').selectOption('games/memoryparade.html', { force: true });
+                const url = new URL(await popup.evaluate(() => document.getElementById('games').raw));
+                url.searchParams.set('localserverport', unusedPort);
+                url.searchParams.set(parameter, `ws://127.0.0.1:${port}`);
+                const row = { parameter, url: url.href };
+                report.explicitGameRelay.push(row);
+                await page.goto(url.href, { waitUntil: 'domcontentloaded' });
+                await delay(1500);
+                if (parameter === 'server') publisher.send(JSON.stringify({ type: 'youtube', chatname: 'Explicit Relay Viewer', chatmessage: '!ready', textonly: true, id: 'explicit-relay-' + parameter }));
+                else await capture('!ready', 'Explicit Relay Viewer');
+                await page.waitForFunction(() => document.getElementById('participants').textContent === '1');
+                row.joinedViaExplicitEndpoint = true;
+                console.log('PASS game explicit relay override: ' + parameter);
+            }
+        }
+
+        if (process.env.SSAPP_LOCAL_DOCK_WORKFLOWS === '1') {
+            // Manual featuring uses the separate "Dock publish via API" switch.
+            await popup.evaluate(() => { const input = document.getElementById('server'); if (!input.checked) input.click(); });
+            await popup.waitForFunction(() => new URL(document.getElementById('dock').raw).searchParams.has('server'), null, { polling: 100 });
+            const dockUrl = await popup.evaluate(() => document.getElementById('dock').raw);
+            await popup.locator('#featured-preset-select').selectOption('themes/featured-styles/featured-modern.html?style=glass', { force: true });
+            const featuredUrl = await popup.evaluate(() => document.getElementById('overlay').raw);
+            const dock = await createWindow(dockUrl);
+            await dock.waitForLoadState('domcontentloaded');
+            await page.goto(featuredUrl, { waitUntil: 'domcontentloaded' });
+            report.dockFeaturing = { dockUrl, featuredUrl, messages: [] };
+            await delay(1800);
+            for (let sequence = 1; sequence <= 2; sequence++) {
+                const message = 'Dock feature QA ' + sequence;
+                await capture(message, 'Dock Viewer');
+                await dock.getByText(message, { exact: true }).waitFor();
+                assert.equal(await dock.getByText(message, { exact: true }).count(), 1, 'One captured message per Dock row');
+                assert.equal(await page.getByText(message, { exact: true }).count(), 0, 'Manual featured overlay waits for selection');
+                await dock.screenshot({ path: path.join(output, 'dock-before-selection.png') });
+                await dock.getByText(message, { exact: true }).click();
+                await page.getByText(message, { exact: true }).waitFor();
+                await dock.locator('#clear_overlay').click();
+                await page.getByText(message, { exact: true }).waitFor({ state: 'detached' });
+                report.dockFeaturing.messages.push({ message, featuredAndCleared: true });
+            }
+            console.log('PASS generated Dock and featured links: captured chat, selection, clear and repeat');
+            await dock.close();
+        }
+
         async function checkFlowAction(label) {
             await page.goto(`https://socialstream.ninja/actions.html?session=${room}&server&localserver&localserverport=${port}`, { waitUntil: 'domcontentloaded' });
             await delay(1200);
@@ -165,7 +214,7 @@ async function run() {
             assert.equal(await page.getByText('Flow action LocalFlow-QA ' + label, { exact: true }).count(), 1, 'One action per captured message');
             assert.equal(await page.getByText('Inactive flow must stay off', { exact: true }).count(), 0);
         }
-        if (process.env.SSAPP_LOCAL_LIFECYCLE === '1' || process.env.SSAPP_LOCAL_ROUTING_WORKFLOWS === '1') {
+        if (process.env.SSAPP_LOCAL_LIFECYCLE === '1' || process.env.SSAPP_LOCAL_ROUTING_WORKFLOWS === '1' || process.env.SSAPP_LOCAL_PORT_CONFLICT === '1') {
             await background.evaluate(async () => {
                 const flow = { id: 'local-active-flow', name: 'Captured chat action', active: true,
                     nodes: [
@@ -457,6 +506,62 @@ async function run() {
             await new Promise((resolve, reject) => { publisher.once('open', resolve); publisher.once('error', reject); });
             publisher.send(JSON.stringify({ join: room, out: 1, in: 2 }));
             assert.deepEqual(errors, [], 'Routing workflows produce no page errors');
+        }
+
+        if (process.env.SSAPP_LOCAL_PORT_CONFLICT === '1') {
+            async function localMenu(prefix) {
+                return app.evaluate(({ Menu }, prefix) => {
+                    function find(menu) {
+                        for (const item of menu.items) {
+                            if (item.label.startsWith(prefix)) return item;
+                            if (item.submenu) { const result = find(item.submenu); if (result) return result; }
+                        }
+                    }
+                    const item = find(Menu.getApplicationMenu());
+                    if (!item) throw new Error('Missing menu item: ' + prefix);
+                    void item.click(item);
+                }, prefix);
+            }
+            report.portConflicts = [];
+            for (const initiallyRunning of [true, false]) {
+                const blocker = net.createServer(socket => socket.destroy());
+                await new Promise(resolve => blocker.listen(0, '127.0.0.1', resolve));
+                try {
+                    port = blocker.address().port;
+                    if (!initiallyRunning) await localMenu('Stop Local Server');
+                    const promptWindow = app.waitForEvent('window');
+                    await localMenu('Set Local Server Port');
+                    const prompt = await promptWindow;
+                    await prompt.locator('input').fill(String(port));
+                    await prompt.locator('#ok').click();
+                    // The Save button closes its window before the menu's async
+                    // handler has finished updating the selected port.
+                    await delay(750);
+                    if (!initiallyRunning) await localMenu('Enable Local Server');
+                    await delay(2500);
+                    background = await findFrame('background');
+                    await background.waitForFunction(() => !new URLSearchParams(location.search).has('localserver')
+                        && window.ssappBackgroundLoadState?.status === 'ready'
+                        && eventFlowSystem.flows.some(flow => flow.id === 'local-active-flow' && flow.active), null, { polling: 100 });
+                    const stableUrl = background.url();
+                    const documentStartedAt = await background.evaluate(() => performance.timeOrigin);
+                    assert.equal(new URL(stableUrl).origin, new URL(report.background.url).origin);
+                    await delay(16000);
+                    assert.equal(background.url(), stableUrl, 'A port conflict does not cause a delayed reload loop');
+                    assert.equal(await background.evaluate(() => performance.timeOrigin), documentStartedAt, 'Background does not silently reload the same URL');
+                } finally {
+                    await new Promise(resolve => blocker.close(resolve));
+                }
+                await localMenu('Enable Local Server');
+                background = await findFrame('background');
+                await background.waitForFunction(port => new URLSearchParams(location.search).get('localserverport') === String(port)
+                    && new URLSearchParams(location.search).has('localserver') && window.ssappBackgroundLoadState?.status === 'ready'
+                    && socketserverDock?.readyState === 1, port, { polling: 100 });
+                popup = await findFrame('popup');
+                await checkFlowAction('recovered-port-' + initiallyRunning);
+                report.portConflicts.push({ initiallyRunning, port, flowPreserved: true, recoveredCapturedAction: true });
+                console.log('PASS occupied port, stable saved flows and recovery; initially running=' + initiallyRunning);
+            }
         }
 
         if (process.env.SSAPP_LOCAL_LIFECYCLE === '1') {
