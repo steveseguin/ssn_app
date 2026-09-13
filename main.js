@@ -18427,6 +18427,7 @@ app.on("ready", () => {
     });
 
     app.on("browser-window-focus", (event, win) => {
+        syncAlwaysOnTopMenu(win);
         // Initially keep window non-clickable
         //win.setIgnoreMouseEvents(true);
 
@@ -18458,6 +18459,11 @@ app.on("activate", function () {
 });
 
 app.on('browser-window-created', (event, window) => {
+    window.on('always-on-top-changed', () => {
+        if (window.isFocused()) syncAlwaysOnTopMenu(window);
+    });
+    window.on('closed', () => syncAlwaysOnTopMenu());
+
     window.webContents.on('will-prevent-unload', (event) => {
         event.preventDefault();
     });
@@ -19531,6 +19537,15 @@ async function promptAndSendManualIssueReport() {
     }
 }
 
+function syncAlwaysOnTopMenu(window = BrowserWindow.getFocusedWindow()) {
+    const item = Menu.getApplicationMenu()?.getMenuItemById('window-always-on-top');
+    if (!item) return;
+
+    const hasWindow = !!window && !window.isDestroyed();
+    item.enabled = hasWindow;
+    item.checked = hasWindow && window.isAlwaysOnTop();
+}
+
 function createMenu() {
     const transferBackupConfig = getTransferBackupConfig();
     const hasTransferBackupFolder = !!(transferBackupConfig.folderPath && String(transferBackupConfig.folderPath).trim());
@@ -19948,15 +19963,19 @@ function createMenu() {
                 type: 'separator'
             },
             {
+                id: 'window-always-on-top',
                 label: 'Always on Top',
                 type: 'checkbox',
-                checked: mainWindow ? mainWindow.isAlwaysOnTop() : false,
-                click: () => {
-                    if (mainWindow) {
-                        const shouldPin = !mainWindow.isAlwaysOnTop();
-                        mainWindow.setAlwaysOnTop(shouldPin);
-                        mainWindow.setVisibleOnAllWorkspaces(shouldPin);
+                click: (menuItem, window) => {
+                    if (!window || window.isDestroyed()) {
+                        syncAlwaysOnTopMenu();
+                        return;
                     }
+
+                    const shouldPin = !window.isAlwaysOnTop();
+                    window.setAlwaysOnTop(shouldPin);
+                    window.setVisibleOnAllWorkspaces(shouldPin);
+                    syncAlwaysOnTopMenu(window);
                 }
             },
             {
@@ -20148,6 +20167,7 @@ function createMenu() {
 
     const menu = Menu.buildFromTemplate(template);
     Menu.setApplicationMenu(menu);
+    syncAlwaysOnTopMenu();
 }
 
 electron.powerMonitor.on("on-battery", () => {
