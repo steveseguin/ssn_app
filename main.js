@@ -14293,6 +14293,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 const selectedSourceFiles = explicitSourceFiles.length
                     ? explicitSourceFiles
                     : (args.source ? [normalizeSelectedSourcePath(args.source)] : []);
+                // Standard TikTok capture needs the native gift reader in the same world.
+                const tikTokSourceIndex = selectedSourceFiles.indexOf("sources/tiktok.js");
+                if (tikTokSourceIndex !== -1 && !selectedSourceFiles.includes("sources/inject/tiktok-gift.js")) {
+                    selectedSourceFiles.splice(tikTokSourceIndex, 0, "sources/inject/tiktok-gift.js");
+                }
                 let sourceInjectionHandled = false;
 
                 if (runningLocally && selectedSourceFiles.length && selectedSourceFiles.every((value) => value && !isAbsoluteScriptUrl(value))) {

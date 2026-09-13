@@ -36,6 +36,15 @@ async function launch() {
                 if (args.url === 'https://www.ebay.com/ebaylive/graphql') {
                     global.ebayFixtureRequests.push(args);
                     const input = args.body.variables.liveEventsInput;
+                    if (input.ids) {
+                        const id = input.ids[0];
+                        if (id === 'DelayedEvent') await new Promise(resolve => setTimeout(resolve, 1000));
+                        if (id === 'UnavailableEvent') return { status: 503, data: '{}' };
+                        if (id === 'ChallengeEvent') return { status: 200, data: '<html>Verify your browser</html>' };
+                        return { status: 200, data: JSON.stringify({ data: { liveEvents: {
+                            events: id === 'MissingEvent' ? [] : [{ id, title: 'Event ' + id, state: 'RECORDED' }]
+                        } } }) };
+                    }
                     if (input.sellerId === 'DelayedSeller') await new Promise(resolve => setTimeout(resolve, 1000));
                     if (input.sellerId === 'FailSeller' && !global.ebayFailureCount++) return { status: 503, data: '{}' };
                     const event = (id, title, state = 'LIVE', sellerId = input.sellerId) => ({
@@ -65,6 +74,23 @@ async function launch() {
         await input.fill('https://ebay.com.evil.example/ebaylive/events/Bad');
         await proceed.click();
         await status.filter({ hasText: 'Use an eBay Live link' }).waitFor();
+        await input.fill('MissingEvent');
+        await proceed.click();
+        await status.filter({ hasText: 'event not found' }).waitFor();
+        assert.equal(await page.evaluate(() => stateManager.getSources().length), 0);
+        await input.fill('UnavailableEvent');
+        await proceed.click();
+        await status.filter({ hasText: 'Could not verify' }).waitFor();
+        await input.fill('ChallengeEvent');
+        await proceed.click();
+        await status.filter({ hasText: 'Could not verify' }).waitFor();
+        assert.equal(await page.evaluate(() => stateManager.getSources().length), 0);
+        await input.fill('DelayedEvent');
+        await proceed.click();
+        await input.fill('EditedEvent');
+        await page.waitForTimeout(1200);
+        assert.equal(await status.textContent(), '');
+        assert.equal(await page.evaluate(() => stateManager.getSources().length), 0, 'stale validation must not save an edited input');
         await input.fill('https://www.ebay.com/ebaylive/events/DirectEvent/stream?tracking=1#chat');
         await proceed.click();
         await page.locator('.ebay-setup').waitFor({ state: 'detached' });
@@ -84,7 +110,7 @@ async function launch() {
         const selected = await page.evaluate(() => stateManager.getSources().find(s => s.videoId === 'FixtureEventTwo'));
         assert.equal(selected.ebaySellerId, 'FixtureSeller');
         assert.equal(selected.username, 'Luna · $2 healing crystals');
-        const requests = await app.evaluate(() => global.ebayFixtureRequests);
+        const requests = await app.evaluate(() => global.ebayFixtureRequests.filter(r => r.body.variables.liveEventsInput.sellerId));
         assert.deepEqual(requests[0].body.variables.liveEventsInput.states, ['LIVE']);
         assert.equal(requests[1].body.variables.liveEventsInput.pagination.pageCursor, 'page-two');
         assert.equal(requests[0].body.variables.includeVideoPreview, false);
@@ -121,6 +147,61 @@ async function launch() {
         await page.keyboard.press('Escape');
         assert.equal(await page.locator('.ebay-setup').count(), 0);
         assert.equal(await page.locator('body > [inert]').count(), 0);
+        // Saved sources (including old imports) must also validate on activation.
+        const missing = await page.evaluate(async () => {
+            await newOtherSource('ebay', 'https://www.ebay.com/ebaylive/events/MissingEvent/chat', false,
+                { username: 'Missing event', videoId: 'MissingEvent', connectionMode: 'classic' });
+            return stateManager.getSources().find(s => s.videoId === 'MissingEvent');
+        });
+        const missingRow = page.locator(`[data-source-id="${missing.id}"]`);
+        await missingRow.locator('[data-activatehtml]').press('Enter');
+        await page.waitForFunction(id => stateManager.getSource(id)?.status === 'error', missing.id);
+        const failed = await page.evaluate(id => stateManager.getSource(id), missing.id);
+        assert.match(failed.error, /event not found/);
+        assert(!failed.vid, 'invalid saved event must not open a blank capture window');
+        assert((await missingRow.textContent()).includes('event not found'), 'activation feedback must remain visible');
+        await page.evaluate(id => stateManager.updateSource(id, { url: 'https://www.ebay.com/ebaylive/events/DirectEvent/chat', videoId: 'DirectEvent' }), missing.id);
+        await missingRow.locator('[data-activatehtml]').press('Enter');
+        await page.waitForFunction(id => !!stateManager.getSource(id)?.vid, missing.id);
+        await missingRow.locator('[data-stophtml]').click();
+        await page.evaluate(id => stateManager.updateSource(id, { url: 'https://www.ebay.com/ebaylive/events/DelayedEvent/chat', videoId: 'DelayedEvent' }), missing.id);
+        await missingRow.locator('[data-activatehtml]').press('Enter');
+        await page.waitForFunction(id => stateManager.getSource(id)?.status === 'activating', missing.id);
+        await missingRow.locator('[data-stophtml]').evaluate(el => stopThis(el));
+        await page.waitForTimeout(1200);
+        assert.equal(await page.evaluate(id => stateManager.getSource(id)?.status, missing.id), 'inactive');
+        assert.equal(await page.evaluate(id => !!stateManager.getSource(id)?.vid, missing.id), false, 'stopped validation must not create a window');
+
+        // Every existing eBay manifest host must preserve its marketplace.
+        const domainChecks = await page.evaluate(() => {
+            const hosts = manifest.content_scripts.filter(s => s.js.includes('./sources/ebay.js'))
+                .flatMap(s => s.matches).filter(u => u.includes('/ebaylive/events/')).map(u => new URL(u).hostname);
+            return hosts.map(host => ({ host, origin: getEbayLiveOrigin('https://' + host + '/ebaylive/events/Test/chat'),
+                bare: parseEbayLiveInput('https://' + host.replace(/^www\./, '') + '/ebaylive/events/Test/chat').origin }));
+        });
+        assert(domainChecks.length >= 21);
+        for (const check of domainChecks) {
+            assert.equal(check.origin, 'https://' + check.host);
+            assert.equal(check.bare, check.origin);
+        }
+        assert.equal(await page.evaluate(() => { try { getEbayLiveOrigin('https://ebay.ca.evil.example/'); return false; } catch (_) { return true; } }), true);
+        for (const host of ['cafr.ebay.ca', 'befr.ebay.be', 'benl.ebay.be']) {
+            assert.equal(await page.evaluate(host => getEbayLiveOrigin('https://www.' + host), host), 'https://' + host);
+        }
+
+        // Real Sign-in buttons, IPC and BrowserWindows, with local page fixtures.
+        await app.context().route(/^https:\/\/(?:www\.|cafr\.|befr\.|benl\.)?ebay\.[^/]+\/$/,
+            route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Regional eBay sign-in</title><p>Sign-in fixture</p>' }));
+        for (const host of ['www.ebay.co.uk', 'www.ebay.com.au', 'www.ebay.ca', 'cafr.ebay.ca', 'befr.ebay.be', 'www.ebay.com.hk']) {
+            await page.evaluate(({ id, host }) => stateManager.updateSource(id, { url: 'https://' + host + '/ebaylive/events/DirectEvent/chat' }), { id: missing.id, host });
+            const opened = app.waitForEvent('window');
+            await missingRow.locator('[data-signin]').click();
+            const signin = await opened;
+            await signin.waitForURL('https://' + host + '/');
+            await signin.getByText('Sign-in fixture').waitFor();
+            const win = await app.browserWindow(signin);
+            await win.evaluate(w => w.close());
+        }
         // Restart the process, not just the renderer, to validate saved selection.
         await app.close();
         ({ app, page } = await launch());
@@ -130,7 +211,7 @@ async function launch() {
         assert.equal(saved.url, changed.url);
         assert.equal(saved.sourceFile, 'sources/ebay.js');
         assert(JSON.parse(fs.readFileSync(path.join(root, 'package.json'))).build.files.includes('ebay.js'));
-        console.log('PASS: eBay setup validation, direct URL normalization, seller pagination/picker, actual source activation, event replacement, errors/refresh, stale requests, Escape and process-restart persistence.');
+        console.log('PASS: eBay event validation/retry/cancellation, regional sign-in windows, manifest host parity, seller picker, source activation/replacement and process-restart persistence.');
         console.log('Screenshot: ' + path.join(profile, 'seller-picker.png'));
     } finally { if (app) await app.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

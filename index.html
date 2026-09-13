@@ -7164,7 +7164,7 @@
             try {
                 const sid = parentElement.dataset.sourceId;
                 const src = sid ? stateManager.getSource(sid) : null;
-                if (src && (src.connectionMode === 'classic')) {
+                if (src && (src.connectionMode === 'classic') && (src.target !== 'ebay' || windowId)) {
                     updateConnectionStatus(parentElement, 'info', 'Reminder: After the window opens, sign in (if required) and confirm the chat is visible.');
                 }
             } catch (_) { }
@@ -9321,6 +9321,16 @@
                         windowId = await createWindowWSSFromSource(source, tabid);
                     }
                 } else {
+                    if (resolvedTarget === 'ebay') {
+                        const ebayUrl = source.url;
+                        await validateEbayLiveEvent(parseEbayLiveInput(ebayUrl));
+                        // A stopped, edited or deleted source must not open a
+                        // window when its pending event check returns.
+                        if (stateManager.getSource(sourceId) !== source || pendingSourceActivations.get(sourceId) !== activationToken) {
+                            return { success: false, error: new Error('Activation canceled') };
+                        }
+                        if (source.url !== ebayUrl) throw new Error('The eBay event changed. Activate the source again.');
+                    }
                     windowId = await createClassicWindowFromSource(source, tabid);
                 }
 
@@ -11617,6 +11627,10 @@
             }
 
             let signinUrl = config?.[effectivePlatform]?.signin?.url;
+            if (!signinUrl && effectivePlatform === 'ebay') {
+                try { signinUrl = getEbayLiveOrigin(urlForSignin); }
+                catch (error) { Toast.error('eBay Sign-in', error.message); return false; }
+            }
             if (!signinUrl && urlForSignin) {
                 try {
                     signinUrl = "https://" + getPrimaryDomain(urlForSignin);

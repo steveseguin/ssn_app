@@ -4238,7 +4238,7 @@ class GiftProcessor {
         };
 
         // Preserve upstream ids/timestamps for downstream dedupe and debugging
-        const upstreamMsgId = data?.common?.msgId || data?.msgId || data?.msg_id;
+        const upstreamMsgId = data?.common?.msgId || data?.common?.msg_id || data?.msgId || data?.msg_id;
         if (upstreamMsgId) msg.msgId = String(upstreamMsgId);
         const upstreamCreateTime = data?.common?.createTime || data?.createTime;
         if (upstreamCreateTime) msg.createTime = String(upstreamCreateTime);
@@ -4249,7 +4249,9 @@ class GiftProcessor {
         if (contentImage) {
             msg.contentimg = contentImage;
         }
-        if (donationDisplay && !hiddenFromTray) {
+        const giftSettings = getCachedSettings();
+        const treatGiftAsDonation = giftSettings.tiktokdonations || !giftSettings.notiktokdonations;
+        if (donationDisplay && !hiddenFromTray && treatGiftAsDonation) {
             msg.hasDonation = donationDisplay;
             msg.donoValue = totalDiamonds * 0.005;
         }
@@ -4265,6 +4267,12 @@ class GiftProcessor {
 
         const meta = sanitizeEventMeta({
             giftId,
+            giftName,
+            tiktokGiftMessageId: upstreamMsgId ? String(upstreamMsgId) : undefined,
+            tiktokGiftSenderId: pickFirstNonEmptyString([data.userId, data.user_id, data?.user?.id, data?.user?.id_str, data?.user?.userId]) || undefined,
+            groupId: resolveGiftGroupId(data) || undefined,
+            tiktokGiftCount: count,
+            repeatEnd: true, // GiftProcessor has already settled this streak.
             count,
             repeatCount: repeatCount > 1 ? repeatCount : undefined,
             comboCount: comboCount > 1 ? comboCount : undefined,

@@ -364,11 +364,13 @@
     "yargs": "^17.7.2"
   },
   "overrides": {
+    "@xmldom/xmldom": "0.8.15",
     "brace-expansion@<1.1.18": "1.1.18",
     "brace-expansion@>=2.0.0 <2.1.4": "2.1.4",
     "brace-expansion@>=3.0.0 <5.0.9": "5.0.9",
     "fast-uri": "3.1.6",
     "fflate": "^0.8.3",
+    "js-yaml@>=4.0.0 <4.3.2": "4.3.2",
     "protobufjs": "7.6.6",
     "sharp": "$sharp",
     "tar": "7.5.22"

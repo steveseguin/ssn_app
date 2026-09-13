@@ -20,7 +20,7 @@ function removeIfExists(targetPath) {
 function validateMacSharp(resourcesDir, archName) {
   const asar = require('@electron/asar');
   const archive = path.join(resourcesDir, 'app.asar');
-  const sharp = JSON.parse(asar.extractFile(archive, 'node_modules/sharp/package.json'));
+  const sharp = JSON.parse(asar.extractFile(archive, path.join('node_modules', 'sharp', 'package.json')));
   for (const name of [`@img/sharp-darwin-${archName}`, `@img/sharp-libvips-darwin-${archName}`]) {
     const expected = sharp.optionalDependencies?.[name];
     if (!expected) throw new Error(`[packaging] Sharp does not declare ${name}.`);
@@ -28,7 +28,7 @@ function validateMacSharp(resourcesDir, archName) {
     // Match the dependency lookup from Sharp, including npm's nested native packages.
     for (const directory of ['node_modules/sharp/node_modules', 'node_modules']) {
       let contents;
-      try { contents = asar.extractFile(archive, `${directory}/${name}/package.json`); }
+      try { contents = asar.extractFile(archive, path.join(directory, name, 'package.json')); }
       catch (_) { continue; }
       installed = JSON.parse(contents).version;
       break;
