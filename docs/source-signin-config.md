@@ -1,4 +1,58 @@
-# Per-source sign-in Origin rules
+# Per-source sign-in configuration
+
+## Self-hosted servers and HTTP Basic Authentication
+
+Owncast uses these settings in all three Social Stream `settings/config*.json` files:
+
+```json
+{
+  "owncast": {
+    "httpBasicAuth": true,
+    "signin": { "useSourceUrl": true }
+  }
+}
+```
+
+`signin.useSourceUrl` makes the existing Sign-in button open the source's full HTTP(S)
+URL, preserving its subdomain, port, path, and query. An explicit `signin.url` still
+takes precedence. URLs containing embedded usernames/passwords are rejected by this
+sign-in path; enter credentials in the server sign-in dialog instead.
+
+`httpBasicAuth` handles HTTP Basic challenges in that source's Standard capture and
+Sign-in windows. It is read only from the explicit platform configuration, not global
+defaults. It is currently enabled only for Owncast. The dialog shows the server and
+realm, supports retry and cancellation, and remains accessible when capture is hidden.
+Stopping the source or navigating away cancels its pending authentication request.
+
+The handler accepts challenges only from the original source origin (protocol, host,
+and port); it does not handle proxy authentication, other schemes, other origins, or
+WebSocket connector windows. No Authorization request hook or session mapping changes
+are made. Chromium reuses successful HTTP authentication within the existing browser
+session; credentials are not saved in source settings or passed through the general
+chat/control IPC. Expect to sign in again after restarting the app. Unattended headless
+mode cancels challenges and logs that interactive sign-in is required.
+
+This requires the updated SSApp runtime as well as the source configuration; a beta
+source update alone cannot add the authentication dialog to an older desktop build.
+
+Run `node tests/electron/owncast-auth-e2e.js` for real SSApp workflow checks against
+loopback HTTP challenges and Owncast-shaped chat fixtures. Set `OWNCAST_TEST_URL` to
+the URL of a local Owncast 0.3 server to also check its actual production chat page
+behind a temporary Basic Auth reverse proxy. This optional server must use HTTP on
+localhost/127.0.0.1; the test never uses public channels. Windows verification does
+not establish Fedora/Wayland behavior.
+
+Set `OWNCAST_TEST_REPLY=1` as well when the local server has an active stream and
+allows chat. That also checks a reply through SSApp's normal outgoing-message path.
+
+Verified on Windows with SSApp 0.4.29 / Electron 43 and the official Owncast 0.3.0
+Linux release running locally in WSL: full-address sign-in, rejected-password retry,
+session reuse/isolation, distinct server ports, cancellation, source-stop cleanup,
+excluded platforms/redirects, capture starting hidden, visible/hidden capture, hidden
+reload, and outgoing replies. No capture-script or shared keepalive changes were
+needed for those checks. Fedora/Wayland and macOS remain unverified.
+
+## Per-source sign-in Origin rules
 
 Set `signin.fillMissingOrigin` under **any source key** in Social Stream's
 `settings/config_0.json`, `settings/config_linux_0.json`, and `settings/config_mac_0.json`.

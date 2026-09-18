@@ -6922,7 +6922,9 @@ class ConnectionManager {
             this.logDebug('control.websocketConnected');
             this.handleConnect();
         });
-        this.connection.on('disconnect', (disconnectInfo) => {
+        // The TikTok connector uses "disconnected"; our Euler proxy adapter uses "disconnect".
+        const disconnectEvent = this.connection instanceof EulerWebsocketServerConnection ? 'disconnect' : 'disconnected';
+        this.connection.on(disconnectEvent, (disconnectInfo) => {
             // For EulerWS, disconnectInfo contains { code, reason, codeLabel }
             const code = disconnectInfo?.code;
             const codeLabel = disconnectInfo?.codeLabel || '';

@@ -11627,6 +11627,15 @@
             }
 
             let signinUrl = config?.[effectivePlatform]?.signin?.url;
+            if (!signinUrl && config?.[effectivePlatform]?.signin?.useSourceUrl === true && urlForSignin) {
+                try {
+                    const sourceUrl = new URL(urlForSignin);
+                    if (!['http:', 'https:'].includes(sourceUrl.protocol) || sourceUrl.username || sourceUrl.password) {
+                        throw new Error('Use a server URL without embedded login credentials.');
+                    }
+                    signinUrl = sourceUrl.href;
+                } catch (error) { Toast.error('Sign-in Error', error.message); return false; }
+            }
             if (!signinUrl && effectivePlatform === 'ebay') {
                 try { signinUrl = getEbayLiveOrigin(urlForSignin); }
                 catch (error) { Toast.error('eBay Sign-in', error.message); return false; }

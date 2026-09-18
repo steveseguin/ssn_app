@@ -4,6 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
+const { WebSocketServer } = require('ws');
 const { createTikTokEnvironment, __test } = require('../../tiktok/connection-manager.js');
 
 function cloneStatus(payload) {
@@ -147,10 +148,11 @@ function createHarness(outcomesByMode, options = {}) {
 	const {
 		allowProxy = true,
 		localSignerEnabled = true,
-		signing = null
+		signing = null,
+		connectorOverride = null
 	} = options;
 	const plan = createScenarioPlan(outcomesByMode);
-	const connector = createFakeConnector(plan);
+	const connector = connectorOverride || createFakeConnector(plan);
 	const env = createTikTokEnvironment({
 		connector,
 		onStatus: (payload) => plan.statuses.push(cloneStatus(payload)),
@@ -908,6 +910,66 @@ async function testHandleConnectIgnoresDuplicateConnectedEmission() {
 	assert.strictEqual(countStatuses(plan, entry => entry.status === 'connected'), 1);
 }
 
+async function testInstalledConnectorRecoversAfterSocketClose() {
+	const { manager, plan } = createHarness({}, {
+		allowProxy: false,
+		localSignerEnabled: false,
+		connectorOverride: require('tiktok-live-connector')
+	});
+	const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+	await new Promise((resolve, reject) => {
+		server.once('listening', resolve);
+		server.once('error', reject);
+	});
+	async function waitUntil(predicate) {
+		const deadline = Date.now() + 5000;
+		while (!predicate()) {
+			assert.ok(Date.now() < deadline, 'Timed out waiting for TikTok socket recovery');
+			await new Promise(resolve => setTimeout(resolve, 10));
+		}
+	}
+	try {
+		manager.initializeConnectionInstance();
+		const connection = manager.connection;
+		// Replace only remote room/signing lookup. Keep the installed connector's
+		// connect, WebSocket transport and close-event implementation intact.
+		connection._connect = () => connection.setupWebsocket(
+			`ws://127.0.0.1:${server.address().port}/`, {}, '123456'
+		);
+		manager.attemptReconnect = () => __test.ConnectionManager.prototype.attemptReconnect.call(
+			manager, 10, { immediate: true }
+		);
+		await manager.connect();
+		for (let drop = 1; drop <= 2; drop++) {
+			for (const socket of server.clients) socket.close(1012, 'fixture restart');
+			await waitUntil(() => countStatuses(plan, entry => entry.status === 'connected') === drop + 1);
+			assert.strictEqual(countStatuses(plan, entry => entry.status === 'disconnected'), drop);
+			assert.strictEqual(getLastStatus(plan, 'disconnected').disconnectCode, 1012);
+			assert.strictEqual(connection.isConnected, true);
+		}
+		manager.disconnect();
+		await waitUntil(() => server.clients.size === 0);
+		assert.strictEqual(manager.reconnectTimer, null, 'Manual stop must not reconnect');
+		assert.strictEqual(countStatuses(plan, entry => entry.status === 'connected'), 3);
+	} finally {
+		manager.disconnect();
+		for (const socket of server.clients) socket.terminate();
+		await new Promise(resolve => server.close(resolve));
+	}
+}
+
+async function testEulerProxyDisconnectStillReconnects() {
+	const { manager, plan } = createHarness({}, { localSignerEnabled: false });
+	manager.signingProvider = 'euler-ws';
+	manager.connection = new __test.EulerWebsocketServerConnection('tester', { apiKey: 'fixture' });
+	manager.setupEventHandlers();
+	manager.handleConnect();
+	manager.connection.emit('disconnect', { code: 4500, codeLabel: 'TIKTOK_CLOSED_CONNECTION' });
+	assert.strictEqual(plan.reconnects.length, 1);
+	assert.strictEqual(getLastStatus(plan, 'disconnected').disconnectCode, 4500);
+	manager.disconnect();
+}
+
 async function testFallbackRestartDelayIsApplied() {
 	const { manager, plan } = createHarness({
 		auto: [{ ok: true }]
@@ -944,6 +1006,14 @@ async function testLocalSignerProviderTimesOut() {
 
 async function run() {
 	const tests = [
+		{
+			name: 'installed connector recovers after repeated real socket closes',
+			fn: testInstalledConnectorRecoversAfterSocketClose
+		},
+		{
+			name: 'Euler proxy disconnect still schedules recovery',
+			fn: testEulerProxyDisconnectStillReconnects
+		},
 		{
 			name: 'installed connector has no runtime polling path',
 			fn: testInstalledConnectorHasNoRuntimePollingPath

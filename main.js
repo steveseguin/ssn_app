@@ -9,6 +9,7 @@ const os = require("os");
 const { pathToFileURL, fileURLToPath } = require("url");
 const { getSocialStreamSourceUrls } = require('./resources/social-stream-source-mirrors');
 const { normalizeMissingOriginRule, applyMissingOriginRule } = require('./resources/signin-origin-rule');
+const { attachSourceBasicAuth } = require('./resources/source-basic-auth');
 const {
     cleanVisibleString,
     firstNonEmptyVisibleString,
@@ -12789,6 +12790,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
 
             const view = new BrowserWindow(windowOptions);
+            attachSourceBasicAuth(view, args, { parent: mainWindow, headless: headlessControlEnabled });
 
 			// Chrome's loading behavior
             view.once('ready-to-show', () => {
@@ -13500,6 +13502,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             //log(args);
             view.args = args;
             view.__ss_visible = !!visibibility;
+            attachSourceBasicAuth(view, args, { parent: mainWindow, headless: headlessControlEnabled });
             const releaseActivatedWindowSessionHooks = registerActivatedWindowSessionHooks(view, args);
             view.once('closed', () => {
                 try {
