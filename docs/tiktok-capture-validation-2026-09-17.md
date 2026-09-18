@@ -175,6 +175,12 @@ $env:UV_THREADPOOL_SIZE = '2'
 node tests/electron/tiktok-capture-soak-e2e.js --minutes=30
 ```
 
+After committing the fix, the harness defaults to the pre-fix Social Stream
+revision `1267e184` instead of the moving `HEAD`. Use `--baseline-ref=REVISION`
+to select a different original script; that revision must exist in the local
+Social Stream checkout. The source hashes above identify the scripts used for
+the completed run.
+
 ## Standard mode: likes and follows
 
 The follow-up clarification was that TikTok likes were missing; YouTube capture

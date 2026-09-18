@@ -16,6 +16,9 @@ const { freePort, waitFor } = require('./tiktok-disconnect-validation-e2e');
 const { linuxLaunchArgs } = require('./helpers/electron-launch');
 const root = path.resolve(__dirname, '../..');
 const sourceRoot = path.resolve(root, '../social_stream');
+// Keep the original script available after the fix is committed to HEAD.
+const baselineArg = process.argv.find(arg => arg.startsWith('--baseline-ref='));
+const baselineRef = baselineArg ? baselineArg.slice('--baseline-ref='.length) : '1267e184';
 const minutesArg = process.argv.find(arg => arg.startsWith('--minutes='));
 const minutes = minutesArg ? Number(minutesArg.slice(10)) : 30;
 // Keep successive closes over 60 seconds apart so this tests ordinary recovery,
@@ -52,7 +55,7 @@ async function run() {
 	const reportPath = path.join(artifactDir, `tiktok-soak-${Date.now()}.json`);
 	const progressPath = reportPath.replace('.json', '.jsonl');
 	const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-tiktok-soak-'));
-	const baselineText = execFileSync('git', ['show', 'HEAD:sources/tiktok.js'], { cwd: sourceRoot, encoding: 'utf8' });
+	const baselineText = execFileSync('git', ['show', `${baselineRef}:sources/tiktok.js`], { cwd: sourceRoot, encoding: 'utf8' });
 	const baselinePath = path.join(profile, 'tiktok-original.js');
 	fs.writeFileSync(baselinePath, baselineText);
 	const patchedText = fs.readFileSync(path.join(sourceRoot, 'sources/tiktok.js'), 'utf8');
@@ -87,7 +90,7 @@ async function run() {
 	let paused = true;
 	let suppressChat = false;
 	let sequence = 0;
-	let report = { started, minutes, environment: {}, actions, scope: 'Windows SSApp with local fixtures; signing/room lookup bypassed' };
+	let report = { started, minutes, baselineRef, environment: {}, actions, scope: 'Windows SSApp with local fixtures; signing/room lookup bypassed' };
 	const writeProgress = entry => {
 		fs.appendFileSync(progressPath, JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n');
 		console.log('[tiktok-soak] ' + JSON.stringify(entry));
