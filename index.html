@@ -192,6 +192,8 @@
                             src="https://cache.socialstream.ninja/sources/images/vkvideo.png" class="icon" />VK Video Live</button></span>
                 <span><button onclick="showEbayAddSourcePrompt();" data-source-type="ebay"><img
                             src="https://cache.socialstream.ninja/sources/images/ebay.png" class="icon" />eBay Live</button></span>
+                <span><button onclick="showWhatnotSourceSetup();" data-source-type="whatnot"><img
+                            src="https://cache.socialstream.ninja/sources/images/whatnot.png" class="icon" />Whatnot</button></span>
                 <span><button onclick="newSourcePrompt('vpzone');" data-source-type="vpzone"><img
                             src="https://cache.socialstream.ninja/sources/images/vpzone.png" class="icon" />VPZONE</button></span>
                 <span><button onclick="newSourcePrompt('velora');" data-source-type="velora"><img
@@ -1718,9 +1720,25 @@
             return "";
         }
 
+        function normalizeWhatnotShowId(value) {
+            let showId = typeof value === 'string' ? value.trim() : '';
+            const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+            if (uuid.test(showId)) return showId.toLowerCase();
+            try {
+                const url = new URL(/^https?:\/\//i.test(showId) ? showId : 'https://' + showId);
+                if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.port
+                    || !/^(?:www\.)?whatnot\.com$/i.test(url.hostname)) return '';
+                const match = url.pathname.match(/^\/(?:dashboard\/)?live\/([^/]+)\/?$/i);
+                return match && uuid.test(match[1]) ? match[1].toLowerCase() : '';
+            } catch (_) {
+                return '';
+            }
+        }
+
         function getWebSocketChannelForSource(source) {
             if (!source || typeof source !== "object") return "";
             if (source.target === "vpzone") return getVpzoneChannelForSource(source);
+            if (source.target === 'whatnot') return normalizeWhatnotShowId(source.url || source.videoId || source.username);
             const sourceUrl = source.url || source.URL || "";
             const urlIdentifier = extractSourceUrlIdentifier(sourceUrl);
             const storedIdentifier = getExplicitSourceIdentifier(source, sourceUrl);
@@ -8008,6 +8026,7 @@
                 beamstream: controlPlatform(['url']),
                 vpzone: controlPlatform(['url'], ['classic', 'websocket'], 'websocket'),
                 velora: controlPlatform(['url'], ['classic', 'websocket'], 'websocket'),
+                whatnot: controlPlatform(['videoId', 'url'], ['classic', 'websocket'], 'websocket', 'sources/whatnot.js'),
                 peertube: controlPlatform(['url']),
                 zoom: controlPlatform(['url']),
                 arenasocial: controlPlatform(['url']),
@@ -8037,6 +8056,10 @@
             }
 
             function buildSourceUrl(target, username, suppliedUrl, videoId) {
+                if (target === 'whatnot') {
+                    const showId = normalizeWhatnotShowId(suppliedUrl || videoId || username);
+                    return showId ? `https://www.whatnot.com/live/${showId}` : '';
+                }
                 const rawUrl = String(suppliedUrl || '').trim();
                 if (rawUrl) {
                     try {

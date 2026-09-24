@@ -73,6 +73,7 @@ this.helpers = {
 	isValidTikTokUsername,
 	normalizeTikTokUsernameInput,
 	normalizeTwitchUsernameInput,
+	normalizeWhatnotShowId,
 	getExplicitSourceIdentifier,
 	getWebSocketChannelForSource,
 	extractFacebookVideoId,
@@ -93,6 +94,7 @@ const {
 	isValidTikTokUsername,
 	normalizeTikTokUsernameInput,
 	normalizeTwitchUsernameInput,
+	normalizeWhatnotShowId,
 	getExplicitSourceIdentifier,
 	getWebSocketChannelForSource,
 	extractFacebookVideoId,
@@ -314,6 +316,19 @@ runCases("isValidTikTokUsername", [
 	{ input: "www.tiktok.com", expected: false }
 ], isValidTikTokUsername);
 
+runCases("normalizeWhatnotShowId", [
+	{ input: "8eb66e58-49e1-4990-942f-3a20184993fb", expected: "8eb66e58-49e1-4990-942f-3a20184993fb" },
+	{ input: "https://www.whatnot.com/live/8EB66E58-49E1-4990-942F-3A20184993FB?ref=share", expected: "8eb66e58-49e1-4990-942f-3a20184993fb" },
+	{ input: "whatnot.com/live/8eb66e58-49e1-4990-942f-3a20184993fb", expected: "8eb66e58-49e1-4990-942f-3a20184993fb" },
+	{ input: "https://www.whatnot.com/dashboard/live/8eb66e58-49e1-4990-942f-3a20184993fb/", expected: "8eb66e58-49e1-4990-942f-3a20184993fb" },
+	{ input: "https://www.whatnot.com/user/seller", expected: "" },
+	{ input: "https://whatnot.com.example.org/live/8eb66e58-49e1-4990-942f-3a20184993fb", expected: "" },
+	{ input: "https://user:password@www.whatnot.com/live/8eb66e58-49e1-4990-942f-3a20184993fb", expected: "" },
+	{ input: "https://www.whatnot.com:9999/live/8eb66e58-49e1-4990-942f-3a20184993fb", expected: "" },
+	{ input: "https://www.whatnot.com/live/8eb66e58-49e1-4990-942f-3a20184993fb/extra", expected: "" },
+	{ input: "seller", expected: "" }
+], normalizeWhatnotShowId);
+
 runCases("normalizeVpzoneChannel", [
 	{ input: "https://vpzone.tv/watch/Ashaelon", expected: "ashaelon" },
 	{ input: "vpzone.tv/watch/evarate", expected: "evarate" },
@@ -453,6 +468,16 @@ for (const testCase of scriptCases) {
 console.log(`getWebSocketScriptPathForSource: ${scriptCases.length} cases passed`);
 
 const launchCases = [
+	{
+		name: "Whatnot show URL takes precedence over the display name",
+		source: { target: "whatnot", username: "Summit Metals", url: "https://www.whatnot.com/live/8eb66e58-49e1-4990-942f-3a20184993fb?ref=share", sourceFile: "sources/whatnot.js" },
+		options: {},
+		expected: {
+			websocketTarget: "whatnot",
+			scriptPath: "sources/websocket/whatnot.js",
+			queryParams: { channel: "8eb66e58-49e1-4990-942f-3a20184993fb", ssapp: "1" }
+		}
+	},
 	{
 		name: "Facebook video URL launch plan",
 		source: { target: "facebook", username: "facebook.com", url: "https://www.facebook.com/HeadlockedGaming/videos/1906282487324916/" },

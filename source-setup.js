@@ -127,6 +127,25 @@ function showBilibiliSourceSetup() {
         });
 }
 
+function showWhatnotSourceSetup() {
+    createSourceSetup('Add Whatnot',
+        '<p>Capture public live chat without loading the video.</p>',
+        `<label for="source-setup-input">Live show URL or show ID</label>
+        <input id="source-setup-input" type="text" required autocomplete="off" spellcheck="false" aria-label="Live show URL or show ID" placeholder="https://www.whatnot.com/live/...">
+        <p>Use the show link, rather than a seller profile. Messages use your existing chat history and export settings.</p>`,
+        async modal => {
+            const showId = normalizeWhatnotShowId(modal.querySelector('input').value);
+            if (!showId) throw new Error('Enter a Whatnot live show URL or its full show ID.');
+            closeModal();
+            await newOtherSource('whatnot', 'https://www.whatnot.com/live/' + showId, false, {
+                username: showId,
+                videoId: showId,
+                connectionMode: 'websocket',
+                sourceFile: 'sources/whatnot.js'
+            });
+        });
+}
+
 function newOtherSourcePrompt(target = '') {
     createSourceSetup('Add other source',
         '<p>Paste the URL of the page showing your chat.</p>',
