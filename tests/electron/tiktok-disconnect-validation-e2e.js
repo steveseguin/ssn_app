@@ -151,6 +151,21 @@ async function run() {
 		await start();
 		send(1002);
 		await waitFor(() => received.includes('disconnect fixture 1002'), 'manual restart chat');
+		const beforeReload = await page.evaluate(id => stateManager.getSource(id), sourceId);
+		const connectionsBeforeReload = connections;
+		const socketsBeforeReload = [...server.clients];
+		await page.reload({ waitUntil: 'load' });
+		await page.waitForFunction(() => window.stateManager?.initialized
+			&& ipcRenderer.listenerCount('tiktokConnectionStatus') > 0);
+		const afterReload = await page.evaluate(id => stateManager.getSource(id), sourceId);
+		assert.strictEqual(afterReload.vid, beforeReload.vid, 'UI reload lost the running TikTok virtual tab.');
+		assert.strictEqual(afterReload.tiktokWssId, beforeReload.tiktokWssId, 'UI reload lost the TikTok connection handle.');
+		assert.strictEqual(connections, connectionsBeforeReload, 'UI reload created a duplicate TikTok connection.');
+		assert.deepStrictEqual([...server.clients], socketsBeforeReload);
+		await page.waitForFunction(() => document.getElementById('frame2')?.contentWindow?.isExtensionOn === true);
+		send(1005);
+		await waitFor(() => received.includes('disconnect fixture 1005'), 'chat after UI reload');
+		console.log('[tiktok-disconnect] PASS UI reload retained the same connection and delivered chat.');
 		for (let drop = 0; drop < 2; drop++) {
 			const count = connections;
 			for (const socket of server.clients) socket.close(1012, 'fixture restart');
@@ -160,6 +175,8 @@ async function run() {
 			await waitFor(() => received.includes(`disconnect fixture ${1003 + drop}`), 'chat after automatic reconnect');
 		}
 		await stop();
+		assert.ok(!(await page.evaluate(() => ipcRenderer.sendSync('getTabs', {}))).some(tab => tab.id === beforeReload.vid),
+			'Stop after UI reload left the TikTok dock destination registered.');
 		const stoppedCount = connections;
 		await new Promise(resolve => setTimeout(resolve, 6000));
 		assert.strictEqual(connections, stoppedCount);

@@ -4306,6 +4306,20 @@
                         if (source.groupId) {
                             console.log("Removing grouped YouTube video source on startup:", source.id, "videoId:", source.videoId, "groupId:", source.groupId);
 
+                            // A renderer reload leaves capture windows running in the main
+                            // process. Close the window before discarding its only UI handle.
+                            if (source.vid && ipcRenderer) {
+                                try {
+                                    if (!ipcRenderer.sendSync('closeWindow', { vid: source.vid })) {
+                                        console.warn('[YouTube] Keeping source because its window could not be closed:', source.id);
+                                        return;
+                                    }
+                                } catch (error) {
+                                    console.warn('[YouTube] Failed to close source during startup cleanup:', source.id, error);
+                                    return;
+                                }
+                            }
+
                             // Remove the source element from DOM if it exists
                             const sourceElement = document.querySelector(`[data-source-id="${source.id}"]`);
                             if (sourceElement) {
@@ -12399,6 +12413,7 @@
 
             // Clean up stale window IDs on startup
             const sources = stateManager.getSources();
+            const runningSourceTabs = ipcRenderer ? ipcRenderer.sendSync('getTabs', {}) : [];
             for (const source of sources) {
                 // Set default connection mode for TikTok sources if not set
                 if (source.target === 'tiktok' && !source.connectionMode) {
@@ -12410,16 +12425,21 @@
                 }
 
                 // Check regular windows
+                let windowExists = false;
                 if (source.vid && ipcRenderer) {
-                    const windowExists = await ipcRenderer.invoke('checkWindowExists', { vid: source.vid });
+                    const tab = runningSourceTabs.find(tab => Number(tab.id) === Number(source.vid));
+                    windowExists = !!tab && (!tab.sourceId || tab.sourceId === source.id)
+                        && await ipcRenderer.invoke('checkWindowExists', { vid: source.vid });
                     if (!windowExists) {
                         stateManager.updateSource(source.id, { vid: null, status: 'inactive', activeConnectionMode: null });
                     }
                 }
 
-                // Clean up websocket IDs on startup - websocket connections don't persist across app restarts
+                // A main-page reload does not stop browser or native WebSocket sources.
+                // Keep verified live handles so Stop/Delete and YouTube cleanup can close
+                // them. Only a full app restart (or a missing window) makes them stale.
                 const staleTikTokWssId = getTikTokWssId(source);
-                if (source.wssId || staleTikTokWssId) {
+                if (!windowExists && (source.wssId || staleTikTokWssId)) {
                     const staleIdLabel = staleTikTokWssId || source.wssId;
                     console.log(`Clearing stale wssId ${staleIdLabel} for ${source.id} on startup`);
                     stateManager.updateSource(source.id, { vid: null, wssId: null, tiktokWssId: null, status: 'inactive', activeConnectionMode: null });
