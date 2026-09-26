@@ -9,9 +9,8 @@ const net = require("net");
 const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
-const { linuxLaunchArgs } = require("./helpers/electron-launch");
+const { linuxLaunchArgs, electronTestTarget } = require("./helpers/electron-launch");
 
-const electronPath = require("electron");
 const repoRoot = path.resolve(__dirname, "..", "..");
 const socialStreamRoot = path.resolve(repoRoot, "..", "social_stream");
 const profilePrefix = path.join(os.tmpdir(), "ssapp-twitch-bot-account-");
@@ -144,12 +143,11 @@ async function waitFor(check, label, timeoutMs = 60000, intervalMs = 250) {
 }
 
 function launchApp() {
-	child = spawn(electronPath, [
-		".",
-		"--running-from-source",
+	const target = electronTestTarget(socialStreamRoot);
+	child = spawn(target.executablePath, [
+		...target.args,
 		"--multiinstance",
 		"--preferlocalassets",
-		`--filesource=${socialStreamRoot}`,
 		"--remote-control",
 		...linuxLaunchArgs(),
 	], {

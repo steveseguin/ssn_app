@@ -10,7 +10,7 @@ const os = require('os');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const { _electron } = require('playwright-core');
-const { linuxLaunchArgs } = require('./helpers/electron-launch');
+const { linuxLaunchArgs, electronTestTarget, electronTestRuntime } = require('./helpers/electron-launch');
 
 const root = path.resolve(__dirname, '../..');
 const sourceRoot = path.resolve(root, '../social_stream');
@@ -46,10 +46,10 @@ async function run() {
 		});
 		const env = { ...process.env, SSAPP_USER_DATA_DIR: profile, SSAPP_DEBUG_LOGS: '0' };
 		delete env.ELECTRON_RUN_AS_NODE;
+		const target = electronTestTarget(pathToFileURL(sourceRoot + path.sep).href);
 		app = await _electron.launch({
-			executablePath: require('electron'), cwd: root,
-			args: ['.', '--multiinstance', '--running-from-source', '--disable-logs',
-				`--filesource=${pathToFileURL(sourceRoot + path.sep).href}`, ...linuxLaunchArgs()],
+			executablePath: target.executablePath, cwd: root,
+			args: [...target.args, '--multiinstance', '--disable-logs', ...linuxLaunchArgs()],
 			env, timeout: 60000,
 		});
 		log = fs.createWriteStream(path.join(profile, 'app.log'));
@@ -62,6 +62,7 @@ async function run() {
 		const mainReady = () => main.waitForFunction(() =>
 			typeof configReady !== 'undefined' && configReady && window.stateManager?.initialized);
 		await mainReady();
+		report.runtime = await electronTestRuntime(app);
 		const sourceId = await main.evaluate(() => stateManager.addSource({
 			id: 'oauth-error-local-fixture', target: 'twitch', username: 'ssn_local_fixture',
 			url: 'https://www.twitch.tv/ssn_local_fixture', connectionMode: 'websocket',

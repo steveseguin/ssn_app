@@ -11,7 +11,7 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 const { _electron } = require('playwright-core');
 const { WebSocketServer } = require('ws');
-const { linuxLaunchArgs } = require('./helpers/electron-launch');
+const { linuxLaunchArgs, electronTestTarget, electronTestRuntime, electronTestSourceBase } = require('./helpers/electron-launch');
 
 const root = path.resolve(__dirname, '../..');
 const sourceRoot = path.resolve(root, '../social_stream');
@@ -56,10 +56,11 @@ async function run() {
 	try {
 		const env = { ...process.env, SSAPP_USER_DATA_DIR: profile, SSAPP_DEBUG_LOGS: '0' };
 		delete env.ELECTRON_RUN_AS_NODE;
+		let sourceBase = pathToFileURL(sourceRoot + path.sep).href;
+		const target = electronTestTarget(sourceBase);
 		app = await _electron.launch({
-			executablePath: require('electron'), cwd: root,
-			args: ['.', '--multiinstance', '--running-from-source', '--disable-logs',
-				`--filesource=${pathToFileURL(sourceRoot + path.sep).href}`, ...linuxLaunchArgs()],
+			executablePath: target.executablePath, cwd: root,
+			args: [...target.args, '--multiinstance', '--disable-logs', ...linuxLaunchArgs()],
 			env, timeout: 60000,
 		});
 		const log = fs.createWriteStream(path.join(profile, 'app.log'));
@@ -67,6 +68,9 @@ async function run() {
 		app.process().stderr.pipe(log);
 		const main = await app.firstWindow();
 		await main.waitForFunction(() => typeof configReady !== 'undefined' && configReady && typeof ipcRenderer !== 'undefined');
+		report.runtime = await electronTestRuntime(app);
+		sourceBase = await electronTestSourceBase(main, sourceBase);
+		report.sourceBase = sourceBase;
 
 		// Block camera/microphone permission probes and any accidental capture in this
 		// test only. Native source enumeration, thumbnails and picker code are real.
@@ -90,7 +94,7 @@ async function run() {
 			await fixture.loadURL(url);
 		}, fixtureUrl);
 		const fixture = await until(() => app.windows().find(page => page.url() === fixtureUrl), 'fixture window');
-		const cohostUrl = `${pathToFileURL(path.join(sourceRoot, 'cohost.html')).href}?session=picker-e2e-${Date.now()}`;
+		const cohostUrl = `${sourceBase}cohost.html?session=picker-e2e-${Date.now()}`;
 		await main.evaluate(url => { window.open(url, '_blank'); }, cohostUrl);
 		const cohost = await until(() => app.windows().find(page => page.url() === cohostUrl), 'Co-host window');
 		await cohost.waitForFunction(() => typeof ElectronDesktopCapture !== 'undefined' && ElectronDesktopCapture);
@@ -167,7 +171,7 @@ async function run() {
 			await cohost.waitForFunction(() => typeof ElectronDesktopCapture !== 'undefined' && ElectronDesktopCapture);
 			await checkPicker(markerTitle, true);
 
-			const dockUrl = `${pathToFileURL(path.join(sourceRoot, 'dock.html')).href}?session=title-e2e-${Date.now()}` +
+			const dockUrl = `${sourceBase}dock.html?session=title-e2e-${Date.now()}` +
 				`&chatonly&server2=${encodeURIComponent(`ws://127.0.0.1:${server.address().port}/legacy-dock-relay`)}&server3`;
 			await main.evaluate(url => { ipcRenderer.sendSync('createWindow', { url, visible: true }); }, dockUrl);
 			const dock = await until(() => app.context().pages().find(page => page.url() === dockUrl), 'Dock window');

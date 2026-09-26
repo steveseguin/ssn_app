@@ -11,7 +11,7 @@ const http = require('http');
 const { pathToFileURL } = require('url');
 const root = path.resolve(__dirname, '../..');
 const { _electron } = require(path.join(root, 'node_modules/playwright-core'));
-const { linuxLaunchArgs } = require('./helpers/electron-launch');
+const { linuxLaunchArgs, electronTestTarget, electronTestRuntime, electronTestSourceBase } = require('./helpers/electron-launch');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, label) {
   const deadline = Date.now() + 45000;
@@ -45,7 +45,7 @@ async function run() {
   fs.writeFileSync(outside, 'OUTSIDE DISPOSABLE GUARD');
   const room = 'download_audit_' + Date.now();
   const relayPort = await freePort();
-  const sourceBase = pathToFileURL(path.resolve(root, '../social_stream') + path.sep).href;
+  let sourceBase = pathToFileURL(path.resolve(root, '../social_stream') + path.sep).href;
   fs.writeFileSync(path.join(profile, 'savedSync.json'), JSON.stringify({
     streamID: room, password: 'false', state: true, wsServer: true, settings: { server2: { setting: true } },
   }));
@@ -90,14 +90,18 @@ async function run() {
     const targetUrl = 'http://127.0.0.1:' + server.address().port + '/landing?label=https://socialstream.ninja/';
     const env = { ...process.env, SSAPP_USER_DATA_DIR: profile, SSAPP_DEBUG_LOGS: '0' };
     delete env.ELECTRON_RUN_AS_NODE;
-    app = await _electron.launch({ executablePath: require(path.join(root, 'node_modules/electron')), cwd: root,
-      args: ['.', '--multiinstance', '--running-from-source', '--filesource=' + sourceBase,
+    const target = electronTestTarget(sourceBase);
+    app = await _electron.launch({ executablePath: target.executablePath, cwd: root,
+      args: [...target.args, '--multiinstance',
         '--ssapp-local-server-port=' + relayPort, ...(autoSaving ? ['--savefolder=' + saveDir + path.sep + path.sep] : []),
         '--disable-logs', ...linuxLaunchArgs()], env, timeout: 60000 });
     log = fs.createWriteStream(path.join(profile, 'app.log'));
     app.process().stdout.pipe(log, { end: false }); app.process().stderr.pipe(log, { end: false });
     const main = await app.firstWindow();
     await main.waitForFunction(() => typeof configReady !== 'undefined' && configReady && typeof ipcRenderer !== 'undefined');
+    report.runtime = await electronTestRuntime(app);
+    sourceBase = await electronTestSourceBase(main, sourceBase);
+    report.sourceBase = sourceBase;
     const dockUrl = sourceBase + 'dock.html?session=' + room + '&password=false&activelinks&server2&localserver&localserverport=' + relayPort;
     await main.evaluate(url => { window.open(url, '_blank'); }, dockUrl);
     const dock = await until(() => app.context().pages().find(page => page.url() === dockUrl), 'Dock');
@@ -108,8 +112,8 @@ async function run() {
     const background = await until(() => main.frames().find(frame => frame.url().includes('/background.html')), 'background');
     await until(() => background.evaluate(() => typeof socketserverDock !== 'undefined' && socketserverDock.readyState === 1), 'background relay');
     await pause(5000);
-    await app.evaluate(({ BrowserWindow }, { root, targetUrl }) => {
-      const req = process.getBuiltinModule('module').createRequire(root + '/package.json');
+    await app.evaluate(({ app, BrowserWindow }, targetUrl) => {
+      const req = process.getBuiltinModule('module').createRequire(app.getAppPath() + '/package.json');
       const native = req('./tiktok/connection-manager');
       const mainWindow = BrowserWindow.getAllWindows().find(win => win.webContents.getURL().includes('/index.html'));
       const env = native.createTikTokEnvironment({ connector: req('tiktok-live-connector'), getMainWindow: () => mainWindow });
@@ -117,7 +121,7 @@ async function run() {
         nickname: 'Local fixture', textonly: true, comment: 'Local download fixture ' + targetUrl });
       message.type = 'tiktok';
       env.sendToBackground(message);
-    }, { root, targetUrl });
+    }, targetUrl);
     await dock.locator('a[href="' + targetUrl + '"]').first().click({ timeout: 30000 });
     const page = await until(() => app.context().pages().find(candidate => candidate.url() === targetUrl), 'clicked chat link');
     report.destination = await page.evaluate(() => ({ node: typeof require === 'function', bridge: !!window.ninjafy }));
@@ -165,15 +169,15 @@ async function run() {
       }
     }
     const automaticUrl = targetUrl + '&automatic=collision';
-    await app.evaluate(({ BrowserWindow }, { root, automaticUrl }) => {
-      const req = process.getBuiltinModule('module').createRequire(root + '/package.json');
+    await app.evaluate(({ app, BrowserWindow }, automaticUrl) => {
+      const req = process.getBuiltinModule('module').createRequire(app.getAppPath() + '/package.json');
       const native = req('./tiktok/connection-manager');
       const mainWindow = BrowserWindow.getAllWindows().find(win => win.webContents.getURL().includes('/index.html'));
       const env = native.createTikTokEnvironment({ connector: req('tiktok-live-connector'), getMainWindow: () => mainWindow });
       const message = native.__test.composeTikTokChatMessage({ msgId: 'automatic-download-audit', uniqueId: 'local_fixture',
         nickname: 'Local fixture', textonly: true, comment: 'Local automatic download fixture ' + automaticUrl });
       message.type = 'tiktok'; env.sendToBackground(message);
-    }, { root, automaticUrl });
+    }, automaticUrl);
     const beforeAutomatic = await app.evaluate(() => global.__downloadAudit.length);
     fs.writeFileSync(existing, 'ORIGINAL DISPOSABLE CONTENT');
     await dock.locator('a[href="' + automaticUrl + '"]').first().click({ timeout: 30000 });

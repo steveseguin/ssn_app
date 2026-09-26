@@ -10,7 +10,7 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 const root = path.resolve(__dirname, '../..');
 const { _electron } = require(path.join(root, 'node_modules/playwright-core'));
-const { linuxLaunchArgs } = require('./helpers/electron-launch');
+const { linuxLaunchArgs, electronTestTarget, electronTestRuntime, electronTestSourceBase } = require('./helpers/electron-launch');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, label) {
   const start = Date.now();
@@ -32,7 +32,7 @@ async function run() {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-tiktok-fields-'));
   const room = 'fields_local_' + Date.now();
   const relayPort = await freePort();
-  const sourceBase = pathToFileURL(path.resolve(root, '../social_stream') + path.sep).href;
+  let sourceBase = pathToFileURL(path.resolve(root, '../social_stream') + path.sep).href;
   fs.writeFileSync(path.join(profile, 'savedSync.json'), JSON.stringify({
     streamID: room, password: 'false', state: true, wsServer: true, settings: { server2: { setting: true } },
   }));
@@ -61,13 +61,17 @@ async function run() {
     ];
     const env = { ...process.env, SSAPP_USER_DATA_DIR: profile, SSAPP_DEBUG_LOGS: '0' };
     delete env.ELECTRON_RUN_AS_NODE;
-    app = await _electron.launch({ executablePath: require(path.join(root, 'node_modules/electron')), cwd: root,
-      args: ['.', '--multiinstance', '--running-from-source', '--filesource=' + sourceBase,
+    const target = electronTestTarget(sourceBase);
+    app = await _electron.launch({ executablePath: target.executablePath, cwd: root,
+      args: [...target.args, '--multiinstance',
         '--ssapp-local-server-port=' + relayPort, '--disable-logs', ...linuxLaunchArgs()], env, timeout: 60000 });
     log = fs.createWriteStream(path.join(profile, 'app.log'));
     app.process().stdout.pipe(log, { end: false }); app.process().stderr.pipe(log, { end: false });
     const main = await app.firstWindow();
     await main.waitForFunction(() => typeof configReady !== 'undefined' && configReady && typeof ipcRenderer !== 'undefined');
+    report.runtime = await electronTestRuntime(app);
+    sourceBase = await electronTestSourceBase(main, sourceBase);
+    report.sourceBase = sourceBase;
     const dockUrl = sourceBase + 'dock.html?session=' + room + '&password=false&server2&localserver&localserverport=' + relayPort;
     await main.evaluate(url => { window.open(url, '_blank'); }, dockUrl);
     const dock = await until(() => app.context().pages().find(page => page.url() === dockUrl), 'dock');
@@ -81,12 +85,12 @@ async function run() {
     let background = await until(() => main.frames().find(frame => frame.url().includes('/background.html')), 'background');
     await until(() => background.evaluate(() => typeof socketserverDock !== 'undefined' && socketserverDock.readyState === 1), 'background relay');
     await pause(5000);
-    await app.evaluate(({ BrowserWindow }, root) => {
-      const req = process.getBuiltinModule('module').createRequire(root + '/package.json');
+    await app.evaluate(({ app, BrowserWindow }) => {
+      const req = process.getBuiltinModule('module').createRequire(app.getAppPath() + '/package.json');
       const native = req('./tiktok/connection-manager');
       const mainWindow = BrowserWindow.getAllWindows().find(win => !win.isDestroyed() && !win.webContents.isDestroyed() && win.webContents.getURL().includes('/index.html'));
       global.__nativeFieldsFixture = { native, env: native.createTikTokEnvironment({ connector: req('tiktok-live-connector'), getMainWindow: () => mainWindow }) };
-    }, root);
+    });
     for (const phase of ['initial', 'background-reload']) {
       if (phase !== 'initial') {
         await background.evaluate(() => location.reload());
