@@ -38,6 +38,8 @@ Electron desktop application for aggregating social media live stream chat. Comm
 
 ## Social Stream Payload Rules
 
+- `donoValue` is always a numeric USD amount, supplied optionally by the source when it has better context. Consumers must honor a valid override (including zero) before using `currency.js` to estimate USD from `hasDonation` and the source. Keep the original display amount/unit in `hasDonation`; do not put raw coins or foreign-currency amounts in `donoValue`. Unpriced TikTok gifts default to one coin per gift at the existing USD-per-coin rate.
+
 - Donation-style chat rows should use `hasDonation` and optional `donoValue`; do not set `event: "donation"` just because a chat/tip row has a donation value.
 - Use existing payload fields first. Only populate `meta` when there is additional structured data that downstream consumers actually need and no existing field handles it well.
 

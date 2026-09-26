@@ -4166,7 +4166,16 @@ class GiftProcessor {
 
         const giftId = resolveGiftId(data);
 
-        const mappedGiftName = giftId && giftMapping && giftMapping[giftId] ? giftMapping[giftId].name : null;
+        const suppliedGiftName = pickFirstNonEmptyString([
+            data.giftName, giftData.giftName, giftData.name, giftDetails.giftName,
+            giftDetails.describe, extendedGiftInfo.name, extendedGiftInfo.describe
+        ]);
+        const giftIcon = resolveTikTokGiftInlineImage(data, giftData, giftDetails, extendedGiftInfo) || '';
+        const iconKey = giftIcon.split(/[?#]/)[0].split('/').pop().split(/[.~]/)[0];
+        const giftNameKey = String(suppliedGiftName || '').normalize('NFKC')
+            .replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, ' ').trim().toLowerCase();
+        const mappedGift = giftMapping[giftId] || giftMapping[iconKey] || giftMapping['name:' + giftNameKey];
+        const mappedGiftName = mappedGift ? mappedGift.name : null;
         const giftName = pickFirstNonEmptyString([
             data.giftName,
             giftData.giftName,
@@ -4182,21 +4191,27 @@ class GiftProcessor {
 
         const perGiftDiamonds = pickFirstPositiveNumber([
             data.diamondCount,
+            data.diamond_count,
             giftData.diamondCount,
             giftData.diamond_count,
             giftData.diamondValue,
             giftData.diamond_value,
             giftData.value,
-            giftData.coins,
             giftDetails.diamondCount,
             giftDetails.diamond_count,
             extendedGiftInfo.diamondCount,
-            extendedGiftInfo.diamond_count,
-            extendedGiftInfo.coins,
-            giftId && giftMapping && giftMapping[giftId] ? giftMapping[giftId].coins : 0
+            extendedGiftInfo.diamond_count
         ]);
         const totalDiamonds = perGiftDiamonds * count;
-        const donationDisplay = totalDiamonds > 0 ? `${totalDiamonds} 💎` : null;
+        const perGiftCoins = pickFirstPositiveNumber([
+            data.coinCount, data.coin_count, data.coins,
+            giftData.coins, giftData.coinCount, giftData.coin_count,
+            giftDetails.coins, extendedGiftInfo.coins, mappedGift && mappedGift.coins
+        ]);
+        const totalCoins = perGiftCoins * count;
+        const donationDisplay = totalDiamonds > 0 ? `${totalDiamonds} 💎` :
+            totalCoins > 0 ? `${totalCoins} coins` : `${count} ${count === 1 ? 'gift' : 'gifts'}`;
+        const donationUSD = totalDiamonds > 0 ? totalDiamonds * 0.005 : (totalCoins || count) * 0.01;
         const interactiveGiftIgnoreConfig = resolveInteractiveGiftIgnoreConfig(data);
         const hiddenFromTray = isGiftHiddenFromTray(data, interactiveGiftIgnoreConfig);
         const outgoingEventType = hiddenFromTray ? 'reaction' : 'gift';
@@ -4253,7 +4268,7 @@ class GiftProcessor {
         const treatGiftAsDonation = giftSettings.tiktokdonations || !giftSettings.notiktokdonations;
         if (donationDisplay && !hiddenFromTray && treatGiftAsDonation) {
             msg.hasDonation = donationDisplay;
-            msg.donoValue = totalDiamonds * 0.005;
+            msg.donoValue = donationUSD;
         }
         const fanTicketCount = pickFirstPositiveNumber([
             data.fanTicketCount,
@@ -4279,6 +4294,7 @@ class GiftProcessor {
             groupCount: groupCount > 1 ? groupCount : undefined,
             diamondsPerGift: perGiftDiamonds || undefined,
             diamondsTotal: totalDiamonds || undefined,
+            coinsPerGift: perGiftCoins || undefined,
             fanTickets: fanTicketCount > 0 ? fanTicketCount : undefined,
             interactiveGift: interactiveGiftIgnoreConfig !== null ? {
                 ignoreConfig: interactiveGiftIgnoreConfig,
