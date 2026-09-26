@@ -18,6 +18,7 @@ const EXECUTABLE_OVERRIDE = String(process.env.SSAPP_E2E_EXECUTABLE || "").trim(
 const ELECTRON_PATH = EXECUTABLE_OVERRIDE ? path.resolve(EXECUTABLE_OVERRIDE) : require("electron");
 const ELECTRON_APP_ARGS = EXECUTABLE_OVERRIDE ? [] : ["."];
 const EXPECTED_VERSION = String(process.env.SSAPP_EXPECT_VERSION || "").trim();
+const EXPORT_ONLY = process.argv.includes("--export-only");
 const PROFILE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "ssapp-chathistory-origin-e2e-"));
 const MESSAGE_PREFIX = `history-origin-e2e-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -295,12 +296,18 @@ async function addStoredMessage(background, marker) {
 async function openHistoryAndWait(page, popup, marker) {
 	const context = page.context();
 	const pageCount = context.pages().length;
+	await page.bringToFront();
+	await page.waitForFunction(() => typeof configReady !== "undefined" && configReady);
+	await page.locator('#main-navigation a[data-page="streams"]').click();
+	if (await page.locator("#popup-handle").getAttribute("aria-expanded") === "false") {
+		await page.locator("#popup-handle").click();
+	}
 	await popup.evaluate(() => {
 		if (document.body.classList.contains("beginner-mode")) disablePopupBeginnerMode();
-		const mechanics = document.getElementById("wrapper-global-mechanics-options");
-		mechanics.checked = true;
-		mechanics.dispatchEvent(new Event("change", { bubbles: true }));
 	});
+	if (!await popup.locator("#wrapper-global-mechanics-options").isChecked()) {
+		await popup.locator('label[for="wrapper-global-mechanics-options"]').click();
+	}
 	const historyLink = popup.locator("#chathistory");
 	if (!await historyLink.isVisible()) {
 		const visibility = await historyLink.evaluate(element => {
@@ -327,9 +334,10 @@ async function openHistoryAndWait(page, popup, marker) {
 		return link && link.target === "_self" && link.getAttribute("href") === "#";
 	});
 	await historyLink.scrollIntoViewIfNeeded();
-	const newPagePromise = context.waitForEvent("page", { timeout: 30000 });
-	await historyLink.click();
-	const historyPage = await newPagePromise;
+	const [historyPage] = await Promise.all([
+		context.waitForEvent("page", { timeout: 30000 }),
+		historyLink.click(),
+	]);
 	await historyPage.waitForLoadState("domcontentloaded");
 	assert.ok(historyPage.url().startsWith("blob:"), `Message Browser did not use the local snapshot document: ${historyPage.url()}`);
 	assert.strictEqual(await historyPage.title(), "Message Browser", "Message Browser window title is incorrect.");
@@ -586,6 +594,37 @@ async function verifySnapshotFeatures(historyPage, history, background) {
 	assert.ok(exportedMessages.some(message => message.chatmessage === firstMarker), "History export omitted the first saved message.");
 	assert.ok(exportedMessages.some(message => message.chatmessage === secondMarker), "History export omitted the second saved message.");
 
+	// Force a filename collision through the real Download button. App-owned exports
+	// must keep their deliberate replacement behavior when external downloads change.
+	const exportPath = path.join(PROFILE_DIR, download.suggestedFilename());
+	const firstExportDeadline = Date.now() + 15000;
+	while (!fs.existsSync(exportPath) && Date.now() < firstExportDeadline) await historyPage.waitForTimeout(100);
+	assert.ok(fs.existsSync(exportPath), "Snapshot export did not finish downloading.");
+	assert.deepStrictEqual(JSON.parse(fs.readFileSync(exportPath, "utf8")), exportedMessages);
+	fs.writeFileSync(exportPath, "DISPOSABLE EXPORT COLLISION");
+	await history.evaluate(filename => {
+		const originalClick = HTMLAnchorElement.prototype.click;
+		HTMLAnchorElement.prototype.click = function (...args) {
+			if (this.download) {
+				this.download = filename;
+				HTMLAnchorElement.prototype.click = originalClick;
+			}
+			return originalClick.apply(this, args);
+		};
+	}, download.suggestedFilename());
+	const repeatedDownload = historyPage.waitForEvent("download", { timeout: 15000 });
+	await history.locator("#export-button").click();
+	assert.strictEqual((await repeatedDownload).suggestedFilename(), download.suggestedFilename());
+	const replacementDeadline = Date.now() + 15000;
+	while (Date.now() < replacementDeadline) {
+		try {
+			if (fs.readFileSync(exportPath, "utf8") === exportCapture.content) break;
+		} catch (_) { }
+		await historyPage.waitForTimeout(100);
+	}
+	assert.deepStrictEqual(JSON.parse(fs.readFileSync(exportPath, "utf8")), exportedMessages,
+		"The Message Browser's same-name export must retain its existing replacement behavior.");
+
 	historyPage.once("dialog", dialog => dialog.accept());
 	await history.locator("#clear-history").click();
 	await history.waitForFunction(() => {
@@ -612,6 +651,7 @@ async function verifySnapshotFeatures(historyPage, history, background) {
 	return {
 		filtering: true,
 		exportDownload: true,
+		sameNameExportReplacement: true,
 		clearHistoryRelay: true,
 	};
 }
@@ -680,8 +720,10 @@ async function runAppPass(sourcePort, options = {}) {
 			assert.strictEqual(secondVisible, true, "Second stored message did not persist across an app restart.");
 			await verifySnapshotFeatures(persistedHistory.historyPage, persistedHistory.history, background);
 			await closeHistory(persistedHistory.historyPage);
-			await verifyHistoryReviewFixes(page, popup, background);
-			await verifyHistoryPagination(page, popup, background);
+			if (!EXPORT_ONLY) {
+				await verifyHistoryReviewFixes(page, popup, background);
+				await verifyHistoryPagination(page, popup, background);
+			}
 		}
 
 		await page.waitForTimeout(500);
@@ -704,12 +746,14 @@ async function run() {
 		assert.strictEqual(secondVersion, firstVersion, "SSApp version changed between persistence passes.");
 		console.log("Chat history origin compatibility Electron E2E passed", JSON.stringify({
 			version: firstVersion,
+			scope: EXPORT_ONLY ? "exports and persistence" : "full",
 			executable: EXECUTABLE_OVERRIDE || "repository Electron",
 			persistence: true,
 			repeatedOpenClose: true,
 			fullSizeMessageBrowser: true,
 			filtering: true,
 			exportDownload: true,
+			sameNameExportReplacement: true,
 			clearHistoryRelay: true,
 			popupStayedAlive: true,
 			backgroundStayedAlive: true,

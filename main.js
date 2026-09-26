@@ -246,6 +246,61 @@ function isSocialStreamRemoteUrl(urlValue) {
     }
 }
 
+// Classify the download's window, not individual embedded frames. Preserve local/app
+// exports and configured main-page recordings; protect against external-window collisions.
+function isExternalAutoDownload(webContents, filesource) {
+    if (!webContents || webContents.isDestroyed()) return true;
+    if (mainWindow && webContents === mainWindow.webContents) return false;
+    try {
+        let sourceUrl = webContents.getURL();
+        if (sourceUrl.startsWith('blob:')) sourceUrl = sourceUrl.slice(5);
+        const source = new URL(sourceUrl);
+        // Local pages and their snapshot/blob windows retain existing export behavior.
+        if (source.protocol === 'file:') return false;
+        if (source.protocol !== 'https:' && source.protocol !== 'http:') return true;
+        if (!source.port && isSocialStreamRemoteUrl(source.href)) return false;
+        if (filesource) {
+            try {
+                if (source.origin === new URL(filesource).origin) return false;
+            } catch (_) { }
+        }
+        if (localMediaService && localMediaService.isRunning()
+            && source.origin === new URL(localMediaService.getBaseUrl()).origin) return false;
+    } catch (_) { }
+    return true;
+}
+
+const autoDownloadPaths = new Set();
+const autoDownloadItems = new WeakMap();
+
+function reserveAutoDownloadPath(item, requestedPath) {
+    if (autoDownloadItems.has(item)) return autoDownloadItems.get(item);
+    const parsed = path.parse(requestedPath);
+    // Reserve names until completion so concurrent downloads cannot select the same path.
+    for (let suffix = 0; suffix < 110; suffix++) {
+        const label = suffix < 100 ? suffix : crypto.randomUUID();
+        const candidate = suffix === 0 ? requestedPath
+            : path.join(parsed.dir, `${parsed.name} (${label})${parsed.ext}`);
+        const resolved = path.resolve(candidate);
+        const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+        if (autoDownloadPaths.has(key)) continue;
+        try {
+            fs.lstatSync(candidate); // Treat directories and dangling symlinks as occupied too.
+            continue;
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+        autoDownloadPaths.add(key);
+        autoDownloadItems.set(item, candidate);
+        item.once('done', () => {
+            autoDownloadPaths.delete(key);
+            autoDownloadItems.delete(item);
+        });
+        return candidate;
+    }
+    throw new Error('Unable to choose an unused download filename');
+}
+
 const {
     fetch: undiciFetch
 } = require('undici');
@@ -11146,8 +11201,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
 
             if (dir !== null) {
-                log("Auto saving too " + dir + item.getFilename());
-                item.setSavePath(dir + item.getFilename());
+                let savePath = dir + item.getFilename();
+                if (isExternalAutoDownload(webContents, args.filesource || Argv.filesource)) {
+                    try {
+                        savePath = reserveAutoDownloadPath(item, savePath);
+                    } catch (error) {
+                        // Let the normal save dialog handle an unreadable directory instead
+                        // of falling back to an unchecked automatic overwrite.
+                        console.warn('[Downloads] Could not choose a safe auto-save path:', error.message);
+                        return;
+                    }
+                }
+                log("Auto saving to " + savePath);
+                item.setSavePath(savePath);
             }
         }
     });
