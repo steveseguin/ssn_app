@@ -2161,12 +2161,13 @@ function renderTikTokEmoteToken(emote = {}, textOnly = false) {
 	const emoteUrl = normalizeTikTokImageUrl(emote?.emoteUrl);
 	if (emoteUrl) {
 		const emoteId = cleanVisibleString(emote?.emoteId) || '';
-		let tag = `<img class="sticker" src="${emoteUrl}"`;
+		// These values are literal metadata, even when the message body is HTML.
+		let tag = `<img class="sticker" src="${escapeTikTokHtmlAttribute(emoteUrl)}"`;
 		if (emoteLabel) {
-			tag += ` alt="${emoteLabel}"`;
+			tag += ` alt="${escapeTikTokHtmlAttribute(emoteLabel)}"`;
 		}
 		if (emoteId) {
-			tag += ` data-emote-id="${emoteId}"`;
+			tag += ` data-emote-id="${escapeTikTokHtmlAttribute(emoteId)}"`;
 		}
 		tag += '>';
 		return tag;
