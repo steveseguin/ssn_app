@@ -224,6 +224,99 @@ const rendererWorkflow = String.raw`
 	stateManager.clearAllSourcesAndGroups();
 	await Promise.resolve();
 
+	const ownershipChannelId = 'UCBJycsmduvYEL83R_U4JriQ';
+	const otherChannelId = 'UCSJ4gkVC6NrvII8umztf0Ow';
+	const liveCard = (videoId, channelId) => ({ videoRenderer: {
+		videoId,
+		title: { simpleText: 'Ownership regression fixture' },
+		ownerText: channelId ? { runs: [{ navigationEndpoint: { browseEndpoint: { browseId: channelId } } }] } : undefined,
+		badges: [{ metadataBadgeRenderer: { style: 'BADGE_STYLE_TYPE_LIVE_NOW' } }],
+		navigationEndpoint: { commandMetadata: { webCommandMetadata: { url: '/watch?v=' + videoId } } }
+	} });
+	const ownCard = liveCard('ownstream01', ownershipChannelId);
+	const foreignCard = liveCard('rFZHOHl-L8A', otherChannelId);
+	const ownerlessCard = liveCard('ownstream02');
+	const channelPage = (items = []) => ({
+		metadata: { channelMetadataRenderer: { externalId: ownershipChannelId, ownerUrls: ['https://www.youtube.com/@mkbhd'] } },
+		contents: { twoColumnBrowseResultsRenderer: { tabs: [{ tabRenderer: {
+			title: 'Live', endpoint: { browseEndpoint: { browseId: ownershipChannelId } },
+			content: { richGridRenderer: { contents: items.map(content => ({ richItemRenderer: { content } })) } }
+		} }] } },
+		secondaryContents: { recommendations: [foreignCard, ownerlessCard] }
+	});
+	let ownershipPage = channelPage();
+	let ownershipRawHtml = null;
+	const originalOwnershipInvoke = ipcRenderer.invoke;
+	const ownershipRequests = [];
+	ipcRenderer.invoke = function (channel, payload, ...rest) {
+		if (channel === 'nodefetch') {
+			ownershipRequests.push(payload.url);
+			return Promise.resolve({ status: 200, data: ownershipRawHtml ?? '<script>var ytInitialData = ' + JSON.stringify(ownershipPage) + ';</script>' });
+		}
+		return originalOwnershipInvoke.call(this, channel, payload, ...rest);
+	};
+	const ownershipGroupId = stateManager.addGroup({
+		id: 'youtube-ownership-e2e', target: 'youtube', username: '@mkbhd',
+		isChannel: false, connectionMode: 'classic', autoActivate: true, streams: []
+	});
+	try {
+		await checkYouTubeGroupForNewStreams(ownershipGroupId);
+		await new Promise(resolve => setTimeout(resolve, 750));
+		assertRenderer(stateManager.getGroup(ownershipGroupId).streams.length === 0,
+			'an empty channel must not add or auto-activate another channel from recommendations');
+		ownershipPage = channelPage([ownCard, ownerlessCard, foreignCard]);
+		const owned = await fetchYoutube('@mkbhd');
+		assertRenderer(owned.length === 2 && owned.every(video => video.channelId === ownershipChannelId),
+			'channel uploads should retain ownership and exclude cards with a different explicit owner');
+		assertRenderer(!(await fetchYoutube(otherChannelId))?.length, 'a page for a different requested channel ID must be rejected');
+		assertRenderer(!(await fetchYoutube('@different-handle'))?.length, 'a page for a different requested handle must be rejected');
+		const upcomingCard = liveCard('upcoming001');
+		upcomingCard.videoRenderer.badges = [{ metadataBadgeRenderer: { label: 'UPCOMING' } }];
+		upcomingCard.videoRenderer.upcomingEventData = { startTime: String(Math.floor(Date.now() / 1000) + 600) };
+		ownershipPage = channelPage([upcomingCard]);
+		assertRenderer((await fetchYoutube('@mkbhd'))?.[0]?.status === 'upcoming', 'owned scheduled streams must remain discoverable');
+		const endedCard = liveCard('endedlive01');
+		endedCard.videoRenderer.badges = [];
+		endedCard.videoRenderer.publishedTimeText = { simpleText: 'Streamed yesterday' };
+		endedCard.videoRenderer.thumbnailOverlays = [{ thumbnailOverlayTimeStatusRenderer: { style: 'DEFAULT', text: { simpleText: '1:00:00' } } }];
+		ownershipPage = channelPage([endedCard]);
+		assertRenderer((await fetchYoutube('@mkbhd'))?.[0]?.status === 'ended', 'owned ended streams must retain their status');
+		ownershipPage.contents.twoColumnBrowseResultsRenderer.tabs[0].tabRenderer.content.richGridRenderer.contents = [
+			{ richSectionRenderer: { content: { shelfRenderer: { content: { items: [ownerlessCard, foreignCard] } } } } }
+		];
+		assertRenderer(!(await fetchYoutube('@mkbhd'))?.length, 'a shelf must not inherit ownership from its surrounding channel page');
+		ownershipRawHtml = '<script>{"videoId":"rFZHOHl-L8A"}</script>';
+		assertRenderer(!(await fetchYoutube('@mkbhd'))?.length, 'a bare video ID without ownership must not become a stream');
+		ownershipRawHtml = null;
+		ownershipPage = { contents: { twoColumnWatchNextResults: { results: { results: { contents: [
+			{ videoPrimaryInfoRenderer: { title: { simpleText: 'Live' }, viewCount: { videoViewCountRenderer: { isLive: true } } } },
+			{ videoSecondaryInfoRenderer: { owner: { videoOwnerRenderer: { navigationEndpoint: {
+				browseEndpoint: { browseId: ownershipChannelId, canonicalBaseUrl: '/@mkbhd' }
+			} } } } }
+		] } } } }, currentVideoEndpoint: { watchEndpoint: { videoId: 'ownstream01' },
+			commandMetadata: { webCommandMetadata: { url: '/watch?v=ownstream01' } } },
+			secondaryContents: { recommendations: [foreignCard] } };
+		const primaryStream = await fetchYoutube('@mkbhd', true);
+		assertRenderer(primaryStream.length === 1 && primaryStream[0].videoId === 'ownstream01',
+			'/live should return only its verified primary video');
+		assertRenderer(!(await fetchYoutube('@different-handle', true))?.length,
+			'/live must reject a primary video owned by another channel');
+		ownershipPage = { contents: [{ channelRenderer: { channelId: otherChannelId, title: { simpleText: 'MKBHD fan streams' } } }] };
+		assertRenderer(!(await fetchYoutube('MKBHD', false, { forceSearch: true }))?.length,
+			'channel search must not choose a partial match or first unrelated result');
+		assertRenderer(selectYouTubeChannelCandidate([
+			{ channelId: ownershipChannelId, title: 'Same name' }, { channelId: otherChannelId, title: 'Same name' }
+		], 'Same name') === null, 'ambiguous display names must not silently pick a channel');
+		assertRenderer(selectYouTubeChannelCandidate([
+			{ channelId: otherChannelId, title: 'mkbhd' }, { channelId: ownershipChannelId, title: 'Marques Brownlee', url: '/@mkbhd' }
+		], 'mkbhd')?.channelId === ownershipChannelId, 'an exact handle should take precedence over another channel display name');
+		assertRenderer(ownershipRequests.every(url => new URL(url).hostname === 'www.youtube.com'),
+			'ownership verification must not add Data API requests');
+	} finally {
+		ipcRenderer.invoke = originalOwnershipInvoke;
+		stateManager.removeGroup(ownershipGroupId);
+	}
+
 	const originalConfirm = window.confirm;
 	const originalPrompt = window.prompt;
 	const confirmMessages = [];
@@ -313,6 +406,7 @@ const rendererWorkflow = String.raw`
 		const schedulerGroupId = stateManager.addGroup({
 			id: 'youtube-owner-e2e-scheduler',
 			target: 'youtube',
+			connectionMode: 'classic',
 			username: 'Scheduler E2E',
 			channelId: 'UCowner000000000000000002',
 			youtubeDiscoveryMode: 'owner',

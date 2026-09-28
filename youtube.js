@@ -1275,11 +1275,22 @@ function getVideoStatusFromAnyRenderer(videoEntry, fallbackRendererStatus) {
 function selectYouTubeChannelCandidate(candidates, identifier) {
     if (!Array.isArray(candidates) || !candidates.length) return null;
     const query = normalizeYouTubeLookupText(identifier);
-    if (!query) return candidates[0];
-    return candidates.find(candidate => normalizeYouTubeLookupText(candidate.title) === query)
-        || candidates.find(candidate => normalizeYouTubeLookupText(candidate.url || '').endsWith('/' + query))
-        || candidates.find(candidate => normalizeYouTubeLookupText(candidate.title).includes(query))
-        || candidates[0];
+    if (!query) return null;
+    const handleMatches = candidates.filter(candidate =>
+        normalizeYouTubeLookupText(candidate.handle) === query
+        || normalizeYouTubeLookupText(normalizeYouTubeChannelIdentifier(candidate.url)) === query);
+    const matches = handleMatches.length ? handleMatches
+        : candidates.filter(candidate => normalizeYouTubeLookupText(candidate.title) === query);
+    const uniqueMatches = new Map(matches.map(candidate => [candidate.channelId || candidate.url, candidate]));
+    return uniqueMatches.size === 1 ? uniqueMatches.values().next().value : null;
+}
+
+function matchesYouTubeChannelPage(fetchUrl, channelId, channelUrls) {
+    if (!channelId) return false;
+    const requested = normalizeYouTubeChannelIdentifier(fetchUrl);
+    if (/^(UC|HC|UU)/.test(requested)) return requested === channelId;
+    return channelUrls.some(url => url && normalizeYouTubeLookupText(normalizeYouTubeChannelIdentifier(url))
+        === normalizeYouTubeLookupText(requested));
 }
 
 function normalizeYouTubeChannelIdentifier(identifier) {
@@ -1399,7 +1410,10 @@ async function fetchYoutube(username, alt = false, options = {}) {
 				scheduledStartTime: data.upcomingEventData?.startTime || null, 
 				actualStartTime: null, 
 				actualEndTime: null,
-				channelId: data.ownerText?.runs?.[0]?.navigationEndpoint?.browseEndpoint?.browseId || data.channelThumbnailSupportedRenderers?.channelThumbnailWithLinkRenderer?.navigationEndpoint?.browseEndpoint?.browseId || null,
+				channelId: data.ownerText?.runs?.[0]?.navigationEndpoint?.browseEndpoint?.browseId
+                    || data.longBylineText?.runs?.[0]?.navigationEndpoint?.browseEndpoint?.browseId
+                    || data.shortBylineText?.runs?.[0]?.navigationEndpoint?.browseEndpoint?.browseId
+                    || data.channelThumbnailSupportedRenderers?.channelThumbnailWithLinkRenderer?.navigationEndpoint?.browseEndpoint?.browseId || null,
 				channelTitle: data.ownerText?.runs?.[0]?.text || data.longBylineText?.runs?.[0]?.text || null,
 				queryIdentifier: username 
 			  };
@@ -1503,53 +1517,62 @@ async function fetchYoutube(username, alt = false, options = {}) {
 
             const videos = [];
             if (ytInitialData) {
+                const channel = ytInitialData.metadata?.channelMetadataRenderer;
                 const tabs = ytInitialData.contents?.twoColumnBrowseResultsRenderer?.tabs;
-                let targetTabContents = null;
-
-                if (tabs) {
+                const channelUrls = [...(channel?.ownerUrls || []), channel?.channelUrl, channel?.vanityChannelUrl];
+                // Legacy /c/ and /user/ aliases need not appear in the canonical metadata.
+                const legacyChannelPage = /^\/(c|user)\//.test(new URL(fetchUrl).pathname) && channel?.externalId;
+                if (Array.isArray(tabs) && (legacyChannelPage || matchesYouTubeChannelPage(fetchUrl, channel?.externalId, channelUrls))) {
                     const liveTab = tabs.find(tab => tab.tabRenderer?.title?.toLowerCase() === 'live' || tab.tabRenderer?.endpoint?.commandMetadata?.webCommandMetadata?.url?.endsWith('/live'));
                     const streamsTab = tabs.find(tab => tab.tabRenderer?.title?.toLowerCase() === 'streams' || tab.tabRenderer?.endpoint?.commandMetadata?.webCommandMetadata?.url?.endsWith('/streams'));
                     const videosTab = tabs.find(tab => tab.tabRenderer?.title?.toLowerCase() === 'videos' || tab.tabRenderer?.endpoint?.commandMetadata?.webCommandMetadata?.url?.endsWith('/videos'));
-                    targetTabContents = liveTab?.tabRenderer?.content || streamsTab?.tabRenderer?.content || videosTab?.tabRenderer?.content;
-
-                }
-
-                let videoEntries = collectYouTubeVideoRenderers(targetTabContents);
-                if (!videoEntries.length) {
-                    videoEntries = collectYouTubeVideoRenderers(ytInitialData);
-                }
-                videoEntries.forEach(entry => {
-                    const video = getVideoStatusFromAnyRenderer(entry, getVideoStatusFromRenderer);
-                    if (video && video.videoId) {
+                    const targetTab = [liveTab, streamsTab, videosTab].find(tab => tab?.tabRenderer?.content)?.tabRenderer;
+                    const tabChannelId = targetTab?.endpoint?.browseEndpoint?.browseId;
+                    const targetTabContents = !tabChannelId || tabChannelId === channel.externalId ? targetTab?.content : null;
+                    // Only direct upload cards may inherit the channel's ownership. Shelves,
+                    // recommendations and cards elsewhere need their own matching owner ID.
+                    const uploadItems = targetTabContents?.richGridRenderer?.contents
+                        || (targetTabContents?.sectionListRenderer?.contents || []).flatMap(section =>
+                            (section.itemSectionRenderer?.contents || []).flatMap(item => item.gridRenderer?.items || [item]));
+                    const uploadRenderers = new Set(uploadItems.flatMap(item => {
+                        const content = item.richItemRenderer?.content || item;
+                        return [content.videoRenderer, content.lockupViewModel].filter(Boolean);
+                    }));
+                    const videoEntries = collectYouTubeVideoRenderers(targetTabContents || tabs[0]?.tabRenderer?.content);
+                    videoEntries.forEach(entry => {
+                        const video = getVideoStatusFromAnyRenderer(entry, getVideoStatusFromRenderer);
+                        if (!video?.videoId) return;
+                        if (video.channelId ? video.channelId !== channel.externalId : !uploadRenderers.has(entry.renderer)) return;
+                        video.channelId = channel.externalId;
+                        video.channelTitle = video.channelTitle || channel.title || null;
                         video.queryIdentifier = username;
                         videos.push(video);
-                    }
-                });
-                if (videos.length === 0 && ytInitialData.contents?.twoColumnBrowseResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.sectionListRenderer?.contents) {
-                     ytInitialData.contents.twoColumnBrowseResultsRenderer.tabs[0].tabRenderer.content.sectionListRenderer.contents.forEach(section => {
-                        section.itemSectionRenderer?.contents?.forEach(contentItem => {
-                             if (contentItem.shelfRenderer?.content?.expandedShelfContentsRenderer?.items) { 
-                                contentItem.shelfRenderer.content.expandedShelfContentsRenderer.items.forEach(shelfItem => {
-                                    const videoRenderer = shelfItem.videoRenderer;
-                                    if (videoRenderer && videoRenderer.videoId) {
-                                         videos.push(getVideoStatusFromRenderer(videoRenderer));
-                                    }
-                                });
-                            }
-                            const videoRenderer = contentItem.videoRenderer; 
-                            if (videoRenderer && videoRenderer.videoId) {
-                                videos.push(getVideoStatusFromRenderer(videoRenderer));
-                            }
-                        });
                     });
+                } else if (alt) {
+                    // /live can redirect to a watch page. Read only the primary video,
+                    // and verify its owner before considering it for activation.
+                    const watchContents = ytInitialData.contents?.twoColumnWatchNextResults?.results?.results?.contents || [];
+                    const primary = watchContents.find(item => item.videoPrimaryInfoRenderer)?.videoPrimaryInfoRenderer;
+                    const owner = watchContents.find(item => item.videoSecondaryInfoRenderer)?.videoSecondaryInfoRenderer?.owner?.videoOwnerRenderer;
+                    const ownerEndpoint = owner?.navigationEndpoint;
+                    const ownerId = ownerEndpoint?.browseEndpoint?.browseId;
+                    const ownerUrls = [ownerEndpoint?.browseEndpoint?.canonicalBaseUrl, ownerEndpoint?.commandMetadata?.webCommandMetadata?.url];
+                    const videoId = ytInitialData.currentVideoEndpoint?.watchEndpoint?.videoId;
+                    if (primary && videoId && matchesYouTubeChannelPage(fetchUrl, ownerId, ownerUrls)) {
+                        const video = getVideoStatusFromRenderer({
+                            videoId,
+                            title: primary.title,
+                            viewCountText: primary.viewCount?.videoViewCountRenderer?.viewCount,
+                            upcomingEventData: primary.upcomingEventData,
+                            badges: primary.badges,
+                            navigationEndpoint: ytInitialData.currentVideoEndpoint
+                        });
+                        if (primary.viewCount?.videoViewCountRenderer?.isLive) video.status = video.statusDisplay = 'live';
+                        video.channelId = ownerId;
+                        video.channelTitle = getYouTubeFormattedText(owner.title);
+                        videos.push(video);
+                    }
                 }
-            } else { 
-                 const videoIdMatches = [...htmlData.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})"/g)];
-                 if (videoIdMatches.length > 0) {
-                     const firstVideoId = videoIdMatches[0][1];
-                     // Provide a minimal object, ensuring status and isShort are present
-                     videos.push({ videoId: firstVideoId, title: `Live/Upcoming Stream (Scraped ID for ${username})`, status: 'upcoming', statusDisplay: 'upcoming', isShort: false });
-                 }
             }
 
 			if (videos.length > 0) {
