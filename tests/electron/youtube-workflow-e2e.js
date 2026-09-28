@@ -322,6 +322,32 @@ const rendererWorkflow = String.raw`
 		], 'mkbhd')?.channelId === ownershipChannelId, 'an exact handle should take precedence over another channel display name');
 		assertRenderer(ownershipRequests.every(url => new URL(url).hostname === 'www.youtube.com'),
 			'ownership verification must not add Data API requests');
+
+		ownershipPage = channelPage([ownCard]);
+		const fixtureInvoke = ipcRenderer.invoke;
+		let releaseDiscovery;
+		ipcRenderer.invoke = function (channel, payload, ...rest) {
+			if (channel === 'nodefetch') return new Promise(resolve => { releaseDiscovery = resolve; });
+			return fixtureInvoke.call(this, channel, payload, ...rest);
+		};
+		const pendingDiscovery = checkYouTubeGroupForNewStreams(ownershipGroupId);
+		stateManager.removeGroup(ownershipGroupId);
+		releaseDiscovery({ status: 200, data: '<script>var ytInitialData = ' + JSON.stringify(ownershipPage) + ';</script>' });
+		await pendingDiscovery;
+		await new Promise(resolve => setTimeout(resolve, 750));
+		assertRenderer(!stateManager.getSources().some(source => source.groupId === ownershipGroupId),
+			'removing a group during discovery must not recreate or activate its sources');
+		ipcRenderer.invoke = fixtureInvoke;
+		stateManager.addGroup({
+			id: ownershipGroupId, target: 'youtube', username: '@mkbhd',
+			isChannel: false, connectionMode: 'classic', autoActivate: true, streams: []
+		});
+		await checkYouTubeGroupForNewStreams(ownershipGroupId);
+		document.querySelector('[data-group-id="' + ownershipGroupId + '"] .auto-activate-toggle input').click();
+		await new Promise(resolve => setTimeout(resolve, 750));
+		assertRenderer(stateManager.getGroup(ownershipGroupId).autoActivate === false
+			&& stateManager.getSources().filter(source => source.groupId === ownershipGroupId).every(source => !source.vid),
+			'turning off auto-activate before a scheduled window opens must cancel that activation');
 	} finally {
 		ipcRenderer.invoke = originalOwnershipInvoke;
 		stateManager.removeGroup(ownershipGroupId);
