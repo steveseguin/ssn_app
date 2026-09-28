@@ -4067,7 +4067,8 @@
                                 group.target === "youtubeshorts",
                                 false,
                                 true,
-                                group.isChannel
+                                group.isChannel,
+                                { groupId: group.id }
                             );
                         }, 2500 + Math.random() * 1000);
                     }
@@ -11882,7 +11883,9 @@
                                 const s = stateManager.getSource(sid);
                                 return s && s.status === 'active' && (s.vid || s.wssId || s.tiktokWssId);
                             });
-                            const shouldAttemptImmediate = (!group.streams || group.streams.length === 0) && !hasActive;
+                            // Owner discovery already runs through the owner-aware auto-checker.
+                            const shouldAttemptImmediate = !isYouTubeOwnerGroup(group)
+                                && (!group.streams || group.streams.length === 0) && !hasActive;
                             if (shouldAttemptImmediate) {
                                 setTimeout(async () => {
                                     // Re-check state at call time to avoid races
