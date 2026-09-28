@@ -3016,7 +3016,7 @@ try {
 	                : null;
 
             let activeUrlUsed = primaryUrl;
-            let win = await ensureTikTokSigningWindow(primaryUrl, { allowNavigation: false, mode: 'background' });
+            let win = await ensureTikTokSigningWindow(primaryUrl, { allowNavigation: !!options?.performFetch, mode: 'background' });
             let parameters;
 
             try {
@@ -20569,6 +20569,8 @@ async function ensureTikTokSigningWindow(targetUrl, options = {}) {
         } catch (_) { }
         attachSigningWindow(tiktokSigningWindow);
         installTikTokSigningWindowPopupHandling(tiktokSigningWindow);
+        await tiktokSigningWindow.loadURL('about:blank');
+        await tikTokSignerHelper.observeChatBootstrap(tiktokSigningWindow);
         await tiktokSigningWindow.loadURL(landingUrl);
     } else {
         installTikTokSigningWindowPopupHandling(tiktokSigningWindow);

@@ -4747,6 +4747,51 @@ class ConnectionManager {
         return normalizeSourceAccountRole(this.accountRole) === 'host' ? 'anchor' : 'audience';
     }
 
+    applyLocalSignerConnectorAdapter(connection) {
+        // Connector 2.4 replaced the per-connection signedWebSocketProvider option
+        // with global routes. Keep our browser-backed bootstrap on this instance.
+        if (!connection || typeof connection._wsClientProvider !== 'function') return;
+        const manager = this;
+        const createWebSocket = connection._wsClientProvider;
+        connection._wsClientProvider = function (params) {
+            return createWebSocket({
+                ...params,
+                wsHeaders: {
+                    ...params.wsHeaders,
+                    ...manager.buildLocalSignerHeaders(manager.lastSignerPayload)
+                }
+            });
+        };
+        connection._connect = async function (roomId) {
+            const result = await manager.fetchSignedWebSocketViaLocalSigner({
+                roomId: roomId || this.roomId || null,
+                uniqueId: this.uniqueId
+            });
+            if (manager.isStopped) {
+                const error = new Error('TikTok connection stopped.');
+                error.code = 'SSAPP_TIKTOK_STOPPED';
+                throw error;
+            }
+            const resolvedRoomId = this.roomId;
+            if (!resolvedRoomId || !result.cursor) {
+                throw new Error('TikTok Local Signer did not return a room ID and chat cursor.');
+            }
+            this.clientParams.cursor = result.cursor;
+            this.clientParams.internal_ext = result.internalExt;
+            if (this.options.processInitialData) await this.processProtoMessageFetchResult(result);
+            const wsParams = {
+                compress: 'gzip',
+                room_id: resolvedRoomId,
+                internal_ext: result.internalExt,
+                cursor: result.cursor
+            };
+            for (const [key, value] of Object.entries(result.routeParams || {})) {
+                if (value) wsParams[key] = value;
+            }
+            return this.setupWebsocket(result.pushServer, wsParams, resolvedRoomId);
+        };
+    }
+
     applyLocalSignerWebcastIdentityOverride(connection, identity = this.resolveLocalSignerWebcastIdentity()) {
         if (!connection || typeof connection.setupWebsocket !== 'function') {
             return false;
@@ -5046,7 +5091,8 @@ class ConnectionManager {
                 }
 
                 const ensureValidProtoMessageFetchResult = (proto, source = 'unknown') => {
-                    const wsUrl = proto && typeof proto.wsUrl === 'string' ? proto.wsUrl.trim() : '';
+                    const wsUrl = proto && typeof (proto.pushServer || proto.wsUrl) === 'string'
+                        ? (proto.pushServer || proto.wsUrl).trim() : '';
                     if (!wsUrl) {
                         const err = new Error('TikTok did not return a WebSocket URL (wsUrl) during bootstrap.');
                         err.name = 'TikTokWsUrlError';
@@ -5380,12 +5426,12 @@ class ConnectionManager {
 	                }
 	            }
 	        }
+        }
 
 	        const roomId = payload?.room_id || payload?.roomId || payload?.roomIdStr || payload?.room_id_str || null;
 	        if (roomId) {
 	            this.applyRoomIdToConnection(roomId, 'signer_payload');
 	        }
-	    }
     }
 
     parseSignedFetchParams(pathWithQuery, fallbackRoomId) {
@@ -5661,6 +5707,7 @@ class ConnectionManager {
         this.applyResumeCursorToConnection();
         this.applySignRequestTimeout(this.signRequestTimeoutMs);
         if (!useLegacyConnector && this.shouldUseLocalSigner()) {
+            this.applyLocalSignerConnectorAdapter(this.connection);
             this.applyLocalSignerWebcastIdentityOverride(this.connection);
         }
         this.logDebug('lifecycle.initialize.signTimeoutConfigured', {
