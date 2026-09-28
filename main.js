@@ -20913,7 +20913,7 @@ ipcMain.handle("tiktokShowSigningWindow", async (_event, args = {}) => {
         const landingUrl = typeof args?.landingUrl === 'string' && args.landingUrl.trim()
             ? args.landingUrl.trim()
             : null;
-        await ensureTikTokSigningWindow(landingUrl, { allowNavigation: Boolean(landingUrl) });
+        await ensureTikTokSigningWindow(landingUrl, { mode: 'login', allowNavigation: Boolean(landingUrl) });
         return { success: true, state: getTikTokSigningWindowState() };
     } catch (error) {
         console.error('[TikTok] Failed to show signing window:', error);

@@ -5875,7 +5875,7 @@
             if (signinButton) {
                 const isWebsocketMode = signinMode === 'websocket' || signinMode === 'tiktok-websocket' || signinMode === 'tiktok-legacy';
 
-                if (target === 'tiktok' && signinMode === 'tiktok-websocket') {
+                if (target === 'tiktok' && (signinMode === 'tiktok-websocket' || signinMode === 'tiktok-legacy')) {
                     const resolvedSourceId = (source && source.id) || (sourceElement?.dataset?.sourceId || null);
                     let tikTokSource = source;
                     if (!tikTokSource && resolvedSourceId && window.stateManager) {
@@ -5915,7 +5915,7 @@
                         signinButton.title = translate('tiktok.signin.title');
                     }
                     signinButton.classList.toggle('authenticated', hasSession);
-                } else if (isWebsocketMode) {
+                } else if (isWebsocketMode && !isYouTubeWebSocketSigninContext(source)) {
                     // Hide for other websocket modes
                     signinButton.classList.add("hidden");
                     signinButton.style.display = '';
@@ -10438,7 +10438,7 @@
                                     <span style="color: #fbbf24; font-size: 16px;">&bull;</span>
                                     <span style="color: #f8fafc; font-weight: 500;">Session Saved</span>
                                 </div>
-                                <span style="color: #fbbf24; font-size: 11px;">Missing tt_target_idc cookie. Reload page?</span>
+                                <span style="color: #fbbf24; font-size: 11px;">Missing tt-target-idc cookie. Open TikTok Sign-in, then Collect Session again.</span>
                             </div>
                         `;
                     } else {
@@ -10511,7 +10511,8 @@
             const source = stateManager.getSource(sourceId);
             if (!source) return;
 
-            const isAuthenticated = source.tiktokSessionId ? true : false;
+            const hasSavedSession = !!(typeof source.tiktokSessionId === 'string' && source.tiktokSessionId.trim());
+            const hasSavedIdc = !!(typeof source.tiktokTtTargetIdc === 'string' && source.tiktokTtTargetIdc.trim());
             const signingHelpUrl = typeof window.SSAPP_SIGNING_HELP_URL === 'string' ? window.SSAPP_SIGNING_HELP_URL : '';
             const existingSigningApiKey = typeof source.tiktokSigningApiKey === 'string' ? source.tiktokSigningApiKey : '';
             const existingSigningServiceUrl = typeof source.tiktokSigningServiceUrl === 'string' ? source.tiktokSigningServiceUrl : '';
@@ -10631,13 +10632,13 @@
                 <div style="margin-bottom: 18px;">
                     <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #e2e8f0;">Manual Session Cookie</h4>
                     <p style="margin: 0 0 10px 0; font-size: 13px; color: #94a3b8;">
-                        If the local signer fails, you can manually extract the <code>sessionid</code> cookie.
+                        If the local signer fails, you can manually copy the <code>sessionid</code> and <code>tt-target-idc</code> cookies. Both are needed for an authenticated connection.
                     </p>
                     <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                         <button onclick="tiktokManualSignIn('${sourceId}')" class="button" style="background: #475569; font-size: 13px;">
                             📝 Enter Session ID
                         </button>
-                        ${isAuthenticated ? `
+                        ${hasSavedSession ? `
                         <button onclick="clearTikTokAuth('${sourceId}')" class="button" style="background: #ef4444; font-size: 13px;">
                             🗑️ Clear Authentication
                         </button>` : ''}
@@ -10667,15 +10668,21 @@
             let headerTitle = 'Manage TikTok Signing';
 
             if (providerValue === 'auto') {
-                headerTitle = 'TikTok Signing: Auto';
-                const sessionBanner = isAuthenticated
-                    ? `<div style="background: rgba(34, 197, 94, 0.12); border-left: 3px solid #22c55e; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px;">
-                        <h4 style="margin: 0 0 4px 0; color: #4ade80; font-size: 14px;">✓ Signed in to TikTok</h4>
-                        <p style="margin: 0 0 10px 0; font-size: 13px; color: #dcfce7;">
-                            Your session is active. Authenticated connections receive more chat messages.
+                const isPolling = getEffectiveConnectionMode(source) === 'tiktok-legacy';
+                headerTitle = isPolling ? 'TikTok Signing: Polling' : 'TikTok Signing: Auto';
+                const sessionBanner = hasSavedSession
+                    ? `<div style="background: ${hasSavedIdc ? 'rgba(34, 197, 94, 0.12)' : 'rgba(245, 158, 11, 0.12)'}; border-left: 3px solid ${hasSavedIdc ? '#22c55e' : '#f59e0b'}; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px;">
+                        <h4 style="margin: 0 0 4px 0; color: ${hasSavedIdc ? '#4ade80' : '#fbbf24'}; font-size: 14px;">${hasSavedIdc ? 'TikTok session saved' : 'TikTok sign-in incomplete'}</h4>
+                        <p style="margin: 0 0 10px 0; font-size: 13px; color: #e2e8f0;">
+                            ${hasSavedIdc
+                                ? 'Your saved cookies will be used when connecting. If they expire, sign in again.'
+                                : 'The tt-target-idc cookie is missing, so this source connects anonymously. Sign in again or enter both cookies manually.'}
                         </p>
                         <button onclick="tiktokSignIn('${sourceId}', { forceRefresh: true })" class="button" style="background: #2563eb; font-size: 13px;">
                             Re-authenticate
+                        </button>
+                        <button onclick="tiktokManualSignIn('${sourceId}')" class="button" style="background: #475569; font-size: 13px;">
+                            Enter cookies manually
                         </button>
                     </div>`
                     : `<div style="background: rgba(59, 130, 246, 0.12); border-left: 3px solid #3b82f6; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px;">
@@ -10695,9 +10702,11 @@
                 mainContent = `
                     ${sessionBanner}
                     <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
-                        <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #94a3b8;">Auto Mode</h4>
+                        <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #94a3b8;">${isPolling ? 'Polling Mode' : 'Auto Mode'}</h4>
                         <p style="margin: 0; font-size: 13px; color: #94a3b8;">
-                            Tries Euler signing, falls back to Polling if it fails. Adding an API key can help avoid rate limits.
+                            ${isPolling
+                                ? 'Uses polling to receive chat messages. Sign in to improve message coverage.'
+                                : 'Tries Euler signing, falls back to Polling if it fails. Adding an API key can help avoid rate limits.'}
                         </p>
                     </div>
                     ${apiInputsBlock}
@@ -10936,8 +10945,12 @@
                         Toast.warning("TikTok Signing", validationResult.error || 'TikTok fetch validation failed.');
                     }
                 }
-                if (!restarted) {
-                    Toast.success("TikTok Signing", "Session collected.");
+                if (!response.parameters.sessionid) {
+                    Toast.warning("No signed-in TikTok session was found in the signing window. Sign in there, then collect again.", "TikTok Sign-in Needed");
+                } else if (!response.parameters.tt_target_idc) {
+                    Toast.warning("Session cookie collected, but tt-target-idc is missing. Sign in again or enter both cookies manually.", "TikTok Sign-in Incomplete");
+                } else if (!restarted) {
+                    Toast.success("TikTok session collected. Activate the source to use it.", "TikTok Signing");
                 }
             } catch (error) {
                 console.error('Failed to collect TikTok signing parameters:', error);
@@ -11120,8 +11133,10 @@
                             }
                         }
                         const restarted = await restartTikTokSourceAfterAuthIfActive(sourceId, 'TikTok sign-in');
-                        if (!restarted) {
-                            Toast.success("TikTok Sign-in", "Successfully signed in to TikTok!");
+                        if (!rawIdc) {
+                            Toast.warning("Missing tt-target-idc cookie. This source connects anonymously until you sign in again or enter both cookies manually.", "TikTok Sign-in Incomplete");
+                        } else if (!restarted) {
+                            Toast.success("TikTok session saved. Activate the source to use it.", "TikTok Sign-in");
                         }
                     }
                 } else {
@@ -11170,7 +11185,9 @@
                             }
                         }
                         const restarted = await restartTikTokSourceAfterAuthIfActive(sourceId, 'TikTok credentials');
-                        if (!restarted) {
+                        if (!rawIdc) {
+                            Toast.warning("Missing tt-target-idc cookie. This source connects anonymously until you enter both cookies.", "TikTok Sign-in Incomplete");
+                        } else if (!restarted) {
                             Toast.success("TikTok Sign-in", "Successfully added TikTok credentials!");
                         }
                     }
