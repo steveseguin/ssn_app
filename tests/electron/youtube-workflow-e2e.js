@@ -270,6 +270,16 @@ const rendererWorkflow = String.raw`
 			'channel uploads should retain ownership and exclude cards with a different explicit owner');
 		assertRenderer(!(await fetchYoutube(otherChannelId))?.length, 'a page for a different requested channel ID must be rejected');
 		assertRenderer(!(await fetchYoutube('@different-handle'))?.length, 'a page for a different requested handle must be rejected');
+		ownershipPage.metadata.channelMetadataRenderer.ownerUrls = ['https://www.youtube.com/@cafe犬'];
+		assertRenderer(!(await fetchYoutube('@cafe猫'))?.length, 'international handles with the same ASCII prefix must not match');
+		assertRenderer((await fetchYoutube('@cafe犬'))?.length === 2, 'the complete matching international handle must work');
+		assertRenderer(selectYouTubeChannelCandidate([
+			{ channelId: otherChannelId, title: 'Different channel', url: '/@cafe犬' }
+		], 'cafe') === null, 'search must not truncate an international handle into an exact ASCII match');
+		for (const channelUrl of ['https://www.youtube.com/@cafe犬/streams', 'https://www.youtube.com/@cafe%E7%8A%AC/streams']) {
+			const normalized = normalizeYouTubePublicSourceInput(channelUrl);
+			assertRenderer(normalized.value === '@cafe犬', 'pasted channel URLs must preserve the entire international handle');
+		}
 		const upcomingCard = liveCard('upcoming001');
 		upcomingCard.videoRenderer.badges = [{ metadataBadgeRenderer: { label: 'UPCOMING' } }];
 		upcomingCard.videoRenderer.upcomingEventData = { startTime: String(Math.floor(Date.now() / 1000) + 600) };

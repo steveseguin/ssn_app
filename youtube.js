@@ -1278,18 +1278,30 @@ function selectYouTubeChannelCandidate(candidates, identifier) {
     if (!query) return null;
     const handleMatches = candidates.filter(candidate =>
         normalizeYouTubeLookupText(candidate.handle) === query
-        || normalizeYouTubeLookupText(normalizeYouTubeChannelIdentifier(candidate.url)) === query);
+        || normalizeYouTubeLookupText(getYouTubeChannelUrlIdentifier(candidate.url)) === query);
     const matches = handleMatches.length ? handleMatches
         : candidates.filter(candidate => normalizeYouTubeLookupText(candidate.title) === query);
     const uniqueMatches = new Map(matches.map(candidate => [candidate.channelId || candidate.url, candidate]));
     return uniqueMatches.size === 1 ? uniqueMatches.values().next().value : null;
 }
 
+function getYouTubeChannelUrlIdentifier(channelUrl) {
+    if (!channelUrl) return '';
+    try {
+        const parts = new URL(channelUrl, 'https://www.youtube.com').pathname.split('/').filter(Boolean);
+        const identifier = ['channel', 'c', 'user'].includes(parts[0]) ? parts[1] : parts[0];
+        // Compare the entire decoded handle, including non-ASCII characters.
+        return decodeURIComponent(identifier || '');
+    } catch (_) {
+        return '';
+    }
+}
+
 function matchesYouTubeChannelPage(fetchUrl, channelId, channelUrls) {
     if (!channelId) return false;
-    const requested = normalizeYouTubeChannelIdentifier(fetchUrl);
+    const requested = getYouTubeChannelUrlIdentifier(fetchUrl);
     if (/^(UC|HC|UU)/.test(requested)) return requested === channelId;
-    return channelUrls.some(url => url && normalizeYouTubeLookupText(normalizeYouTubeChannelIdentifier(url))
+    return channelUrls.some(url => url && normalizeYouTubeLookupText(getYouTubeChannelUrlIdentifier(url))
         === normalizeYouTubeLookupText(requested));
 }
 
@@ -2084,8 +2096,8 @@ function extractYoutubeVideoId(url) {
 }
 function parseYoutubeUrl(url) { 
     const urlString = typeof url === 'string' ? url : url.toString();
-	const handleRegex = /(?:youtube\.com\/)(@[a-zA-Z0-9._-]+)/i;
-	const usernameRegex = /(?:youtube\.com\/(?:user\/|c\/))([a-zA-Z0-9._-]+)/i;
+	const handleRegex = /(?:youtube\.com\/)(@[^/?#]+)/i;
+	const usernameRegex = /(?:youtube\.com\/(?:user\/|c\/))([^/?#]+)/i;
     const channelIdRegex = /(?:youtube\.com\/channel\/)(UC[a-zA-Z0-9_-]{22})/i;
 
 	try {
@@ -2096,11 +2108,11 @@ function parseYoutubeUrl(url) {
         }
         const handleMatch = urlString.match(handleRegex);
         if (handleMatch && handleMatch[1]) {
-            return { isYoutubeUrl: true, type: 'channel_username', username: handleMatch[1] };
+            return { isYoutubeUrl: true, type: 'channel_username', username: decodeURIComponent(handleMatch[1]) };
         }
         const usernameMatch = urlString.match(usernameRegex);
         if (usernameMatch && usernameMatch[1]) {
-            return { isYoutubeUrl: true, type: 'channel_username', username: usernameMatch[1] };
+            return { isYoutubeUrl: true, type: 'channel_username', username: decodeURIComponent(usernameMatch[1]) };
         }
         const channelIdMatch = urlString.match(channelIdRegex);
         if (channelIdMatch && channelIdMatch[1]) {
