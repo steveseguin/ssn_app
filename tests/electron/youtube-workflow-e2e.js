@@ -352,6 +352,30 @@ const rendererWorkflow = String.raw`
 		ipcRenderer.invoke = originalOwnershipInvoke;
 		stateManager.removeGroup(ownershipGroupId);
 	}
+	const originalManualFetch = window.fetch;
+	try {
+		let releaseManual;
+		window.fetch = function (url, ...rest) {
+			if (String(url).startsWith('https://api.socialstream.ninja/youtube/streams?')) {
+				return new Promise(resolve => { releaseManual = resolve; });
+			}
+			return originalManualFetch.call(this, url, ...rest);
+		};
+		manualYouTubeDiscoveryCache.clear();
+		await newSource('youtube', '@manual-cancel-e2e', false, {}, false);
+		const manualGroupId = 'youtube-@manual-cancel-e2e';
+		const pendingManual = handleYouTubeActivation('@manual-cancel-e2e', false, false, true, false,
+			{ manualTrigger: true, groupId: manualGroupId });
+		stateManager.removeGroup(manualGroupId);
+		releaseManual(new Response(JSON.stringify({ success: true, data: [{ videoId: 'ownstream01', status: 'live', isShort: false }] }),
+			{ status: 200, headers: { 'Content-Type': 'application/json' } }));
+		assertRenderer((await pendingManual).type === 'cancelled_or_empty'
+			&& !stateManager.getGroup(manualGroupId)
+			&& !stateManager.getSources().some(source => source.videoId === 'ownstream01'),
+			'manual discovery must not recreate a group removed while the API request was pending');
+	} finally {
+		window.fetch = originalManualFetch;
+	}
 
 	const originalConfirm = window.confirm;
 	const originalPrompt = window.prompt;
@@ -438,6 +462,35 @@ const rendererWorkflow = String.raw`
 			{ manualTrigger: true, groupId: ownerGroupId }
 		);
 		assertRenderer(ownerActivationResult?.type === 'auth_error', 'expired owner auth should return a visible auth error');
+		const originalOwnerBridge = getYouTubeOwnerBridge;
+		const ownerSwitchGroupId = 'youtube-owner-switch-e2e';
+		try {
+			let releaseOwner;
+			getYouTubeOwnerBridge = () => ({ fetchYouTubeOwnerBroadcasts: () => new Promise(resolve => { releaseOwner = resolve; }) });
+			const profileA = { channelId: ownershipChannelId, channelTitle: 'Owner A', authRef: 'owner-switch-a' };
+			const profileB = { channelId: otherChannelId, channelTitle: 'Owner B', authRef: 'owner-switch-b' };
+			const broadcast = { videoId: 'switchown01', channelId: ownershipChannelId, status: 'live', statusDisplay: 'live',
+				isShort: false, liveChatId: 'switch-chat', youtubeChatStatus: 'ready', lifeCycleStatus: 'live' };
+			for (const manual of [false, true]) {
+				const group = createOrUpdateYouTubeOwnerGroup(profileA, 'youtube', ownerSwitchGroupId);
+				const pending = manual
+					? handleYouTubeActivation(group.username, false, false, true, false, { manualTrigger: true, groupId: group.id })
+					: checkYouTubeGroupForNewStreams(group.id);
+				createOrUpdateYouTubeOwnerGroup(profileB, 'youtube', group.id);
+				releaseOwner({ success: true, profile: profileA, broadcasts: [broadcast] });
+				await pending;
+				assertRenderer(group.channelId === profileB.channelId && group.channelTitle === profileB.channelTitle && group.streams.length === 0,
+					'switching the signed-in channel must discard the previous channel response and profile');
+			}
+			const currentGroup = stateManager.getGroup(ownerSwitchGroupId);
+			const current = fetchYouTubeOwnerStreamsForGroup(currentGroup);
+			releaseOwner({ success: true, profile: { ...profileB, channelTitle: 'Owner B renamed' }, broadcasts: [{ ...broadcast, channelId: profileB.channelId }] });
+			assertRenderer((await current).length === 1 && currentGroup.channelTitle === 'Owner B renamed',
+				'a display-name update for the same signed-in channel must still accept its broadcasts');
+		} finally {
+			getYouTubeOwnerBridge = originalOwnerBridge;
+			stateManager.removeGroup(ownerSwitchGroupId);
+		}
 
 		const schedulerGroupId = stateManager.addGroup({
 			id: 'youtube-owner-e2e-scheduler',

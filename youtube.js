@@ -608,11 +608,16 @@ class YouTubeStreamSelector {
 
 async function handleYouTubeActivation(username, isShortDefault = false, showPrompts = true, autoActivateAll = false, isChannelName = false, options = {}) {
     const manualTrigger = !!options.manualTrigger;
+    let requestIsCurrent = () => true;
     try {
         const groupTargetType = isShortDefault ? 'youtubeshorts' : 'youtube';
         const requestedGroup = options.groupId && typeof stateManager !== 'undefined'
             ? stateManager.getGroup(options.groupId)
             : null;
+        if (options.groupId && !requestedGroup) return { type: 'cancelled_or_empty' };
+        const discoveryIdentity = requestedGroup ? getYouTubeGroupDiscoveryIdentity(requestedGroup) : null;
+        requestIsCurrent = () => !requestedGroup || (stateManager.getGroup(requestedGroup.id) === requestedGroup
+            && getYouTubeGroupDiscoveryIdentity(requestedGroup) === discoveryIdentity);
         const ownerDiscoveryGroup = isYouTubeOwnerDiscoveryGroup(requestedGroup) ? requestedGroup : null;
         console.log("handleYouTubeActivation:", {
             username,
@@ -634,6 +639,7 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
                     cacheTtlMs: showPrompts ? 15000 : YOUTUBE_STREAM_DISCOVERY_CACHE_TTL_MS
                 }));
         
+        if (!requestIsCurrent()) return { type: 'cancelled_or_empty' };
         if (!combinedStreams.length) {
             const message = ownerDiscoveryGroup
                 ? getYouTubeOwnerDiscoveryMessage(combinedStreams)
@@ -689,6 +695,7 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
             }
             console.log("Calling show() with streams:", combinedStreams.length);
             const selectionResult = await window.streamSelector.show(combinedStreams, username, isShortDefault);
+            if (!requestIsCurrent()) return { type: 'cancelled_or_empty' };
             console.log("show() returned:", selectionResult);
 
             console.log("Selection result:", selectionResult);
@@ -700,6 +707,7 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
             let activatedCount = 0;
             let waitingCount = 0;
             for (const selectedStream of selectionResult) { 
+                if (!requestIsCurrent()) return { type: 'cancelled_or_empty' };
                 console.log("Processing selected stream:", selectedStream);
                 if (selectedStream && !stateManager.isVideoIdAdded(selectedStream.videoId)) {
                     const sourceElement = await createYouTubeEntry(selectedStream, username, selectedStream.isShort);
@@ -742,6 +750,7 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
             let activatedCount = 0;
             let waitingCount = 0;
             for (const stream of combinedStreams) {
+                if (!requestIsCurrent()) return { type: 'cancelled_or_empty' };
                 const streamStatus = stream.statusDisplay; // Use pre-calculated statusDisplay
                 // Only consider live or upcoming within the next 180 minutes
                 if (streamStatus === 'ended') continue;
@@ -835,6 +844,7 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
             return { type: 'multiple_auto', count: activatedCount, waitingCount, message: emptyAutoMessage };
         }
     } catch (error) {
+        if (!requestIsCurrent()) return { type: 'cancelled_or_empty' };
         console.error("Error in handleYouTubeActivation for " + username + ":", error);
         if (isYouTubeOwnerAuthError(error)) {
             const authMessage = 'YouTube sign-in expired or is unavailable. Use Manage sign-in to reconnect this channel.';

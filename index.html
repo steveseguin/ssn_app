@@ -2978,11 +2978,14 @@
             if (!group.youtubeAuthRef) {
                 throw new Error('This YouTube group needs sign-in before owner discovery can run.');
             }
+            const discoveryIdentity = getYouTubeGroupDiscoveryIdentity(group);
             const result = await bridge.fetchYouTubeOwnerBroadcasts({
                 authRef: group.youtubeAuthRef,
                 channelId: group.channelId,
                 statuses: ['active', 'upcoming']
             });
+            if (stateManager.getGroup(group.id) !== group
+                || getYouTubeGroupDiscoveryIdentity(group) !== discoveryIdentity) return [];
             if (result?.success === false) {
                 const detail = result.error && typeof result.error === 'object' ? result.error : {};
                 const error = new Error(detail.message || 'YouTube owner discovery failed.');
@@ -4765,7 +4768,7 @@
         function getYouTubeGroupDiscoveryIdentity(group) {
             if (!group) return '';
             return JSON.stringify({
-                username: String(group.username || '').trim(),
+                username: isYouTubeOwnerGroup(group) ? '' : String(group.username || '').trim(),
                 target: group.target || '',
                 isChannel: !!group.isChannel,
                 youtubeDiscoveryMode: group.youtubeDiscoveryMode || '',
@@ -5174,6 +5177,7 @@
         async function checkYouTubeGroupForNewStreams(groupId) {
             const group = stateManager.getGroup(groupId);
             if (!group || (group.target !== "youtube" && group.target !== "youtubeshorts")) return false;
+            const discoveryIdentity = getYouTubeGroupDiscoveryIdentity(group);
             const ownerBackedGroup = isYouTubeOwnerGroup(group);
             const useApiBootstrap = !ownerBackedGroup && shouldUseYouTubeGroupApiBootstrap(group);
 
@@ -5201,6 +5205,8 @@
                     return false;
                 }
             } catch (error) {
+                if (stateManager.getGroup(groupId) !== group
+                    || getYouTubeGroupDiscoveryIdentity(group) !== discoveryIdentity) return false;
                 console.error("YouTube group discovery failed:", error);
                 if (typeof isYouTubeOwnerAuthError === 'function' && isYouTubeOwnerAuthError(error)) {
                     return {
@@ -5217,8 +5223,9 @@
                 return false;
             }
 
-            // A removed or replaced group must not consume an earlier discovery response.
-            if (stateManager.getGroup(groupId) !== group) return false;
+            // A removed, replaced or switched group must not consume an earlier response.
+            if (stateManager.getGroup(groupId) !== group
+                || getYouTubeGroupDiscoveryIdentity(group) !== discoveryIdentity) return false;
 
             // Filter streams based on type
             const isShorts = group.target === "youtubeshorts";
@@ -5293,7 +5300,8 @@
 
                     // Auto-activate the new source when chat is available. Owner-backed upcoming broadcasts stay as waiting rows.
                     setTimeout(async () => {
-                        if (stateManager.getGroup(groupId) !== group) return;
+                        if (stateManager.getGroup(groupId) !== group
+                            || getYouTubeGroupDiscoveryIdentity(group) !== discoveryIdentity) return;
                         const addedSource = stateManager.getSources().find(s => s.videoId === stream.videoId);
                         console.log(`[Auto-add TIMEOUT] Looking for source with videoId: ${stream.videoId}`);
                         console.log(`[Auto-add TIMEOUT] addedSource:`, addedSource ? JSON.stringify({ id: addedSource.id, isVisible: addedSource.isVisible, isMuted: addedSource.isMuted }) : 'NOT FOUND');
