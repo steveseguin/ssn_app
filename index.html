@@ -2069,6 +2069,8 @@
 
             // Hide sign-in button when in websocket mode
             const effectiveMode = getEffectiveConnectionMode(source);
+            const isYouTubeStandard = (source.target === 'youtube' || source.target === 'youtubeshorts') && effectiveMode === 'classic';
+            const hasYouTubeStandardWindow = isYouTubeStandard && !!source.vid;
             const isTikTokLocalSigner = source.target === 'tiktok' && source.tiktokSigningProvider === 'local';
 
             const signinButton = element.querySelector("[data-signin]");
@@ -2114,7 +2116,7 @@
             if (visibilityControl) {
                 const isTikTokApiMode = source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy');
                 const showDuringConnect = (effectiveMode === 'websocket' && !!source.vid);
-                const showWhenActive = (source.status === 'active' && !!source.vid);
+                const showWhenActive = (source.status === 'active' && !!source.vid) || hasYouTubeStandardWindow;
                 const showManualTikTokStandardWindow = hasManualTikTokStandardCaptureWindow(source);
                 const hide = (!isTikTokLocalSigner && isTikTokApiMode) || (!isTikTokApiMode && !showDuringConnect && !showWhenActive && !showManualTikTokStandardWindow);
                 visibilityControl.classList.toggle('hidden', hide);
@@ -2223,18 +2225,21 @@
             const shouldManageConnectionStatus = effectiveMode === 'websocket'
                 || effectiveMode === 'tiktok-websocket'
                 || effectiveMode === 'tiktok-legacy'
-                || source.target === 'tiktok';
+                || source.target === 'tiktok'
+                || isYouTubeStandard;
             const hasTikTokConnectedContext = source.target === 'tiktok'
                 && !!(source.vid || activeWssHandle || source.tiktokConnectionMethod);
             if (shouldManageConnectionStatus) {
-                if (source.status === 'active' && (activeWssHandle || hasTikTokConnectedContext)) {
+                if (isYouTubeStandard && source.status === 'error' && source.error) {
+                    updateConnectionStatus(element, 'error', source.error);
+                } else if (source.status === 'active' && (activeWssHandle || hasTikTokConnectedContext || hasYouTubeStandardWindow)) {
                     updateConnectionStatus(element, 'connected');
                 } else if (source.status === 'activating') {
                     // Show connecting for supported WSS sources.
                     const t = (source.target || '').toLowerCase();
                     const supports = t === 'tiktok' || t.startsWith('youtube') || t === 'twitch' || t === 'vpzone' || t === 'velora';
                     if (supports) updateConnectionStatus(element, 'connecting');
-                } else if (source.status === 'inactive' && wsStatusElement && !wsStatusElement.classList.contains('error')) {
+                } else if (source.status === 'inactive' && wsStatusElement && (isYouTubeStandard || !wsStatusElement.classList.contains('error'))) {
                     updateConnectionStatus(element, 'clear');
                 }
             } else {
@@ -2252,7 +2257,7 @@
                 setActivateButtonConnecting(element);
                 stopButton?.classList.add('hidden');
                 if (reloadButton) reloadButton.classList.add('hidden');
-            } else if (source.status === 'active' && (source.vid || activeWssHandle)) {
+            } else if ((source.status === 'active' && (source.vid || activeWssHandle)) || hasYouTubeStandardWindow) {
                 const isTikTokApiMode = source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy');
                 if (isTikTokApiMode && activateButton) {
                     activateButton.classList.remove('hidden');
@@ -2307,7 +2312,7 @@
                 }
                 delete element.dataset.vid;
             }
-            updateSourceUIAfterModeChange(element, source.connectionMode, (source.status === 'active'));
+            updateSourceUIAfterModeChange(element, source.connectionMode, (source.status === 'active' || hasYouTubeStandardWindow));
 
             // Show/hide YouTube type toggle based on source type and status
             const youtubeTypeToggle = element.querySelector('.youtube-type-toggle');
