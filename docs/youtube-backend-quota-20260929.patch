@@ -1,6 +1,35 @@
 --- a/youtube/youtube_helper.php
 +++ b/youtube/youtube_helper.php
-@@ -884,6 +884,21 @@
+@@ -166,7 +166,7 @@
+         return $info;
+     }
+ 	
+-	public function getVideoChannelData($videoId) {
++	public function getVideoChannelData($videoId, $includeVideoDetails = true) {
+ 		$cache_key = "ytvchdata_" . $videoId;
+ 		$cached_data = $this->memcached->get($cache_key);
+ 		
+@@ -177,6 +177,19 @@
+ 		// First check if we have the channel ID cached from this video
+ 		$channelMappingKey = "ytvid_ch_" . $videoId;
+ 		$cachedChannelId = $this->memcached->get($channelMappingKey);
++
++        // Channel-only callers do not need another videos.list request when the
++        // video-to-channel mapping is cached. Keep the full-data cache authoritative
++        // above, and do not store a partial response where full-data callers read it.
++        if (!$includeVideoDetails && $cachedChannelId !== false) {
++            $channelInfo = $this->getChannelInfo($cachedChannelId);
++            return [
++                'channelId' => $cachedChannelId,
++                'channelTitle' => $channelInfo['title'] ?? null,
++                'thumbnailUrl' => $channelInfo['thumbnailUrl'] ?? null,
++                'customUrl' => $channelInfo['customUrl'] ?? null
++            ];
++        }
+ 		
+ 		$channelId = null;
+ 		$snippet = null;
+@@ -884,6 +897,21 @@
              ]
          ]);
  
@@ -67,6 +96,17 @@
  
  try {
      $helper = new YouTubeHelper(YOUTUBE_API_KEY);
+@@ -16,8 +15,8 @@
+         throw new Exception('No video ID provided');
+     }
+     
+-    // Get full channel data from video
+-    $data = $helper->getVideoChannelData($params['videoId']);
++    // This response only needs channel metadata, not the video's title or description.
++    $data = $helper->getVideoChannelData($params['videoId'], false);
+     
+     // Extract just the channel info we need
+     $result = [
 @@ -28,26 +27,8 @@
          'customUrl' => $data['customUrl'] ?? null
      ];
