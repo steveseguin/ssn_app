@@ -353,6 +353,115 @@ const rendererWorkflow = String.raw`
 		stateManager.removeGroup(ownershipGroupId);
 	}
 	const originalManualFetch = window.fetch;
+	const originalPickerInvoke = ipcRenderer.invoke;
+	const originalPickerCreateWindow = createWindow;
+	const pickerGroupId = stateManager.addGroup({
+		id: 'youtube-picker-e2e', target: 'youtube', username: '@mkbhd',
+		isChannel: false, connectionMode: 'classic', autoActivate: false, streams: []
+	});
+	try {
+		let apiRequests = 0;
+		let pageRequests = 0;
+		let releasePage;
+		const activatedIds = [];
+		window.fetch = function (url, ...rest) {
+			if (String(url).startsWith('https://api.socialstream.ninja/youtube/streams?')) {
+				apiRequests++;
+				return Promise.resolve(new Response(JSON.stringify({ success: true, data: [
+					{ videoId: 'ownstream01', status: 'live', isShort: false, title: 'API result' }
+				] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+			}
+			return originalManualFetch.call(this, url, ...rest);
+		};
+		ipcRenderer.invoke = function (channel, payload, ...rest) {
+			if (channel === 'nodefetch') {
+				pageRequests++;
+				return new Promise(resolve => { releasePage = resolve; });
+			}
+			return originalPickerInvoke.call(this, channel, payload, ...rest);
+		};
+		createWindow = async button => {
+			activatedIds.push(stateManager.getSource(button.closest('[data-source-id]').dataset.sourceId).videoId);
+		};
+		manualYouTubeDiscoveryCache.clear();
+		const pickerTask = handleYouTubeActivation('@mkbhd', false, true, false, false,
+			{ manualTrigger: true, groupId: pickerGroupId });
+		await waitFor(() => document.getElementById('ytStreamModal').style.display === 'block' && releasePage,
+			'picker must display API results while the channel page is still loading');
+		const firstRow = document.querySelector('#ytStreamList [data-video-id="ownstream01"]');
+		assertRenderer(firstRow && document.querySelectorAll('#ytStreamList .yt-stream-item').length === 1,
+			'partial API results should be usable before page discovery finishes');
+		firstRow.querySelector('.shorts-toggle-checkbox').click();
+		firstRow.click();
+		const sharedPageCheck = discoverYouTubeStreamsForManualAction('@mkbhd', false, false, { includePageResults: true });
+		releasePage({ status: 200, data: '<script>var ytInitialData = ' + JSON.stringify(channelPage([ownCard, ownerlessCard, foreignCard])) + ';</script>' });
+		await sharedPageCheck;
+		await waitFor(() => document.querySelectorAll('#ytStreamList .yt-stream-item').length === 2,
+			'channel page must add the missing owned stream to the open picker');
+		assertRenderer(!window.streamSelector.selectedStreams.has('ownstream01')
+			&& window.streamSelector.streams.find(stream => stream.videoId === 'ownstream01').isShort === true,
+			'page results must preserve the selection and Shorts edits already made');
+		assertRenderer(!window.streamSelector.selectedStreams.has('ownstream02')
+			&& !document.querySelector('#ytStreamList [data-video-id="rFZHOHl-L8A"]'),
+			'late results must not select themselves or include unrelated streamers');
+		await discoverYouTubeStreamsForManualAction('@mkbhd', false, false, { includePageResults: true });
+		assertRenderer(apiRequests === 1 && pageRequests === 1,
+			'page enrichment, concurrent checks and cached repeats must share one API call and one page fetch');
+		document.querySelector('#ytStreamList [data-video-id="ownstream02"]').click();
+		document.getElementById('ytActivateButton').click();
+		await pickerTask;
+		assertRenderer(activatedIds.length === 1 && activatedIds[0] === 'ownstream02',
+			'the user must be able to activate the stream found only on the channel page');
+		stateManager.getSources().filter(source => source.videoId === 'ownstream02').forEach(source => stateManager.removeSource(source.id));
+
+		manualYouTubeDiscoveryCache.clear();
+		releasePage = null;
+		const closingPicker = handleYouTubeActivation('@mkbhd', false, true, false, false,
+			{ manualTrigger: true, groupId: pickerGroupId });
+		await waitFor(() => releasePage, 'second picker should start its page check');
+		window.streamSelector.selectedStreams.clear();
+		document.getElementById('ytCancelButton').click();
+		await closingPicker;
+		const otherPicker = window.streamSelector.show([{ videoId: 'newpicker01', status: 'live', title: 'Another channel' }], '@different');
+		releasePage({ status: 200, data: '<script>var ytInitialData = ' + JSON.stringify(channelPage([ownCard, ownerlessCard])) + ';</script>' });
+		await new Promise(resolve => setTimeout(resolve, 150));
+		assertRenderer(window.streamSelector.streams.length === 1 && window.streamSelector.streams[0].videoId === 'newpicker01',
+			'a late page result must not alter a closed or replaced picker');
+		window.streamSelector.selectedStreams.clear();
+		window.streamSelector.hide();
+		await otherPicker;
+
+		manualYouTubeDiscoveryCache.clear();
+		releasePage = null;
+		const failedPagePicker = handleYouTubeActivation('@mkbhd', false, true, false, false,
+			{ manualTrigger: true, groupId: pickerGroupId });
+		await waitFor(() => releasePage, 'failure case should start its page check');
+		releasePage({ status: 0, error: 'ETIMEDOUT: fixture connection timeout' });
+		await waitFor(() => document.querySelector('#ytStreamList .yt-stream-discovery-message')?.textContent.includes('Could not finish'),
+			'a page failure should explain that the listed streams remain usable');
+		document.getElementById('ytActivateButton').click();
+		await failedPagePicker;
+		assertRenderer(activatedIds[activatedIds.length - 1] === 'ownstream01',
+			'page discovery failure must not prevent activation of a valid API result');
+		stateManager.getSources().filter(source => source.videoId === 'ownstream01').forEach(source => stateManager.removeSource(source.id));
+
+		manualYouTubeDiscoveryCache.clear();
+		const manualAutoActivate = handleYouTubeActivation('@mkbhd', false, false, true, false,
+			{ manualTrigger: true, groupId: pickerGroupId });
+		const previousRelease = releasePage;
+		await waitFor(() => releasePage !== previousRelease, 'manual auto-activate should check the page before selecting all');
+		releasePage({ status: 200, data: '<script>var ytInitialData = ' + JSON.stringify(channelPage([ownCard, ownerlessCard, foreignCard])) + ';</script>' });
+		await manualAutoActivate;
+		assertRenderer(activatedIds.slice(-2).join(',') === 'ownstream01,ownstream02',
+			'manual auto-activate must include missing owned page results');
+		stateManager.getSources().filter(source => ['ownstream01', 'ownstream02'].includes(source.videoId)).forEach(source => stateManager.removeSource(source.id));
+	} finally {
+		window.fetch = originalManualFetch;
+		ipcRenderer.invoke = originalPickerInvoke;
+		createWindow = originalPickerCreateWindow;
+		stateManager.removeGroup(pickerGroupId);
+		manualYouTubeDiscoveryCache.clear();
+	}
 	try {
 		let releaseManual;
 		window.fetch = function (url, ...rest) {

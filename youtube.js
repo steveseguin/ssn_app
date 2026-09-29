@@ -269,34 +269,38 @@ async function fetchYouTubeLiveStreamsFromApi(identifier, options = {}) {
   }
 }
 
-async function discoverYouTubeStreamsForManualAction(username, isShortDefault = false, isChannelName = false) {
+async function discoverYouTubeStreamsForManualAction(username, isShortDefault = false, isChannelName = false, options = {}) {
+    const includePageResults = !!options.includePageResults;
     const cacheKey = getYouTubeStreamDiscoveryCacheKey(username, {
         isChannelOnly: isChannelName,
         isUsernameOnly: !isChannelName && !username.startsWith("UC"),
         isShortDefault
     });
     const cached = manualYouTubeDiscoveryCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
+    const cacheIsFresh = cached && cached.expiresAt > Date.now();
+    if (cacheIsFresh && (!includePageResults || cached.pageChecked)) {
         return cloneYouTubeStreams(cached.streams);
     }
 
     if (manualYouTubeDiscoveryInflight.has(cacheKey)) {
-        const pending = await manualYouTubeDiscoveryInflight.get(cacheKey);
-        return cloneYouTubeStreams(pending);
+        await manualYouTubeDiscoveryInflight.get(cacheKey);
+        return discoverYouTubeStreamsForManualAction(username, isShortDefault, isChannelName, options);
     }
 
+    let pageChecked = false;
     const request = (async () => {
-        const streamsFromApi = await fetchYouTubeLiveStreamsFromApi(username, {
+        const streamsFromApi = cloneYouTubeStreams(options.knownStreams || (cacheIsFresh ? cached.streams : await fetchYouTubeLiveStreamsFromApi(username, {
             isChannelOnly: isChannelName,
             isUsernameOnly: !isChannelName && !username.startsWith("UC")
-        });
+        })));
         let streamsFromScrape = [];
 
-        if (!streamsFromApi || streamsFromApi.length === 0) {
+        if (includePageResults || !streamsFromApi || streamsFromApi.length === 0) {
             streamsFromScrape = await fetchYoutube(username, false, { forceSearch: isChannelName });
             if (!Array.isArray(streamsFromScrape) || !streamsFromScrape.length) {
                 streamsFromScrape = await fetchYoutube(username, true, { forceSearch: isChannelName }) || [];
             }
+            pageChecked = true;
         }
 
         const combinedStreams = [...streamsFromApi];
@@ -318,7 +322,8 @@ async function discoverYouTubeStreamsForManualAction(username, isShortDefault = 
     const streams = await request;
     manualYouTubeDiscoveryCache.set(cacheKey, {
         expiresAt: Date.now() + MANUAL_YOUTUBE_DISCOVERY_CACHE_TTL_MS,
-        streams: cloneYouTubeStreams(streams)
+        streams: cloneYouTubeStreams(streams),
+        pageChecked
     });
 
     return cloneYouTubeStreams(streams);
@@ -440,7 +445,7 @@ class YouTubeStreamSelector {
         }
      }
 
-    async createStreamElements(streams, username) {
+    async createStreamElements(streams, username, autoSelect = true) {
         if (!this.streamList) return;
         const allStreamsEnded = streams.length && streams.every(stream => {
             const status = this.getVideoStatus(stream?.status, stream?.viewers);
@@ -545,7 +550,7 @@ class YouTubeStreamSelector {
             if (shortsLabel) shortsLabel.addEventListener('click', (e) => e.stopPropagation());
             this.streamList.appendChild(element);
 
-            if (selectable) {
+            if (selectable && autoSelect) {
                 const selectableStreams = streams.filter(s => !stateManager.isVideoIdAdded(s.videoId) && isSelectableYouTubeStreamStatus(this.getVideoStatus(s.status, s.viewers)));
                 if (selectableStreams.length === 1) {
                     this.toggleStreamSelection(stream.videoId, element);
@@ -628,7 +633,7 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
             manualTrigger,
             ownerDiscovery: !!ownerDiscoveryGroup
         });
-        const combinedStreams = ownerDiscoveryGroup
+        let combinedStreams = ownerDiscoveryGroup
             ? await fetchYouTubeOwnerStreamsForGroup(ownerDiscoveryGroup)
             : (manualTrigger
                 ? await discoverYouTubeStreamsForManualAction(username, isShortDefault, isChannelName)
@@ -640,6 +645,17 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
                 }));
         
         if (!requestIsCurrent()) return { type: 'cancelled_or_empty' };
+        if (manualTrigger && autoActivateAll && !ownerDiscoveryGroup && combinedStreams.length) {
+            try {
+                combinedStreams = await discoverYouTubeStreamsForManualAction(username, isShortDefault, isChannelName, {
+                    includePageResults: true,
+                    knownStreams: combinedStreams
+                });
+            } catch (error) {
+                console.warn('YouTube channel page check failed; using the streams already found:', error);
+            }
+            if (!requestIsCurrent()) return { type: 'cancelled_or_empty' };
+        }
         if (!combinedStreams.length) {
             const message = ownerDiscoveryGroup
                 ? getYouTubeOwnerDiscoveryMessage(combinedStreams)
@@ -694,7 +710,32 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
                 window.streamSelector = new YouTubeStreamSelector();
             }
             console.log("Calling show() with streams:", combinedStreams.length);
-            const selectionResult = await window.streamSelector.show(combinedStreams, username, isShortDefault);
+            const selector = window.streamSelector;
+            const selectionPromise = selector.show(combinedStreams, username, isShortDefault);
+            if (!ownerDiscoveryGroup) {
+                const pickerResolver = selector.resolvePromise;
+                const pageStatus = document.createElement('div');
+                pageStatus.className = 'yt-stream-discovery-message';
+                pageStatus.textContent = 'Checking the channel page for more streams...';
+                selector.streamList.appendChild(pageStatus);
+                discoverYouTubeStreamsForManualAction(username, isShortDefault, isChannelName, {
+                    includePageResults: true,
+                    knownStreams: combinedStreams
+                }).then(async streams => {
+                    if (!requestIsCurrent() || selector.resolvePromise !== pickerResolver) return;
+                    const additional = streams.filter(stream => isSelectableYouTubeStreamStatus(stream.status)
+                        && !selector.streams.some(existing => existing.videoId === stream.videoId));
+                    selector.streams.push(...additional);
+                    // Preserve selections and Shorts edits already made while the page loaded.
+                    await selector.createStreamElements(additional, username, false);
+                    pageStatus.remove();
+                }).catch(error => {
+                    console.warn('YouTube channel page check failed:', error);
+                    if (!requestIsCurrent() || selector.resolvePromise !== pickerResolver) return;
+                    pageStatus.textContent = 'Could not finish checking the channel page. You can still select the streams listed.';
+                });
+            }
+            const selectionResult = await selectionPromise;
             if (!requestIsCurrent()) return { type: 'cancelled_or_empty' };
             console.log("show() returned:", selectionResult);
 
