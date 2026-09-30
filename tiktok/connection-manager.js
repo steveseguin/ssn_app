@@ -4588,10 +4588,12 @@ class ConnectionManager {
             const legacySuffix = this.pollingFallbackActivated
                 ? ' (legacy fallback)'
                 : ((usingLegacyTikTokConnector || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy') ? ' (legacy connector)' : '');
+            const method = this.pollingFallbackActivated || usingLegacyTikTokConnector
+                ? 'Polling' : 'Compatibility (WebSocket)';
             return {
                 effectiveMode: 'Polling/Legacy',
-                method: `Polling${legacySuffix}`,
-                label: `Connected via polling${legacySuffix}`
+                method: `${method}${legacySuffix}`,
+                label: `Connected via ${method === 'Polling' ? 'polling' : method}${legacySuffix}`
             };
         }
 
@@ -5646,7 +5648,7 @@ class ConnectionManager {
             const apiKey = looksLikeJwt ? null : rawKey;
             const jwtKey = looksLikeJwt ? rawKey : rawJwtKey;
             if (!apiKey && !jwtKey) {
-                const missingKeyError = new Error('Euler Proxy requires an Euler API key or JWT. Add one in TikTok Signing settings or switch to Auto/Polling.');
+                const missingKeyError = new Error('Euler Proxy requires an Euler API key or JWT. Add one in TikTok Signing settings or switch to Auto/Compatibility.');
                 missingKeyError.code = 'SSAPP_TIKTOK_EULER_WS_MISSING_KEY';
                 this.logDebug('lifecycle.initialize.euler_ws_missing_key', {
                     provider: this.signingProvider,
@@ -6532,7 +6534,7 @@ class ConnectionManager {
             || this.connectionStrategy === 'legacy'
             || usingLegacyTikTokConnector;
         if (usingPolling) {
-            return 'TikTok Polling requires an Euler plan that supports signing. Add a compatible Euler API key, or use Auto, Local Signer, or Standard mode.';
+            return 'TikTok Compatibility requires an Euler plan that supports signing. Add a compatible Euler API key, or use Auto, Local Signer, or Standard mode.';
         }
         return 'The Euler signing endpoint requires a compatible plan. Add a compatible Euler API key, or use Local Signer or Standard mode.';
     }
@@ -8432,9 +8434,9 @@ class ConnectionManager {
 
     getEulerApiKeyPromptMessage() {
         if (this.signingProvider === EULER_WS_PROVIDER) {
-            return `Euler Proxy retries were exhausted. Options: add a free Euler API key (${EULER_DASHBOARD_URL}), switch to Polling, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
+            return `Euler Proxy retries were exhausted. Options: add a free Euler API key (${EULER_DASHBOARD_URL}), switch to Compatibility, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
         }
-        return `AUTO retries were exhausted. Options: switch to Local Signer, add a free Euler API key (${EULER_DASHBOARD_URL}), use Euler Proxy, switch to Polling, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
+        return `AUTO retries were exhausted. Options: switch to Local Signer, add a free Euler API key (${EULER_DASHBOARD_URL}), use Euler Proxy, switch to Compatibility, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
     }
 
     shouldPromptForEulerApiKey(primaryError, rawMessage = '') {
@@ -8736,7 +8738,7 @@ class ConnectionManager {
         }
 
         if (normalized.includes('403') || normalized.includes('forbidden') || normalized.includes('unauthorized')) {
-            return 'Euler signing was rejected (403). Try Local Signer, Polling, or Standard mode.';
+            return 'Euler signing was rejected (403). Try Local Signer, Compatibility, or Standard mode.';
         }
 
         if (normalized.includes('timeout') || primaryError?.code === 'ECONNABORTED') {

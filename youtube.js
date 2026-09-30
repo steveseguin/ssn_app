@@ -622,7 +622,8 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
         if (options.groupId && !requestedGroup) return { type: 'cancelled_or_empty' };
         const discoveryIdentity = requestedGroup ? getYouTubeGroupDiscoveryIdentity(requestedGroup) : null;
         requestIsCurrent = () => !requestedGroup || (stateManager.getGroup(requestedGroup.id) === requestedGroup
-            && getYouTubeGroupDiscoveryIdentity(requestedGroup) === discoveryIdentity);
+            && getYouTubeGroupDiscoveryIdentity(requestedGroup) === discoveryIdentity
+            && (!options.requireAutoActivate || requestedGroup.autoActivate));
         const ownerDiscoveryGroup = isYouTubeOwnerDiscoveryGroup(requestedGroup) ? requestedGroup : null;
         console.log("handleYouTubeActivation:", {
             username,

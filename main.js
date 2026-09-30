@@ -13490,6 +13490,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
         if (args.sourceId) {
             for (const [id, view] of Object.entries(browserViews)) {
                 if (view.args && view.args.sourceId === args.sourceId && !isBrowserViewDestroyed(view)) {
+                    // Standard fallback needs a real capture window, not the failed connector's virtual tab.
+                    if (args.platform === 'tiktok' && !args.wss && view.isTikTokVirtual) {
+                        cleanupConnection(view.wssID);
+                        continue;
+                    }
                     log("Window already exists for source: " + args.sourceId);
                     eventRet.returnValue = id;
                     return;

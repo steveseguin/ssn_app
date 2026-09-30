@@ -2304,7 +2304,7 @@
                         if (mode === 'tiktok-websocket' && source.target === 'tiktok') {
                             activateButton.textContent = 'Connect TikTok WebSocket';
                         } else if (mode === 'tiktok-legacy' && source.target === 'tiktok') {
-                            activateButton.textContent = 'Connect TikTok Polling';
+                            activateButton.textContent = 'Connect TikTok Compatibility';
                         } else if (mode === 'websocket') {
                             activateButton.textContent = translate('btn.connectwebsocket');
                         } else {
@@ -4665,7 +4665,7 @@
             if (skipped > 0) {
                 Toast.warning('Partial Mode Update', `Updated inactive streams; ${skipped} active source(s) unchanged. Stop them to switch modes.`);
             } else {
-                Toast.info('Connection Mode Updated', `All streams in ${group.username} now use ${mode === 'websocket' ? 'WebSocket' : (mode === 'tiktok-websocket' ? 'TikTok WS' : (mode === 'tiktok-legacy' ? 'TikTok Polling' : 'Standard'))} mode`);
+                Toast.info('Connection Mode Updated', `All streams in ${group.username} now use ${mode === 'websocket' ? 'WebSocket' : (mode === 'tiktok-websocket' ? 'TikTok WS' : (mode === 'tiktok-legacy' ? 'TikTok Compatibility (WebSocket)' : 'Standard'))} mode`);
             }
         }
 
@@ -5832,7 +5832,7 @@
                             ? '⏹️ Disconnect'
                             : translate('btn.stop');
                     } else if (displayMode === 'tiktok-legacy') {
-                        activateButton.innerText = 'Connect TikTok Polling';
+                        activateButton.innerText = 'Connect TikTok Compatibility';
                     } else if (displayMode === 'tiktok-websocket') {
                         if (provider === 'local') {
                             activateButton.innerText = 'Connect TikTok Local Signer';
@@ -6247,7 +6247,7 @@
             } else if (val === 'local') {
                 html = '<strong>Local Signer:</strong> Uses a lightweight TikTok signing window. Anonymous mode is best effort; signed-in Host mode is recommended for full chat capture.';
             } else if (val === 'polling') {
-                html = '<strong>Polling:</strong> HTTP compatibility mode. No signing needed. No replies.';
+                html = `Signing required. No replies. <a href="${ssappEscapeHtml(window.SSAPP_SIGNING_HELP_URL)}" target="_blank">Mode guide</a>.`;
             } else if (val === 'standard') {
                 html = '<strong>Standard:</strong> Uses the capture browser window. Best for manual sign-in and troubleshooting.';
             } else if (val === 'euler-ws') {
@@ -6346,7 +6346,7 @@
                     <div style="margin-top: 16px; background: rgba(34, 197, 94, 0.08); border: 1px solid rgba(34, 197, 94, 0.3); border-radius: 8px; padding: 14px;">
                         <div style="font-weight: 600; color: #86efac; margin-bottom: 8px; font-size: 14px;">Which should I use?</div>
                         <div style="color: #d1d5db; font-size: 13px; line-height: 1.7;">
-                            <strong style="color: #f8fafc;">Most users</strong> → Use <strong>TikTok WS</strong> with <strong>Auto</strong> (default). It falls back to Polling if needed.<br>
+                            <strong style="color: #f8fafc;">Most users</strong> → Use <strong>TikTok WS</strong> with <strong>Auto</strong> (default). It falls back to Compatibility if needed.<br>
                             <strong style="color: #f8fafc;">Need to reply to chat?</strong> → Use <strong>Standard</strong> mode and sign in first.<br>
                             <strong style="color: #f8fafc;">Standard not working?</strong> → Try <strong>TikTok WS</strong> with <strong>Local Signer</strong> for replies.<br>
                             <strong style="color: #f8fafc;">Everything failing?</strong> → Try <strong>Euler Proxy</strong> or <strong>Euler Signing</strong> with an API key.<br>
@@ -6363,7 +6363,7 @@
                                 <span style="font-size: 11px; background: rgba(34,197,94,0.2); color: #86efac; padding: 2px 8px; border-radius: 4px;">Recommended</span>
                             </div>
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.5; margin-top: 6px;">
-                                Real-time connection with smooth message flow. With <strong>Auto</strong>, it falls back to Polling if WebSocket fails. Reply support depends on the signing provider (see below).
+                                Real-time connection with smooth message flow. With <strong>Auto</strong>, it falls back to Compatibility if WebSocket fails. Reply support depends on the signing provider (see below).
                             </div>
                         </div>
 
@@ -6375,9 +6375,9 @@
                         </div>
 
                         <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 12px 14px;">
-                            <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #f8fafc;">🕰️ Polling</h4>
+                            <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #f8fafc;">🕰️ Compatibility (WebSocket)</h4>
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
-                                Fetches chat via HTTP in batches. No signing needed. Use as a fallback when other modes fail. Cannot send replies. Messages may have slight delay.
+                                Uses the compatibility connector settings over a signed WebSocket. Cannot send replies.
                             </div>
                         </div>
                     </div>
@@ -6403,7 +6403,7 @@
                                 <span style="font-size: 11px; background: rgba(34,197,94,0.2); color: #86efac; padding: 2px 8px; border-radius: 4px;">Default</span>
                             </div>
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
-                                Tries Euler signing, falls back to Polling automatically if it fails. No API key needed. No replies. Best starting point.
+                                Tries Euler signing, falls back to Compatibility automatically if it fails. No API key needed. No replies. Best starting point.
                             </div>
                         </div>
 
@@ -6443,7 +6443,7 @@
                         <div style="font-weight: 600; color: #fcd34d; margin-bottom: 8px; font-size: 14px;">Troubleshooting</div>
                         <div style="color: #d1d5db; font-size: 12px; line-height: 1.8;">
                             <strong>Standard mode not working?</strong> → Click <strong>👁️ Show capture page</strong> to check for CAPTCHA or sign-in. If nothing appears, try <strong>🔄 Reload</strong>.<br>
-                            <strong>WebSocket keeps failing?</strong> → Try a different signing provider, or switch to Polling.<br>
+                            <strong>WebSocket keeps failing?</strong> → Try a different signing provider, or switch to Compatibility.<br>
                             <strong>Getting blocked/throttled?</strong> → Close other TikTok tabs/apps. Wait a few minutes and retry.<br>
                             <strong>Still missing chat?</strong> → Try a <strong>TikFinity OBS Dock</strong> URL in <strong>Add other source</strong> and keep TikFinity open.<br>
                             <strong>Need replies but nothing works?</strong> → Standard (with sign-in) or Local Signer are your options.
@@ -6680,7 +6680,7 @@
                 <select onchange="setTikTokConnectionPreset(this.closest('.entry'), this.value); updateSigningProviderHelpText(this);" class="tiktok-connection-select" style="width: 100%; margin-top: 4px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.35); background: rgba(15,23,42,0.55); color: #e2e8f0;">
                     <option value="auto">AUTO (Recommended)</option>
                     <option value="local">Local Signer (Replies)</option>
-                    <option value="polling">Polling (Compatibility)</option>
+                    <option value="polling">Compatibility (WebSocket)</option>
                     <option value="standard">Standard (Capture Window)</option>
                     <option value="euler-ws">Euler Proxy (API Key)</option>
                     <option value="custom">Euler Signing (Advanced)</option>
@@ -6891,7 +6891,7 @@
                                 ? (cliForcesTikTokClassic
                                     ? 'TikTok API connectors are disabled by launch flag.'
                                     : 'Disable the global TikTok Classic preference to use TikTok API connectors.')
-                                : 'Use HTTP polling without signing.';
+                                : 'Signed WebSocket compatibility mode.';
                             if (icon) icon.textContent = '🕰️';
                         } else {
                             item.title = '';
@@ -7746,7 +7746,7 @@
                 if (activeMode === 'tiktok-websocket') {
                     activateButton.textContent = 'Connect TikTok WebSocket';
                 } else if (activeMode === 'tiktok-legacy') {
-                    activateButton.textContent = 'Connect TikTok Polling';
+                    activateButton.textContent = 'Connect TikTok Compatibility';
                 } else {
                     activateButton.textContent = translate('btn.activate');
                 }
@@ -9026,7 +9026,7 @@
                 case 'tiktok-websocket':
                     return 'TikTok WebSocket';
                 case 'tiktok-legacy':
-                    return 'TikTok Polling';
+                    return 'TikTok Compatibility (WebSocket)';
                 case 'classic':
                     return 'TikTok Standard';
                 default:
@@ -9358,6 +9358,10 @@
 
             const resolvedTarget = target || source.target;
             const normalizedMode = resolvedTarget === 'tiktok' ? normalizeTikTokMode(mode) : mode;
+            if (resolvedTarget === 'tiktok' && normalizedMode === 'classic') {
+                // A late API connector result must not replace the Standard fallback window.
+                cancelPendingTikTokActivation(sourceId);
+            }
             let pendingTikTokToken = null;
             // TikTok has its own token lifecycle; other asynchronous starters also
             // need to distinguish a stopped attempt from a subsequent activation.
@@ -10301,7 +10305,7 @@
                 const isLegacyAttempt = strategy === 'legacy';
                 if (!fallbackInfo || fallbackInfo.mode !== 'classic') {
                     console.error('Error in TikTok connector from source:', error);
-                    const label = isLegacyAttempt ? 'Polling' : 'WebSocket';
+                    const label = isLegacyAttempt ? 'Compatibility (WebSocket)' : 'WebSocket';
                     Toast.warning('TikTok Connector Error', `(${label}) Connection Failed: ${error.message || 'Please try again.'}`);
                 }
                 throw error;
@@ -10589,7 +10593,7 @@
                         ${credentialsDescription}
                     </p>
                     <div style="background: rgba(245, 158, 11, 0.12); border-left: 3px solid #f59e0b; padding: 10px 12px; border-radius: 6px; margin: 10px 0 12px 0; font-size: 12px; color: #ffedd5;">
-                        <strong>Experimental:</strong> API key / signing URL support is new and not fully validated. If it fails, switch back to <strong>Auto</strong> or <strong>Polling</strong>.
+                        <strong>Experimental:</strong> API key / signing URL support is new and not fully validated. If it fails, switch back to <strong>Auto</strong> or <strong>Compatibility</strong>.
                     </div>
                     <label for="${apiKeyInputId}" style="display: block; font-size: 13px; color: #cbd5f5; margin-bottom: 4px;">API key</label>
                     <input id="${apiKeyInputId}" type="password" autocomplete="off" spellcheck="false" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #f8fafc;" value="${ssappEscapeHtml(existingSigningApiKey)}" placeholder="Euler API key">
@@ -10706,7 +10710,7 @@
 
             if (providerValue === 'auto') {
                 const isPolling = getEffectiveConnectionMode(source) === 'tiktok-legacy';
-                headerTitle = isPolling ? 'TikTok Signing: Polling' : 'TikTok Signing: Auto';
+                headerTitle = isPolling ? 'TikTok Signing: Compatibility' : 'TikTok Signing: Auto';
                 const sessionBanner = hasSavedSession
                     ? `<div style="background: ${hasSavedIdc ? 'rgba(34, 197, 94, 0.12)' : 'rgba(245, 158, 11, 0.12)'}; border-left: 3px solid ${hasSavedIdc ? '#22c55e' : '#f59e0b'}; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px;">
                         <h4 style="margin: 0 0 4px 0; color: ${hasSavedIdc ? '#4ade80' : '#fbbf24'}; font-size: 14px;">${hasSavedIdc ? 'TikTok session saved' : 'TikTok sign-in incomplete'}</h4>
@@ -10739,11 +10743,11 @@
                 mainContent = `
                     ${sessionBanner}
                     <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
-                        <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #94a3b8;">${isPolling ? 'Polling Mode' : 'Auto Mode'}</h4>
+                        <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #94a3b8;">${isPolling ? 'Compatibility (WebSocket)' : 'Auto Mode'}</h4>
                         <p style="margin: 0; font-size: 13px; color: #94a3b8;">
                             ${isPolling
-                                ? 'Uses polling to receive chat messages. Sign in to improve message coverage.'
-                                : 'Tries Euler signing, falls back to Polling if it fails. Adding an API key can help avoid rate limits.'}
+                                ? 'Uses a signed WebSocket to receive chat messages. Sign in to improve message coverage.'
+                                : 'Tries Euler signing, falls back to Compatibility if it fails. Adding an API key can help avoid rate limits.'}
                         </p>
                     </div>
                     ${apiInputsBlock}
@@ -11348,7 +11352,7 @@
                 case 'classic':
                     return 'Connected (Standard)';
                 case 'tiktok-legacy':
-                    return 'Connected via polling';
+                    return 'Connected via Compatibility (WebSocket)';
                 case 'tiktok-websocket':
                     return 'WebSocket connected (TikTok)';
                 default:
@@ -11923,9 +11927,12 @@
                             const shouldAttemptImmediate = !isYouTubeOwnerGroup(group)
                                 && (!group.streams || group.streams.length === 0) && !hasActive;
                             if (shouldAttemptImmediate) {
+                                const discoveryIdentity = getYouTubeGroupDiscoveryIdentity(group);
                                 setTimeout(async () => {
                                     // Re-check state at call time to avoid races
                                     const freshGroup = stateManager.getGroup(group.id);
+                                    if (freshGroup !== group || !freshGroup.autoActivate
+                                        || getYouTubeGroupDiscoveryIdentity(freshGroup) !== discoveryIdentity) return;
                                     const freshHasActive = (freshGroup?.streams || []).some(sid => {
                                         const s = stateManager.getSource(sid);
                                         return s && s.status === 'active' && (s.vid || s.wssId || s.tiktokWssId);
@@ -11940,7 +11947,8 @@
                                         group.target === "youtubeshorts",
                                         false,
                                         true,
-                                        group.isChannel
+                                        group.isChannel,
+                                        { groupId: group.id, requireAutoActivate: true }
                                     );
                                 }, 2500 + Math.random() * 1000);
                             }
@@ -11983,7 +11991,7 @@
                             setTimeout(async () => {
                                 const activateButton = sourceElement.querySelector('[data-activatehtml]');
                                 const currentSrcState = stateManager.getSource(source.id);
-                                if (activateButton && currentSrcState && !currentSrcState.vid && !currentSrcState.wssId && !currentSrcState.tiktokWssId) {
+                                if (activateButton && currentSrcState?.autoActivate && !currentSrcState.vid && !currentSrcState.wssId && !currentSrcState.tiktokWssId) {
                                     await createWindow(activateButton);
                                 }
                             }, 2000 + Math.random() * 1000);
@@ -12279,7 +12287,7 @@
                 legacyOption.style.opacity = forcedValue ? '0.6' : '';
                 legacyOption.title = forcedValue
                     ? lockMessage
-                    : 'Use HTTP polling without signing.';
+                    : 'Signed WebSocket compatibility mode.';
             }
             if (wsMenuItem) {
                 setSettingsMenuItemDisabled(wsMenuItem, forcedValue);
@@ -12295,7 +12303,7 @@
                 setSettingsMenuItemDisabled(legacyMenuItem, forcedValue);
                 legacyMenuItem.style.opacity = forcedValue ? '0.6' : '';
                 if (!legacyMenuItem.dataset.originalTitle) {
-                    legacyMenuItem.dataset.originalTitle = legacyMenuItem.title || 'Use HTTP polling without signing.';
+                    legacyMenuItem.dataset.originalTitle = legacyMenuItem.title || 'Signed WebSocket compatibility mode.';
                 }
                 legacyMenuItem.title = forcedValue
                     ? lockMessage
@@ -15362,7 +15370,7 @@
                 'source.add': 'Add source',
                 'source.mode.standard': '📄 Standard',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Auto-activate',
                 'source.youtube.username': 'YouTube',
                 'source.youtube.videoid': 'YouTube Video',
@@ -15449,7 +15457,7 @@
                 'source.add': 'Adicionar nova fonte:',
                 'source.mode.standard': '📄 Padrão',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Ativar automaticamente',
                 'source.youtube.username': 'Nome de usuário do YouTube',
                 'source.youtube.videoid': 'ID do vídeo do YouTube',
@@ -15534,7 +15542,7 @@
                 'source.add': 'Añadir nueva fuente:',
                 'source.mode.standard': '📄 Estándar',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Activar automáticamente',
                 'source.youtube.username': 'Nombre de usuario de YouTube',
                 'source.youtube.videoid': 'ID de video de YouTube',
@@ -15612,7 +15620,7 @@
                 'source.add': 'Přidat nový zdroj:',
                 'source.mode.standard': '📄 Standardní',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Automaticky aktivovat',
                 'source.youtube.username': 'Uživatelské jméno YouTube',
                 'source.youtube.videoid': 'ID videa YouTube',
@@ -15691,7 +15699,7 @@
                 'source.add': 'Ajouter une nouvelle source:',
                 'source.mode.standard': '📄 Standard',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Activation automatique',
                 'source.youtube.username': 'Nom d\'utilisateur YouTube',
                 'source.youtube.videoid': 'ID de vidéo YouTube',
@@ -15769,7 +15777,7 @@
                 'source.add': 'Neue Quelle hinzufügen:',
                 'source.mode.standard': '📄 Standard',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Automatisch aktivieren',
                 'source.youtube.username': 'YouTube-Benutzername',
                 'source.youtube.videoid': 'YouTube-Video-ID',
@@ -15847,7 +15855,7 @@
                 'source.add': 'Aggiungi nuova fonte:',
                 'source.mode.standard': '📄 Standard',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Attivazione automatica',
                 'source.youtube.username': 'Nome utente YouTube',
                 'source.youtube.videoid': 'ID video YouTube',
@@ -15925,7 +15933,7 @@
                 'source.add': '新しいソースを追加:',
                 'source.mode.standard': '📄 スタンダード',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': '自動有効化',
                 'source.youtube.username': 'YouTubeユーザー名',
                 'source.youtube.videoid': 'YouTube動画ID',
@@ -16159,7 +16167,7 @@
                 'source.add': '새 소스 추가:',
                 'source.mode.standard': '📄 표준',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': '자동 활성화',
                 'source.youtube.username': 'YouTube 사용자명',
                 'source.youtube.videoid': 'YouTube 동영상 ID',
@@ -16237,7 +16245,7 @@
                 'source.add': 'Добавить новый источник:',
                 'source.mode.standard': '📄 Стандартный',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Автоактивация',
                 'source.youtube.username': 'Имя пользователя YouTube',
                 'source.youtube.videoid': 'ID видео YouTube',
@@ -16315,7 +16323,7 @@
                 'source.add': 'Yeni kaynak ekle:',
                 'source.mode.standard': '📄 Standart',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Otomatik etkinleştir',
                 'source.youtube.username': 'YouTube Kullanıcı Adı',
                 'source.youtube.videoid': 'YouTube Video ID',
@@ -16401,7 +16409,7 @@
                 'source.add': 'Додати нове джерело:',
                 'source.mode.standard': '📄 Стандартний',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Автоактивація',
                 'source.youtube.username': 'Ім’я користувача YouTube',
                 'source.youtube.videoid': 'ID відео YouTube',
