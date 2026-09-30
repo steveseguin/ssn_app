@@ -757,6 +757,21 @@ const localMediaBridge = {
 	rotateToken: async () => ipcRenderer.invoke('local-media:rotate-token'),
 };
 
+const shareplayBridge = {
+	accounts: () => ipcRenderer.invoke('shareplay-accounts'),
+	signIn: (payload) => ipcRenderer.invoke('shareplay-signin', payload),
+	cancelSignIn: () => ipcRenderer.invoke('shareplay-cancel-signin'),
+	forget: (authRef) => ipcRenderer.invoke('shareplay-forget', authRef),
+	connect: (payload) => ipcRenderer.invoke('shareplay-connect', payload),
+	disconnect: (sourceId) => ipcRenderer.invoke('shareplay-disconnect', sourceId),
+	onStatus(callback) {
+		if (typeof callback !== 'function') return () => {};
+		const listener = (_event, status) => callback(status);
+		ipcRenderer.on('shareplayConnectionStatus', listener);
+		return () => ipcRenderer.removeListener('shareplayConnectionStatus', listener);
+	},
+};
+
 const discordBridge = {
 	listBots: async () => ipcRenderer.invoke('discord-bots-list'),
 	saveBot: async (payload = {}) => ipcRenderer.invoke('discord-bot-save', payload),
@@ -825,6 +840,7 @@ function configureContextBridge(){
 		  localMedia: localMediaBridge,
 
 		  discord: discordBridge,
+		  shareplay: shareplayBridge,
 
 		  getSttCapabilities: async () => {
 			return await ipcRenderer.invoke('stt:get-capabilities');
@@ -1068,6 +1084,7 @@ try {
 			localMedia: localMediaBridge,
 
 			discord: discordBridge,
+			shareplay: shareplayBridge,
 			
 			sendMessage: (a, b, c, tabID) => {
 				const messageData = b || a;

@@ -186,6 +186,8 @@
                             src="https://cache.socialstream.ninja/sources/images/loco.png" class="icon" />Loco</button></span>
                 <span><button onclick="newSourcePrompt('picarto');"><img
                             src="https://cache.socialstream.ninja/sources/images/picarto.png" class="icon" />Picarto</button></span>
+                <span><button onclick="showSharePlaySetup();" data-source-type="shareplay"><img
+                            src="https://cache.socialstream.ninja/sources/images/shareplay.png" class="icon" />SharePlay</button></span>
                 <span><button onclick="newSourcePrompt('parti');"><img
                             src="https://cache.socialstream.ninja/sources/images/parti.png" class="icon" />Parti</button></span>
                 <span><button onclick="newSourcePrompt('beamstream');"><img
@@ -796,6 +798,7 @@
     <script type="text/javascript" src="ebay.js"></script>
     <script type="text/javascript" src="source-setup.js"></script>
     <script type="text/javascript" src="discord.js"></script>
+    <script type="text/javascript" src="resources/shareplay-ui.js"></script>
     <!-- Temporarily disabled performance monitor to fix loading issue -->
     <!-- <script type="text/javascript" src="performance-monitor.js"></script> -->
     <script>
@@ -2330,6 +2333,9 @@
             if (source.discordNative && typeof window.applyDiscordNativeSourceUI === 'function') {
                 window.applyDiscordNativeSourceUI(element, source);
             }
+            if (source.shareplayNative && typeof window.applySharePlaySourceUI === 'function') {
+                window.applySharePlaySourceUI(element, source);
+            }
         }
 
         function updateGroupUI(element, group) {
@@ -2449,6 +2455,9 @@
                 }
             }
 
+            if (source.shareplayNative && typeof window.applySharePlaySourceUI === 'function') {
+                window.applySharePlaySourceUI(ele, source);
+            }
             return ele;
         }
 
@@ -9368,6 +9377,8 @@
                 if (resolvedTarget === 'tiktok' && (normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')) {
                     pendingTikTokToken = beginPendingTikTokActivation(sourceId);
                     windowId = await createTikTokWSSFromSource(source, normalizedMode === 'tiktok-legacy' ? 'legacy' : 'websocket');
+                } else if (resolvedTarget === 'shareplay' && source.shareplayNative) {
+                    windowId = await window.createSharePlaySource(source);
                 } else if (resolvedTarget === 'discord' && source.discordNative) {
                     if (typeof window.createDiscordNativeSource !== 'function') {
                         throw new Error('The native Discord connector is unavailable. Restart SSApp and try again.');
@@ -9447,6 +9458,9 @@
                     const alreadyConnectedDiscord = resolvedTarget === 'discord'
                         && source.discordNative
                         && sourceAfterCreate?.status === 'active';
+                    const alreadyConnectedSharePlay = resolvedTarget === 'shareplay'
+                        && source.shareplayNative
+                        && sourceAfterCreate?.status === 'active';
                     let statusValue;
                     if (nonTikTokWssReportedError) {
                         statusValue = 'error';
@@ -9455,6 +9469,8 @@
                     } else if (alreadyConnectedTikTok) {
                         statusValue = 'active';
                     } else if (alreadyConnectedDiscord) {
+                        statusValue = 'active';
+                    } else if (alreadyConnectedSharePlay) {
                         statusValue = 'active';
                     } else if (normalizedMode === 'websocket' || normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy') {
                         statusValue = 'activating';
@@ -12715,7 +12731,7 @@
                     const isManual = !source.isAutoDiscovered;
                     const target = source.target;
                     const connMode = source.connectionMode;
-                    const allowTip = isManual && !source.discordNative && element && !element.dataset.tipShown && ((target !== 'tiktok') || (connMode === 'classic'));
+                    const allowTip = isManual && !source.discordNative && !source.shareplayNative && element && !element.dataset.tipShown && ((target !== 'tiktok') || (connMode === 'classic'));
                     if (allowTip) {
                         updateConnectionStatus(element, 'info', 'Tip: Sign in on the site if needed, then press ▶️ Activate and make sure the chat is visible.');
                         element.dataset.tipShown = '1';

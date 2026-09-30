@@ -598,7 +598,12 @@ function renderMessages() {
 
         const messageText = document.createElement('p');
         messageText.className = 'message-text';
-        messageText.appendChild(sanitizeRichMessageFragment(message.chatmessage || ''));
+        // Literal bodies must bypass HTML parsing, including tag- and entity-looking text.
+        if (message.textonly) {
+            messageText.textContent = message.chatmessage || '';
+        } else {
+            messageText.appendChild(sanitizeRichMessageFragment(message.chatmessage || ''));
+        }
         content.appendChild(messageText);
 
         appendImage(content, message.contentimg, 'Content', 'content-image', 'self');
@@ -837,7 +842,7 @@ function exportMessages(format) {
                                 <div class="message">
                                     <span class="username">${escapeHtml(m.chatname || 'Anonymous')}</span>
                                     <span class="timestamp">${escapeHtml(new Date(m.timestamp).toLocaleString())}</span>
-                                    <p>${sanitizeRichMessageHtml(m.chatmessage)}</p>
+                                    <p>${m.textonly ? escapeHtml(m.chatmessage) : sanitizeRichMessageHtml(m.chatmessage)}</p>
                                     ${m.hasDonation ? `<p>Donation: ${escapeHtml(m.hasDonation)}</p>` : ''}
                                 </div>
                             `).join('')}

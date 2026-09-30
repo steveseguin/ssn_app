@@ -202,6 +202,7 @@ const { setupExternalBrowserSigninHandler } = require('./resources/electron-rumb
 const { setupVpzoneOAuthHandler } = require('./resources/electron-vpzone-handler');
 const { setupMediaUploadHandler } = require('./resources/electron-media-upload-handler');
 const { setupDiscordHandler, clearDiscordBotAuthStore } = require('./resources/electron-discord-handler');
+const { setupSharePlayHandler, clearSharePlayAuthStore } = require('./resources/electron-shareplay-handler');
 const { setupElectronLocalMedia } = require('./resources/electron-local-media-server');
 const { createControlApiRouter } = require('./resources/electron-control-api');
 const { SourceObservationService } = require('./resources/source-observation-service');
@@ -311,6 +312,7 @@ const { Worker } = require('worker_threads');
 
 const Store = require("electron-store");
 const store = new Store();
+const ninjaChatterAudienceStore = new Store({ name: 'ninjachatter-audience' });
 const localWebSocketConfig = resolveLocalWebSocketConfig({
     argv: process.argv,
     env: process.env,
@@ -2098,6 +2100,19 @@ const discordIntegration = setupDiscordHandler({
     }
 });
 
+const shareplayIntegration = setupSharePlayHandler({
+    getMainWindow: () => mainWindow,
+    getBrowserViews: () => browserViews,
+    getSettings: getCachedSettings,
+    forwardMessage: relayNativeSourcePayloadToBackground,
+    recordCapture: (payload, context) => {
+        if (sourceObservationService) sourceObservationService.recordCapture(payload, context);
+    },
+    recordStatus: (payload, context) => {
+        if (sourceObservationService) sourceObservationService.recordStatus(payload, context);
+    }
+});
+
 function normalizeSourceAccountRole(role) {
     const value = String(role || 'normal').trim().toLowerCase();
     return ['host', 'bot', 'relay'].includes(value) ? value : 'normal';
@@ -3564,6 +3579,12 @@ function clearUserSessionPersistence(sessionName) {
         } catch (_) { }
     });
 
+    try {
+        ninjaChatterAudienceStore.delete(getUserSessionStoreKey('connection', sessionName));
+    } catch (error) {
+        console.warn('[NinjaChatter] Failed to clear deleted session pairing:', error?.message || error);
+    }
+
     const paths = getSavedSyncPaths(sessionName);
     [paths.mainPath, paths.tmpPath, paths.bakPath, `${paths.mainPath}.before-legacy-recovery`].forEach((filePath) => {
         try {
@@ -4376,6 +4397,30 @@ async function getBackgroundReportContext() {
         return { error: 'Background diagnostics unavailable' };
     }
 }
+
+ipcMain.handle('ninjachatter:audience-room', async (event, request = {}) => {
+    const frame = event.senderFrame;
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents
+        || !frame || !mainWindow.webContents.mainFrame.frames.includes(frame)
+        || !(frame.url.startsWith('file://') || isSocialStreamRemoteUrl(frame.url))) {
+        throw new Error('Audience connection requires the app settings or background.');
+    }
+    if (matchesSocialStreamPagePath(frame.url, 'background')) {
+        const connectionKey = getUserSessionStoreKey('connection');
+        if (request.op === 'load') return ninjaChatterAudienceStore.get(connectionKey);
+        if (request.op === 'save') {
+            ninjaChatterAudienceStore.set(connectionKey, request.config);
+            return;
+        }
+    } else if (matchesSocialStreamPagePath(frame.url, 'popup') && request.op === 'command') {
+        const background = mainWindow.webContents.mainFrame.frames.find(candidate =>
+            matchesSocialStreamPagePath(candidate.url, 'background')
+            && (candidate.url.startsWith('file://') || isSocialStreamRemoteUrl(candidate.url)));
+        if (!background) throw new Error('Start SSN to connect an audience room.');
+        return background.executeJavaScript(`window.ncAudience.handle(${JSON.stringify(request.command)})`);
+    }
+    throw new Error('Unsupported audience connection operation.');
+});
 
 ipcMain.handle('socialstream:background-dependencies', async (event, expectedUrl) => {
     if (!mainWindow || mainWindow.isDestroyed()
@@ -7898,6 +7943,12 @@ async function clearAllData() {
         }
 
         try {
+            ninjaChatterAudienceStore.clear();
+        } catch (audienceStoreError) {
+            console.error('Failed to clear NinjaChatter audience store during reset:', audienceStoreError);
+        }
+
+        try {
             clearYouTubeOwnerAuthStore();
         } catch (ownerAuthStoreError) {
             console.error('Failed to clear YouTube owner auth store during reset:', ownerAuthStoreError);
@@ -7907,6 +7958,12 @@ async function clearAllData() {
             clearDiscordBotAuthStore();
         } catch (discordAuthStoreError) {
             console.error('Failed to clear Discord bot auth store during reset:', discordAuthStoreError);
+        }
+
+        try {
+            clearSharePlayAuthStore();
+        } catch (shareplayAuthStoreError) {
+            console.error('Failed to clear SharePlay auth store during reset:', shareplayAuthStoreError);
         }
 
         try {
@@ -10220,6 +10277,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
             url,
             features
         }) => {
+            // Keep NinjaChatter's dashboard and provider sign-in in the system browser.
+            if (/^https:\/\/ninjachatter\.com\/dashboard\.html(?:[?#]|$)/.test(url)) {
+                shell.openExternal(url).catch(error => {
+                    console.error('[NinjaChatter] Failed to open dashboard in system browser:', error);
+                });
+                return { action: 'deny' };
+            }
 
             var frame = !shouldUseFramelessForUrl(url);
             log(url);
@@ -15306,6 +15370,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
         log("sendToTab-async");
         const view = getActiveBrowserView(args.tab);
         if (view && view.webContents) {
+            if (view.isVirtualSource && view.virtualSourceTarget === 'shareplay') {
+                return args.message === 'getSource' ? 'shareplay' : false;
+            }
             if (view.isVirtualSource && view.virtualSourceTarget === 'discord') {
                 if (args.message === 'getSource') return 'discord';
                 if (args.message?.type === 'SEND_MESSAGE') {
@@ -15816,7 +15883,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
 }
 
 contextMenu({
-    prepend: (defaultActions, params, browserWindow) => [{
+    prepend: (defaultActions, params, browserWindow) => {
+        // The context-menu package's Copy Link action uses the pre-Electron 44 clipboard API.
+        defaultActions.copyLink().click = () => clipboard.write([
+            new electron.ClipboardItem({
+                'text/plain': params.linkURL,
+                'electron application/bookmark': { title: params.linkText, url: params.linkURL }
+            })
+        ]).catch(error => console.error('[Clipboard] Failed to copy link:', error));
+        return [{
         label: "🔙 Go Back",
         // Only show it when right-clicking text
         visible: browserWindow.webContents.navigationHistory.canGoBack(),
@@ -16619,7 +16694,8 @@ contextMenu({
             browserWindow.close(); // hide, and wait 2 second before really closing; this allows for saving of files.
         },
     },
-    ],
+    ];
+    },
 });
 
 app.on("second-instance", (event, commandLine, workingDirectory, argv2) => {
@@ -16690,6 +16766,9 @@ app.on("before-quit", (event) => {
     }
     if (discordIntegration) {
         discordIntegration.closeAll();
+    }
+    if (shareplayIntegration) {
+        shareplayIntegration.closeAll();
     }
 });
 

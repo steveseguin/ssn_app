@@ -49,6 +49,7 @@ async function run() {
     const quotedUrl = base + '/image.png"onerror=""data-ssapp-injected="';
     const quotedLabel = 'Emote & "quoted" label';
     const signedUrl = base + '/emote.png?expires=123&signature=a%2Fb%3D';
+    const smile = { emoteId: 'smile', emoteName: 'Smile', emoteImageUrl: base + '/emote.png' };
     const variants = [
       { name: 'nickname', data: { nickname: 'N<img src=x onerror="">' } },
       { name: 'comment', suffix: ` <img src="${base}/comment.png" onerror="" data-ssapp-injected="comment">` },
@@ -58,6 +59,18 @@ async function run() {
       { name: 'badge-url', data: { userBadges: [{ url: quotedUrl }] } },
       { name: 'quoted-label-control', data: { nickname: 'O\'Neil & Friend', emotes: [{ emoteId: 'ordinary', emoteName: quotedLabel, emoteImageUrl: signedUrl }] } },
       { name: 'plain-control', data: { nickname: 'Ordinary viewer', emotes: [{ emoteId: 'smile', emoteName: 'Smile', emoteImageUrl: base + '/emote.png' }] } },
+      // Audience-controlled comment text with ordinary emote metadata. All event
+      // attributes and scripts are empty; no supplied JavaScript is executed.
+      { name: 'comment-with-emote', suffix: ` <img src="${base}/comment.png" onerror="" data-ssapp-injected="comment"> [smile]`, data: { emotes: [smile] } },
+      { name: 'positioned-emote', suffix: ' left & < > [smile] right', positionMarker: '[smile]', data: { emotes: [smile] } },
+      { name: 'positioned-attribute', suffix: ' <span title="[smile]" onmouseover="">attribute boundary</span>', positionMarker: '[smile]', expectEmote: false, data: { emotes: [smile] } },
+      { name: 'placeholder-attribute', suffix: ' <span title="[smile]" onmouseover="">placeholder boundary</span>', expectEmote: false, data: { emotes: [smile] } },
+      { name: 'literal-entities', suffix: ' &lt;b&gt;entity&lt;/b&gt; &amp;lt;double&amp;gt; & "quotes" ${literal} `backticks`', literalCheck: true },
+      { name: 'entities-with-emote', suffix: ' &lt;b&gt;entity&lt;/b&gt; &amp;lt;double&amp;gt; [smile]', literalCheck: true, data: { emotes: [smile] } },
+      { name: 'unsafe-tags-with-emote', suffix: ' <script></script><svg><g onload=""></g></svg><math></math><iframe></iframe><object></object><embed> [smile]', data: { emotes: [smile] } },
+      { name: 'unsafe-links-with-emote', suffix: ' <a href="javascript:/* inert */" onclick="">link</a> <a href="java&#10;script:/* inert */">entity link</a> [smile]', data: { emotes: [smile] } },
+      { name: 'formatting-with-emote', suffix: ' <b data-ssapp-audience-format="">audience bold</b> [smile]', data: { emotes: [smile] } },
+      { name: 'v3-positioned-emote', schema: 'v3', suffix: ' <b>before</b> & [smile] after', positionMarker: '[smile]', data: { emotes: [smile] } },
     ];
     const env = { ...process.env, SSAPP_USER_DATA_DIR: profile, SSAPP_DEBUG_LOGS: '0' };
     delete env.ELECTRON_RUN_AS_NODE;
@@ -103,15 +116,23 @@ async function run() {
         const key = `${phase}-${textonly}-${variant.name}`;
         const sent = await app.evaluate((_electron, { key, textonly, variant }) => {
           const { native, env } = global.__nativeFieldsFixture;
-          const message = native.__test.composeTikTokChatMessage({
+          const input = {
             msgId: key, uniqueId: 'ssapp_fields_fixture', nickname: 'Local fields fixture', textonly,
             comment: 'FIELDS ' + key + (variant.suffix || ''), ...variant.data,
-          });
+          };
+          if (variant.positionMarker) {
+            input.emotes = input.emotes.map(emote => ({ ...emote, placeInComment: input.comment.indexOf(variant.positionMarker) }));
+          }
+          if (variant.schema === 'v3') {
+            input.content = input.comment;
+            delete input.comment;
+          }
+          const message = native.__test.composeTikTokChatMessage(input);
           message.type = 'tiktok';
           env.sendToBackground(message);
           return message;
         }, { key, textonly, variant });
-        const expectedImage = textonly ? null : variant.data?.emotes?.[0]?.emoteImageUrl;
+        const expectedImage = textonly || variant.expectEmote === false ? null : variant.data?.emotes?.[0]?.emoteImageUrl;
         const rendered = await until(() => inDock(({ key, nativeHtml, expectedImage }) => {
           const row = [...document.querySelectorAll('.highlight-chat')].find(row => row.textContent.includes('FIELDS ' + key));
           if (!row) return null;
@@ -123,12 +144,25 @@ async function run() {
             emptyHandlers: [...row.querySelectorAll('*')].flatMap(el =>
             [...el.attributes].filter(attr => /^on/i.test(attr.name) && attr.value === '').map(attr => attr.name)),
             injectedAttributes: row.querySelectorAll('[data-ssapp-injected]').length,
+            forbiddenElements: [...row.querySelectorAll('script,iframe,object,embed,math')].map(el => el.tagName),
+            unsafeUrls: [...row.querySelectorAll('[href],[src],[xlink\\:href]')].flatMap(el =>
+              [...el.attributes].filter(attr => ['href', 'src', 'xlink:href'].includes(attr.name)).filter(attr => {
+                try { return ['javascript:', 'vbscript:'].includes(new URL(attr.value, location.href).protocol); }
+                catch (_) { return false; }
+              }).map(attr => attr.value)),
+            audienceBold: [...row.querySelectorAll('b')].some(el => el.textContent === 'audience bold'),
             images: [...row.querySelectorAll('img')].map(img => ({ src: img.getAttribute('src'), alt: img.alt,
               emoteId: img.getAttribute('data-emote-id'), loaded: img.complete && img.naturalWidth > 0 })),
           };
         }, { key, nativeHtml: sent.chatmessage, expectedImage }), key + ' rendered');
         report.cases.push({ phase, textonly, variant: variant.name, sent, rendered });
         assert.equal(rendered.emptyHandlers.length, 0, key + ' retained an untrusted event attribute');
+        assert.deepStrictEqual(rendered.forbiddenElements, [], key + ' retained an unsafe element');
+        assert.deepStrictEqual(rendered.unsafeUrls, [], key + ' retained an executable URL');
+        if (textonly && (variant.literalCheck || variant.suffix)) {
+          assert(rendered.text.includes(sent.chatmessage), key + ' changed the literal body');
+          assert(!rendered.images.some(img => img.src?.startsWith(base)), key + ' parsed a literal image');
+        }
         if (!textonly && ['emote-label', 'emote-id'].includes(variant.name)) {
           assert.equal(rendered.producerEmptyHandlers, 0, key + ' native markup broke out of an emote attribute');
           assert.equal(rendered.injectedAttributes, 0, key + ' added a foreign attribute');
