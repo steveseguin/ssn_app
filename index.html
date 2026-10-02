@@ -10299,6 +10299,7 @@
                     sourceId: source.id,
                     signing,
                     signingProvider, // Pass the provider preference to the backend
+                    autoMode: resolveTikTokConnectionPreset(source) === 'auto' && !source.disableTikTokAutoFallback,
                     autoActivate: !!source.autoActivate
                 });
 
@@ -11560,6 +11561,13 @@
                     lockProvider(true);
                     statusElement.classList.add('retry');
                     statusElement.innerHTML = `<i class="las la-sync fa-spin"></i> ${statusText(message || 'Retrying connection...')}`;
+                    if (element._eulerLimit?.keySource === 'shared') {
+                        statusElement.appendChild(document.createTextNode(' '));
+                        appendStatusAction('Get your own Euler key', () => window.open('https://www.eulerstream.com/dashboard', '_blank'));
+                    } else if (element._eulerLimit?.keySource === 'user') {
+                        statusElement.appendChild(document.createTextNode(' '));
+                        appendStatusAction('Euler usage', () => window.open('https://www.eulerstream.com/dashboard', '_blank'));
+                    }
                     break;
                 case 'stopped':
                     lockProvider(false);
@@ -13892,6 +13900,7 @@
 
                     switch (data.status) {
                         case 'connecting':
+                            if (entryElement) entryElement._eulerLimit = null;
                             {
                                 const classicTabId = normalizeNumericId(data.tabID);
                                 const updatePayload = {
@@ -14019,8 +14028,18 @@
                                 restoreActivateUI();
                             }
                             break;
+                        case 'euler_rate_limit':
+                            if (entryElement) entryElement._eulerLimit = data.eulerLimit;
+                            if (data.eulerLimit?.keySource === 'user') Toast.warning('Euler limit reached', data.error);
+                            if (entryElement) updateConnectionStatus(entryElement, 'info', data.error);
+                            break;
                         case 'failed':
                             {
+                                if (data.skipEulerFallback && entryElement?._tiktokFallback) {
+                                    // Compatibility uses Euler too; advance to Standard
+                                    // after the backend has tried the available local signer.
+                                    entryElement._tiktokFallback.attempted.add('tiktok-legacy');
+                                }
                                 const isSigningIssue = data.sessionRejected === true;
                                 const offlineFailure = isTikTokOfflineFailureStatus(data);
                                 const offlineRetryExhausted = offlineFailure && isTikTokOfflineRetryExhaustedStatus(data);

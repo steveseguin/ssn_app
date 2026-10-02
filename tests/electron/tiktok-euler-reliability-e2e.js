@@ -1,7 +1,7 @@
 'use strict';
 
-// Real Electron UI/IPC, installed connector, HTTP signing requests and captured
-// protobuf chat. Only remote room/gift lookups are replaced. No real API keys.
+// Real Electron UI/IPC and installed connector against controlled HTTP/WS
+// endpoints and chat pages. Room/gift lookups are fixtures. No real API keys.
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
@@ -32,9 +32,14 @@ async function run() {
         scenario.requests.push(record);
         response.on('close', () => { record.closedAt = Date.now(); });
         if (scenario.mode === 'stall') return;
+        if (scenario.mode === 'unavailable') {
+            response.writeHead(503, { 'Content-Type': 'application/json' });
+            response.end(JSON.stringify({ message: 'Signing temporarily unavailable' }));
+            return;
+        }
         if (scenario.mode === 'rate') {
-            response.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '30' });
-            response.end(JSON.stringify({ message: 'Rate limit', limit_label: 'rate_limit_room_id_hour' }));
+            response.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': String(scenario.retryAfter || 30) });
+            response.end(JSON.stringify({ message: 'Rate limit', limit_label: scenario.limitLabel ?? 'rate_limit_room_id_hour' }));
             return;
         }
         const body = Object.assign(connector.ProtoMessageFetchResult.decode(Buffer.alloc(0)), {
@@ -54,6 +59,10 @@ async function run() {
         const record = { at: Date.now(), key: new URL(request.url, 'http://fixture').searchParams.get('apiKey'), closedAt: null };
         proxyRequests.push(record);
         socket.on('close', () => { record.closedAt = Date.now(); });
+        if (proxyMode === 'http-quota') {
+            socket.end('HTTP/1.1 429 Too Many Requests\r\nRetry-After: 40773\r\nRateLimit-Policy: 1000;w=86400\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+            return;
+        }
         if (proxyMode === 'stall') {
             // Consume EOF so the fixture observes the client's aborted socket.
             // HTTP upgrade sockets allow half-open connections on the server.
@@ -61,7 +70,11 @@ async function run() {
             socket.resume();
             return;
         }
-        proxyWs.handleUpgrade(request, socket, head, ws => proxyWs.emit('connection', ws, request));
+        proxyWs.handleUpgrade(request, socket, head, ws => {
+            proxyWs.emit('connection', ws, request);
+            if (proxyMode === 'quota') ws.close(4429, 'rate_limit_account_day');
+            if (proxyMode === 'quota-unknown') ws.close(4429, 'Too many connections');
+        });
     });
     for (const server of [signServer, proxyServer]) server.on('connection', socket => {
         sockets.add(socket);
@@ -91,6 +104,8 @@ async function run() {
                 '--ssapp-local-server-port=' + relayPort, ...linuxLaunchArgs()],
             env: { ...process.env, SSAPP_USER_DATA_DIR: profile,
                 SIGN_API_URL: `http://127.0.0.1:${signServer.address().port}`, SIGN_API_KEY: '',
+                SSAPP_TIKTOK_SHARED_EULER_SIGNING_KEY: 'synthetic-shared-signing',
+                SSAPP_TIKTOK_SHARED_EULER_PROXY_KEY: 'synthetic-shared-proxy',
                 EULER_WS_URL: `ws://127.0.0.1:${proxyServer.address().port}` },
             timeout: 60000,
         });
@@ -106,6 +121,7 @@ async function run() {
             const init = ConnectionManager.prototype.initializeConnectionInstance;
             ConnectionManager.prototype.initializeConnectionInstance = function (...args) {
                 const result = init.apply(this, args);
+                if (this.username.startsWith('euler_autoquota')) this.localSigner = null;
                 if (!global.__eulerTest.managers.includes(this)) global.__eulerTest.managers.push(this);
                 this.connection.on('error', event => {
                     const error = event?.exception || event;
@@ -125,7 +141,7 @@ async function run() {
         relay.on('message', raw => {
             try {
                 const message = JSON.parse(raw);
-                if (message.type === 'tiktok' && String(message.chatmessage).startsWith('disconnect fixture')) received.push(message);
+                if (message.type === 'tiktok' && /^(disconnect fixture|hidden-capture message)/.test(message.chatmessage)) received.push(message);
             } catch (_) { }
         });
         async function add(name, preset = 'custom', mode = 'ok') {
@@ -169,7 +185,7 @@ async function run() {
                 return tid && received.slice(startIndex).some(m => m.tid === tid);
             }, s.name + ' captured chat at relay');
         }
-        if (!process.argv.includes('--proxy-only')) {
+        if (!process.argv.includes('--proxy-only') && !process.argv.includes('--quota-only')) {
             const first = await add('euler_first', 'auto');
             await start(first); await captured(first);
             assert.strictEqual(first.requests.at(-1).key, null);
@@ -230,30 +246,114 @@ async function run() {
             record('Stop cancels signing and allows restart', { requests: cancel.requests.length });
         }
 
-        const proxy = await add('euler_proxy', 'euler-ws');
-        await setKey(proxy, 'synthetic-proxy'); await start(proxy);
-        await waitFor(async () => (await manager(proxy))?.connected, 'proxy connected');
-        assert.strictEqual(proxyRequests.at(-1).key, 'synthetic-proxy');
-        await stop(proxy);
-        proxyMode = 'stall'; const beforeProxy = proxyRequests.length;
-        await start(proxy);
-        await waitFor(() => proxyRequests.length > beforeProxy, 'proxy stalled handshake');
-        await waitFor(async () => (await app.evaluate(() => global.__eulerTest.errors)).some(e => /handshake.*timed out/i.test(e.message)), 'proxy handshake timeout', 35000);
-        const proxyAttempt = proxyRequests[beforeProxy];
-        await waitFor(() => proxyAttempt.closedAt !== null, 'timed-out proxy socket closed');
-        const proxyTimeoutDelay = proxyAttempt.closedAt - proxyAttempt.at;
-        assert.ok(proxyTimeoutDelay >= 24000 && proxyTimeoutDelay < 34000, 'proxy timeout: ' + proxyTimeoutDelay);
-        proxyMode = 'ok';
-        await waitFor(async () => (await manager(proxy))?.connected, 'proxy recovery', 45000);
-        await stop(proxy);
-        proxyMode = 'stall'; const beforeCancel = proxyRequests.length;
-        await start(proxy); await waitFor(() => proxyRequests.length > beforeCancel, 'proxy handshake before Stop');
-        await stop(proxy);
-        await waitFor(() => proxyRequests[beforeCancel].closedAt !== null, 'Stop closes proxy handshake');
-        assert.strictEqual((await manager(proxy)).pending, false);
-        await page.waitForTimeout(3500);
-        assert.strictEqual(proxyRequests.length, beforeCancel + 1, 'no proxy retry after Stop');
-        record('proxy keys, deadline, recovery and Stop', { proxyTimeoutDelay });
+        if (!process.argv.includes('--quota-only')) {
+            const proxy = await add('euler_proxy', 'euler-ws');
+            await setKey(proxy, 'synthetic-proxy'); await start(proxy);
+            await waitFor(async () => (await manager(proxy))?.connected, 'proxy connected');
+            assert.strictEqual(proxyRequests.at(-1).key, 'synthetic-proxy');
+            await stop(proxy);
+            proxyMode = 'stall'; const beforeProxy = proxyRequests.length;
+            await start(proxy);
+            await waitFor(() => proxyRequests.length > beforeProxy, 'proxy stalled handshake');
+            await waitFor(async () => (await app.evaluate(() => global.__eulerTest.errors)).some(e => /handshake.*timed out/i.test(e.message)), 'proxy handshake timeout', 35000);
+            const proxyAttempt = proxyRequests[beforeProxy];
+            await waitFor(() => proxyAttempt.closedAt !== null, 'timed-out proxy socket closed');
+            const proxyTimeoutDelay = proxyAttempt.closedAt - proxyAttempt.at;
+            assert.ok(proxyTimeoutDelay >= 24000 && proxyTimeoutDelay < 34000, 'proxy timeout: ' + proxyTimeoutDelay);
+            proxyMode = 'ok';
+            await waitFor(async () => (await manager(proxy))?.connected, 'proxy recovery', 45000);
+            await stop(proxy);
+            proxyMode = 'stall'; const beforeCancel = proxyRequests.length;
+            await start(proxy); await waitFor(() => proxyRequests.length > beforeCancel, 'proxy handshake before Stop');
+            await stop(proxy);
+            await waitFor(() => proxyRequests[beforeCancel].closedAt !== null, 'Stop closes proxy handshake');
+            assert.strictEqual((await manager(proxy)).pending, false);
+            await page.waitForTimeout(3500);
+            assert.strictEqual(proxyRequests.length, beforeCancel + 1, 'no proxy retry after Stop');
+            record('proxy keys, deadline, recovery and Stop', { proxyTimeoutDelay });
+        }
+
+        if (!process.argv.includes('--proxy-only')) {
+            async function quotaUI(s, expected) {
+                await waitFor(async () => page.locator(`[data-source-id="${s.id}"] .ws-status.retry`).filter({ hasText: expected }).count(), expected);
+                return page.locator(`[data-source-id="${s.id}"] .ws-status`).innerText();
+            }
+            const daily = await add('euler_daily', 'custom', 'rate');
+            daily.limitLabel = 'rate_limit_account_day'; daily.retryAfter = 40773;
+            await setKey(daily, 'synthetic-own-daily'); await start(daily);
+            const dailyText = await quotaUI(daily, 'Your Euler key has reached its daily limit.');
+            assert.match(dailyText, /Euler usage/);
+            const remaining = await page.evaluate(id => document.querySelector(`[data-source-id="${id}"]`)._tiktokRetryEndAt - Date.now(), daily.id);
+            assert.ok(remaining > 40760000 && remaining <= 40775000, 'Euler reset deadline must not be capped at 30 minutes');
+            const fresh = await add('euler_fresh');
+            await setKey(fresh, 'synthetic-fresh-key'); await start(fresh); await captured(fresh); await stop(fresh);
+            assert.strictEqual(daily.requests.length, 1);
+            await stop(daily);
+            record('personal daily quota is named, waits for reset, and does not block another key', { dailyText, remaining });
+
+            const shared = await add('euler_shared', 'custom', 'rate');
+            shared.limitLabel = 'rate_limit_account_day'; shared.retryAfter = 40773;
+            await setKey(shared, 'synthetic-shared-signing'); await start(shared);
+            const sharedText = await quotaUI(shared, 'The shared Euler key has reached its daily limit.');
+            assert.match(sharedText, /Get your own Euler key/);
+            await stop(shared);
+            record('explicit shared key quota offers a personal key', { sharedText });
+
+            const unknown = await add('euler_unknown', 'custom', 'rate');
+            unknown.limitLabel = ''; await setKey(unknown, 'synthetic-unknown'); await start(unknown);
+            const unknownText = await quotaUI(unknown, 'Your Euler key has reached a rate limit.');
+            assert.doesNotMatch(unknownText, /daily/);
+            await stop(unknown);
+            record('unknown limits are not called daily', { unknownText });
+
+            const proxyQuota = await add('euler_proxyquota', 'euler-ws');
+            await setKey(proxyQuota, 'synthetic-shared-proxy'); proxyMode = 'quota'; await start(proxyQuota);
+            const proxyText = await quotaUI(proxyQuota, 'The shared Euler key has reached its daily limit.');
+            assert.match(proxyText, /Get your own Euler key/);
+            await stop(proxyQuota);
+            await setKey(proxyQuota, 'synthetic-proxy-personal'); proxyMode = 'quota-unknown'; await start(proxyQuota);
+            const proxyUnknownText = await quotaUI(proxyQuota, 'Your Euler key has reached a rate limit.');
+            assert.doesNotMatch(proxyUnknownText, /daily/);
+            await stop(proxyQuota);
+            record('proxy close codes identify ownership and known period', { proxyText, proxyUnknownText });
+
+            proxyMode = 'http-quota'; await start(proxyQuota);
+            const httpQuotaText = await quotaUI(proxyQuota, 'Your Euler key has reached its daily limit.');
+            const proxyRemaining = await page.evaluate(id => document.querySelector(`[data-source-id="${id}"]`)._tiktokRetryEndAt - Date.now(), proxyQuota.id);
+            assert.ok(proxyRemaining > 40760000 && proxyRemaining <= 40775000, `Proxy reset: ${proxyRemaining}; status: ${httpQuotaText}`);
+            await page.waitForTimeout(1500);
+            assert.match(await page.locator(`[data-source-id="${proxyQuota.id}"] .ws-status`).innerText(), /Your Euler key has reached its daily limit/);
+            await stop(proxyQuota); proxyMode = 'ok';
+            record('proxy HTTP quota preserves reset headers and message', { httpQuotaText, proxyRemaining });
+
+            const fixture = fs.readFileSync(path.join(__dirname, 'fixtures/hidden-capture.html'), 'utf8');
+            await page.context().route('**www.tiktok.com/@euler_autoquota*/live**', route => route.fulfill({
+                contentType: 'text/html', body: fixture.replace('var platform = query.get("platform") || "youtube";', 'var platform = "tiktok";'),
+            }));
+            const automatic = await add('euler_autoquota', 'auto', 'rate');
+            automatic.limitLabel = 'rate_limit_account_day'; automatic.retryAfter = 40773;
+            await page.evaluate(id => stateManager.updateSource(id, { disableTikTokAutoFallback: false }), automatic.id);
+            const proxiesBefore = proxyRequests.length;
+            await start(automatic); await captured(automatic);
+            assert.strictEqual(await page.evaluate(id => stateManager.getSource(id).activeConnectionMode, automatic.id), 'classic');
+            assert.deepStrictEqual(automatic.requests.map(r => r.key), [null, 'synthetic-shared-signing']);
+            assert.strictEqual(proxyRequests.length, proxiesBefore, 'Auto must skip the shared proxy after shared account exhaustion');
+            assert.strictEqual((await manager(automatic)).stopped, true);
+            await page.locator(`[data-source-id="${automatic.id}"] [data-stophtml]`).press('Enter');
+            record('Auto skips exhausted shared Euler and captures through Standard', { keys: automatic.requests.map(r => r.key) });
+
+            const autoProxy = await add('euler_autoquota_proxy', 'auto', 'unavailable');
+            await page.evaluate(id => stateManager.updateSource(id, { disableTikTokAutoFallback: false }), autoProxy.id);
+            const proxyQuotaStart = proxyRequests.length;
+            proxyMode = 'quota'; await start(autoProxy); await captured(autoProxy);
+            assert.strictEqual(await page.evaluate(id => stateManager.getSource(id).activeConnectionMode, autoProxy.id), 'classic');
+            assert.strictEqual(proxyRequests.length, proxyQuotaStart + 1);
+            assert.strictEqual(proxyRequests.at(-1).key, 'synthetic-shared-proxy');
+            assert.strictEqual(autoProxy.requests.length, 1, 'No return to signing after shared proxy quota');
+            assert.strictEqual((await manager(autoProxy)).stopped, true);
+            await page.locator(`[data-source-id="${autoProxy.id}"] [data-stophtml]`).press('Enter');
+            record('Auto shared proxy quota also advances to Standard capture', {});
+        }
         console.log('[euler-e2e] All checks passed. Evidence: ' + profile);
     } catch (error) {
         record('FAILED', { error: error.stack });

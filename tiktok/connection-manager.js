@@ -178,6 +178,7 @@ class EulerWebsocketServerConnection extends EventEmitter {
                 const socket = new WebSocket(url, { handshakeTimeout: this.handshakeTimeoutMs });
                 this.ws = socket;
                 this.rejectPendingConnect = reject;
+                let quotaRejected = false;
 
                 const finalize = (fn) => {
                     try {
@@ -195,6 +196,7 @@ class EulerWebsocketServerConnection extends EventEmitter {
                 socket.on('message', (data) => this.handleMessage(data));
 
                 socket.on('close', (code, reason) => {
+                    if (quotaRejected) return;
                     if (this.rejectPendingConnect) {
                         this.rejectPendingConnect(new Error(`Euler WebSocket closed before connecting (${code})`));
                         this.rejectPendingConnect = null;
@@ -227,6 +229,7 @@ class EulerWebsocketServerConnection extends EventEmitter {
                 });
 
                 socket.on('error', (error) => {
+                    if (quotaRejected) return;
                     if (!this.isConnected) {
                         this.rejectPendingConnect = null;
                         reject(error);
@@ -238,6 +241,15 @@ class EulerWebsocketServerConnection extends EventEmitter {
                     const status = res && res.statusCode ? res.statusCode : null;
                     const statusText = res && res.statusMessage ? res.statusMessage : '';
                     const err = new Error(`Euler WebSocket server rejected connection${status ? ` (${status}${statusText ? ` ${statusText}` : ''})` : ''}`);
+                    err.status = status;
+                    err.headers = res?.headers;
+                    err.eulerRateLimit = status === 429;
+                    // Closing a rejected handshake also emits error/close. The
+                    // quota rejection already owns recovery and its reset delay.
+                    if (err.eulerRateLimit) {
+                        quotaRejected = true;
+                        this.rejectPendingConnect = null;
+                    }
                     this.emit('error', err);
                     if (!this.isConnected) {
                         reject(err);
@@ -4424,6 +4436,8 @@ class ConnectionManager {
         this.warnedMissingTtTargetIdc = false;
         this.signingConfig = normalizeSigningConfig(signing);
         this.signingProvider = options.signingProvider || 'auto';
+        this.autoMode = options.autoMode ?? (this.signingProvider === 'auto' && !forceLegacyConnector);
+        this.eulerQuotaExhausted = null;
         this.userProvidedSigningApiKey = this.signingConfig?.apiKey || null;
         this.sharedEulerApiKeyPool = this.buildSharedEulerApiKeyPool();
         this.sharedEulerApiKeyAttempts = new Set();
@@ -7937,6 +7951,10 @@ class ConnectionManager {
                 this.logDebug('lifecycle.connect.start');
                 const usingLocalSigner = this.shouldUseLocalSigner();
 
+                if (this.autoMode && this.eulerQuotaExhausted && !usingLocalSigner) {
+                    return this.finishEulerQuotaFallback(this.eulerQuotaExhausted);
+                }
+
                 // Mark connection attempt in progress to prevent cleanup during slow operations
                 // (e.g., local signer window navigation and fetch)
                 connectionStates.set(this.wssID, {
@@ -8085,6 +8103,11 @@ class ConnectionManager {
                 }
 
                 const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, errorMessage);
+                const eulerLimit = this.getEulerRateLimitInfo(primaryError);
+                if (eulerLimit && eulerLimit.keySource !== 'anonymous') {
+                    const handled = await this.handleEulerKeyRateLimit(primaryError, eulerLimit);
+                    if (handled !== null) return handled;
+                }
                 const isRateLimited = this.isRateLimitError(primaryError, errorMessage);
                 const isSignServerIssue = !isRateLimited && this.isSignServerError(primaryError, errorMessage);
                 const offlineMessage = errorMessage || userFacingMessage || (primaryError && primaryError.reason) || '';
@@ -8264,7 +8287,7 @@ class ConnectionManager {
 
 	                        this.offlineRetry = false;
 	                        this.offlineRetryCount = 0;
-	                        this.offlineReason = 'Rate limited by TikTok';
+	                        this.offlineReason = eulerLimit ? userFacingMessage : 'Rate limited by TikTok';
 	                        this.attemptReconnect(retryDelayMs, { fixed: true, offline: false, immediate: true, reason: this.offlineReason });
 	                    } else if (isOffline) {
 	                        if (!this.offlineRetry) {
@@ -8745,7 +8768,67 @@ class ConnectionManager {
         return nestedMessages[0];
     }
 
+    getEulerRateLimitInfo(primaryError) {
+        if (this.isLocalSignerRateLimit(primaryError)) return null;
+        const isEuler = primaryError instanceof SignatureRateLimitError
+            || primaryError?.name === 'SignatureRateLimitError'
+            || primaryError?.eulerRateLimit === true;
+        if (!isEuler) return null;
+        const detail = `${primaryError?.limit_label || ''} ${primaryError?.message || ''}`.toLowerCase();
+        const policy = readHeaderCaseInsensitive(primaryError?.headers, 'ratelimit-policy') || '';
+        const daily = /rate_limit_\w+_day\b|\bdaily\b|\bper day\b/.test(detail) || /\bw=86400\b/.test(policy);
+        const hourly = /rate_limit_\w+_hour\b|\bhourly\b/.test(detail);
+        const minute = /rate_limit_\w+_minute\b|\bper minute\b/.test(detail);
+        const key = this.signingConfig?.apiKey || this.signingConfig?.jwtKey || defaultEulerApiKey;
+        const shared = key && (key === SHARED_EULER_SIGNING_FALLBACK_KEY || key === SHARED_EULER_PROXY_FALLBACK_KEY);
+        return {
+            keySource: shared ? 'shared' : (key ? 'user' : 'anonymous'),
+            period: daily ? 'daily' : (hourly ? 'hourly' : (minute ? 'per-minute' : null))
+        };
+    }
+
+    getEulerRateLimitMessage(limit) {
+        const owner = limit.keySource === 'shared' ? 'The shared Euler key'
+            : (limit.keySource === 'user' ? 'Your Euler key' : 'Euler anonymous access');
+        return `${owner} has reached ${limit.period ? `its ${limit.period}` : 'a rate'} limit.`;
+    }
+
+    finishEulerQuotaFallback(limit) {
+        this.isStopped = true;
+        emitStatus({
+            wssID: this.wssID,
+            status: 'failed',
+            error: this.getEulerRateLimitMessage(limit),
+            eulerLimit: limit,
+            skipEulerFallback: true
+        });
+        cleanupConnection(this.wssID);
+        return false;
+    }
+
+    async handleEulerKeyRateLimit(primaryError, limit) {
+        const message = this.getEulerRateLimitMessage(limit);
+        emitStatus({ wssID: this.wssID, status: 'euler_rate_limit', error: message, eulerLimit: limit });
+        // Keep the existing personal-key AUTO fallback choices. The user must
+        // still see why their selected Euler credential stopped working.
+        if (this.autoMode && limit.keySource === 'user') return null;
+        if (this.autoMode) {
+            this.eulerQuotaExhausted = limit;
+            if (await this.tryFallbackToLocalSigner(primaryError, 'euler_quota')) {
+                return this.restartConnectionAttempt(primaryError, 'euler_quota_local');
+            }
+            return this.finishEulerQuotaFallback(limit);
+        }
+        const rateLimit = this.registerTikTokRateLimit(primaryError, 'euler_quota');
+        this.offlineRetry = false;
+        this.offlineReason = message;
+        this.attemptReconnect(rateLimit.delayMs, { fixed: true, offline: false, immediate: true, reason: message });
+        return false;
+    }
+
     getUserFriendlyErrorMessage(primaryError, fallbackMessage = '') {
+        const eulerLimit = this.getEulerRateLimitInfo(primaryError);
+        if (eulerLimit) return this.getEulerRateLimitMessage(eulerLimit);
         const candidates = [
             fallbackMessage,
             primaryError?.message,
@@ -8941,6 +9024,17 @@ class ConnectionManager {
         this.resetLikeTotalUpdateState();
 
         if (!this.isStopped) {
+            if (isEulerWs && code === 4429) {
+                const error = Object.assign(new Error(disconnectInfo?.reason || codeLabel), {
+                    status: 429, eulerRateLimit: true
+                });
+                const limit = this.getEulerRateLimitInfo(error);
+                if (limit.keySource === 'shared' || !this.autoMode) {
+                    this.handleEulerKeyRateLimit(error, limit).catch(error => this.handleFatalError(error));
+                    return;
+                }
+                emitStatus({ wssID: this.wssID, status: 'euler_rate_limit', error: this.getEulerRateLimitMessage(limit), eulerLimit: limit });
+            }
             const canTrySharedEulerWsKey = this.shouldTrySharedEulerApiKeyForEulerWsClose(code);
             if (canTrySharedEulerWsKey) {
                 const retryReason = code === 4401 ? 'auth' : 'rate_limit';
@@ -9145,6 +9239,11 @@ class ConnectionManager {
 
         const combinedMessage = msg || infoText || '';
         const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, combinedMessage);
+        const eulerLimit = this.getEulerRateLimitInfo(primaryError);
+        if (eulerLimit && eulerLimit.keySource !== 'anonymous') {
+            const handled = await this.handleEulerKeyRateLimit(primaryError, eulerLimit);
+            if (handled !== null) return handled;
+        }
         const isRateLimited = this.isRateLimitError(primaryError, combinedMessage);
         const isSignServerIssue = !isRateLimited && this.isSignServerError(primaryError, combinedMessage);
         const offlineMessage = combinedMessage || userFacingMessage || (primaryError && primaryError.reason) || '';
@@ -9279,7 +9378,7 @@ class ConnectionManager {
 
 	                this.offlineRetry = false;
 	                this.offlineRetryCount = 0;
-	                this.offlineReason = 'Rate limited by TikTok';
+	                this.offlineReason = eulerLimit ? userFacingMessage : 'Rate limited by TikTok';
 	                this.attemptReconnect(retryDelayMs, { fixed: true, offline: false, immediate: true, reason: this.offlineReason });
 	            } else if (isOffline) {
 	                if (!this.offlineRetry) {
@@ -9498,6 +9597,11 @@ class ConnectionManager {
 	            delayMs = Math.min(delayMs, maxDelayMs);
 	        }
 
+	        const eulerLimit = this.getEulerRateLimitInfo(primaryError);
+	        if (eulerLimit && Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+	            delayMs = Math.max(delayMs, (retryAfterSeconds + 2) * 1000);
+	        }
+
 	        if (primaryError && typeof primaryError === 'object') {
 	            primaryError.__ssappTikTokRateLimitDelayMs = delayMs;
 	        }
@@ -9510,11 +9614,15 @@ class ConnectionManager {
 	            delayMs
 	        });
 
-	        setTikTokConnectAttemptCooldown(
-	            getTikTokConnectAttemptGateKey(this),
-	            now + delayMs,
-	            'rate_limit'
-	        );
+	        // A keyed Euler quota must not hold unrelated credentials behind
+	        // this provider's connect gate. The manager schedules its own retry.
+	        if (!eulerLimit || eulerLimit.keySource === 'anonymous') {
+	            setTikTokConnectAttemptCooldown(
+	                getTikTokConnectAttemptGateKey(this),
+	                now + delayMs,
+	                'rate_limit'
+	            );
+	        }
 
 	        if (this.shouldUseLocalSigner()) {
 	            setLocalSignerCooldown(now + delayMs, 'tiktok_rate_limit');

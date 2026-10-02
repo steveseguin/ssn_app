@@ -11,11 +11,6 @@ function cloneStatus(payload) {
 	return JSON.parse(JSON.stringify(payload));
 }
 
-function firstNonEmptyLine(value) {
-	if (typeof value !== 'string') return '';
-	return value.split(/\r?\n/).find(line => line.trim().length) || '';
-}
-
 function createRateLimitError(options = {}) {
 	const {
 		name = 'SignatureRateLimitError',
@@ -427,7 +422,7 @@ async function testConfiguredEulerApiKeyIsReusedForProxyFallback() {
 	assert.strictEqual(connected.connectionMethod, 'Euler WS relay (API key)');
 }
 
-async function testAutoFallsBackFromProxyToPolling() {
+async function testAutoSkipsPollingAfterSharedEulerQuota() {
 	const proxyRateLimit = createRateLimitError();
 	const { manager, plan } = createHarness({
 		auto: [{ error: createRateLimitError() }, { error: createRateLimitError() }],
@@ -438,8 +433,8 @@ async function testAutoFallsBackFromProxyToPolling() {
 
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
 
-	assert.strictEqual(result, true);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy', 'polling']);
+	assert.strictEqual(result, false);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy']);
 	assert.deepStrictEqual(getReconnectingReasons(plan), [
 		'Sign server unavailable. Trying local signer.',
 		'Local signer failed. Trying Euler signing.',
@@ -447,14 +442,12 @@ async function testAutoFallsBackFromProxyToPolling() {
 	]);
 	assert.strictEqual(plan.reconnects.length, 0);
 
-	const pollingFallback = getLastStatus(plan, 'fallback_polling');
-	assert(pollingFallback, 'expected a polling fallback status');
-	assert.strictEqual(pollingFallback.error, proxyRateLimit.message);
-
-	const connected = getLastStatus(plan, 'connected');
-	assert(connected, 'expected a connected status');
-	assert.strictEqual(connected.connectionMethod, 'Polling (legacy fallback)');
-	assert.strictEqual(connected.connectionLabel, 'Connected via polling (legacy fallback)');
+	assert.strictEqual(getLastStatus(plan, 'fallback_polling'), null);
+	assert.strictEqual(getLastStatus(plan, 'connected'), null);
+	const failed = getLastStatus(plan, 'failed');
+	assert.strictEqual(failed.skipEulerFallback, true);
+	assert.deepStrictEqual(failed.eulerLimit, { keySource: 'shared', period: 'daily' });
+	assert.strictEqual(failed.error, 'The shared Euler key has reached its daily limit.');
 }
 
 async function testAutoExhaustionSurfacesFailureMessage() {
@@ -464,6 +457,8 @@ async function testAutoExhaustionSurfacesFailureMessage() {
 		local: [{ error: createRateLimitError({ name: 'TikTokRateLimitError', source: 'local_signer' }) }],
 		proxy: [{ error: createRateLimitError() }],
 		polling: [{ error: pollingRateLimit }]
+	}, {
+		signing: { apiKey: 'user-euler-key' }
 	});
 
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
@@ -473,15 +468,26 @@ async function testAutoExhaustionSurfacesFailureMessage() {
 
 	const failed = getLastStatus(plan, 'failed');
 	assert(failed, 'expected a failed status');
-	assert.strictEqual(failed.error, firstNonEmptyLine(pollingRateLimit.message));
+	assert.strictEqual(failed.error, 'Your Euler key has reached its daily limit.');
 
 	const pollingFallback = getLastStatus(plan, 'fallback_polling');
 	assert(pollingFallback, 'expected a polling fallback status before final failure');
 
 	assert.strictEqual(plan.reconnects.length, 1);
-	assert.strictEqual(plan.reconnects[0].reason, 'Rate limited by TikTok');
+	assert.strictEqual(plan.reconnects[0].reason, 'Your Euler key has reached its daily limit.');
 	assert.strictEqual(plan.reconnects[0].fixed, true);
 	assert.strictEqual(plan.reconnects[0].immediate, true);
+}
+
+async function testEulerQuotaWithSavedTikTokSession() {
+	const { manager } = createHarness({}, { signing: { apiKey: 'personal-key' } });
+	manager.sessionId = 'saved-tiktok-session';
+	const quotaError = createRateLimitError();
+	assert.strictEqual(manager.getUserFriendlyErrorMessage(quotaError, quotaError.message),
+		'Your Euler key has reached its daily limit.');
+	assert.strictEqual(manager.getEulerRateLimitInfo(createRateLimitError({
+		name: 'TikTokRateLimitError', source: 'local_signer'
+	})), null, 'TikTok local signer limits must not be labeled Euler');
 }
 
 async function testOfflineFailureStatusCarriesOfflineFlag() {
@@ -1039,8 +1045,12 @@ async function run() {
 			fn: testConfiguredEulerApiKeyIsReusedForProxyFallback
 		},
 		{
-			name: 'auto falls back from proxy to polling',
-			fn: testAutoFallsBackFromProxyToPolling
+			name: 'auto skips polling after shared Euler quota',
+			fn: testAutoSkipsPollingAfterSharedEulerQuota
+		},
+		{
+			name: 'Euler quota with a saved TikTok session is not a sign-in error',
+			fn: testEulerQuotaWithSavedTikTokSession
 		},
 		{
 			name: 'auto exhaustion surfaces a failed status message',

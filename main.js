@@ -20829,7 +20829,7 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
         wssID,
         sessionId,
         ttTargetIdc,
-        { forceLegacyConnector: requestedStrategy === 'legacy', signing, signingProvider, autoActivate }
+        { forceLegacyConnector: requestedStrategy === 'legacy', signing, signingProvider, autoActivate, autoMode: args.autoMode }
     );
     if (args && args.replyOnly === true) {
         manager.replyOnly = true;
