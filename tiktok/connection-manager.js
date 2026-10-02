@@ -5,7 +5,10 @@ const path = require('path');
 const os = require('os');
 const { EventEmitter } = require('events');
 const WebSocket = require('ws');
+const EulerStreamApiClient = require('tiktok-live-api-sdk').default;
 const {
+    SignConfig,
+    SignatureRateLimitError,
     ControlAction,
     GiftMessageIgnoreConfig,
     WebcastEvent,
@@ -14,6 +17,11 @@ const {
     createBaseWebcastPushFrame: publicCreateBaseWebcastPushFrame,
     deserializeMessage: publicDeserializeMessage
 } = require('tiktok-live-connector');
+
+// The connector mutates SignConfig when a source supplies a key. Keep the
+// startup defaults separate so another source cannot inherit that key.
+const defaultEulerApiKey = SignConfig.apiKey;
+const defaultEulerHeaders = { ...SignConfig.baseOptions?.headers };
 
 const {
     cleanVisibleString,
@@ -138,6 +146,8 @@ class EulerWebsocketServerConnection extends EventEmitter {
         this.isConnected = false;
         this.enableExtendedGiftInfo = false;
         this.ws = null;
+        this.handshakeTimeoutMs = options.handshakeTimeoutMs || CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_MS;
+        this.rejectPendingConnect = null;
     }
 
     async connect() {
@@ -165,8 +175,9 @@ class EulerWebsocketServerConnection extends EventEmitter {
 
         return new Promise((resolve, reject) => {
             try {
-                const socket = new WebSocket(url);
+                const socket = new WebSocket(url, { handshakeTimeout: this.handshakeTimeoutMs });
                 this.ws = socket;
+                this.rejectPendingConnect = reject;
 
                 const finalize = (fn) => {
                     try {
@@ -175,6 +186,7 @@ class EulerWebsocketServerConnection extends EventEmitter {
                 };
 
                 socket.on('open', () => {
+                    this.rejectPendingConnect = null;
                     this.isConnected = true;
                     this.emit('websocketConnected');
                     resolve(true);
@@ -183,6 +195,10 @@ class EulerWebsocketServerConnection extends EventEmitter {
                 socket.on('message', (data) => this.handleMessage(data));
 
                 socket.on('close', (code, reason) => {
+                    if (this.rejectPendingConnect) {
+                        this.rejectPendingConnect(new Error(`Euler WebSocket closed before connecting (${code})`));
+                        this.rejectPendingConnect = null;
+                    }
                     this.isConnected = false;
                     const reasonStr = reason ? reason.toString() : '';
                     // Log close code for debugging - see https://www.eulerstream.com/docs/sign-server/websockets
@@ -211,10 +227,11 @@ class EulerWebsocketServerConnection extends EventEmitter {
                 });
 
                 socket.on('error', (error) => {
-                    this.emit('error', error);
                     if (!this.isConnected) {
+                        this.rejectPendingConnect = null;
                         reject(error);
                     }
+                    this.emit('error', error);
                 });
 
                 socket.on('unexpected-response', (_req, res) => {
@@ -234,9 +251,17 @@ class EulerWebsocketServerConnection extends EventEmitter {
     }
 
     async disconnect() {
+        if (this.rejectPendingConnect) {
+            const error = new Error('TikTok connection stopped');
+            error.code = 'SSAPP_TIKTOK_STOPPED';
+            this.rejectPendingConnect(error);
+            this.rejectPendingConnect = null;
+        }
         if (this.ws) {
             try {
                 this.ws.removeAllListeners();
+                // ws emits an error when an unfinished handshake is closed.
+                this.ws.on('error', () => { });
             } catch (_) { }
             try {
                 this.ws.close();
@@ -1409,6 +1434,7 @@ function createTikTokEnvironment(options = {}) {
         ConnectionManager,
         cleanupConnection,
         registerActiveTikTokSourceConnection,
+        getActiveTikTokWssIdForSource,
         retireTikTokConnectionsForSource,
         sendToBackground,
         sendBatchToBackground,
@@ -2863,6 +2889,7 @@ function cleanupConnection(wssID) {
                 activeTikTokConnectionBySourceId.delete(sourceId);
             }
             manager.isStopped = true;
+            manager.eulerRequestAbortController?.abort();
             manager.activeConnectPromise = null;
             // If it's a ConnectionManager instance
             if (manager.connection) {
@@ -5660,6 +5687,7 @@ class ConnectionManager {
             this.connection = new EulerWebsocketServerConnection(this.username, {
                 apiKey,
                 jwtKey,
+                handshakeTimeoutMs: this.signRequestTimeoutMs,
                 features: { rawMessages: true, bundleEvents: true }
             });
             this.applyResumeCursorToConnection();
@@ -5685,6 +5713,18 @@ class ConnectionManager {
             throw new Error('TikTok connector missing. Please reinstall tiktok-live-connector.');
         }
         const connectionOptions = this.buildConnectionOptions(useLegacyConnector);
+        this.eulerRequestAbortController = new AbortController();
+        connectionOptions.eulerApiInstance = new EulerStreamApiClient({
+            basePath: SignConfig.basePath,
+            apiKey: connectionOptions.signApiKey || defaultEulerApiKey,
+            baseOptions: {
+                ...SignConfig.baseOptions,
+                headers: { ...defaultEulerHeaders },
+                timeout: this.signRequestTimeoutMs,
+                timeoutErrorMessage: `Sign server request timed out after ${this.signRequestTimeoutMs}ms`,
+                signal: this.eulerRequestAbortController.signal
+            }
+        });
         if (this.sessionId) {
             connectionOptions.sessionId = this.sessionId;
             if (this.ttTargetIdc) {
@@ -5893,6 +5933,7 @@ class ConnectionManager {
     }
 
     async teardownConnection({ silent = false } = {}) {
+        this.eulerRequestAbortController?.abort();
         this.directChatRoute = null;
         this.directChatRouteClient = null;
         this.pendingRoomIdPromise = null;
@@ -6390,6 +6431,19 @@ class ConnectionManager {
         }
 
         try {
+            if (this.connection instanceof EulerWebsocketServerConnection) {
+                this.connection.handshakeTimeoutMs = timeoutMs;
+                return;
+            }
+            const apiConfig = this.connection.apiClient?.configuration;
+            if (apiConfig) {
+                apiConfig.baseOptions = {
+                    ...apiConfig.baseOptions,
+                    timeout: timeoutMs,
+                    timeoutErrorMessage: `Sign server request timed out after ${timeoutMs}ms`
+                };
+                return;
+            }
             const webcastApi = this.connection?.webClient?.webSigner?.webcast;
             if (!webcastApi) {
                 return;
@@ -9278,6 +9332,7 @@ class ConnectionManager {
 
     disconnect() {
         this.isStopped = true;
+        this.eulerRequestAbortController?.abort();
         this.clearPendingStreamEndConfirmation('disconnect');
         if (this.connection) {
             this.connection.disconnect();
@@ -9387,7 +9442,10 @@ class ConnectionManager {
 	    }
 
 	    getRetryAfterSeconds(primaryError) {
-	        const direct = parseRetryAfterSeconds(primaryError?.retryAfterSeconds ?? primaryError?.retryAfter ?? null);
+	        const retryAfter = primaryError instanceof SignatureRateLimitError
+                ? primaryError.retryAfter / 1000
+                : primaryError?.retryAfter;
+	        const direct = parseRetryAfterSeconds(primaryError?.retryAfterSeconds ?? retryAfter ?? null);
 	        if (direct !== null) {
 	            return direct;
 	        }

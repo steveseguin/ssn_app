@@ -6,7 +6,17 @@
 const fs = require('fs');
 const path = require('path');
 
-const patches = [];
+const patches = [{
+    file: 'node_modules/tiktok-live-connector/dist/lib-CbB_CSnH.js',
+    description: 'tiktok-live-connector 2.4.3: preserve headers when constructing a signing rate-limit error',
+    from: 'Too many connections started, try again later.`, response.data);',
+    to: 'Too many connections started, try again later.`, response);'
+}, {
+    file: 'node_modules/tiktok-live-connector/dist/lib-CbB_CSnH.js',
+    description: 'tiktok-live-connector 2.4.3: allow short sign-server error messages',
+    from: 'const msgLen = message.length;',
+    to: 'const msgLen = Math.max(message.length, 19);'
+}];
 
 let anyFailed = false;
 

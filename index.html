@@ -7802,7 +7802,13 @@
         }
 
         function cancelPendingTikTokActivation(sourceId) {
-            pendingTikTokActivations.delete(sourceId);
+            if (pendingTikTokActivations.delete(sourceId) && ipcRenderer) {
+                try {
+                    // The backend registers the source before connect() resolves;
+                    // its window ID may not have reached the renderer yet.
+                    ipcRenderer.sendSync('disconnectTikTokConnection', { sourceId });
+                } catch (error) { console.warn('Error canceling TikTok connection:', error); }
+            }
         }
 
 

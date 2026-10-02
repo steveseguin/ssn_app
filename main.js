@@ -2993,6 +2993,7 @@ let usingLegacyTikTokConnector = false;
 let ConnectionManager = null;
 let cleanupConnection = () => { };
 let registerActiveTikTokSourceConnection = () => [];
+let getActiveTikTokWssIdForSource = () => null;
 let sendToBackground = () => { };
 let sendBatchToBackground = () => { };
 let logTikTokForwardedMessage = () => { };
@@ -3112,6 +3113,7 @@ try {
     ConnectionManager = tikTokEnv.ConnectionManager;
     cleanupConnection = tikTokEnv.cleanupConnection;
     registerActiveTikTokSourceConnection = tikTokEnv.registerActiveTikTokSourceConnection;
+    getActiveTikTokWssIdForSource = tikTokEnv.getActiveTikTokWssIdForSource;
     sendToBackground = tikTokEnv.sendToBackground;
     sendBatchToBackground = tikTokEnv.sendBatchToBackground;
     logTikTokForwardedMessage = tikTokEnv.logTikTokForwardedMessage;
@@ -20931,22 +20933,26 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
 });
 
 ipcMain.on("disconnectTikTokConnection", function (eventRet, args) {
-    if (!args.wssID) {
+    const requestedWssID = args.wssID || getActiveTikTokWssIdForSource(args.sourceId);
+    if (!requestedWssID) {
         eventRet.returnValue = false;
         return;
     }
 
     try {
-        const normalizedWssID = normalizeTikTokConnectionHandle(args.wssID) || args.wssID;
-        const managerMeta = websocketConnections[normalizedWssID] || websocketConnections[args.wssID];
+        const normalizedWssID = normalizeTikTokConnectionHandle(requestedWssID) || requestedWssID;
+        const managerMeta = websocketConnections[normalizedWssID] || websocketConnections[requestedWssID];
         const sourceId = managerMeta && managerMeta.sourceId ? managerMeta.sourceId : null;
         try {
-            // Notify renderer to clear UI/countdowns
-            mainWindow.webContents.send('tiktokConnectionStatus', {
-                wssID: normalizedWssID,
-                status: 'stopped_by_user',
-                sourceId
-            });
+            // Pending source cancellation already updates the renderer and can
+            // accompany a switch to Standard. Do not overwrite its newer state.
+            if (args.wssID) {
+                mainWindow.webContents.send('tiktokConnectionStatus', {
+                    wssID: normalizedWssID,
+                    status: 'stopped_by_user',
+                    sourceId
+                });
+            }
         } catch (_) { }
         cleanupConnection(normalizedWssID);
         eventRet.returnValue = true;
