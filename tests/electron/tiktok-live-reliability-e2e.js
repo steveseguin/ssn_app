@@ -245,6 +245,10 @@ async function run() {
                 .every(wc => !/^https:\/\/(www\.)?tiktok\.com\//.test(wc.getURL()))), 'signing window closed');
             await page.waitForTimeout(5000);
             report.memoryAfterHelperClose = await sampleMemory(app, true);
+            // Chromium can release a closed renderer asynchronously. Preserve
+            // a later sample rather than equating window closure with RSS release.
+            await page.waitForTimeout(25000);
+            report.memoryAfterIdle = await sampleMemory(app, true);
             assert.strictEqual(JSON.stringify(counts), afterStop, 'Closing the signing window restarted capture');
         }
         assert.ok(report.sources.every(source => source.counts?.chat > 0),
