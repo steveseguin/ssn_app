@@ -218,6 +218,48 @@ async function run() {
 			});
 			await clear();
 		}
+		await check('TikTok Local Signer honors Retry-After before reconnecting and capturing chat', async () => {
+			const username = 'local_rate_limit_fixture';
+			const bootstrapUrl = 'https://webcast.us.tiktok.com/webcast/im/fetch/?room_id=123456&identity=audience';
+			const requests = [];
+			const body = Object.assign(connector.ProtoMessageFetchResult.decode(Buffer.alloc(0)), {
+				messages: [], cursor: 'local-retry-fixture', internalExt: '', routeParams: {},
+				pushServer: `ws://127.0.0.1:${server.address().port}/`,
+			});
+			await page.context().route(bootstrapUrl, route => {
+				requests.push(Date.now());
+				return route.fulfill(requests.length === 1
+					? { status: 429, headers: { 'Retry-After': '120' }, body: '' }
+					: { contentType: 'application/octet-stream', body: Buffer.from(connector.ProtoMessageFetchResult.encode(body).finish()) });
+			});
+			await page.context().route(`https://www.tiktok.com/@${username}/live`, route => route.fulfill({
+				contentType: 'text/html', body: `<html><body data-room-id="123456">Rate limit fixture<script>
+				window.SIGI_STATE = { room: { roomId: '123456' } };
+				setTimeout(() => fetch(${JSON.stringify(bootstrapUrl)}).then(r => r.arrayBuffer()), 500);
+				</script></body></html>`,
+			}));
+			const id = await page.evaluate(username => stateManager.addSource({
+				target: 'tiktok', username, url: `https://www.tiktok.com/@${username}/live`, autoActivate: false,
+				connectionMode: 'tiktok-websocket', tiktokSigningProvider: 'local',
+			}), username);
+			const before = received.length;
+			await page.locator(`[data-source-id="${id}"] [data-activatehtml]`).press('Enter');
+			await waitFor(() => requests.length > 0, 'rate-limited bootstrap request', 45000);
+			await waitFor(() => app.evaluate(() => global.__activationFixture.managers.at(-1).tiktokRateLimitCount === 1),
+				'HTTP 429 recognized by the real connection manager', 45000);
+			await waitFor(async () => {
+				const s = await sourceState(id);
+				return s.status === 'active' && received.slice(before).some(m => m.tid === s.vid);
+			}, 'local signer reconnect and chat after Retry-After', 160000);
+			assert.strictEqual(requests.length, 2, 'Only one retry should be needed');
+			const retryDelayMs = requests[1] - requests[0];
+			assert.ok(retryDelayMs >= 120000, `Retried before Retry-After expired: ${retryDelayMs}ms`);
+			report.localSignerRetry = { retryAfterSeconds: 120, retryDelayMs };
+			assert.strictEqual(await app.evaluate(() => global.__activationFixture.managers.at(-1).signingProvider), 'local');
+			await page.locator(`[data-source-id="${id}"] [data-activatehtml]`).press('Enter');
+			await waitFor(async () => (await sourceState(id)).status === 'inactive', 'rate-limited local signer Stop');
+		});
+		await clear();
 		await check('TikTok Auto retires failed connectors and captures through a real Standard window', async () => {
 			await app.evaluate(() => { global.__activationFixture.failBootstrap = true; });
 			const id = await addTikTok();
