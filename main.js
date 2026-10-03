@@ -20813,6 +20813,11 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     const signing = normalizeTikTokSigningArgs(args?.signing);
     const signingProvider = args?.signingProvider || 'auto';
     const autoActivate = args?.autoActivate === true;
+    if (signingProvider === 'tikfinity' && Object.values(websocketConnections).some(connection =>
+        connection && !connection.isStopped && connection.signingProvider === 'tikfinity'
+        && connection.sourceId !== sourceIdFromRenderer)) {
+        throw new Error('TikFinity Desktop is already captured by another source. Stop that source first to avoid duplicate messages.');
+    }
     
     // Debug: Log signing config received from renderer
     console.log('[TikTok] Signing config received:', {

@@ -5834,7 +5834,9 @@
                     } else if (displayMode === 'tiktok-legacy') {
                         activateButton.innerText = 'Connect TikTok Compatibility';
                     } else if (displayMode === 'tiktok-websocket') {
-                        if (provider === 'local') {
+                        if (provider === 'tikfinity') {
+                            activateButton.innerText = 'Connect TikFinity Desktop';
+                        } else if (provider === 'local') {
                             activateButton.innerText = 'Connect TikTok Local Signer';
                         } else if (provider === 'euler-ws') {
                             activateButton.innerText = 'Connect TikTok Euler Proxy';
@@ -5945,6 +5947,10 @@
                         signinButton.title = translate('tiktok.signin.title');
                     }
                     signinButton.classList.toggle('authenticated', hasSession);
+                    if (provider === 'tikfinity') {
+                        signinButton.classList.add('hidden');
+                        signinButton.style.display = 'none';
+                    }
                 } else if (isWebsocketMode && !isYouTubeWebSocketSigninContext(source)) {
                     // Hide for other websocket modes
                     signinButton.classList.add("hidden");
@@ -6117,6 +6123,7 @@
                 return 'polling';
             }
             if (normalizedMode === 'tiktok-websocket') {
+                if (provider === 'tikfinity') return 'tikfinity';
                 if (provider === 'local') return 'local';
                 if (provider === 'euler-ws') return 'euler-ws';
                 if (provider === 'custom') return 'custom';
@@ -6152,6 +6159,10 @@
             let nextProvider = source.tiktokSigningProvider || 'auto';
 
             switch (preset) {
+                case 'tikfinity':
+                    nextMode = 'tiktok-websocket';
+                    nextProvider = 'tikfinity';
+                    break;
                 case 'auto':
                     nextMode = 'tiktok-websocket';
                     nextProvider = 'auto';
@@ -6250,6 +6261,8 @@
             let html = '';
             if (val === 'auto') {
                 html = 'Recommended: WebSocket with automatic signing. If signing fails, fallback can switch to compatibility modes.';
+            } else if (val === 'tikfinity') {
+                html = 'Read-only. Open TikFinity Desktop on this computer and connect your LIVE there. Captures the stream selected in TikFinity, regardless of the username entered here. Do not also capture that stream using another source.';
             } else if (val === 'local') {
                 html = '<strong>Local Signer:</strong> Uses a lightweight TikTok signing window. Anonymous mode is best effort; signed-in Host mode is recommended for full chat capture.';
             } else if (val === 'polling') {
@@ -6690,6 +6703,7 @@
                     <option value="standard">Standard (Capture Window)</option>
                     <option value="euler-ws">Euler Proxy (API Key)</option>
                     <option value="custom">Euler Signing (Advanced)</option>
+                    <option value="tikfinity">TikFinity Desktop (Local API, Beta)</option>
                     <option value="tikfinity-guide">TikFinity (Setup guide)</option>
                 </select>
                 <div class="provider-help-text" style="font-size: 11px; color: #94a3b8; line-height: 1.35; margin-top: 8px; min-height: 2.8em;"></div>
@@ -9014,6 +9028,7 @@
                 case 'local':
                 case 'euler-ws':
                 case 'custom':
+                case 'tikfinity':
                     pushMode(initialMode || 'tiktok-websocket');
                     pushMode(preferredMode || 'tiktok-websocket');
                     pushMode('tiktok-websocket');
@@ -11383,6 +11398,9 @@
             if (!method) return null;
             const normalized = String(method).trim();
             if (!normalized) return null;
+            if (normalized === 'TikFinity Desktop') {
+                return sourceCtx?.tiktokConnectionLabel || 'Connected to TikFinity Desktop; waiting for LIVE events';
+            }
 
             const lower = normalized.toLowerCase();
             const effectiveMode = normalizeTikTokMode(
@@ -13911,6 +13929,17 @@
                     }
 
                     switch (data.status) {
+                        case 'capture_health': {
+                            const badge = entryElement && entryElement.querySelector('.ws-status');
+                            if (!badge || currentState.status !== 'active') break;
+                            const ago = timestamp => Number.isFinite(timestamp) && timestamp > 0
+                                ? `${Math.max(0, Math.floor((Date.now() - timestamp) / 1000))}s ago` : 'not yet';
+                            badge.title = `${data.localBridge ? 'TikFinity' : 'TikTok'} traffic: ${ago(data.lastActivityAt)}. `
+                                + `Last forwarded event: ${ago(data.lastForwardedAt)}. `
+                                + `${Number(data.forwardedEvents) || 0} events forwarded. `
+                                + (data.localBridge ? 'TikFinity manages the LIVE connection; check its dashboard if events stop.' : 'A quiet chat can still have a healthy connection.');
+                            break;
+                        }
                         case 'connecting':
                             if (entryElement) entryElement._eulerLimit = null;
                             {
@@ -13947,7 +13976,8 @@
                                     status: 'active',
                                     error: null,
                                     tiktokFallbackMode: null,
-                                    tiktokConnectionMethod: connectionMethod
+                                    tiktokConnectionMethod: connectionMethod,
+                                    tiktokConnectionLabel: data.connectionLabel || null
                                 };
                                 if (typeof classicTabId === 'number' && !data.wssID) {
                                     updatePayload.vid = classicTabId;

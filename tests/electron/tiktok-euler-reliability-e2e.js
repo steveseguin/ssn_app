@@ -115,6 +115,9 @@ async function run() {
             timeout: 60000,
         });
         page = await app.firstWindow();
+        for (const stream of [app.process().stdout, app.process().stderr]) {
+            stream.on('data', chunk => fs.appendFileSync(path.join(profile, 'electron.log'), chunk));
+        }
         await page.waitForFunction(() => window.stateManager?.initialized && configReady);
         await page.waitForTimeout(6000);
         await app.evaluate((_, root) => {

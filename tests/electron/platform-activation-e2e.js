@@ -23,16 +23,22 @@ async function run() {
 	const relayPort = await freePort();
 	const room = `activation_${Date.now()}`;
 	fs.writeFileSync(path.join(profile, 'savedSync.json'), JSON.stringify({
-		streamID: room, password: 'false', state: true, settings: { server2: { setting: true } }, wsServer: true,
+		streamID: room, password: 'false', state: true, settings: { server2: { setting: true },
+			capturelikeevent: { setting: true }, showviewercount: { setting: true }, capturejoinedevent: { setting: true } }, wsServer: true,
 	}));
 	const server = new WebSocket.WebSocketServer({ host: '127.0.0.1', port: 0 });
 	await new Promise(resolve => server.once('listening', resolve));
 	let sequence = 10000;
+	let pauseChat = false;
+	let socketConnections = 0;
+	server.on('connection', () => { socketConnections++; });
 	const sendTimer = setInterval(() => {
+		if (pauseChat) return;
 		for (const socket of server.clients) if (socket.readyState === WebSocket.OPEN) socket.send(chatFrame(++sequence));
 	}, 500);
 	const report = { profile, checks: [] };
 	const received = [];
+	const allTikTokEvents = [];
 	let app, page, relay;
 	let output = '';
 	async function check(name, action) {
@@ -95,6 +101,7 @@ async function run() {
 		relay.on('message', raw => {
 			try {
 				const message = JSON.parse(raw.toString());
+				if (message.type === 'tiktok') allTikTokEvents.push(message);
 				if (/^(disconnect fixture|hidden-capture message)/.test(message.chatmessage)) received.push(message);
 			} catch (_) { }
 		});
@@ -144,6 +151,146 @@ async function run() {
 			} finally {
 				await page.evaluate(() => { window.open = window.originalGuideOpen; });
 			}
+		});
+		await clear();
+		if (process.env.SSAPP_TIKFINITY_EXECUTABLE) await check('TikFinity real Desktop API forwards into SSApp and stops', async () => {
+			const desktop = await _electron.launch({ executablePath: process.env.SSAPP_TIKFINITY_EXECUTABLE,
+				args: ['--user-data-dir=' + path.join(profile, 'tikfinity')], timeout: 60000 });
+			try {
+				const dashboard = await desktop.firstWindow();
+				await dashboard.waitForFunction(() => window.API && typeof window.API.toMain === 'function');
+				await dashboard.waitForTimeout(10000);
+				const id = await addTikTok();
+				const entry = page.locator(`[data-source-id="${id}"]`);
+				await entry.locator('.tiktok-connection-select').selectOption('tikfinity');
+				await entry.locator('[data-activatehtml]').press('Enter');
+				await waitFor(async () => (await sourceState(id)).status === 'active', 'real TikFinity socket');
+				const payload = { event: 'chat', data: { nickname: 'Real Desktop fixture', uniqueId: 'desktop_fixture',
+					comment: 'hidden-capture message real Desktop API', msgId: '820001' } };
+				// The real Desktop app broadcasts through its official renderer-to-main
+				// path. This checks local integration, not account-authenticated LIVE.
+				await dashboard.evaluate(payload => window.API.toMain({ action: 'emitWs', payload }), payload);
+				await waitFor(() => received.some(m => m.chatname === 'Real Desktop fixture'), 'real Desktop chat at relay');
+				await entry.screenshot({ path: path.join(profile, 'tikfinity-source.png') });
+				await entry.locator('[data-stophtml]').press('Enter');
+				const before = received.length;
+				payload.data.msgId = '820002';
+				await dashboard.evaluate(payload => window.API.toMain({ action: 'emitWs', payload }), payload);
+				await page.waitForTimeout(1500);
+				assert.strictEqual(received.length, before, 'real Desktop forwarded after Stop');
+			} finally {
+				await clear();
+				await desktop.close();
+			}
+		});
+		await clear();
+		await check('TikFinity Desktop local API captures, deduplicates, recovers, persists and stops', async () => {
+			const desktop = new WebSocket.WebSocketServer({ host: '127.0.0.1', port: 21213 });
+			await new Promise((resolve, reject) => { desktop.once('listening', resolve); desktop.once('error', reject); });
+			let count = 0;
+			desktop.on('connection', () => count++);
+			const send = packet => {
+				for (const socket of desktop.clients) socket.send(typeof packet === 'string' ? packet : JSON.stringify(packet));
+			};
+			try {
+				const id = await addTikTok();
+				const entry = page.locator(`[data-source-id="${id}"]`);
+				await entry.locator('.tiktok-connection-select').selectOption('tikfinity');
+				await reloadFor(`[data-source-id="${id}"]`);
+				await page.waitForTimeout(6000);
+				assert.strictEqual(await entry.locator('.tiktok-connection-select').inputValue(), 'tikfinity');
+				const signingCalls = await app.evaluate(() => global.__activationFixture.signingCalls);
+				await entry.locator('[data-activatehtml]').press('Enter');
+				await waitFor(async () => (await sourceState(id)).status === 'active', 'Desktop API connected');
+				await waitFor(() => desktop.clients.size === 1, 'one Desktop socket');
+				assert.match(await entry.innerText(), /waiting for LIVE events/);
+				send('invalid json');
+				send({ event: 'chat', data: null });
+				send({ event: 'unknown', data: { comment: 'must not forward' } });
+				const message = { event: 'chat', data: { msgId: '810001', userId: '123', uniqueId: 'local_api_viewer',
+					nickname: 'Desktop fixture', comment: 'hidden-capture message Desktop API 👋 <script>' } };
+				send(message);
+				send(message);
+				const captured = () => received.filter(m => m.chatname === 'Desktop fixture');
+				await waitFor(() => captured().length === 1, 'Desktop chat at relay');
+				assert.match(captured()[0].chatmessage, /👋/);
+				assert.ok(!captured()[0].chatmessage.includes('<script>'), 'Unsafe markup reached the relay');
+				await page.waitForTimeout(1200);
+				assert.strictEqual(captured().length, 1, 'Duplicate message forwarded');
+				assert.match(await entry.innerText(), /Receiving LIVE events/);
+				assert.strictEqual(await entry.locator('[data-signin]').isVisible(), false, 'Desktop mode must not suggest TikTok sign-in');
+				const user = { userId: '456', uniqueId: 'desktop_gifter', nickname: 'Desktop gift' };
+				for (const event of ['follow', 'share', 'subscribe', 'member', 'like']) send({ event, data: { ...user, action: 1, msgId: 'event-' + event } });
+				send({ event: 'roomUser', data: { viewerCount: 123 } });
+				const gift = { event: 'gift', data: { ...user, msgId: 'gift-810', giftId: 5655, giftName: 'Rose',
+					giftType: 1, diamondCount: 1, repeatCount: 1, repeatEnd: false, groupId: 'streak-810' } };
+				send(gift);
+				gift.data.repeatCount = 3;
+				send(gift);
+				gift.data.repeatEnd = true;
+				send(gift);
+				send(gift);
+				await waitFor(() => allTikTokEvents.some(m => m.chatname === 'Desktop gift' && m.event === 'gift'), 'Desktop gift streak');
+				await page.waitForTimeout(1500);
+				const gifts = allTikTokEvents.filter(m => m.chatname === 'Desktop gift' && m.event === 'gift');
+				assert.strictEqual(gifts.length, 1, 'Gift progress/completion was counted twice');
+				assert.match(gifts[0].hasDonation, /3/);
+				for (const event of ['followed', 'shared', 'subscribe', 'joined', 'liked']) {
+					assert.ok(allTikTokEvents.some(m => m.chatname === 'Desktop gift' && m.event === event), event + ' missing');
+				}
+				assert.strictEqual(await app.evaluate(() => global.__activationFixture.managers.find(m =>
+					m.signingProvider === 'tikfinity' && !m.isStopped).lastViewerCount), 123, 'Viewer count not normalized');
+				const reply = await app.evaluate(async () => {
+					const manager = global.__activationFixture.managers.find(m => m.signingProvider === 'tikfinity' && !m.isStopped);
+					manager.sessionId = 'fixture';
+					return manager.sendChatMessage('must not send');
+				});
+				assert.strictEqual(reply.success, false);
+				assert.match(reply.error, /read-only/);
+				const second = await page.evaluate(() => stateManager.addSource({ target: 'tiktok', username: 'desktop_duplicate',
+					url: 'https://www.tiktok.com/@desktop_duplicate/live', connectionMode: 'tiktok-websocket',
+					tiktokSigningProvider: 'tikfinity', autoActivate: false }));
+				await page.locator(`[data-source-id="${second}"] [data-activatehtml]`).click({ force: true });
+				await waitFor(async () => (await sourceState(second)).status === 'error', 'duplicate Desktop source rejected');
+				assert.strictEqual(count, 1, 'Duplicate Desktop socket opened');
+				assert.strictEqual((await sourceState(id)).status, 'active', 'Duplicate attempt stopped the first source');
+				for (let expected = 2; expected <= 4; expected++) {
+					for (const socket of desktop.clients) socket.terminate();
+					await waitFor(() => count === expected, 'Desktop reconnect ' + expected, 40000);
+				}
+				send({ ...message, data: { ...message.data, msgId: '810002', comment: 'hidden-capture message Desktop recovered' } });
+				send(gift);
+				await waitFor(() => captured().length === 2, 'chat after Desktop recovery');
+				assert.strictEqual(allTikTokEvents.filter(m => m.chatname === 'Desktop gift' && m.event === 'gift').length, 1, 'Gift replayed after reconnect');
+				assert.strictEqual(await app.evaluate(() => global.__activationFixture.signingCalls), signingCalls, 'Local API used remote signing');
+				await entry.locator('[data-stophtml]').press('Enter');
+				await waitFor(() => desktop.clients.size === 0, 'Desktop socket stopped');
+				await page.waitForTimeout(1500);
+				assert.strictEqual(captured().length, 2);
+				assert.strictEqual(count, 4, 'Stopped Desktop source reconnected');
+			} finally {
+				await clear();
+				for (const socket of desktop.clients) socket.terminate();
+				await new Promise(resolve => desktop.close(resolve));
+			}
+		});
+		await clear();
+		await check('TikFinity unavailable API retries locally and Stop cancels recovery', async () => {
+			const id = await addTikTok();
+			const entry = page.locator(`[data-source-id="${id}"]`);
+			await entry.locator('.tiktok-connection-select').selectOption('tikfinity');
+			const before = await app.evaluate(() => global.__activationFixture.signingCalls);
+			await entry.locator('[data-activatehtml]').click({ force: true });
+			await waitFor(async () => app.evaluate(() => global.__activationFixture.managers.some(m =>
+				m.signingProvider === 'tikfinity' && !m.isStopped && m.reconnectAttempts >= 2)), 'local retry after refusal');
+			assert.match(await entry.innerText(), /TikFinity Desktop|retrying/);
+			await entry.locator('[data-activatehtml]').click({ force: true });
+			await waitFor(async () => app.evaluate(() => global.__activationFixture.managers.filter(m =>
+				m.signingProvider === 'tikfinity').every(m => m.isStopped && !m.reconnectTimer)), 'cancel local retry');
+			await page.waitForTimeout(5000);
+			assert.strictEqual(await app.evaluate(() => global.__activationFixture.signingCalls), before, 'Unavailable local API called a sign service');
+			await entry.locator('.tiktok-connection-select').selectOption('local');
+			assert.strictEqual(await entry.locator('[data-signin]').isVisible(), true, 'Switching modes did not restore sign-in');
 		});
 		await clear();
 		await check('TikFinity Activity Feed captures through Add other source and stops', async () => {
@@ -218,6 +365,44 @@ async function run() {
 			});
 			await clear();
 		}
+		await check('TikTok watchdog recovers a stalled busy connection without reconnecting a quiet room', async () => {
+			const id = await addTikTok();
+			await page.locator(`[data-source-id="${id}"] [data-activatehtml]`).press('Enter');
+			await waitFor(async () => (await sourceState(id)).status === 'active', 'watchdog source connected', 45000);
+			pauseChat = true;
+			const before = socketConnections;
+			try {
+				await app.evaluate(() => {
+					const m = global.__activationFixture.managers.at(-1);
+					const at = Date.now() - 15 * 60000;
+					m.lastMessageTime = at;
+					m.activityBuckets = new Map([[Math.floor(at / 60000) * 60000, 1]]);
+				});
+				// Let the real, unaccelerated 60-second health timer run at least once.
+				await page.waitForTimeout(65000);
+				assert.strictEqual(socketConnections, before, 'Quiet room should keep its connection');
+				assert.match(await page.locator(`[data-source-id="${id}"] .ws-status`).getAttribute('title'), /traffic:.*events forwarded/);
+				const timeout = await app.evaluate(() => {
+					const m = global.__activationFixture.managers.at(-1);
+					const at = Date.now() - 6 * 60000;
+					m.lastMessageTime = at;
+					m.activityBuckets = new Map([[Math.floor(at / 60000) * 60000, 240]]);
+					return m.getAdaptiveMessageTimeout();
+				});
+				assert.strictEqual(timeout, 5 * 60000, 'Busy stream must not become idle during silence');
+				await waitFor(() => socketConnections > before, 'real watchdog automatic reconnect', 75000);
+				pauseChat = false;
+				const count = received.length;
+				await waitFor(async () => {
+					const s = await sourceState(id);
+					return s.status === 'active' && received.slice(count).some(m => m.tid === s.vid);
+				}, 'chat at relay after watchdog recovery');
+				assert.strictEqual(socketConnections, before + 1, 'Watchdog must create only one replacement connection');
+			} finally {
+				pauseChat = false;
+			}
+		});
+		await clear();
 		await check('TikTok Local Signer honors Retry-After before reconnecting and capturing chat', async () => {
 			const username = 'local_rate_limit_fixture';
 			const bootstrapUrl = 'https://webcast.us.tiktok.com/webcast/im/fetch/?room_id=123456&identity=audience';
@@ -438,6 +623,7 @@ async function run() {
 		for (const socket of server.clients) socket.terminate();
 		await new Promise(resolve => server.close(resolve));
 		fs.writeFileSync(path.join(profile, 'electron.log'), output);
+		fs.writeFileSync(path.join(profile, 'events.json'), JSON.stringify(allTikTokEvents, null, 2));
 		console.log(`Evidence: ${profile}`);
 	}
 	assert.strictEqual(report.checks.filter(c => !c.passed).length, 0, 'Functional regression checks failed');

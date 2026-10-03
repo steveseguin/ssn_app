@@ -359,7 +359,7 @@
     "phonemizer": "^1.2.1",
     "sharp": "^0.35.4",
     "tiktok-live-api-sdk": "0.4.0-beta1",
-    "tiktok-live-connector": "2.4.3",
+    "tiktok-live-connector": "2.5.0",
     "undici": "^7.5.0",
     "unzipper": "^0.12.3",
     "utf-8-validate": "^6.0.5",

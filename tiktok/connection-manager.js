@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const { EventEmitter } = require('events');
 const WebSocket = require('ws');
+const { TikFinityConnection } = require('./tikfinity-connection');
 const EulerStreamApiClient = require('tiktok-live-api-sdk').default;
 const {
     SignConfig,
@@ -550,6 +551,7 @@ function getTikTokConnectAttemptGateKey(manager = null) {
     if (!manager || typeof manager !== 'object') {
         return 'unknown';
     }
+    if (manager.signingProvider === 'tikfinity') return 'tikfinity';
     if (manager.pollingFallbackActivated || manager.preferredStrategy === 'legacy' || manager.connectionStrategy === 'legacy') {
         return 'legacy';
     }
@@ -1146,6 +1148,19 @@ function installTikTokSignServerFallback(connector) {
     if (!connector || typeof connector !== 'object') {
         return;
     }
+    // Connector 2.4/2.5 draws a fixed-width heading around server errors.
+    // Short messages make String.repeat receive a negative count, replacing
+    // the real 429/402 with RangeError and losing its retry/configuration data.
+    const signErrorClass = connector.SignAPIError || connector.errors?.SignAPIError;
+    if (signErrorClass && typeof signErrorClass.formatSignServerMessage === 'function'
+        && !signErrorClass.__ssappShortMessagePatched) {
+        const format = signErrorClass.formatSignServerMessage;
+        signErrorClass.formatSignServerMessage = function (message) {
+            const text = typeof message === 'string' ? message.trim() : String(message || '');
+            return text.length < 19 ? text : format.call(this, text);
+        };
+        signErrorClass.__ssappShortMessagePatched = true;
+    }
 
     const { TikTokSignClient, errors } = connector;
     if (!TikTokSignClient || typeof TikTokSignClient !== 'function') {
@@ -1644,7 +1659,13 @@ function buildGiftDedupeKey(data) {
         data?.msg_id,
         data?.idStr
     ]);
-    if (msgId) return `gift|${msgId}`;
+    // A streak can reuse its message ID as the count increases and again
+    // when it ends. Only identical updates are duplicates.
+    const repeatCount = resolveGiftMetricCount(data, 'repeat') || 0;
+    const comboCount = resolveGiftMetricCount(data, 'combo') || 0;
+    const groupCount = resolveGiftMetricCount(data, 'group') || 0;
+    const repeatEnd = resolveGiftRepeatEnd(data) ? 1 : 0;
+    if (msgId) return `gift|${msgId}|${repeatCount}|${comboCount}|${groupCount}|${repeatEnd}`;
 
     const identity = extractTikTokIdentity(data);
     const userId = firstNonEmptyVisibleString([
@@ -1658,14 +1679,11 @@ function buildGiftDedupeKey(data) {
         data?.createTime
     ]) || '';
     const giftId = resolveGiftId(data) || '';
-    const repeatCount = resolveGiftMetricCount(data, 'repeat') || 0;
-    const comboCount = resolveGiftMetricCount(data, 'combo') || 0;
-    const groupCount = resolveGiftMetricCount(data, 'group') || 0;
 
     // Require userId AND at least one distinguishing detail to avoid
     // collapsing different gifts from the same user.
     if (!userId || (!createTime && !giftId)) return null;
-    return `gift|${userId}|${createTime}|${giftId}|${repeatCount}|${comboCount}|${groupCount}`;
+    return `gift|${userId}|${createTime}|${giftId}|${repeatCount}|${comboCount}|${groupCount}|${repeatEnd}`;
 }
 
 
@@ -4580,6 +4598,7 @@ class ConnectionManager {
     }
 
     recordTikTokDiagnosticCounter(counterName, amount = 1) {
+        if (counterName === 'forwardedEvents') this.lastForwardedEventAt = Date.now();
         if (!this.diagnosticStats || typeof this.diagnosticStats !== 'object') {
             this.diagnosticStats = {
                 rawFrames: 0,
@@ -4614,6 +4633,15 @@ class ConnectionManager {
     }
 
     getConnectionModeDetails() {
+        if (this.signingProvider === 'tikfinity') {
+            return {
+                effectiveMode: 'TikFinity Desktop',
+                method: 'TikFinity Desktop',
+                label: this.connection?.hasLiveEvents
+                    ? 'Receiving LIVE events from TikFinity Desktop'
+                    : 'Connected to TikFinity Desktop; waiting for LIVE events'
+            };
+        }
         const usingPolling = this.pollingFallbackActivated
             || this.preferredStrategy === 'legacy'
             || this.connectionStrategy === 'legacy'
@@ -5678,6 +5706,12 @@ class ConnectionManager {
     }
 
     initializeConnectionInstance({ forceLegacy = false, context = 'primary' } = {}) {
+        if (this.signingProvider === 'tikfinity') {
+            this.connectionStrategy = 'websocket';
+            this.connection = new TikFinityConnection();
+            this.setupEventHandlers();
+            return;
+        }
         if (!forceLegacy && this.signingProvider === EULER_WS_PROVIDER) {
             const rawKey = typeof this.signingConfig?.apiKey === 'string' && this.signingConfig.apiKey.trim()
                 ? this.signingConfig.apiKey.trim()
@@ -6051,6 +6085,7 @@ class ConnectionManager {
     }
 
     async tryFallbackToPolling(primaryError, stage = 'connect') {
+        if (this.signingProvider === 'tikfinity') return false;
         if (this.signingProvider === 'local' && !this.autoLocalSignerFallbackActive) {
             this.logDebug('lifecycle.fallback.polling.skipped', {
                 reason: 'explicit_local_signer',
@@ -6901,7 +6936,13 @@ class ConnectionManager {
     }
 
     getAdaptiveMessageTimeout() {
-        const now = Date.now();
+        // Judge silence against the traffic level when the connection was last
+        // alive. Moving this window forward during an outage makes every busy
+        // stream become "idle" before its shorter recovery timeout can fire.
+        const currentTime = Date.now();
+        const now = Number.isFinite(this.lastMessageTime) && this.lastMessageTime > 0
+            ? Math.min(currentTime, this.lastMessageTime)
+            : currentTime;
         this.pruneActivity(now);
 
         const {
@@ -6989,6 +7030,13 @@ class ConnectionManager {
     }
 
     setupEventHandlers() {
+        if (this.signingProvider === 'tikfinity') {
+            this.connection.on('captureStatus', message => {
+                if (!this.isActiveSourceConnection()) return;
+                emitStatus({ wssID: this.wssID, status: 'connected',
+                    connectionMethod: 'TikFinity Desktop', connectionLabel: message });
+            });
+        }
         const suppressedDecodedLogTypes = new Set([
             'WebcastLinkLayerMessage',
             'WebcastLinkMessage',
@@ -7747,7 +7795,23 @@ class ConnectionManager {
             const timeSinceLastMessage = now - this.lastMessageTime;
             const connectionDuration = now - this.connectionStartTime;
 
+            if (this.connection?.isConnected) {
+                emitStatus({
+                    wssID: this.wssID,
+                    status: 'capture_health',
+                    lastActivityAt: this.lastMessageTime,
+                    lastForwardedAt: this.lastForwardedEventAt || null,
+                    forwardedEvents: this.getTikTokDiagnosticStats().forwardedEvents,
+                    localBridge: this.signingProvider === 'tikfinity'
+                });
+            }
+
             // Proactively reconnect after 1.5 hours to avoid 2-hour timeout
+            if (this.signingProvider === 'tikfinity') {
+                // Desktop owns the upstream connection. Silence is not proof
+                // of failure and reconnecting its local API cannot repair it.
+                return;
+            }
             if (connectionDuration > 90 * 60 * 1000) { // 90 minutes
                 console.info('Proactively refreshing connection after 90 minutes');
                 this.connectionStartTime = Date.now();
@@ -7914,7 +7978,7 @@ class ConnectionManager {
         }
 
         // 3-Strike Rule: If we've failed Websocket connections too many times, force legacy mode
-        if (this.websocketFailureCount >= this.WEBSOCKET_FAILURE_THRESHOLD && !this.pollingFallbackActivated) {
+        if (this.signingProvider !== 'tikfinity' && this.websocketFailureCount >= this.WEBSOCKET_FAILURE_THRESHOLD && !this.pollingFallbackActivated) {
             console.warn(`[TikTok] Websocket failure threshold reached (${this.websocketFailureCount}), forcing Polling Fallback.`);
             this.pollingFallbackActivated = true;
             this.preferredStrategy = 'legacy';
@@ -10625,6 +10689,9 @@ class ConnectionManager {
     }
 
     async sendChatMessage(message) {
+        if (this.signingProvider === 'tikfinity') {
+            return { success: false, error: 'TikFinity Desktop capture is read-only. Send replies in TikFinity or TikTok.' };
+        }
         if (shouldLogTikTokDebug()) {
             console.log('[TikTok] sendChatMessage called', {
                 messageLength: typeof message === 'string' ? message.length : null
