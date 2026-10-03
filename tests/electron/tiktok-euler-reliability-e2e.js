@@ -32,6 +32,11 @@ async function run() {
         scenario.requests.push(record);
         response.on('close', () => { record.closedAt = Date.now(); });
         if (scenario.mode === 'stall') return;
+        if (scenario.mode === 'plan') {
+            response.writeHead(402, { 'Content-Type': 'application/json' });
+            response.end(JSON.stringify({ code: 402, message: 'This feature requires a business plan' }));
+            return;
+        }
         if (scenario.mode === 'unavailable') {
             response.writeHead(503, { 'Content-Type': 'application/json' });
             response.end(JSON.stringify({ message: 'Signing temporarily unavailable' }));
@@ -274,6 +279,17 @@ async function run() {
         }
 
         if (!process.argv.includes('--proxy-only')) {
+            const plan = await add('euler_plan', 'custom', 'plan');
+            await setKey(plan, 'synthetic-plan'); await start(plan);
+            await waitFor(async () => await page.evaluate(id => stateManager.getSource(id).status === 'error', plan.id), 'Euler plan error');
+            await page.waitForTimeout(1500);
+            const planBanner = page.locator(`[data-source-id="${plan.id}"] .ws-status.error`);
+            assert.strictEqual(await planBanner.isVisible(), true, 'Failed activation must keep its error banner');
+            assert.match(await planBanner.innerText(), /requires a compatible plan/);
+            assert.strictEqual((await manager(plan)).retry, false, 'Plan errors must not retry automatically');
+            await page.evaluate(id => stopThis(document.querySelector(`[data-source-id="${id}"] [data-activatehtml]`)), plan.id);
+            record('Euler plan error remains visible after activation completes', {});
+
             async function quotaUI(s, expected) {
                 await waitFor(async () => page.locator(`[data-source-id="${s.id}"] .ws-status.retry`).filter({ hasText: expected }).count(), expected);
                 return page.locator(`[data-source-id="${s.id}"] .ws-status`).innerText();

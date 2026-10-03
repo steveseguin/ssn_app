@@ -6131,6 +6131,12 @@
             if (!sourceId || !stateManager) return;
             const source = stateManager.getSource(sourceId);
             if (!source || source.target !== 'tiktok') return;
+            if (preset === 'tikfinity-guide') {
+                const presetSelect = sourceElement.querySelector('.tiktok-connection-select');
+                if (presetSelect) presetSelect.value = resolveTikTokConnectionPreset(source);
+                window.open('https://socialstream.ninja/docs/tikfinity-setup.html', '_blank');
+                return;
+            }
             if (hasConnectionHandles(source)) {
                 Toast.warning('Mode Locked', 'Stop the current connection before changing modes.');
                 const presetSelect = sourceElement.querySelector('.tiktok-connection-select');
@@ -6684,6 +6690,7 @@
                     <option value="standard">Standard (Capture Window)</option>
                     <option value="euler-ws">Euler Proxy (API Key)</option>
                     <option value="custom">Euler Signing (Advanced)</option>
+                    <option value="tikfinity-guide">TikFinity (Setup guide)</option>
                 </select>
                 <div class="provider-help-text" style="font-size: 11px; color: #94a3b8; line-height: 1.35; margin-top: 8px; min-height: 2.8em;"></div>
                 <div class="mode-info">
@@ -7218,7 +7225,12 @@
             }
 
             if (isTikTokWebsocketAttempt && !windowId) {
-                updateConnectionStatus(parentElement, 'clear');
+                const failedSource = stateManager.getSource(sourceId);
+                if (failedSource?.status === 'error' && failedSource.error) {
+                    updateConnectionStatus(parentElement, 'error', failedSource.error);
+                } else {
+                    updateConnectionStatus(parentElement, 'clear');
+                }
                 restoreActivateButton(parentElement);
                 return;
             }

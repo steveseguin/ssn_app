@@ -10,6 +10,7 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 const { _electron } = require('playwright-core');
 const WebSocket = require('ws');
+const connector = require('tiktok-live-connector');
 const { chatFrame, freePort, waitFor } = require('./tiktok-disconnect-validation-e2e');
 const { linuxLaunchArgs } = require('./helpers/electron-launch');
 
@@ -124,6 +125,98 @@ async function run() {
 		async function reloadFor(selector) {
 			await page.reload();
 			await page.waitForFunction(selector => window.stateManager?.initialized && configReady && document.querySelector(selector), selector);
+		}
+		await check('TikFinity dropdown opens its guide without changing the source mode', async () => {
+			const id = await addTikTok();
+			const select = page.locator(`[data-source-id="${id}"] .tiktok-connection-select`);
+			await select.selectOption('local');
+			const before = await sourceState(id);
+			await page.evaluate(() => {
+				window.originalGuideOpen = window.open;
+				window.guideUrls = [];
+				window.open = url => window.guideUrls.push(url);
+			});
+			try {
+				await select.selectOption('tikfinity-guide');
+				assert.deepStrictEqual(await page.evaluate(() => window.guideUrls), ['https://socialstream.ninja/docs/tikfinity-setup.html']);
+				assert.deepStrictEqual(await sourceState(id), before);
+				assert.strictEqual(await select.inputValue(), 'local');
+			} finally {
+				await page.evaluate(() => { window.open = window.originalGuideOpen; });
+			}
+		});
+		await clear();
+		await check('TikFinity Activity Feed captures through Add other source and stops', async () => {
+			const url = 'https://tikfinity.zerody.one/widget/activity-feed?cid=ssapp-test&did=1';
+			const frameUrl = 'https://tikfinity.zerody.one/widget/vite/src/activity-feed/ssapp-test';
+			await page.context().route(url, route => route.fulfill({
+				contentType: 'text/html', body: `<html><body><iframe src="${frameUrl}"></iframe></body></html>`,
+			}));
+			await page.context().route(frameUrl, route => route.fulfill({
+				contentType: 'text/html', body: `<html><body>TikFinity fixture<script>
+				let sequence = 0;
+				setInterval(() => window.postMessage({ type: 'chat', payload: {
+					nickname: 'TikFinity fixture', uniqueId: 'ssapp_fixture',
+					comment: 'hidden-capture message TikFinity ' + (++sequence), msgId: String(sequence)
+				}}, '*'), 500);
+				</script></body></html>`,
+			}));
+			await page.locator('[data-source-type="other"]').click();
+			await page.locator('#source-setup-input').fill(url);
+			await page.getByRole('button', { name: 'Add source', exact: true }).click();
+			const id = await page.evaluate(() => stateManager.getSources().find(s => s.target === 'tikfinity')?.id);
+			assert.ok(id, 'Activity Feed URL should be recognized as TikFinity');
+			assert.deepStrictEqual((await sourceState(id)).sourceFiles, ['sources/tikfinity.js']);
+			const entry = page.locator(`[data-source-id="${id}"]`);
+			await entry.locator('[data-activatehtml]').press('Enter');
+			const captured = () => received.filter(m => m.chatname === 'TikFinity fixture');
+			await waitFor(() => captured().length >= 4, 'TikFinity iframe messages at relay');
+			assert.ok(captured().every(m => m.type === 'tiktok'));
+			assert.strictEqual(new Set(captured().map(m => m.chatmessage)).size, captured().length);
+			await entry.locator('[data-stophtml]').press('Enter');
+			await waitFor(async () => (await sourceState(id)).status === 'inactive', 'TikFinity Stop');
+			const countAfterStop = captured().length;
+			await page.waitForTimeout(1500);
+			assert.strictEqual(captured().length, countAfterStop);
+		});
+		await clear();
+		for (const region of ['global', 'us']) {
+			await check(`TikTok Local Signer captures from the ${region} bootstrap endpoint`, async () => {
+				const host = region === 'us' ? 'webcast.us.tiktok.com' : 'webcast.tiktok.com';
+				const username = `local_${region}_fixture`;
+				const bootstrapUrl = `https://${host}/webcast/im/fetch/?room_id=123456&identity=audience`;
+				const body = Object.assign(connector.ProtoMessageFetchResult.decode(Buffer.alloc(0)), {
+					messages: [], cursor: 'local-fixture', internalExt: '', routeParams: {},
+					pushServer: `ws://127.0.0.1:${server.address().port}/`,
+				});
+				await page.context().route(bootstrapUrl, route => route.fulfill({
+					contentType: 'application/octet-stream', body: Buffer.from(connector.ProtoMessageFetchResult.encode(body).finish()),
+				}));
+				await page.context().route(`https://www.tiktok.com/@${username}/live`, route => route.fulfill({
+					contentType: 'text/html', body: `<html><body data-room-id="123456">Local signer fixture<script>
+					window.SIGI_STATE = { room: { roomId: '123456' } };
+					setTimeout(() => fetch(${JSON.stringify(bootstrapUrl)}).then(r => r.arrayBuffer()), 500);
+					</script></body></html>`,
+				}));
+				const id = await page.evaluate(username => stateManager.addSource({
+					target: 'tiktok', username, url: `https://www.tiktok.com/@${username}/live`, autoActivate: false,
+					connectionMode: 'tiktok-websocket', tiktokSigningProvider: 'local',
+				}), username);
+				const before = received.length;
+				await page.locator(`[data-source-id="${id}"] [data-activatehtml]`).press('Enter');
+				await waitFor(async () => {
+					const s = await sourceState(id);
+					return s.status === 'active' && received.slice(before).some(m => m.tid === s.vid);
+				}, `${region} local signer chat at relay`, 45000);
+				const manager = await app.evaluate(() => {
+					const m = global.__activationFixture.managers.at(-1);
+					return { provider: m.signingProvider, roomId: m.connection.roomId, retries: m.reconnectAttempts };
+				});
+				assert.deepStrictEqual(manager, { provider: 'local', roomId: '123456', retries: 0 });
+				await page.locator(`[data-source-id="${id}"] [data-activatehtml]`).press('Enter');
+				await waitFor(async () => (await sourceState(id)).status === 'inactive', 'local signer Stop');
+			});
+			await clear();
 		}
 		await check('TikTok Auto retires failed connectors and captures through a real Standard window', async () => {
 			await app.evaluate(() => { global.__activationFixture.failBootstrap = true; });
