@@ -4,6 +4,8 @@
 // and local relay. No chat, reactions, or gifts are sent to TikTok.
 // Set SSAPP_LIVE_PROFILE_MEMORY=1 for per-process/window memory diagnostics,
 // including garbage-collected baselines and post-Stop retention.
+// SSAPP_LIVE_CYCLES repeats capture/Stop/Close in the same app; use
+// SSAPP_LIVE_IDLE_SECONDS (a multiple of 30) for longer post-close observations.
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
@@ -91,6 +93,11 @@ async function run() {
     const users = (process.env.SSAPP_LIVE_USERS || 'zachooh,hunterhalifaxx').split(',');
     const minutes = Number(process.env.SSAPP_LIVE_MINUTES || 15);
     const profileMemory = process.env.SSAPP_LIVE_PROFILE_MEMORY === '1';
+    const cycles = Number(process.env.SSAPP_LIVE_CYCLES || 1);
+    const idleSeconds = Number(process.env.SSAPP_LIVE_IDLE_SECONDS || 30);
+    assert.ok(Number.isInteger(cycles) && cycles >= 1 && cycles <= 10);
+    assert.ok(Number.isInteger(idleSeconds) && idleSeconds >= 30 && idleSeconds <= 600 && idleSeconds % 30 === 0);
+    assert.ok(cycles === 1 || profileMemory, 'Repeated cycles require memory profiling');
     assert.ok(users.length === 2 && users.every(user => /^[a-z0-9_.]+$/i.test(user) && !/camcam66gaming/i.test(user)));
     assert.ok(Number.isFinite(minutes) && minutes >= 2 && minutes <= 120);
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-tiktok-live-reliability-'));
@@ -100,12 +107,13 @@ async function run() {
         streamID: room, password: 'false', state: true, wsServer: true,
         settings: { server2: { setting: true }, capturelikeevent: { setting: true } },
     }));
-    const report = { profile, minutes, sources: [], samples: [], stopped: false, duplicates: 0, proactiveRefreshes: 0 };
+    const report = { profile, minutes, cycles, idleSeconds, sources: [], samples: [], stopped: false, duplicates: 0, proactiveRefreshes: 0 };
     if (profileMemory) {
         report.memoryNotes = [
             'Process working sets can include shared pages; do not treat their sum as unique physical memory.',
-            'The test retains native manager references until exit for recovery and Stop assertions.',
+            'Diagnostic manager references are released after Stop, before closed-window idle measurements.',
             'GC checkpoints affect only test renderers whose debugger is owned by this diagnostic.',
+            'Playwright attaches to service workers; compare closed-renderer retention with tiktok-memory-idle-e2e.js before diagnosing a leak.',
         ];
     }
     let app, relay, log = '';
@@ -241,13 +249,15 @@ async function run() {
             // the separate user-facing Close control and measure its cleanup.
             await page.evaluate(id => showTikTokSignInMenu(id), report.sources[0].id);
             await page.locator(`#tiktok-signing-stop-${report.sources[0].id}`).click();
+            await page.locator('button[onclick="closeModal()"]:visible').click();
             await waitFor(() => app.evaluate(({ webContents }) => webContents.getAllWebContents()
                 .every(wc => !/^https:\/\/(www\.)?tiktok\.com\//.test(wc.getURL()))), 'signing window closed');
+            await app.evaluate(() => { global.__liveManagers = []; });
             await page.waitForTimeout(5000);
             report.memoryAfterHelperClose = await sampleMemory(app, true);
             // Chromium can release a closed renderer asynchronously. Preserve
             // a later sample rather than equating window closure with RSS release.
-            await page.waitForTimeout(25000);
+            await page.waitForTimeout((idleSeconds - 5) * 1000);
             report.memoryAfterIdle = await sampleMemory(app, true);
             assert.strictEqual(JSON.stringify(counts), afterStop, 'Closing the signing window restarted capture');
         }
@@ -259,6 +269,56 @@ async function run() {
             assert.ok(report.proactiveRefreshes > 0, 'The real 90-minute refresh was not observed');
             assert.ok(report.sources[0].counts.lastChatAt > report.lastProactiveRefreshAt,
                 'No fresh native chat after the 90-minute refresh');
+        }
+        report.additionalCycles = [];
+        for (let cycle = 2; cycle <= cycles; cycle++) {
+            const result = { cycle, samples: [], sources: [] };
+            report.additionalCycles.push(result);
+            Object.keys(counts).forEach(key => delete counts[key]);
+            seenChatIds.clear();
+            for (const source of report.sources) {
+                // Background-window animations can prevent Playwright's stability check.
+                // The settings panel is closed above; verify activation after the click.
+                await page.locator(`[data-source-id="${source.id}"] [data-activatehtml]`).click({ force: true });
+                await page.waitForFunction(id => stateManager.getSource(id).status !== 'inactive', source.id);
+                await page.waitForTimeout(15000);
+            }
+            const cycleStarted = Date.now();
+            while (Date.now() - cycleStarted < minutes * 60000) {
+                await page.waitForTimeout(20000);
+                const sample = { seconds: Math.round((Date.now() - cycleStarted) / 1000),
+                    counts: JSON.parse(JSON.stringify(counts)), memory: await sampleMemory(app) };
+                result.samples.push(sample);
+                console.log(JSON.stringify({ cycle, seconds: sample.seconds, counts: sample.counts }));
+                fs.writeFileSync(path.join(profile, 'report.json'), JSON.stringify(report, null, 2));
+            }
+            result.memoryBeforeStop = await sampleMemory(app, true);
+            for (const source of report.sources) {
+                const state = await page.evaluate(id => stateManager.getSource(id), source.id);
+                result.sources.push({ mode: source.mode, counts: counts[state.vid] || null });
+                assert.ok(counts[state.vid]?.chat > 0, 'Repeated cycle did not capture live chat');
+                await page.locator(`[data-source-id="${source.id}"] ${source.mode === 'classic' ? '[data-stophtml]' : '[data-activatehtml]'}`).click({ force: true });
+            }
+            await waitFor(() => app.evaluate(() => global.__liveManagers.every(m => m.isStopped)), 'repeated native Stop');
+            const stoppedCounts = JSON.stringify(counts);
+            await page.evaluate(id => showTikTokSignInMenu(id), report.sources[0].id);
+            await page.locator(`#tiktok-signing-stop-${report.sources[0].id}`).click();
+            await page.locator('button[onclick="closeModal()"]:visible').click();
+            await waitFor(() => app.evaluate(({ webContents }) => webContents.getAllWebContents()
+                .every(wc => !/^https:\/\/(www\.)?tiktok\.com\//.test(wc.getURL()))), 'repeated signing window close');
+            await app.evaluate(() => { global.__liveManagers = []; });
+            result.idle = [];
+            for (let elapsed = 30; elapsed <= idleSeconds; elapsed += 30) {
+                await page.waitForTimeout(30000);
+                const sample = { seconds: elapsed, memory: await sampleMemory(app, true) };
+                result.idle.push(sample);
+                assert.strictEqual(JSON.stringify(counts), stoppedCounts, 'Capture resumed while stopped');
+                console.log(JSON.stringify({ cycle, idleSeconds: elapsed, processes: sample.memory.processes.length }));
+                fs.writeFileSync(path.join(profile, 'report.json'), JSON.stringify(report, null, 2));
+            }
+            assert.ok(result.sources.every(source => source.counts?.chat > 0), 'Repeated cycle did not capture chat on both sources');
+            assert.strictEqual(report.duplicates, 0, 'Duplicate chat IDs during repeated capture');
+            result.complete = true;
         }
         report.complete = true;
         console.log(JSON.stringify(report.sources));
