@@ -126,6 +126,9 @@ class StateManager {
                         if (source.tiktokSigningProvider === undefined || !source.tiktokSigningProvider) {
                             source.tiktokSigningProvider = 'auto';
                         }
+                        if (source.target === 'tiktok' && source.connectionMode === 'tiktok-legacy' && source.tiktokSigningProvider === 'tikfinity') {
+                            source.tiktokSigningProvider = 'auto';
+                        }
                         if ((source.tiktokSigningProvider === 'custom' || source.tiktokSigningProvider === 'euler-ws' || source.tiktokSigningProvider === 'local') && source.showTikTokSigningTools !== true) {
                             source.showTikTokSigningTools = true;
                         }
@@ -511,6 +514,9 @@ class StateManager {
         if (source.tiktokSigningProvider === undefined || !source.tiktokSigningProvider) {
             source.tiktokSigningProvider = 'auto';
         }
+        if (source.target === 'tiktok' && source.connectionMode === 'tiktok-legacy' && source.tiktokSigningProvider === 'tikfinity') {
+            source.tiktokSigningProvider = 'auto';
+        }
         if (source.tiktokSigningProvider === 'custom') {
             source.showTikTokSigningTools = true;
         }
@@ -564,6 +570,9 @@ class StateManager {
             ? source.tiktokSigningProvider.trim()
             : 'auto';
         source.tiktokSigningProvider = providerValue;
+        if (source.target === 'tiktok' && source.connectionMode === 'tiktok-legacy' && source.tiktokSigningProvider === 'tikfinity') {
+            source.tiktokSigningProvider = 'auto';
+        }
         if ((providerValue === 'custom' || providerValue === 'euler-ws' || providerValue === 'local') && source.showTikTokSigningTools !== true) {
             source.showTikTokSigningTools = true;
         }

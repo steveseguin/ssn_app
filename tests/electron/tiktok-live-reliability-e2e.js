@@ -25,7 +25,7 @@ async function run() {
         streamID: room, password: 'false', state: true, wsServer: true,
         settings: { server2: { setting: true }, capturelikeevent: { setting: true } },
     }));
-    const report = { profile, minutes, sources: [], samples: [], stopped: false, duplicates: 0 };
+    const report = { profile, minutes, sources: [], samples: [], stopped: false, duplicates: 0, proactiveRefreshes: 0 };
     let app, relay, log = '';
     const counts = {};
     const seenChatIds = new Set();
@@ -36,7 +36,13 @@ async function run() {
                 '--ssapp-local-server-port=' + port, ...linuxLaunchArgs()],
             env: { ...process.env, SSAPP_USER_DATA_DIR: profile }, timeout: 60000 });
         for (const stream of [app.process().stdout, app.process().stderr]) {
-            stream.on('data', chunk => { log = (log + chunk).slice(-200000); });
+            stream.on('data', chunk => {
+                log = (log + chunk).slice(-200000);
+                if (String(chunk).includes('Proactively refreshing connection after 90 minutes')) {
+                    report.proactiveRefreshes++;
+                    report.lastProactiveRefreshAt = Date.now();
+                }
+            });
         }
         const page = await app.firstWindow();
         report.runtime = await app.evaluate((_, root) => ({ electron: process.versions.electron,
@@ -97,9 +103,12 @@ async function run() {
                     const s = stateManager.getSource(id);
                     return { id, status: s.status, vid: s.vid, method: s.tiktokConnectionMethod, error: s.error };
                 }), report.sources.map(s => s.id)),
+                memory: await app.evaluate(({ app }) => app.getAppMetrics().map(p => ({
+                    type: p.type, workingSetSizeKb: p.memory.workingSetSize,
+                }))),
                 native: await app.evaluate(() => global.__liveManagers.map(m => ({
                     username: m.username, stopped: m.isStopped, connected: !!m.connection?.isConnected,
-                    stats: m.getTikTokDiagnosticStats(), lastActivity: m.lastMessageTime,
+                    stats: m.getTikTokDiagnosticStats(), lastActivity: m.lastMessageTime, lastConnectTimestamp: m.lastConnectTimestamp,
                 }))),
             };
             report.samples.push(sample);
@@ -142,6 +151,11 @@ async function run() {
             'Live validation incomplete: one or more sources captured no chat');
         assert.ok(report.recoveredAt, 'Native source did not capture fresh chat after reconnect');
         assert.strictEqual(report.duplicates, 0, 'Duplicate chat IDs forwarded during live capture');
+        if (minutes >= 100) {
+            assert.ok(report.proactiveRefreshes > 0, 'The real 90-minute refresh was not observed');
+            assert.ok(report.sources[0].counts.lastChatAt > report.lastProactiveRefreshAt,
+                'No fresh native chat after the 90-minute refresh');
+        }
         report.complete = true;
         console.log(JSON.stringify(report.sources));
     } catch (error) {

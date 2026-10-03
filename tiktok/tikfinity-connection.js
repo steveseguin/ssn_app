@@ -12,11 +12,15 @@ class TikFinityConnection extends EventEmitter {
         this.socket = null;
         this.rejectConnect = null;
         this.hasLiveEvents = false;
+        this.lastLiveEventAt = 0;
+        this.captureLabel = '';
     }
 
     connect() {
         this.disconnect();
         this.hasLiveEvents = false;
+        this.lastLiveEventAt = 0;
+        this.captureLabel = '';
         return new Promise((resolve, reject) => {
             this.rejectConnect = reject;
             const socket = new WebSocket('ws://127.0.0.1:21213/', {
@@ -45,9 +49,10 @@ class TikFinityConnection extends EventEmitter {
                 if (event === 'member' && packet.data.action == null && packet.data.actionId != null) {
                     packet.data = { ...packet.data, action: packet.data.actionId };
                 }
+                this.lastLiveEventAt = Date.now();
                 if (!this.hasLiveEvents) {
                     this.hasLiveEvents = true;
-                    this.emit('captureStatus', 'Receiving LIVE events from TikFinity Desktop');
+                    this.updateCaptureStatus();
                 }
                 this.emit('decodedData', event, packet.data);
                 this.emit(event, packet.data);
@@ -74,6 +79,20 @@ class TikFinityConnection extends EventEmitter {
                 if (wasConnected) this.emit('disconnected');
             });
         });
+    }
+
+    updateCaptureStatus(now = Date.now()) {
+        if (!this.isConnected || !this.lastLiveEventAt) return;
+        const seconds = Math.max(0, Math.floor((now - this.lastLiveEventAt) / 1000));
+        const quiet = seconds >= 60;
+        const label = quiet
+            ? `TikFinity Desktop connected; last LIVE event ${seconds}s ago. Check TikFinity if events are expected.`
+            : 'Receiving LIVE events from TikFinity Desktop';
+        this.hasLiveEvents = !quiet;
+        if (label !== this.captureLabel) {
+            this.captureLabel = label;
+            this.emit('captureStatus', label);
+        }
     }
 
     disconnect() {

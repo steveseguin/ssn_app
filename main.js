@@ -20811,7 +20811,9 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     const sessionId = rawSessionId || null;
     const ttTargetIdc = rawTtTargetIdc || null;
     const signing = normalizeTikTokSigningArgs(args?.signing);
-    const signingProvider = args?.signingProvider || 'auto';
+    const requestedStrategy = args && args.strategy === 'websocket' ? 'websocket' : 'legacy';
+    const signingProvider = args?.signingProvider === 'tikfinity' && requestedStrategy === 'legacy'
+        ? 'auto' : (args?.signingProvider || 'auto');
     const autoActivate = args?.autoActivate === true;
     if (signingProvider === 'tikfinity' && Object.values(websocketConnections).some(connection =>
         connection && !connection.isStopped && connection.signingProvider === 'tikfinity'
@@ -20821,14 +20823,11 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     
     // Debug: Log signing config received from renderer
     console.log('[TikTok] Signing config received:', {
-        rawSigning: args?.signing,
-        normalizedSigning: signing,
         signingProvider,
         hasApiKey: !!(signing && signing.apiKey),
         hasServiceUrl: !!(signing && signing.serviceUrl)
     });
 
-    const requestedStrategy = args && args.strategy === 'websocket' ? 'websocket' : 'legacy';
     const manager = new ConnectionManager(
         username,
         wssID,

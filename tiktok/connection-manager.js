@@ -7796,6 +7796,7 @@ class ConnectionManager {
             const connectionDuration = now - this.connectionStartTime;
 
             if (this.connection?.isConnected) {
+                if (this.signingProvider === 'tikfinity') this.connection.updateCaptureStatus(now);
                 emitStatus({
                     wssID: this.wssID,
                     status: 'capture_health',

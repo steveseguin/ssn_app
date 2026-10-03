@@ -89,6 +89,8 @@ No formal test framework (Jest/Mocha). Manual integration tests only.
 
 ### TikTok Connection Tests
 
+- A reusable Euler testing key is stored locally in the gitignored root `.secret` file as `EULER_TEST_API_KEY`. Test tooling may use that value (or an environment override). Never print the key, include it in reports, commit it, or package/upload the secrets file. Preserve other entries in `.secret` when updating it.
+
 ```bash
 cd tests/tiktok
 npm install

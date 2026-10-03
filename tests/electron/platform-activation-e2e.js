@@ -133,6 +133,67 @@ async function run() {
 			await page.reload();
 			await page.waitForFunction(selector => window.stateManager?.initialized && configReady && document.querySelector(selector), selector);
 		}
+		await check('TikTok mode matrix preserves settings, restores sign-in, and repairs old Compatibility state', async () => {
+			const id = await addTikTok();
+			const select = page.locator(`[data-source-id="${id}"] .tiktok-connection-select`);
+			const presets = ['auto', 'local', 'polling', 'standard', 'euler-ws', 'custom', 'tikfinity'];
+			await page.evaluate(id => stateManager.updateSource(id, { tiktokSigningApiKey: 'fixture-only-key', tiktokSigningServiceUrl: 'https://fixture.invalid/' }), id);
+			for (const from of presets) for (const to of presets) {
+				await select.selectOption(from);
+				await select.selectOption(to);
+				const state = await sourceState(id);
+				assert.strictEqual(await select.inputValue(), to, `${from} -> ${to} selection`);
+				assert.strictEqual(state.connectionMode, to === 'standard' ? 'classic' : to === 'polling' ? 'tiktok-legacy' : 'tiktok-websocket');
+				if (to === 'polling') assert.notStrictEqual(state.tiktokSigningProvider, 'tikfinity');
+				assert.strictEqual(state.tiktokSigningApiKey, 'fixture-only-key', 'Mode switch erased credentials');
+				assert.strictEqual(await page.locator(`[data-source-id="${id}"] [data-signin]`).isVisible(), to !== 'tikfinity', `${from} -> ${to} sign-in`);
+			}
+			await select.selectOption('polling');
+			await page.evaluate(id => {
+				// Simulate settings saved by the earlier version, bypassing the repaired setter.
+				stateManager.getSource(id).tiktokSigningProvider = 'tikfinity';
+				stateManager.persist();
+			}, id);
+			await reloadFor(`[data-source-id="${id}"]`);
+			assert.strictEqual((await sourceState(id)).tiktokSigningProvider, 'auto');
+			assert.strictEqual(await select.inputValue(), 'polling');
+			await page.evaluate(id => stateManager.updateSource(id, { tiktokSigningApiKey: null, tiktokSigningServiceUrl: null }), id);
+			await page.waitForTimeout(6000);
+			const before = received.length;
+			await page.locator(`[data-source-id="${id}"] [data-activatehtml]`).click({ force: true });
+			await waitFor(() => received.length > before, 'repaired Compatibility captures native fixture chat');
+			assert.strictEqual(await app.evaluate(() => global.__activationFixture.managers.at(-1).signingProvider), 'auto');
+			assert.ok(await select.isDisabled(), 'Active mode selector must be locked until Stop');
+			assert.strictEqual(await select.inputValue(), 'polling', 'Active mode changed without Stop');
+		});
+		await clear();
+		await check('TikTok connection help supports keyboard navigation and narrow zoomed windows', async () => {
+			const id = await addTikTok();
+			const entry = page.locator(`[data-source-id="${id}"]`);
+			assert.strictEqual(await entry.getByRole('combobox', { name: 'TikTok connection mode' }).count(), 1);
+			const help = entry.getByRole('button', { name: 'TikTok connection modes help' });
+			await page.setViewportSize({ width: 800, height: 700 });
+			await page.evaluate(() => { document.body.style.zoom = '1.25'; });
+			try {
+				await help.focus();
+				await help.press('Enter');
+				const modal = page.locator('#tiktok-auth-modal');
+				await modal.waitFor({ state: 'visible' });
+				assert.match(await modal.innerText(), /TikFinity Desktop/);
+				for (let index = 0; index < 12; index++) {
+					await page.keyboard.press('Tab');
+					assert.ok(await modal.evaluate(node => node.contains(document.activeElement)), 'Keyboard focus escaped help');
+				}
+				await page.screenshot({ path: path.join(profile, 'tiktok-help-zoom.png') });
+				await page.keyboard.press('Escape');
+				await modal.waitFor({ state: 'detached' });
+				assert.ok(await help.evaluate(node => document.activeElement === node), 'Help did not restore keyboard focus');
+			} finally {
+				await page.evaluate(() => { closeModal(); document.body.style.zoom = ''; });
+				await page.setViewportSize({ width: 1200, height: 800 });
+			}
+		});
+		await clear();
 		await check('TikFinity dropdown opens its guide without changing the source mode', async () => {
 			const id = await addTikTok();
 			const select = page.locator(`[data-source-id="${id}"] .tiktok-connection-select`);
@@ -218,6 +279,15 @@ async function run() {
 				await page.waitForTimeout(1200);
 				assert.strictEqual(captured().length, 1, 'Duplicate message forwarded');
 				assert.match(await entry.innerText(), /Receiving LIVE events/);
+				// Raw socket traffic is not proof of LIVE events. Age only the
+				// event timestamp, then wait for the actual 60-second health timer.
+				await app.evaluate(() => {
+					global.__activationFixture.managers.find(m => m.signingProvider === 'tikfinity' && !m.isStopped).connection.lastLiveEventAt = Date.now() - 65000;
+				});
+				await waitFor(async () => /last LIVE event/.test(await entry.innerText()), 'quiet Desktop status', 65000);
+				assert.strictEqual(count, 1, 'Quiet Desktop socket should not reconnect');
+				send({ ...message, data: { ...message.data, msgId: '810001-quiet-recovery', comment: 'Desktop LIVE resumed' } });
+				await waitFor(async () => /Receiving LIVE events/.test(await entry.innerText()), 'Desktop live status resumes');
 				assert.strictEqual(await entry.locator('[data-signin]').isVisible(), false, 'Desktop mode must not suggest TikTok sign-in');
 				const user = { userId: '456', uniqueId: 'desktop_gifter', nickname: 'Desktop gift' };
 				for (const event of ['follow', 'share', 'subscribe', 'member', 'like']) send({ event, data: { ...user, action: 1, msgId: 'event-' + event } });

@@ -6181,7 +6181,7 @@
                     break;
                 case 'polling':
                     nextMode = 'tiktok-legacy';
-                    nextProvider = source.tiktokSigningProvider || 'auto';
+                    nextProvider = source.tiktokSigningProvider === 'tikfinity' ? 'auto' : (source.tiktokSigningProvider || 'auto');
                     break;
                 case 'standard':
                 default:
@@ -6365,11 +6365,11 @@
                     <div style="margin-top: 16px; background: rgba(34, 197, 94, 0.08); border: 1px solid rgba(34, 197, 94, 0.3); border-radius: 8px; padding: 14px;">
                         <div style="font-weight: 600; color: #86efac; margin-bottom: 8px; font-size: 14px;">Which should I use?</div>
                         <div style="color: #d1d5db; font-size: 13px; line-height: 1.7;">
-                            <strong style="color: #f8fafc;">Most users</strong> → Use <strong>TikTok WS</strong> with <strong>Auto</strong> (default). It falls back to Compatibility if needed.<br>
+                            <strong style="color: #f8fafc;">Most users</strong> → Start with <strong>AUTO</strong>. If it cannot connect, automatic recovery can try another capture method. The status shows the method actually in use.<br>
                             <strong style="color: #f8fafc;">Need to reply to chat?</strong> → Use <strong>Standard</strong> mode and sign in first.<br>
-                            <strong style="color: #f8fafc;">Standard not working?</strong> → Try <strong>TikTok WS</strong> with <strong>Local Signer</strong> for replies.<br>
+                            <strong style="color: #f8fafc;">Standard not working?</strong> → Try <strong>Local Signer (Replies)</strong>. Replies require a signed-in TikTok session in SSN.<br>
                             <strong style="color: #f8fafc;">Everything failing?</strong> → Try <strong>Euler Proxy</strong> or <strong>Euler Signing</strong> with an API key.<br>
-                            <strong style="color: #f8fafc;">Need a backup source?</strong> → Use <strong>TikFinity OBS Dock</strong> in <strong>Add other source</strong> if TikTok keeps missing chat.
+                            <strong style="color: #f8fafc;">Need a backup source?</strong> → Choose <strong>TikFinity Desktop (Local API, Beta)</strong> if you already use TikFinity on this computer. Its Activity Feed remains available through <strong>Add other source</strong>.
                         </div>
                     </div>
 
@@ -6401,6 +6401,14 @@
                         </div>
                     </div>
 
+                    <div style="margin-top: 12px; background: rgba(168,85,247,0.10); border-radius: 8px; padding: 12px 14px;">
+                        <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #f8fafc;">TikFinity Desktop (Local API, Beta)</h4>
+                        <div style="color: #94a3b8; font-size: 12px; line-height: 1.6;">
+                            Keep TikFinity Desktop open and connected to LIVE on this computer. SSN receives the stream selected in TikFinity, regardless of the username shown in SSN. This option is read-only and supports one Desktop capture at a time. Avoid capturing the same stream through another source too.<br>
+                            A connected Desktop app does not guarantee LIVE events are arriving. Check its dashboard if SSN is waiting for events. Signing into TikFinity and signing into TikTok are separate steps.
+                        </div>
+                    </div>
+
                     <h4 style="margin: 20px 0 10px 0; font-size: 14px; color: #e2e8f0;">External Backup</h4>
                     <div style="background: rgba(168, 85, 247, 0.10); border-left: 3px solid #a855f7; border-radius: 8px; padding: 12px 14px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
@@ -6422,7 +6430,7 @@
                                 <span style="font-size: 11px; background: rgba(34,197,94,0.2); color: #86efac; padding: 2px 8px; border-radius: 4px;">Default</span>
                             </div>
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
-                                Tries Euler signing, falls back to Compatibility automatically if it fails. No API key needed. No replies. Best starting point.
+                                Starts with automatic signing and can try other capture methods when a connection fails. Check the source status for the method currently in use. No personal API key is required to start; service limits may apply.
                             </div>
                         </div>
 
@@ -6432,7 +6440,7 @@
                                 <span style="font-size: 10px; background: rgba(251,191,36,0.2); color: #fcd34d; padding: 2px 6px; border-radius: 4px;">Experimental</span>
                             </div>
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
-                                Signs requests using a local TikTok browser window. No third-party service. <strong style="color: #d1d5db;">Can send replies.</strong> Keep the signer window open for replies and reconnections.
+                                Signs requests using SSN's TikTok browser session. <strong style="color: #d1d5db;">Replies require sign-in.</strong> Anonymous capture is best effort. A TikFinity login is separate from your SSN login.
                             </div>
                         </div>
 
@@ -6442,7 +6450,7 @@
                                 <span style="font-size: 10px; background: rgba(251,191,36,0.2); color: #fcd34d; padding: 2px 6px; border-radius: 4px;">Experimental</span>
                             </div>
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
-                                Connects through Euler's hosted proxy server. Requires API key from <a href="#" onclick="window.open('https://www.eulerstream.com/dashboard', '_blank'); return false;" style="color: #63a4d8;">eulerstream.com</a>. Free tier available. No replies.
+                                Connects through Euler's hosted proxy server. Requires an API key with access to this service from <a href="#" onclick="window.open('https://www.eulerstream.com/dashboard', '_blank'); return false;" style="color: #63a4d8;">eulerstream.com</a>. Your plan and quota determine availability. No replies.
                             </div>
                         </div>
 
@@ -6696,7 +6704,7 @@
                     modeSelector.className = 'mode-selector';
                     modeSelector.innerHTML = `
                 <div class="mode-selector-label">TikTok Connection:</div>
-                <select onchange="setTikTokConnectionPreset(this.closest('.entry'), this.value); updateSigningProviderHelpText(this);" class="tiktok-connection-select" style="width: 100%; margin-top: 4px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.35); background: rgba(15,23,42,0.55); color: #e2e8f0;">
+                <select aria-label="TikTok connection mode" onchange="setTikTokConnectionPreset(this.closest('.entry'), this.value); updateSigningProviderHelpText(this);" class="tiktok-connection-select" style="width: 100%; margin-top: 4px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.35); background: rgba(15,23,42,0.55); color: #e2e8f0;">
                     <option value="auto">AUTO (Recommended)</option>
                     <option value="local">Local Signer (Replies)</option>
                     <option value="polling">Compatibility (WebSocket)</option>
