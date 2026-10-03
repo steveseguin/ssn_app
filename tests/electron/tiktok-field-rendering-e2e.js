@@ -15,8 +15,12 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, label) {
   const start = Date.now();
   while (Date.now() - start < 45000) {
-    const value = await check();
-    if (value) return value;
+    try {
+      const value = await check();
+      if (value) return value;
+    } catch (error) {
+      if (!String(error.message).includes('Execution context was destroyed')) throw error;
+    }
     await pause(150);
   }
   throw new Error('Timed out: ' + label);
