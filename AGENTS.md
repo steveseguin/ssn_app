@@ -68,6 +68,8 @@ Electron desktop application for aggregating social media live stream chat. Comm
 
 ## Testing
 
+Never run SSApp tests through WSL on Steve's PC. Use native Windows for local testing; do not launch WSL as a testing workaround.
+
 No formal test framework (Jest/Mocha). Manual integration tests only.
 
 ### LLM Control Maintenance
