@@ -73,16 +73,23 @@ async function run() {
                 }, { username, preset });
                 const entry = page.locator(`[data-source-id="${id}"]`);
                 await entry.locator('.tiktok-connection-select').selectOption(preset);
-                if (process.env.SSAPP_TIKTOK_AUTH_PROFILE && (preset === 'local' || preset === 'standard')) {
+                const hasSavedLogin = await page.evaluate(id => !!stateManager.getSource(id).tiktokSessionId
+                    && !!stateManager.getSource(id).tiktokTtTargetIdc, id);
+                if (!hasSavedLogin && process.env.SSAPP_TIKTOK_AUTH_PROFILE && (preset === 'local' || preset === 'standard')) {
+                    await entry.locator('.tiktok-connection-select').selectOption('local');
                     await page.evaluate(id => showTikTokSignInMenu(id), id);
                     await page.locator(`[id="tiktok-signing-generate-${id}"]`).click();
                     await waitFor(async () => await page.evaluate(id => !!stateManager.getSource(id).tiktokSessionId
                         && !!stateManager.getSource(id).tiktokTtTargetIdc, id), 'saved TikTok login collected', 60000);
+                    await waitFor(async () => !(await page.locator(`[id="tiktok-signing-generate-${id}"]`).isDisabled()),
+                        'Collect Session completed', 60000);
                     await page.evaluate(() => closeModal());
                     // Collect Session selects Local Signer; restore the mode under test.
                     await entry.locator('.tiktok-connection-select').selectOption(preset);
                 }
-                check.authenticated = await page.evaluate(id => !!stateManager.getSource(id).tiktokSessionId, id);
+                // Saved API credentials do not establish a login in Standard's
+                // separate capture-window session.
+                check.hasSavedSession = await page.evaluate(id => !!stateManager.getSource(id).tiktokSessionId, id);
                 if (preset === 'custom' || preset === 'euler-ws' || preset === 'polling') {
                     await page.evaluate(id => showTikTokSignInMenu(id), id);
                     await page.locator(`[id="tiktok-signing-api-key-${id}"]`).fill(key);
@@ -91,6 +98,15 @@ async function run() {
                 }
                 const start = received.length;
                 await entry.locator('[data-activatehtml]').click({ force: true });
+                if (preset === 'standard' && process.env.SSAPP_EXPECT_ENDED === '1') {
+                    await waitFor(async () => /TikTok LIVE has ended/.test(await page.evaluate(id =>
+                        stateManager.getSource(id).error || '', id)), 'real ended-room status', 45000);
+                    await page.waitForTimeout(5000);
+                    assert.notStrictEqual(await page.evaluate(id => stateManager.getSource(id).status, id), 'active');
+                    check.ended = true;
+                    check.passed = true;
+                    continue;
+                }
                 await waitFor(async () => {
                     const state = await page.evaluate(id => { const s = stateManager.getSource(id); return { status: s.status, vid: s.vid, error: s.error }; }, id);
                     // Quota notices can briefly set an error while AUTO is
@@ -99,14 +115,17 @@ async function run() {
                     return received.slice(start).some(m => m.tid === state.vid && !m.event && !m.hasDonation);
                 }, preset + ' fresh live chat', 150000);
                 await page.waitForTimeout(20000);
-                const state = await page.evaluate(id => { const s = stateManager.getSource(id); return { status: s.status, vid: s.vid, method: s.tiktokConnectionMethod }; }, id);
+                const state = await page.evaluate(id => { const s = stateManager.getSource(id); return {
+                    status: s.status, vid: s.vid, method: s.tiktokConnectionMethod, mode: s.activeConnectionMode || s.connectionMode,
+                }; }, id);
                 check.method = state.method;
                 const messages = received.slice(start).filter(m => m.tid === state.vid);
                 check.chat = messages.filter(m => !m.event && !m.hasDonation).length;
                 check.events = messages.filter(m => m.event || m.hasDonation).length;
                 if (preset === 'euler-ws') assert.match(check.method || '', /Euler WS relay/i);
-                const classicStop = entry.locator('[data-stophtml]');
-                await (await classicStop.isVisible() ? classicStop : entry.locator('[data-activatehtml]')).click({ force: true });
+                const stop = entry.locator(state.mode === 'classic' ? '[data-stophtml]' : '[data-activatehtml]');
+                check.stopAction = await stop.evaluate(button => String(button.onclick));
+                await stop.click({ force: true });
                 await waitFor(async () => await page.evaluate(id => stateManager.getSource(id).status === 'inactive', id), preset + ' Stop');
                 await page.waitForTimeout(1500);
                 const stopped = received.length;
@@ -115,7 +134,11 @@ async function run() {
                 check.passed = true;
             } catch (error) {
                 check.error = redact(error.message);
+                if (id) check.finalState = await page.evaluate(id => { const s = stateManager.getSource(id); return {
+                    status: s.status, mode: s.activeConnectionMode || s.connectionMode, hasHandle: !!(s.vid || s.tiktokWssId),
+                }; }, id).catch(() => null);
             } finally {
+                await page.evaluate(() => closeModal()).catch(() => {});
                 if (id) await page.evaluate(async id => {
                     const entry = document.querySelector(`[data-source-id="${id}"]`);
                     if (entry) await stopThis(entry.querySelector('[data-stophtml]'));
@@ -132,7 +155,9 @@ async function run() {
         if (app) {
             const child = app.process();
             await app.evaluate(({ BrowserWindow }) => {
-                const main = BrowserWindow.getAllWindows().find(w => /\/index\.html/.test(w.webContents.getURL()));
+                const windows = BrowserWindow.getAllWindows();
+                const main = windows.find(w => /\/index\.html/.test(w.webContents.getURL()));
+                for (const window of windows) if (window !== main && !window.isDestroyed()) window.close();
                 if (main) main.close();
             }).catch(() => {});
             await waitFor(() => child.exitCode !== null || child.signalCode !== null, 'app shutdown', 10000).catch(() => child.kill());

@@ -2176,8 +2176,10 @@
                     : (source.status === 'active' || source.status === 'activating' || !!source.vid || !!source.tiktokWssId);
                 stopButton.classList.toggle('hidden', !showStop);
                 if (isTikTokLocalSigner && source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy')) {
+                    stopButton.title = 'Close TikTok signing window';
                     stopButton.onclick = () => tiktokSigningWindowControl(source.id, 'stop');
                 } else {
+                    if (source.target === 'tiktok') stopButton.title = 'Stop and close this source';
                     stopButton.onclick = () => stopThis(stopButton);
                 }
             }

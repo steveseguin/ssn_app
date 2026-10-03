@@ -147,6 +147,8 @@ async function run() {
 				if (to === 'polling') assert.notStrictEqual(state.tiktokSigningProvider, 'tikfinity');
 				assert.strictEqual(state.tiktokSigningApiKey, 'fixture-only-key', 'Mode switch erased credentials');
 				assert.strictEqual(await page.locator(`[data-source-id="${id}"] [data-signin]`).isVisible(), to !== 'tikfinity', `${from} -> ${to} sign-in`);
+				if (to === 'local' || to === 'standard') assert.strictEqual(await page.locator(`[data-source-id="${id}"] [data-stophtml]`).getAttribute('title'),
+					to === 'local' ? 'Close TikTok signing window' : 'Stop and close this source');
 			}
 			await select.selectOption('polling');
 			await page.evaluate(id => {
@@ -577,6 +579,48 @@ async function run() {
 		});
 		await clear();
 		await app.evaluate(() => { global.__activationFixture.failBootstrap = false; });
+		await check('TikTok Standard reports ended rooms without a false sign-in warning or connected overwrite', async () => {
+			const id = await addTikTok();
+			const entry = page.locator(`[data-source-id="${id}"]`);
+			await entry.locator('.tiktok-connection-select').selectOption('standard');
+			const before = received.length;
+			await entry.locator('[data-activatehtml]').click({ force: true });
+			await waitFor(() => received.length > before, 'Standard fixture chat');
+			const sourcePage = app.context().pages().find(p => p.url().includes('/@activation_fixture/live'));
+			assert.ok(sourcePage, 'Real Standard source window missing');
+			await sourcePage.evaluate(() => {
+				const heading = document.createElement('div');
+				heading.className = 'H2-Medium text-center';
+				heading.textContent = 'LIVE has ended';
+				heading.id = 'ended-fixture';
+				heading.style.display = 'none';
+				document.body.appendChild(heading);
+			});
+			await page.waitForTimeout(8000);
+			assert.strictEqual((await sourceState(id)).status, 'active', 'Hidden heading interrupted live capture');
+			await sourcePage.evaluate(() => {
+				window.__hiddenCaptureFixture.stopAuto();
+				document.getElementById('ended-fixture').style.display = '';
+			});
+			await waitFor(async () => /LIVE has ended/.test((await sourceState(id)).error || ''), 'visible ended-room status');
+			await page.waitForTimeout(8000);
+			assert.match((await sourceState(id)).error || '', /LIVE has ended/);
+			assert.notStrictEqual((await sourceState(id)).status, 'active', 'Old chat observer overwrote the ended status');
+			await clear();
+			const endedRoute = route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><button data-e2e="login">Log in</button><script id="SIGI_STATE" type="application/json">{"LiveRoom":{"liveRoomUserInfo":{"liveRoom":{"status":4}}}}</script>' });
+			await page.context().route('**www.tiktok.com/@activation_fixture/live**', endedRoute);
+			try {
+				const offlineId = await addTikTok();
+				const offlineEntry = page.locator(`[data-source-id="${offlineId}"]`);
+				await offlineEntry.locator('.tiktok-connection-select').selectOption('standard');
+				await offlineEntry.locator('[data-activatehtml]').click({ force: true });
+				await waitFor(async () => /LIVE has ended/.test((await sourceState(offlineId)).error || ''), 'initially offline room');
+				assert.doesNotMatch((await sourceState(offlineId)).error || '', /sign in/i);
+			} finally {
+				await page.context().unroute('**www.tiktok.com/@activation_fixture/live**', endedRoute);
+			}
+		});
+		await clear();
 		await check('Compatibility describes and uses signed WebSocket transport; saved mode still loads', async () => {
 			const id = await addTikTok();
 			const select = page.locator(`[data-source-id="${id}"] .tiktok-connection-select`);
