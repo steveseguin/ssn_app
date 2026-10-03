@@ -394,14 +394,19 @@ async function closeHistory(historyPage) {
 
 async function verifyHistoryReviewFixes(page, popup, background) {
 	const marker = `${MESSAGE_PREFIX}-review`;
-	await background.evaluate(async marker => {
+	// Keep calendar-day fixtures inside the default 30-day retention window.
+	const date = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+	const dateString = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+	await background.evaluate(async ({ marker, dateString }) => {
 		await messageStoreDB.ensureDB();
 		await new Promise((resolve, reject) => {
 			const transaction = messageStoreDB.db.transaction("messages", "readwrite");
 			const store = transaction.objectStore("messages");
 			for (const [day, userid] of [[14, 123456], [15, 789012]]) {
+				const timestamp = new Date(`${dateString}T12:00:00`);
+				timestamp.setDate(timestamp.getDate() + day - 15);
 				store.add({ chatname: "Review fixture", chatmessage: `${marker}-${day}`, userid,
-					timestamp: new Date(2026, 7, day, 12).getTime(), textonly: true });
+					timestamp: timestamp.getTime(), textonly: true });
 			}
 			for (const hours of [23, 25]) {
 				store.add({ chatname: "Recent fixture", chatmessage: `${marker}-${hours}h`,
@@ -410,7 +415,7 @@ async function verifyHistoryReviewFixes(page, popup, background) {
 			transaction.oncomplete = resolve;
 			transaction.onerror = () => reject(transaction.error);
 		});
-	}, marker);
+	}, { marker, dateString });
 	let imageRequests = 0;
 	const blockImages = route => { imageRequests += 1; return route.abort(); };
 	await page.context().route("**/sources/images/**", blockImages);
@@ -418,8 +423,8 @@ async function verifyHistoryReviewFixes(page, popup, background) {
 	try {
 		const session = await page.context().newCDPSession(historyPage);
 		await session.send("Emulation.setTimezoneOverride", { timezoneId: "America/Toronto" });
-		await history.locator("#message-date-from").fill("2026-08-15");
-		await history.locator("#message-date-to").fill("2026-08-15");
+		await history.locator("#message-date-from").fill(dateString);
+		await history.locator("#message-date-to").fill(dateString);
 		await historyPage.waitForTimeout(650);
 		const dates = await history.locator(".message-text").allTextContents();
 		await history.locator("#clear-filters").click();
@@ -666,6 +671,55 @@ async function readAppVersion(page) {
 	});
 }
 
+async function verifyMessageCache(page, popup, background) {
+	const marker = `${MESSAGE_PREFIX}-cache`;
+	const result = await background.evaluate(async marker => {
+		settings.disableDB = false;
+		for (let index = 0; index < 1000; index++) {
+			await addMessageDB({ chatname: `Cache viewer ${index}`, type: "tiktok",
+				chatmessage: `${marker}-${index}`, textonly: true });
+		}
+		for (let index = 0; index < 7; index++) {
+			await addMessageDB({ chatname: "Cache viewer", type: index < 5 ? "tiktok" : "youtube",
+				chatmessage: `${marker}-repeat-${index}`, textonly: true });
+		}
+		const store = messageStoreDB;
+		const retained = store.cache.recent.length;
+		const unusedCachePresent = Object.prototype.hasOwnProperty.call(store.cache, "userMessages");
+		const recent = await store.getRecentMessages(100);
+		const first = await store.getUserMessages("Cache viewer", "tiktok", 0, 3);
+		const second = await store.getUserMessages("Cache viewer", "tiktok", 1, 3);
+		const allTypes = await store.getUserMessages("Cache viewer", null);
+		await store.clearCache();
+		const recentFromDisk = await store.getRecentMessages(100);
+		const userFromDisk = await store.getUserMessages("Cache viewer", "tiktok", 0, 3);
+		return { retained, unusedCachePresent, recent, recentFromDisk, first, second, allTypes, userFromDisk };
+	}, marker);
+	assert.strictEqual(result.retained, 100, "Capturing many distinct chatters must keep recent memory bounded.");
+	assert.strictEqual(result.unusedCachePresent, false, "Unused per-user message retention returned.");
+	assert.deepStrictEqual(result.recentFromDisk, result.recent, "Clearing memory changed recent history.");
+	assert.deepStrictEqual(result.userFromDisk, result.first, "Clearing memory changed user history.");
+	assert.deepStrictEqual(result.first.map(row => row.chatmessage), [4, 3, 2].map(n => `${marker}-repeat-${n}`));
+	assert.deepStrictEqual(result.second.map(row => row.chatmessage), [1, 0].map(n => `${marker}-repeat-${n}`));
+	assert.strictEqual(result.allTypes.length, 7, "User history across platforms lost messages.");
+	const { historyPage, history } = await openHistoryAndWait(page, popup, `${marker}-repeat-6`);
+	try {
+		await history.locator("#keyword-filter").fill(`${marker}-999`);
+		await history.waitForFunction(() => document.querySelectorAll(".message-wrapper").length === 1);
+		assert.strictEqual(await history.locator(".message-text").textContent(), `${marker}-999`);
+		historyPage.once("dialog", dialog => dialog.accept());
+		await history.locator("#clear-history").click();
+		await history.waitForFunction(() => document.getElementById("clear-history").textContent === "History Deleted");
+		// The snapshot acknowledges the IPC send before the background commits deletion.
+		await background.waitForFunction(async () => (await messageStoreDB.getRecentMessages(100)).length === 0);
+		assert.deepStrictEqual(await background.evaluate(() => messageStoreDB.getRecentMessages(100)), []);
+		assert.deepStrictEqual(await background.evaluate(() => messageStoreDB.getUserMessages("Cache viewer", "tiktok")), []);
+	} finally {
+		await closeHistory(historyPage);
+	}
+	console.log("Message cache: 1,000 distinct chatters, bounded recent rows, per-user/platform pagination, disk lookup, visible history and deletion passed");
+}
+
 async function runAppPass(sourcePort, options = {}) {
 	const debugPort = await getFreePort();
 	const launched = launchApp(debugPort, sourcePort);
@@ -721,6 +775,7 @@ async function runAppPass(sourcePort, options = {}) {
 			await verifySnapshotFeatures(persistedHistory.historyPage, persistedHistory.history, background);
 			await closeHistory(persistedHistory.historyPage);
 			if (!EXPORT_ONLY) {
+				await verifyMessageCache(page, popup, background);
 				await verifyHistoryReviewFixes(page, popup, background);
 				await verifyHistoryPagination(page, popup, background);
 			}
@@ -738,6 +793,10 @@ async function runAppPass(sourcePort, options = {}) {
 
 async function run() {
 	assert.ok(fs.existsSync(path.join(SOCIAL_STREAM_ROOT, "popup.js")), `Social Stream source not found: ${SOCIAL_STREAM_ROOT}`);
+	fs.writeFileSync(path.join(PROFILE_DIR, "savedSync.json"), JSON.stringify({
+		streamID: "history_cache_fixture", password: "false", state: false,
+		settings: { beginnerMode: { setting: false } },
+	}));
 	const source = await createSourceServer();
 	try {
 		const firstVersion = await runAppPass(source.port, { seed: true });
