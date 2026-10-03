@@ -25,9 +25,10 @@ async function run() {
         streamID: room, password: 'false', state: true, wsServer: true,
         settings: { server2: { setting: true }, capturelikeevent: { setting: true } },
     }));
-    const report = { profile, minutes, sources: [], samples: [], stopped: false };
+    const report = { profile, minutes, sources: [], samples: [], stopped: false, duplicates: 0 };
     let app, relay, log = '';
     const counts = {};
+    const seenChatIds = new Set();
     try {
         app = await _electron.launch({ executablePath: require('electron'), cwd: root,
             args: ['.', '--running-from-source', '--multiinstance',
@@ -60,8 +61,19 @@ async function run() {
                 const data = JSON.parse(raw);
                 if (data.type !== 'tiktok') return;
                 const source = counts[data.tid] ||= { chat: 0, events: {} };
-                if (!data.event) source.chat++;
-                else source.events[data.event] = (source.events[data.event] || 0) + 1;
+                if (!data.event && !data.hasDonation) {
+                    source.chat++;
+                    source.lastChatAt = Date.now();
+                    if (data.msgId) {
+                        const key = data.tid + ':' + data.msgId;
+                        if (seenChatIds.has(key)) report.duplicates++;
+                        seenChatIds.add(key);
+                    }
+                }
+                else {
+                    const kind = data.hasDonation ? 'gift' : data.event;
+                    source.events[kind] = (source.events[kind] || 0) + 1;
+                }
             } catch (_) {}
         });
         for (let i = 0; i < users.length; i++) {
@@ -95,11 +107,23 @@ async function run() {
             fs.writeFileSync(path.join(profile, 'report.json'), JSON.stringify(report, null, 2));
             if (!reconnected && sample.seconds >= minutes * 30) {
                 reconnected = true;
-                await app.evaluate(() => {
+                const didReconnect = await app.evaluate(() => {
                     const manager = global.__liveManagers.find(m => !m.isStopped && m.connection?.isConnected);
-                    if (manager) manager.forceReconnect();
+                    if (!manager) return false;
+                    global.__liveReconnectStarted = Date.now();
+                    manager.forceReconnect();
+                    return true;
                 });
+                assert.ok(didReconnect, 'No connected native source for recovery test');
                 report.reconnectRequestedAt = sample.seconds;
+            }
+            if (reconnected && !report.recoveredAt) {
+                const recovered = await app.evaluate(() => global.__liveManagers.some(m =>
+                    !m.isStopped && m.connection?.isConnected && m.lastConnectTimestamp >= global.__liveReconnectStarted));
+                const nativeState = sample.states[0];
+                if (recovered && counts[nativeState.vid]?.lastChatAt > started + report.reconnectRequestedAt * 1000) {
+                    report.recoveredAt = sample.seconds;
+                }
             }
         }
         for (const source of report.sources) {
@@ -114,6 +138,11 @@ async function run() {
         await page.waitForTimeout(5000);
         assert.strictEqual(JSON.stringify(counts), afterStop, 'Messages arrived after Stop');
         report.stopped = true;
+        assert.ok(report.sources.every(source => source.counts?.chat > 0),
+            'Live validation incomplete: one or more sources captured no chat');
+        assert.ok(report.recoveredAt, 'Native source did not capture fresh chat after reconnect');
+        assert.strictEqual(report.duplicates, 0, 'Duplicate chat IDs forwarded during live capture');
+        report.complete = true;
         console.log(JSON.stringify(report.sources));
     } catch (error) {
         report.error = error.stack;

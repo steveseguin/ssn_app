@@ -39,6 +39,12 @@ class TikFinityConnection extends EventEmitter {
                 if (!packet || !packet.data || typeof packet.data !== 'object' || Array.isArray(packet.data)) return;
                 const event = packet.event;
                 if (!['chat', 'gift', 'follow', 'share', 'subscribe', 'member', 'like', 'roomUser', 'emote', 'envelope'].includes(event)) return;
+                // Desktop uses actionId for member events; the shared TikTok
+                // handler expects action. Preserve explicit action values and
+                // let that handler reject non-join member events as usual.
+                if (event === 'member' && packet.data.action == null && packet.data.actionId != null) {
+                    packet.data = { ...packet.data, action: packet.data.actionId };
+                }
                 if (!this.hasLiveEvents) {
                     this.hasLiveEvents = true;
                     this.emit('captureStatus', 'Receiving LIVE events from TikFinity Desktop');

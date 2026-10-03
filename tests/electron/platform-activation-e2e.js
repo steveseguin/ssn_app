@@ -221,6 +221,9 @@ async function run() {
 				assert.strictEqual(await entry.locator('[data-signin]').isVisible(), false, 'Desktop mode must not suggest TikTok sign-in');
 				const user = { userId: '456', uniqueId: 'desktop_gifter', nickname: 'Desktop gift' };
 				for (const event of ['follow', 'share', 'subscribe', 'member', 'like']) send({ event, data: { ...user, action: 1, msgId: 'event-' + event } });
+				send({ event: 'member', data: { ...user, nickname: 'Desktop actionId join', actionId: 1, msgId: 'desktop-actionid-join' } });
+				send({ event: 'member', data: { ...user, nickname: 'Desktop non-join', actionId: 2, msgId: 'desktop-actionid-other' } });
+				send({ event: 'member', data: { ...user, nickname: 'Desktop explicit action', action: 2, actionId: 1, msgId: 'desktop-action-explicit' } });
 				send({ event: 'roomUser', data: { viewerCount: 123 } });
 				const gift = { event: 'gift', data: { ...user, msgId: 'gift-810', giftId: 5655, giftName: 'Rose',
 					giftType: 1, diamondCount: 1, repeatCount: 1, repeatEnd: false, groupId: 'streak-810' } };
@@ -238,6 +241,8 @@ async function run() {
 				for (const event of ['followed', 'shared', 'subscribe', 'joined', 'liked']) {
 					assert.ok(allTikTokEvents.some(m => m.chatname === 'Desktop gift' && m.event === event), event + ' missing');
 				}
+				assert.ok(allTikTokEvents.some(m => m.chatname === 'Desktop actionId join' && m.event === 'joined'), 'Desktop actionId join missing');
+				assert.ok(!allTikTokEvents.some(m => ['Desktop non-join', 'Desktop explicit action'].includes(m.chatname)), 'Non-join member event forwarded');
 				assert.strictEqual(await app.evaluate(() => global.__activationFixture.managers.find(m =>
 					m.signingProvider === 'tikfinity' && !m.isStopped).lastViewerCount), 123, 'Viewer count not normalized');
 				const reply = await app.evaluate(async () => {
