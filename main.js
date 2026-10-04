@@ -55,7 +55,7 @@ const {
     markPortableProfileInitialized
 } = require('./resources/portable-data-paths');
 const { getTrustedStandaloneCustomJsPageType } = require('./resources/custom-js-page-trust');
-const { captureSettingsPayload, filterSourceSettingsMessage, isTrustedSettingsPage } = require('./resources/source-settings-response');
+const { captureSettingsPayload, filterSourceSettingsMessage, isTrustedSettingsPage, isCaptureCommandAllowed } = require('./resources/source-settings-response');
 const {
     DEFAULT_LOCAL_WEBSOCKET_HOST,
     DEFAULT_LOCAL_WEBSOCKET_PORT,
@@ -10625,6 +10625,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
     });
 
 	    ipcMain.on("fromBackground", function (eventRet, value) {
+        // These storage/controller messages belong to the app, not capture pages.
+        if (!isTrustedSettingsSender(eventRet)) {
+            eventRet.returnValue = getStoredStateResponseForSender(eventRet);
+            return;
+        }
+
         log("\nfromBackground ??????????????????");
         log("Received settings from background:", JSON.stringify(value).substring(0, 200));
 
@@ -10675,7 +10681,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         //log(cachedState);
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (matchesSocialStreamPagePath(frame.url, "popup")) {
+                if (isTrustedSettingsFrame(frame) && matchesSocialStreamPagePath(frame.url, "popup")) {
                     frame.postMessage("fromMain", cachedState);
                     log("SENT TO POP UP SCUCESSFULLY");
                 }
@@ -10687,7 +10693,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 { port: wsServer.port }
             ); // let the index.html page know the pop out should be loaded
         }
-        eventRet.returnValue = cachedState;
+        eventRet.returnValue = getStoredStateResponseForSender(eventRet);
     });
 
     /**
@@ -10724,7 +10730,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         try {
             if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
                 mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                    if (matchesSocialStreamPagePath(frame.url, "popup")) {
+                    if (isTrustedSettingsFrame(frame) && matchesSocialStreamPagePath(frame.url, "popup")) {
                         frame.postMessage("fromMain", cachedState);
                     }
                 });
@@ -10738,6 +10744,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
     global.flushPendingStorageSave = flushPendingStorageSave;
 
     ipcMain.on("storageSave", function (eventRet, value) {
+        // These storage/controller messages belong to the app, not capture pages.
+        if (!isTrustedSettingsSender(eventRet)) {
+            eventRet.returnValue = getStoredStateResponseForSender(eventRet);
+            return;
+        }
+
         // from background
 
         // Sanitize and merge incoming state immediately (caller expects updated state back)
@@ -10812,7 +10824,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 	        }
 
         // Return merged state immediately (required for sendSync callers)
-        eventRet.returnValue = cachedState;
+        eventRet.returnValue = getStoredStateResponseForSender(eventRet);
 
         if (!didAnyStateFieldChange) return;
 
@@ -10849,7 +10861,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             try {
                 if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
                     mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                        if (matchesSocialStreamPagePath(frame.url, "popup")) {
+                        if (isTrustedSettingsFrame(frame) && matchesSocialStreamPagePath(frame.url, "popup")) {
                             frame.postMessage("fromMain", cachedState);
                         }
                     });
@@ -10887,12 +10899,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
         queueCachedStateRecovery("storageGet");
 
-        value.forEach((key) => {
-            //log(key);
-            if (cachedState && key in cachedState) {
-                response[key] = cachedState[key];
-            }
-        });
+        const visibleState = getStoredStateResponseForSender(eventRet);
+        if (Array.isArray(value)) {
+            value.forEach((key) => {
+                if (Object.prototype.hasOwnProperty.call(visibleState, key)) {
+                    response[key] = visibleState[key];
+                }
+            });
+        }
         //log("storageGet running still");
 
         log(response);
@@ -10902,10 +10916,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
     ipcMain.handle("storageGetAsync", async (eventRet, value) => {
         const response = {};
         await recoverCachedStateIfNeeded("storageGetAsync");
+        const visibleState = getStoredStateResponseForSender(eventRet);
         if (Array.isArray(value)) {
             value.forEach((key) => {
-                if (cachedState && key in cachedState) {
-                    response[key] = cachedState[key];
+                if (Object.prototype.hasOwnProperty.call(visibleState, key)) {
+                    response[key] = visibleState[key];
                 }
             });
         }
@@ -10913,6 +10928,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
     });
 
     ipcMain.on("fromBackgroundPopupResponse", function (eventRet, value) {
+        // These storage/controller messages belong to the app, not capture pages.
+        if (!isTrustedSettingsSender(eventRet)) {
+            eventRet.returnValue = getStoredStateResponseForSender(eventRet);
+            return;
+        }
+
         // // state, password, streamID, settings
         if (!value) {
             return;
@@ -10937,7 +10958,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         // Forward response to popup frame
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (matchesSocialStreamPagePath(frame.url, "popup")) {
+                if (isTrustedSettingsFrame(frame) && matchesSocialStreamPagePath(frame.url, "popup")) {
                     frame.postMessage("fromMain", value);
                 }
             });
@@ -10947,6 +10968,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
     });
 
     ipcMain.on("fromBackgroundResponse", function (eventRet, value) {
+        // These storage/controller messages belong to the app, not capture pages.
+        if (!isTrustedSettingsSender(eventRet)) {
+            eventRet.returnValue = getStoredStateResponseForSender(eventRet);
+            return;
+        }
+
         // log("\nBackgroundResponsed");
         //log(value)
 
@@ -10975,13 +11002,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
     });
 
     ipcMain.on("fromPopup", function (eventRet, value) {
+        // These storage/controller messages belong to the app, not capture pages.
+        if (!isTrustedSettingsSender(eventRet)) {
+            eventRet.returnValue = getStoredStateResponseForSender(eventRet);
+            return;
+        }
+
         // Check if this is an async message with callbackId
         const hasCallbackId = value && value.callbackId;
 
         if (!hasCallbackId && value.cmd) {
             // Sync message - return immediately
             if (value.cmd == "getSettings") {
-                eventRet.returnValue = cachedState;
+                eventRet.returnValue = getStoredStateResponseForSender(eventRet);
             } else if (value.cmd == "getOnOffState") {
                 eventRet.returnValue = {
                     state: cachedState.state || false
@@ -10994,7 +11027,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     state: cachedState.state || false
                 };
             } else {
-                eventRet.returnValue = cachedState;
+                eventRet.returnValue = getStoredStateResponseForSender(eventRet);
             }
         } else if (!hasCallbackId) {
             // Sync message without cmd
@@ -11006,7 +11039,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         try {
             if (mainWindow && mainWindow.webContents) {
                 mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                    if (matchesSocialStreamPagePath(frame.url, "background")) {
+                    if (isTrustedSettingsFrame(frame) && matchesSocialStreamPagePath(frame.url, "background")) {
                         frame.postMessage("fromPopup", value); // pass it along to the actual background
                     }
                 });
@@ -11017,9 +11050,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
     });
 
     ipcMain.on("fromPopupResponse", function (eventRet, value) {
+        // These storage/controller messages belong to the app, not capture pages.
+        if (!isTrustedSettingsSender(eventRet)) {
+            eventRet.returnValue = getStoredStateResponseForSender(eventRet);
+            return;
+        }
+
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                if (matchesSocialStreamPagePath(frame.url, "background")) {
+                if (isTrustedSettingsFrame(frame) && matchesSocialStreamPagePath(frame.url, "background")) {
                     frame.postMessage("fromMain", value);
                 }
             });
@@ -11546,6 +11585,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
     });
 
     ipcMain.on("postMessage", function (eventRet, ...args) {
+        if (!isTrustedSettingsSender(eventRet) && !isCaptureCommandAllowed(args[0])) {
+            eventRet.returnValue = { ok: false, error: "This command requires the app controller." };
+            return;
+        }
+
         var tabID = -1;
         var options = {};
 
@@ -11799,7 +11843,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     sourceObservationService.recordCapture(backgroundPayload, { sourceId, tabId: tabID });
                 }
                 mainWindow.webContents.mainFrame.frames.forEach((frame) => {
-                    if (matchesSocialStreamPagePath(frame.url, "background")) {
+                    if (isTrustedSettingsFrame(frame) && matchesSocialStreamPagePath(frame.url, "background")) {
                         frame.postMessage("fromMainSender", [backgroundPayload, {
                             ...sender
                         }]);
@@ -14235,7 +14279,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 if (!key || injectedFrameKeys.has(key)) return;
                 injectedFrameKeys.add(key);
 
-                frame.executeJavaScript(frameInjectionCode, true)
+                // Build the settings cache for this exact frame before sending any code.
+                const code = typeof frameInjectionCode === "function" ? frameInjectionCode(frame.url) : frameInjectionCode;
+                frame.executeJavaScript(code, true)
                     .then(() => {
                         log(`[all_frames] Injected source into frame (${reason}): ${frame.url || "unknown"}`);
                     })
@@ -14537,7 +14583,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         runWithWebContents("Script injection", (wc) => {
                             // Removed empty console-message handler to allow console logs to flow through
 
-                            var code =
+                            var code = (sourceFrameUrl) =>
                                 `
 								// Get the random flag from contextBridge if available
 								var __ssappInjectedScriptFlag = window.ninjafy?.getInjectedScriptFlag?.() || '` + INJECTED_SCRIPT_FLAG + `';
@@ -14597,7 +14643,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 								};
 								// Use closure to hide cached settings
 								(function() {
-									const cachedSettings = ${JSON.stringify(captureSettingsPayload(cachedState, wc.getURL()))};
+									const cachedSettings = ${JSON.stringify(captureSettingsPayload(cachedState, sourceFrameUrl))};
 									
 								chrome.runtime.sendMessage = function(a=null,b=null,c=null){
 									// Use postMessage to communicate with preload script
@@ -14747,7 +14793,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 return;
                             }
                             // Inject into main world (worldId: 0) to access contextBridge APIs
-                            wc.executeJavaScriptInIsolatedWorld(0, [{ code }])
+                            wc.executeJavaScriptInIsolatedWorld(0, [{ code: code(wc.mainFrame?.url || "") }])
                                 .then(() => {
                                     log("Script injection completed successfully in main world");
                                 })
@@ -14823,7 +14869,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 runWithWebContents("Remote script injection", (wc) => {
                                     // Removed empty console-message handler to allow console logs to flow through
 
-                                    var code =
+                                    var code = (sourceFrameUrl) =>
                                         `
 										// Debug window.ninjafy availability
 										console.log("[Injection Remote] window.ninjafy:", window.ninjafy);
@@ -14884,7 +14930,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 										};
                                             // Use closure to hide cached settings
                                             (function() {
-											const cachedSettings = ${JSON.stringify(captureSettingsPayload(cachedState, wc.getURL()))};
+											const cachedSettings = ${JSON.stringify(captureSettingsPayload(cachedState, sourceFrameUrl))};
 											
 											chrome.runtime.sendMessage = function(a=null,b=null,c=null){
 												// Use postMessage to communicate with preload script
@@ -15027,7 +15073,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                         return;
                                     }
                                     // Inject into main world (worldId: 0) to access contextBridge APIs
-                                    wc.executeJavaScriptInIsolatedWorld(0, [{ code }])
+                                    wc.executeJavaScriptInIsolatedWorld(0, [{ code: code(wc.mainFrame?.url || "") }])
                                         .catch(whenDestroyedReject("Remote script injection"));
                                 });
                             } catch (e) {
@@ -16999,16 +17045,27 @@ function normalizePasswordValue(value) {
 }
 
 // Trust the actual sending frame, never a caller-provided tab ID or URL.
+function isTrustedSettingsFrame(frame) {
+    return isTrustedSettingsPage(String(frame?.url || ''), [__dirname, Argv.filesource]);
+}
+
+function isTrustedSettingsSender(event) {
+    return isTrustedSettingsFrame(event?.senderFrame);
+}
+
+function getStoredStateResponseForSender(event, snapshot = cachedState) {
+    return isTrustedSettingsSender(event)
+        ? snapshot : captureSettingsPayload(snapshot, String(event?.senderFrame?.url || ''));
+}
+
 function getSettingsResponseForSender(event) {
-    const senderUrl = String(event?.senderFrame?.url || '');
     const snapshot = {
         settings: cachedState.settings || {},
         state: cachedState.state !== undefined ? cachedState.state : true,
         streamID: normalizeStreamIdValue(cachedState.streamID),
         password: normalizePasswordValue(cachedState.password)
     };
-    return isTrustedSettingsPage(senderUrl, [__dirname, Argv.filesource])
-        ? snapshot : captureSettingsPayload(snapshot, senderUrl);
+    return getStoredStateResponseForSender(event, snapshot);
 }
 
 function filterCaptureSettingsMessage(view, message) {

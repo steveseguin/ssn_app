@@ -77,4 +77,18 @@ function filterSourceSettingsMessage(message, sourceUrl = '', trusted = false) {
     return result;
 }
 
-module.exports = { captureSettingsPayload, filterSourceSettingsMessage, isTrustedSettingsPage };
+// Only source capture commands may cross from a page into the app controller.
+// New controller commands must not become available to capture pages by default.
+const CAPTURE_COMMANDS = new Set([
+    'getSettings', 'getOnOffState', 'claimInstagramInboxPoller', 'filterInstagramInboxStories',
+    'ebaySellerStats', 'resolveRumblePopupUrl', 'joystickFetchJson', 'vpzoneFetchJson',
+    'rumbleFetchHtml', 'rumbleFetchJson', 'rumbleFetchSseBatch'
+]);
+
+function isCaptureCommandAllowed(message) {
+    if (!message || typeof message !== 'object') return true;
+    const request = message.type === 'toBackground' && message.data ? message.data : message;
+    return !request.cmd || CAPTURE_COMMANDS.has(request.cmd);
+}
+
+module.exports = { captureSettingsPayload, filterSourceSettingsMessage, isTrustedSettingsPage, isCaptureCommandAllowed };
