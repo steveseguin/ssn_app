@@ -55,6 +55,7 @@ const {
     markPortableProfileInitialized
 } = require('./resources/portable-data-paths');
 const { getTrustedStandaloneCustomJsPageType } = require('./resources/custom-js-page-trust');
+const { captureSettingsPayload, filterSourceSettingsMessage, isTrustedSettingsPage } = require('./resources/source-settings-response');
 const {
     DEFAULT_LOCAL_WEBSOCKET_HOST,
     DEFAULT_LOCAL_WEBSOCKET_PORT,
@@ -11747,12 +11748,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             let tab = options.tabID || tabID;
 
             // Create settings response matching background.js format
-	            let settingsResponse = {
-	                settings: cachedState.settings || {},
-	                state: cachedState.state !== undefined ? cachedState.state : true,
-	                streamID: normalizeStreamIdValue(cachedState.streamID),
-	                password: normalizePasswordValue(cachedState.password)
-	            };
+            const settingsResponse = getSettingsResponseForSender(eventRet);
 
             log("getSettings request - returning cachedState:", JSON.stringify(settingsResponse).substring(0, 200));
 
@@ -11828,9 +11824,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 return;
             }
         }
-        eventRet.returnValue = cachedState || {
-            settings: {}
-        };
+        eventRet.returnValue = getSettingsResponseForSender(eventRet);
     });
 
     ipcMain.on("getAppVersion", function (eventRet) {
@@ -14603,7 +14597,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 								};
 								// Use closure to hide cached settings
 								(function() {
-									const cachedSettings = ${JSON.stringify(cachedState)};
+									const cachedSettings = ${JSON.stringify(captureSettingsPayload(cachedState, wc.getURL()))};
 									
 								chrome.runtime.sendMessage = function(a=null,b=null,c=null){
 									// Use postMessage to communicate with preload script
@@ -14890,7 +14884,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 										};
                                             // Use closure to hide cached settings
                                             (function() {
-											const cachedSettings = ${JSON.stringify(cachedState)};
+											const cachedSettings = ${JSON.stringify(captureSettingsPayload(cachedState, wc.getURL()))};
 											
 											chrome.runtime.sendMessage = function(a=null,b=null,c=null){
 												// Use postMessage to communicate with preload script
@@ -15404,7 +15398,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
                 try {
                     view.webContents.send("sendToTab-request", {
-                        message: args.message,
+                        message: filterCaptureSettingsMessage(view, args.message),
                         requestId
                     });
                 } catch (error) {
@@ -15485,7 +15479,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         const view = getActiveBrowserView(tabId);
         if (view && view.webContents) {
             try {
-                view.webContents.send("sendToTab", message);
+                view.webContents.send("sendToTab", filterCaptureSettingsMessage(view, message));
                 eventRet.returnValue = true;
             } catch (error) {
                 console.error('sendToTab send failed:', error);
@@ -17002,6 +16996,25 @@ function normalizePasswordValue(value) {
 	// Preserve string passwords verbatim (including "false", "0", "off");
 	// only true non-values (null/undefined/boolean/empty string) are cleared.
 	return normalizeSessionCredentialValue(value, { allowZero: true, coerceSentinelStrings: false });
+}
+
+// Trust the actual sending frame, never a caller-provided tab ID or URL.
+function getSettingsResponseForSender(event) {
+    const senderUrl = String(event?.senderFrame?.url || '');
+    const snapshot = {
+        settings: cachedState.settings || {},
+        state: cachedState.state !== undefined ? cachedState.state : true,
+        streamID: normalizeStreamIdValue(cachedState.streamID),
+        password: normalizePasswordValue(cachedState.password)
+    };
+    return isTrustedSettingsPage(senderUrl, [__dirname, Argv.filesource])
+        ? snapshot : captureSettingsPayload(snapshot, senderUrl);
+}
+
+function filterCaptureSettingsMessage(view, message) {
+    const senderUrl = view?.webContents?.getURL?.() || '';
+    return filterSourceSettingsMessage(message, senderUrl,
+        isTrustedSettingsPage(senderUrl, [__dirname, Argv.filesource]));
 }
 
 function normalizeCachedStateSnapshot(state) {

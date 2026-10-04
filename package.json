@@ -78,6 +78,7 @@
     "mcp": "node resources/ssapp-mcp.js",
     "test:socialstream-path-security": "node tests/electron/socialstream-path-security-regression.js",
     "test:ipc-scaffold": "node tests/electron/ipc-scaffold-regression.js",
+    "test:source-settings": "node tests/electron/source-settings-regression.js",
     "test:source-url-parsing": "node tests/electron/source-url-parsing-regression.js",
     "test:youtube-workflow": "node tests/electron/youtube-workflow-e2e.js",
     "test:platform-activation:e2e": "node tests/electron/platform-activation-e2e.js",
