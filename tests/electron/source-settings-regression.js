@@ -36,7 +36,12 @@ assert.strictEqual(Object.hasOwn(filtered, 'streamID'), false);
 assert.strictEqual(Object.hasOwn(filtered, 'password'), false);
 assert.strictEqual(JSON.stringify(snapshot), before, 'filtering must not mutate persisted settings');
 assert.deepStrictEqual(captureSettingsPayload(snapshot, 'https://rumble.com/live').settings.rumble_api_url, snapshot.settings.rumble_api_url);
-assert.strictEqual(captureSettingsPayload(snapshot, 'https://rumble.com.example.test/live').settings.rumble_api_url, undefined);
+assert.deepStrictEqual(captureSettingsPayload(snapshot, 'https://live.rumble.com/live').settings.rumble_api_url, snapshot.settings.rumble_api_url);
+for (const url of ['https://rumble.com.example.test/live', 'https://notrumble.com/live',
+    'https://rumble.com@example.test/live', 'https://example.test/?next=https://rumble.com',
+    'http://rumble.com/live']) {
+    assert.strictEqual(captureSettingsPayload(snapshot, url).settings.rumble_api_url, undefined, url);
+}
 
 const shared = { ...snapshot, settings: { ...snapshot.settings, sharestreamid: true } };
 assert.strictEqual(captureSettingsPayload(shared, 'https://maestro-launcher.vercel.app/').streamID, snapshot.streamID);
@@ -210,7 +215,7 @@ function checkInjectedFrames() {
                 return target.window.captured;
             }
             const own = inspect(setup.code(parentUrl), parentUrl);
-            if (parentUrl.includes('rumble.com')) assert(own.settings.rumble_api_url);
+            if (new URL(parentUrl).hostname === 'rumble.com') assert(own.settings.rumble_api_url);
             else assert.strictEqual(own.streamID, snapshot.streamID);
             let childCode, childResponse;
             const childUrl = 'https://chatroll.com/embed/chat/synthetic';
