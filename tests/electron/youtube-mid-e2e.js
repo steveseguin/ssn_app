@@ -113,10 +113,26 @@ async function run() {
 			}, args);
 			return until(() => app.windows().find(page => page.url() === args.url), 'source window');
 		}
+		await app.evaluate(({ app }) => {
+			globalThis.midTestDefaultInjections = [];
+			app.on('web-contents-created', (_event, contents) => {
+				const execute = contents.executeJavaScriptInIsolatedWorld.bind(contents);
+				contents.executeJavaScriptInIsolatedWorld = function (world, scripts, ...args) {
+					const result = execute(world, scripts, ...args);
+					if (scripts.some(script => script.code.includes('Simple callback with empty response for now'))) {
+						result.then(() => midTestDefaultInjections.push('ok'), error => midTestDefaultInjections.push(error.message));
+					}
+					return result;
+				};
+			});
+		});
 		const dock = await create({
 			url: base + 'dock.html?session=' + room + '&password=false&server2&localserver&localserverport=' + relayPort,
 			visible: false,
 		});
+		await until(() => app.evaluate(() => midTestDefaultInjections.length), 'default bridge injection completed');
+		assert.deepEqual(await app.evaluate(() => midTestDefaultInjections), ['ok'], 'Default bridge injection must return a serializable result');
+		console.log('PASS default bridge injection completes without a clone error');
 		const dockCdp = await dock.context().newCDPSession(dock);
 		async function dockEval(expression) {
 			const result = await dockCdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });

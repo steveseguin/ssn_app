@@ -345,6 +345,40 @@ async function run() {
                 assert.ok(!(await rows()).some(r=>r.text==='avatar-delay-target'));
             } finally { await dockEval('toDataURL = avatarTestOriginal'); }
         });
+        for (const operation of ['delete-current', 'delete-pending', 'clear']) {
+            await check('Pending avatar selection handles ' + operation + ' without affecting the wrong message', async () => {
+                const current = 'avatar-race-' + operation + '-current';
+                const pending = 'avatar-race-' + operation + '-pending';
+                await capture(first, current);
+                await capture(first, pending);
+                await dockEval(`selectedMessage(false, Array.from(document.querySelectorAll('.highlight-chat')).find(row => row.rawContents?.chatmessage === ${JSON.stringify(current)}))`);
+                await until(() => featured.evaluate(text => document.getElementById('message')?.textContent === text, current), 'current selection');
+                await dockEval(`window.avatarRaceOriginal = toDataURL;
+                    window.avatarRaceCallback = null;
+                    toDataURL = (url, callback) => { avatarRaceCallback = callback; };
+                    var row = Array.from(document.querySelectorAll('.highlight-chat')).find(row => row.rawContents?.chatmessage === ${JSON.stringify(pending)});
+                    row.rawContents.chatimg = 'https://example.invalid/avatar=s32-fixture';
+                    selectedMessage(false, row);`);
+                try {
+                    assert.equal(await dockEval('typeof avatarRaceCallback'), 'function');
+                    if (operation === 'clear') await dockEval('sendDataP2P(false)');
+                    else {
+                        const removed = operation === 'delete-current' ? current : pending;
+                        await remove(first, removed);
+                        await until(async () => !(await rows()).some(row => row.text === removed), 'source deletion reaches dock');
+                    }
+                    await dockEval("avatarRaceCallback('data:image/png;base64,fixture')");
+                    if (operation === 'clear') {
+                        await until(() => featured.evaluate(() => lastMessageId === null), 'manual clear remains clear');
+                    } else {
+                        const expected = operation === 'delete-current' ? pending : current;
+                        await until(() => featured.evaluate(text => document.getElementById('message')?.textContent === text && lastMessageId !== null, expected), 'correct selection survives');
+                    }
+                } finally {
+                    await dockEval('toDataURL = avatarRaceOriginal');
+                }
+            });
+        }
         await check('Dock timeout removes detached selected and auto-show queue rows', async()=>{
             await capture(first,'timeout-queue-target');
             await capture(first,'timeout-queue-keep');

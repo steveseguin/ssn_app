@@ -15166,6 +15166,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
 							setTimeout(() => c({}), 0);
 						}
 					};
+                    // Electron cannot clone the function assigned by the final statement.
+                    void 0;
                     `;
                     runWithWebContents("Default script injection", (wc) => {
                         setAllFrameInjectionCode(wc, code);
