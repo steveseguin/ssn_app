@@ -509,21 +509,26 @@ async function run() {
 
 		const onboarding = await execInRenderer(port, `
 			(async () => {
-				showPage('streamdeck');
+				document.querySelector('#main-navigation [data-page="streamdeck"]').click();
 				await ensureStreamDeckSetupLoaded();
 				const frame = document.getElementById('streamdeck-setup-frame');
 				const started = Date.now();
 				while (Date.now() - started < 15000) {
 					const documentReady = frame && frame.contentDocument && frame.contentDocument.readyState === 'complete';
 					const sessionValue = documentReady && frame.contentDocument.getElementById('sessionValue');
+					if (documentReady) {
+						for (const image of frame.contentDocument.querySelectorAll('.screenshots img')) {
+							if (!image.complete || !image.naturalWidth) image.scrollIntoView();
+						}
+					}
 					const imagesLoaded = documentReady && Array.from(frame.contentDocument.querySelectorAll('.screenshots img')).every(image => image.complete && image.naturalWidth > 0);
-					if (sessionValue && sessionValue.textContent && !sessionValue.textContent.includes('available in SSApp') && !sessionValue.textContent.includes('still loading') && imagesLoaded) {
+					if (sessionValue && sessionValue.value && imagesLoaded) {
 						const setupState = await getStreamDeckSetupState();
 						return {
 							ready: true,
 							src: frame.src,
 							sessionId: setupState.sessionId,
-							displayedSessionId: sessionValue.textContent,
+							displayedSessionId: sessionValue.value,
 							copyEnabled: !frame.contentDocument.getElementById('copySession').disabled,
 							imagesLoaded,
 							activeNav: document.querySelector('[data-page="streamdeck"]').classList.contains('active')
@@ -535,8 +540,9 @@ async function run() {
 					ready: false,
 					src: frame && frame.src,
 					setupState: await getStreamDeckSetupState(),
+					images: frame && frame.contentDocument && Array.from(frame.contentDocument.querySelectorAll('.screenshots img')).map(image => ({ src: image.src, complete: image.complete, width: image.naturalWidth, loading: image.loading })),
 					displayedSessionId: frame && frame.contentDocument && frame.contentDocument.getElementById('sessionValue')
-						? frame.contentDocument.getElementById('sessionValue').textContent
+						? frame.contentDocument.getElementById('sessionValue').value
 						: null
 				};
 			})()

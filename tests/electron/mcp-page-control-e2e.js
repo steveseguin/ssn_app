@@ -383,6 +383,10 @@ async function run() {
 		assert.match(offlineMessage, /SSApp.*(?:not reachable|not running|start SSApp)/i);
 		assert.doesNotMatch(offlineMessage, /ECONNREFUSED|ECONNRESET|connect\s+127\.0\.0\.1/i);
 
+		// Capture tests require SSN enabled; a fresh profile correctly starts disabled.
+		fs.writeFileSync(path.join(profileDir, 'savedSync.json'), JSON.stringify({
+			streamID: 'mcp_page_' + Date.now(), state: true, settings: {},
+		}));
 		appInstance = startApp(port);
 		await waitForMcpApp(mcp);
 

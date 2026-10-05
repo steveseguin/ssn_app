@@ -639,6 +639,10 @@ async function closeFixtures() {
 
 async function main() {
 	try {
+		// Browser capture follows the current SSN state, including on a fresh profile.
+		fs.writeFileSync(path.join(profileDir, 'savedSync.json'), JSON.stringify({
+			streamID: 'discord_native_' + Date.now(), state: true, settings: {},
+		}));
 		remotePort = await getFreePort();
 		await startDiscordFixture();
 		launchApp();

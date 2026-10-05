@@ -52,10 +52,17 @@ const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', ()
     const profile = path.join(output, 'profile'); fs.mkdirSync(profile);
     fs.writeFileSync(path.join(profile, 'savedSync.json'), JSON.stringify({ streamID: 'mimefixture', password: 'false', state: false, settings: {}, wsServer: false }));
     let app;
+    let runtimeOutput = '';
     try {
         app = await _electron.launch({ executablePath: require('electron'), cwd: root,
             args: [path.join(__dirname, 'outage-bootstrap.js'), '--multiinstance', '--no-hwa', '--ignore-certificate-errors'],
             env: { ...process.env, SSAPP_USER_DATA_DIR: profile, SSAPP_PREFER_LOCAL_ASSETS: '0' } });
+        for (const stream of [app.process().stdout, app.process().stderr]) {
+            stream.on('data', chunk => {
+                runtimeOutput += chunk;
+                fs.appendFileSync(path.join(output, 'runtime.log'), chunk);
+            });
+        }
         const main = await app.firstWindow();
         await main.waitForFunction(() => document.getElementById('frame2').src.startsWith('file:'));
         await app.evaluate(async ({ BrowserWindow, session }, proxyPort) => {
@@ -89,10 +96,29 @@ const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', ()
         }
         await main.screenshot({ path: path.join(output, 'editor.png') });
         fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify(seen, null, 2));
+        // Deliver replies queued before shutdown after their real target window closes.
+        await app.evaluate(({ BrowserWindow, ipcMain }, output) => {
+            const main = BrowserWindow.getAllWindows().find(window => /\/index\.html/.test(window.webContents.getURL()));
+            const sender = main.webContents;
+            const popupReply = ipcMain.listeners('fromBackgroundPopupResponse')[0];
+            const captureReply = ipcMain.listeners('fromBackgroundResponse')[0];
+            main.once('closed', () => {
+                const errors = [];
+                for (const reply of [
+                    () => popupReply({ returnValue: null }, { id: 1 }),
+                    () => captureReply({ sender, senderFrame: null }, { id: 1 }, { id: 'closed-window' }),
+                ]) {
+                    try { reply(); } catch (error) { errors.push(error.stack); }
+                }
+                process.getBuiltinModule('fs').writeFileSync(process.getBuiltinModule('path').join(output, 'shutdown.json'), JSON.stringify(errors));
+            });
+        }, output);
     } finally {
         if (app) await app.close();
         for (const socket of sockets) socket.destroy();
         server.closeAllConnections(); server.close(); proxy.closeAllConnections(); proxy.close();
         console.log('Evidence:', output);
     }
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(output, 'shutdown.json'), 'utf8')), [], 'Late replies must tolerate a closed main window');
+    assert.doesNotMatch(runtimeOutput, /Uncaught Exception|Unhandled Rejection/, 'App shutdown must not raise an error');
 })().catch(error => { console.error(error); process.exitCode = 1; });

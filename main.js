@@ -10942,8 +10942,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
         }
 
-        // Forward response to popup frame
-        if (mainWindow && mainWindow.webContents) {
+        // A queued settings reply may arrive after the main window closes.
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
                 if (matchesSocialStreamPagePath(frame.url, "popup")) {
                     frame.postMessage("fromMain", value);
@@ -10958,7 +10958,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         // Only the background may answer a source request. Frame IDs come from main,
         // and the preload's per-document request ID rejects replies after navigation.
         if (reply) {
-            if (!mainWindow || eventRet.sender !== mainWindow.webContents ||
+            if (!mainWindow || mainWindow.isDestroyed() || eventRet.sender !== mainWindow.webContents ||
                 !matchesSocialStreamPagePath(eventRet.senderFrame?.url || '', "background") ||
                 typeof reply.id !== 'string') return;
             try {

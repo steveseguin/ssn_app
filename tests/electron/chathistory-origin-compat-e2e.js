@@ -456,8 +456,7 @@ async function verifyHistoryReviewFixes(page, popup, background) {
 		await history.locator("#export-button").click();
 		const download = await downloadPromise;
 		const exportPath = path.join(PROFILE_DIR, download.suggestedFilename());
-		const downloadDeadline = Date.now() + 15000;
-		while (!fs.existsSync(exportPath) && Date.now() < downloadDeadline) await historyPage.waitForTimeout(100);
+		assert.strictEqual(await download.failure(), null, "History export failed.");
 		assert.ok(fs.existsSync(exportPath), "History export did not finish downloading.");
 		const exported = JSON.parse(fs.readFileSync(exportPath, "utf8"));
 		assert.deepStrictEqual(exported.map(message => message.chatmessage), [`${marker}-23h`],
@@ -602,8 +601,8 @@ async function verifySnapshotFeatures(historyPage, history, background) {
 	// Force a filename collision through the real Download button. App-owned exports
 	// must keep their deliberate replacement behavior when external downloads change.
 	const exportPath = path.join(PROFILE_DIR, download.suggestedFilename());
-	const firstExportDeadline = Date.now() + 15000;
-	while (!fs.existsSync(exportPath) && Date.now() < firstExportDeadline) await historyPage.waitForTimeout(100);
+	// The file can exist while Electron still has it locked for writing on Windows.
+	assert.strictEqual(await download.failure(), null, "Snapshot export failed.");
 	assert.ok(fs.existsSync(exportPath), "Snapshot export did not finish downloading.");
 	assert.deepStrictEqual(JSON.parse(fs.readFileSync(exportPath, "utf8")), exportedMessages);
 	fs.writeFileSync(exportPath, "DISPOSABLE EXPORT COLLISION");
@@ -619,14 +618,9 @@ async function verifySnapshotFeatures(historyPage, history, background) {
 	}, download.suggestedFilename());
 	const repeatedDownload = historyPage.waitForEvent("download", { timeout: 15000 });
 	await history.locator("#export-button").click();
-	assert.strictEqual((await repeatedDownload).suggestedFilename(), download.suggestedFilename());
-	const replacementDeadline = Date.now() + 15000;
-	while (Date.now() < replacementDeadline) {
-		try {
-			if (fs.readFileSync(exportPath, "utf8") === exportCapture.content) break;
-		} catch (_) { }
-		await historyPage.waitForTimeout(100);
-	}
+	const replacement = await repeatedDownload;
+	assert.strictEqual(replacement.suggestedFilename(), download.suggestedFilename());
+	assert.strictEqual(await replacement.failure(), null, "Replacement export failed.");
 	assert.deepStrictEqual(JSON.parse(fs.readFileSync(exportPath, "utf8")), exportedMessages,
 		"The Message Browser's same-name export must retain its existing replacement behavior.");
 

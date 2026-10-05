@@ -182,6 +182,8 @@ async function run() {
 					delete background.settings.hideevents;
 					delete background.settings.filtereventstoggle;
 					delete background.settings.filterevents;
+					delete background.settings.captureliketotals;
+					delete background.settings.captureyoutubelikes;
 				}
 				function resetCounts() {
 					counts.reactions = 0;
@@ -233,6 +235,9 @@ async function run() {
 				resetSettings();
 				resetCounts();
 				scenarios.total = await emit({ id: 81006, type: "tiktok", event: "likes_update", meta: 42 });
+				background.settings.captureliketotals = { setting: true };
+				resetCounts();
+				scenarios.totalEnabled = await emit({ id: 81008, type: "tiktok", event: "likes_update", meta: 43 });
 
 				resetSettings();
 				resetCounts();
@@ -249,7 +254,8 @@ async function run() {
 		assert.deepStrictEqual(result.result.scenarios.hidden, { reactions: 0, dock: 0, eventFlow: 0, disk: 0 });
 		assert.deepStrictEqual(result.result.scenarios.filtered, { reactions: 0, dock: 0, eventFlow: 0, disk: 0 });
 		assert.deepStrictEqual(result.result.scenarios.reaction, { reactions: 1, dock: 1, eventFlow: 1, disk: 1 });
-		assert.deepStrictEqual(result.result.scenarios.total, { reactions: 0, dock: 1, eventFlow: 1, disk: 1 });
+		assert.deepStrictEqual(result.result.scenarios.total, { reactions: 0, dock: 0, eventFlow: 1, disk: 0 });
+		assert.deepStrictEqual(result.result.scenarios.totalEnabled, { reactions: 0, dock: 1, eventFlow: 1, disk: 1 });
 		assert.deepStrictEqual(result.result.scenarios.legacyLike, { reactions: 1, dock: 0, eventFlow: 0, disk: 0 });
 		console.log("Individual-like routing Electron end-to-end checks passed.");
 	} catch (error) {
