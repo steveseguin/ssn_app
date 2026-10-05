@@ -4097,7 +4097,7 @@ class GiftProcessor {
                 clearTimeout(existingStreak.timer);
                 this.streaks.delete(streakKey);
                 const totalCount = existingStreak.count + Math.max(0, increment);
-                this.rememberFlushedStreak(flushMemoryKey, totalCount);
+                this.rememberFlushedStreak(flushMemoryKey, Math.max(previousTotal, aggregatedCount));
                 this.queue.push({
                     data: data || existingStreak.lastData,
                     count: Math.max(1, totalCount)
@@ -4128,7 +4128,11 @@ class GiftProcessor {
         // The safety timeout is based on inactivity, so a long, active combo is
         // not announced in 30-second chunks before TikTok sends repeatEnd.
         if (existingStreak || streakable) {
-            const next = existingStreak || { count: 0, lastData: null, lastTotal: 0, timer: null };
+            // A delayed intermediate update can resume a group after its safety
+            // flush. Its count is cumulative, so only queue the unannounced part.
+            const alreadyFlushed = existingStreak ? 0 : this.getFlushedStreakTotal(flushMemoryKey);
+            if (!existingStreak && aggregatedCount <= alreadyFlushed) return;
+            const next = existingStreak || { count: 0, lastData: null, lastTotal: alreadyFlushed, timer: null };
             const prevTotal = Number(next.lastTotal) || 0;
             const increment = aggregatedCount > prevTotal ? aggregatedCount - prevTotal : 0;
             const safeIncrement = Math.max(0, increment);
@@ -4164,7 +4168,7 @@ class GiftProcessor {
         clearTimeout(streak.timer);
         this.streaks.delete(streakKey);
         const safeCount = Math.max(1, streak.count || 1);
-        this.rememberFlushedStreak(this.resolveFlushMemoryKey(streakKey, streak.lastData), safeCount);
+        this.rememberFlushedStreak(this.resolveFlushMemoryKey(streakKey, streak.lastData), streak.lastTotal);
         this.queue.push({
             data: streak.lastData,
             count: safeCount

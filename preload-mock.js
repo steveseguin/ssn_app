@@ -672,7 +672,57 @@ Function.prototype.toString = function() {
 // Handle IPC exposure based on context isolation setting
 const { contextBridge, ipcRenderer } = require('electron');
 
+// Capture callbacks need the background's answer, not the immediate main-process ack.
+const pendingCaptureReplies = new Map();
+const captureReplyPrefix = Date.now().toString(36) + Math.random().toString(36).slice(2) + ':';
+let captureReplyCounter = 0;
+
+ipcRenderer.on('ssapp:capture-response', (_event, requestId, response) => {
+	const pending = pendingCaptureReplies.get(requestId);
+	if (!pending) return;
+	pendingCaptureReplies.delete(requestId);
+	clearTimeout(pending.timer);
+	pending.callback(response);
+});
+
+function sendCaptureWithResponse(data, callback) {
+	if (!data || !data.message || typeof data.message !== 'object' || typeof callback !== 'function') return false;
+	const requestId = captureReplyPrefix + (++captureReplyCounter);
+	const timer = setTimeout(() => {
+		pendingCaptureReplies.delete(requestId);
+		callback({ error: 'Background capture response timed out' });
+	}, 30000);
+	pendingCaptureReplies.set(requestId, { callback, timer });
+	try {
+		ipcRenderer.send('postMessage', data, { captureReplyId: requestId });
+	} catch (error) {
+		pendingCaptureReplies.delete(requestId);
+		clearTimeout(timer);
+		callback({ error: error.message });
+	}
+	return true;
+}
+
+
+
+const incomingMessageHandlers = [];
+function registerIncomingMessageHandler(callback) {
+  if (typeof callback === 'function' && !incomingMessageHandlers.includes(callback)) incomingMessageHandlers.push(callback);
+}
+
 function dispatchSendToTabMessage(message, requestId) {
+  if (incomingMessageHandlers.length) {
+    let answered = false;
+    const respond = response => {
+      if (answered) return;
+      answered = true;
+      if (requestId) ipcRenderer.send(`sendToTab-response-${requestId}`, response);
+    };
+    incomingMessageHandlers.slice().forEach(callback => {
+      try { callback(message, null, respond); } catch (_) {}
+    });
+    return;
+  }
   try {
     if (typeof window.doSomethingInWebApp === 'function') {
       window.doSomethingInWebApp(message, null, (response) => {
@@ -817,7 +867,7 @@ if (RESTRICT_PAGE_IPC) {
     _authToken: null,
     getInjectedScriptFlag: () => null,
     exposeDoSomethingInWebApp: (callback) => {
-      window.doSomethingInWebApp = callback;
+      registerIncomingMessageHandler(callback);
     },
     sendMessage: (ignore, data, callback, tabID) => {
       if (sendBackgroundCommandIfNeeded(data, callback)) {
@@ -827,6 +877,7 @@ if (RESTRICT_PAGE_IPC) {
       if (tabID !== undefined && tabID !== null && tabID !== false) {
         outgoingData.__tabID__ = tabID;
       }
+      if (sendCaptureWithResponse(outgoingData, callback)) return;
       if (callback) {
         const response = ipcRenderer.sendSync('postMessage', outgoingData);
         callback(response);

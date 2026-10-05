@@ -4419,7 +4419,16 @@ ipcMain.handle('ninjachatter:audience-room', async (event, request = {}) => {
             matchesSocialStreamPagePath(candidate.url, 'background')
             && (candidate.url.startsWith('file://') || isSocialStreamRemoteUrl(candidate.url)));
         if (!background) throw new Error('Start SSN to connect an audience room.');
-        return background.executeJavaScript(`window.ncAudience.handle(${JSON.stringify(request.command)})`);
+        // The popup can poll while the background scripts are still loading.
+        // Check and call in the same frame evaluation so a reload cannot race
+        // a separate readiness probe. Reject early commands without replaying them.
+        const result = await background.executeJavaScript(`(async () => {
+            const connector = window.ncAudience;
+            if (!connector || typeof connector.handle !== 'function') return { ready: false };
+            return { ready: true, value: await connector.handle(${JSON.stringify(request.command)}) };
+        })()`);
+        if (!result.ready) throw new Error('Audience room is still starting. Try again shortly.');
+        return result.value;
     }
     throw new Error('Unsupported audience connection operation.');
 });
@@ -10945,7 +10954,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
         eventRet.returnValue = value;
     });
 
-    ipcMain.on("fromBackgroundResponse", function (eventRet, value) {
+    ipcMain.on("fromBackgroundResponse", function (eventRet, value, reply) {
+        // Only the background may answer a source request. Frame IDs come from main,
+        // and the preload's per-document request ID rejects replies after navigation.
+        if (reply) {
+            if (!mainWindow || eventRet.sender !== mainWindow.webContents ||
+                !matchesSocialStreamPagePath(eventRet.senderFrame?.url || '', "background") ||
+                typeof reply.id !== 'string') return;
+            try {
+                const frame = webFrameMain.fromId(reply.processId, reply.routingId);
+                if (frame && !frame.detached) frame.send('ssapp:capture-response', reply.id, value);
+            } catch (_) { } // The source may have closed while background was processing.
+            return; // State was mirrored when background first produced this response.
+        }
         // log("\nBackgroundResponsed");
         //log(value)
 
@@ -11638,9 +11659,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
         };
 
         if (args.length >= 2) {
+            options = args[1] || {};
             if (args[1] && args[1].tabID) {
                 tabID = args[1].tabID;
-                options = args[1];
             }
         }
 
@@ -11795,6 +11816,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             let backgroundPayload = dockResponsePayload !== undefined ? dockResponsePayload : args[0];
             backgroundPayload = attachSourceAccountMetaToPayload(backgroundPayload, tabID);
+            let captureReply = null;
+            if (backgroundPayload?.message && typeof options.captureReplyId === 'string' &&
+                options.captureReplyId.length <= 100 && eventRet.senderFrame) {
+                captureReply = {
+                    id: options.captureReplyId,
+                    processId: eventRet.senderFrame.processId,
+                    routingId: eventRet.senderFrame.routingId
+                };
+            }
             if (backgroundPayload !== null) {
                 if (sourceObservationService) {
                     const sourceId = sourceIdForObservedMessage(tabID, eventRet.sender);
@@ -11806,7 +11836,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     if (matchesSocialStreamPagePath(frame.url, "background")) {
                         frame.postMessage("fromMainSender", [backgroundPayload, {
                             ...sender
-                        }]);
+                        }, captureReply]);
                     }
                 });
             }
@@ -12083,6 +12113,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 Accept: "application/json,text/plain;q=0.9,*/*;q=0.8"
             }
         });
+        if (response.status === 429) {
+            const error = new Error("Rate limited by Rumble (HTTP 429). Backing off.");
+            error.status = response.status;
+            error.retryAfter = response.headers.get("Retry-After");
+            throw error;
+        }
         const text = await response.text();
         let data = null;
         try {
@@ -12112,6 +12148,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             return {
                 ok: false,
                 status: error && typeof error.status !== "undefined" ? error.status : undefined,
+                retryAfter: error && error.retryAfter,
                 error: error?.message || "Rumble fetch failed"
             };
         }
@@ -14609,9 +14646,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
 									// Use postMessage to communicate with preload script
 									const messageData = b || a;
 									
-									// Handle getSettings synchronously from cached data
+									// Read current settings through the bridge, with a startup snapshot fallback.
 									if (messageData && messageData.getSettings && c) {
-										c(cachedSettings);
+										if (window.ninjafy && window.ninjafy.sendMessage) {
+											window.ninjafy.sendMessage(null, messageData, c, window.__SSAPP_TAB_ID__);
+										} else {
+											c(cachedSettings);
+										}
 										return;
 									}
 
@@ -14896,9 +14937,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
 												// Use postMessage to communicate with preload script
 												const messageData = b || a;
 												
-												// Handle getSettings synchronously from cached data
+												// Read current settings through the bridge, with a startup snapshot fallback.
 												if (messageData && messageData.getSettings && c) {
-													c(cachedSettings);
+													if (window.ninjafy && window.ninjafy.sendMessage) {
+														window.ninjafy.sendMessage(null, messageData, c, window.__SSAPP_TAB_ID__);
+													} else {
+														c(cachedSettings);
+													}
 													return;
 												}
 												try {
@@ -15104,6 +15149,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
 								}
 							}
 						} catch(_){}
+						if (messageData && messageData.message && typeof c === "function" && window.ninjafy && window.ninjafy.sendMessage) {
+							window.ninjafy.sendMessage(null, messageData, c, window.__SSAPP_TAB_ID__);
+							return;
+						}
 						const outgoingMessage = {
 							...messageData
 						};

@@ -251,6 +251,59 @@ function run() {
     gp.stop('test_cleanup');
   }
 
+  // Intermediate updates are cumulative even after the inactivity safety flush.
+  // Resuming a flushed group must only contribute its unannounced remainder.
+  {
+    const gp = createGiftProcessorHarness();
+    const event = (count, repeatEnd = false) => buildGiftEvent({
+      gift_id: 'resume-gift', repeat_count: count, repeatEnd, groupId: 'resume-group'
+    });
+    gp.addToQueue(event(2));
+    gp.flushStreak(gp.streaks.keys().next().value);
+    gp.addToQueue(event(3));
+    gp.addToQueue(event(3, true));
+    assert.deepStrictEqual(gp.queue.map(entry => entry.count), [2, 1], 'resumed streak must only send the delta');
+    gp.addToQueue(event(3, true));
+    assert.strictEqual(gp.queue.length, 2, 'final replay must remember the cumulative total');
+    gp.stop('test_cleanup');
+  }
+
+  // Repeated safety flushes must keep cumulative memory, not just the last delta.
+  {
+    const gp = createGiftProcessorHarness();
+    const event = (count, repeatEnd = false) => buildGiftEvent({
+      gift_id: 'repeat-flush-gift', repeat_count: count, repeatEnd, groupId: 'repeat-flush-group'
+    });
+    for (const count of [2, 3, 5]) {
+      gp.addToQueue(event(count));
+      gp.flushStreak(gp.streaks.keys().next().value);
+    }
+    gp.addToQueue(event(5, true));
+    assert.deepStrictEqual(gp.queue.map(entry => entry.count), [2, 1, 2], 'repeated flushes must emit each gift once');
+    gp.addToQueue(event(7, true));
+    assert.deepStrictEqual(gp.queue.map(entry => entry.count), [2, 1, 2, 2], 'late final increase must only emit the remaining gifts');
+    gp.stop('test_cleanup');
+  }
+
+  // Replayed intermediate counts must not reopen an already-flushed group.
+  {
+    const gp = createGiftProcessorHarness();
+    const event = (count, repeatEnd = false) => buildGiftEvent({
+      gift_id: 'stale-gift', repeat_count: count, repeatEnd, groupId: 'stale-group'
+    });
+    gp.addToQueue(event(5, true));
+    gp.addToQueue(event(5));
+    gp.addToQueue(event(3));
+    assert.strictEqual(gp.streaks.size, 0, 'stale intermediate updates must not start another flush timer');
+    assert.deepStrictEqual(gp.queue.map(entry => entry.count), [5]);
+    gp.addToQueue(event(7));
+    gp.addToQueue(event(6, true));
+    assert.deepStrictEqual(gp.queue.map(entry => entry.count), [5, 2], 'a lower final count must not lose a newer intermediate count');
+    gp.addToQueue(event(7, true));
+    assert.strictEqual(gp.queue.length, 2, 'the higher observed cumulative total must remain deduplicated');
+    gp.stop('test_cleanup');
+  }
+
   // A new streak from the same user with the same gift must not be suppressed
   // when TikTok assigns a different groupId.
   {

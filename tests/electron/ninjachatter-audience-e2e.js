@@ -187,6 +187,39 @@ async function message(id, text) {
     await until(() => deliveries.some(d => d.id === id), 'dock transport');
 }
 
+async function testConnectorStartup() {
+    const main = await app.firstWindow();
+    const errors = [];
+    const onError = error => errors.push(error.message);
+    main.on('pageerror', onError);
+    await background.evaluate(() => {
+        window.audienceStartupTestConnector = window.ncAudience;
+        delete window.ncAudience;
+    });
+    try {
+        for (const op of ['status', 'pair']) {
+            const error = await popup.evaluate(async op => {
+                try {
+                    await ipcRenderer.invoke('ninjachatter:audience-room', { op: 'command', command: { op } });
+                    return '';
+                } catch (error) { return error.message; }
+            }, op);
+            assert.match(error, /Audience room is still starting/, `${op} must report startup without executing a command`);
+        }
+        assert.equal(pairRequests, 0, 'an early pairing command must not be sent or queued');
+        assert.deepEqual(errors, [], 'startup polling must not throw inside the background renderer');
+    } finally {
+        await background.evaluate(() => {
+            window.ncAudience = window.audienceStartupTestConnector;
+            delete window.audienceStartupTestConnector;
+        });
+        main.off('pageerror', onError);
+    }
+    assert.equal((await status()).state, 'disconnected', 'status recovers once the connector is ready');
+    assert.equal(pairRequests, 0, 'recovering readiness must not replay an early pairing command');
+    console.log('Audience startup polling and command rejection recover without renderer errors or replay.');
+}
+
 async function switchSession(api, sessionId, withDock) {
     // Let the real switch handler save and exit; Playwright owns the relaunch
     // so the next process retains the local service fixture and isolated profile.
@@ -208,6 +241,7 @@ async function run() {
     try {
         await launch(api);
         console.log('App settings and Dock ready.');
+        await testConnectorStartup();
         assert.equal((await status()).paired, false);
         await click('pair');
         await until(async () => (await status()).code === 'LOCAL123', 'pairing code');
