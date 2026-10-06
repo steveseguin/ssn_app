@@ -28,6 +28,7 @@
     "test:bulk-state:e2e": "node tests/electron/bulk-state-e2e.js",
     "test:youtube-type-toggle:e2e": "node tests/electron/youtube-type-toggle-e2e.js",
     "test:youtube-mid:e2e": "node tests/electron/youtube-mid-e2e.js",
+    "test:youtube-delivery:e2e": "node tests/electron/youtube-delivery-e2e.js",
     "test:moderation-mid:e2e": "node tests/electron/moderation-mid-e2e.js",
     "test:group-signin:e2e": "node tests/electron/group-signin-e2e.js",
     "test:group-controls:e2e": "node tests/electron/group-controls-e2e.js",
