@@ -1731,7 +1731,7 @@
                 const url = new URL(/^https?:\/\//i.test(showId) ? showId : 'https://' + showId);
                 if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.port
                     || !/^(?:www\.)?whatnot\.com$/i.test(url.hostname)) return '';
-                const match = url.pathname.match(/^\/(?:dashboard\/)?live\/([^/]+)\/?$/i);
+                const match = url.pathname.match(/^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?(?:dashboard\/)?live\/([^/]+)\/?$/i);
                 return match && uuid.test(match[1]) ? match[1].toLowerCase() : '';
             } catch (_) {
                 return '';

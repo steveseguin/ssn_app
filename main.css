@@ -2788,6 +2788,11 @@ button.group-control:hover::after {
   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
 }
 
+#sessionsList > button.session-item {
+  margin-left: 0;
+  margin-right: 0;
+}
+
 .session-item.current {
   border-color: #27ae60;
   background: rgba(46, 125, 50, 0.1);
@@ -3496,6 +3501,8 @@ input:checked + .slider:before {
 
 /* Sources panel heading & label */
 .sources-heading {
+  display: flow-root;
+  min-width: min(240px, calc(100% - 20px));
   margin: 8px 10px 4px;
   font-weight: 600;
   color: var(--text-primary);

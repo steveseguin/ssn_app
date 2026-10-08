@@ -237,7 +237,8 @@ async function run() {
       const cancelled = await until(() => app.evaluate((_electron, offset) => {
         const entry = global.__downloadAudit[offset]; return entry.state === 'cancelled' ? entry : null;
       }, beforeCancel), 'cancellation');
-      assert(!fs.existsSync(cancelled.savePath), 'Cancelled fixture must leave its target unused');
+      // Chromium can finish removing the partial file after emitting "done".
+      await until(() => !fs.existsSync(cancelled.savePath), 'cancelled download file cleanup');
       await startCancellableDownload('cancel-retry');
       const retry = await until(() => app.evaluate((_electron, offset) => global.__downloadAudit[offset], beforeCancel + 1), 'cancellation retry');
       assert.equal(retry.savePath, cancelled.savePath, 'Cancelled download must release its reservation');
