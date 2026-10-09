@@ -23,7 +23,8 @@
   /* Text hierarchy */
   --text-primary:   #eef2f7;
   --text-secondary: #94a3b8;
-  --text-muted:     #64748b;
+  --text-muted:     #9aa8bb;
+  color-scheme: dark;
 
   /* Borders */
   --border-subtle:  rgba(255,255,255,0.07);
@@ -542,7 +543,7 @@ body {
   #sources {
     left: 80px;
 	margin: 0;
-	padding: 2px !important;
+	padding: 2px;
   }
   
   .addnew button {
@@ -1129,7 +1130,10 @@ button.group-control {
   width: 100%;
   height: 100%;
   background-color: rgba(0, 0, 0, 0.7);
-  z-index: 1000;
+  z-index: 10000;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 16px;
 }
 
 .modal.hidden {
@@ -1147,6 +1151,10 @@ button.group-control {
   border-radius: var(--radius-lg);
   color: var(--text-primary);
   box-shadow: var(--shadow-lg);
+  box-sizing: border-box;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
 }
 
 .modal-content h2 {
@@ -1169,7 +1177,7 @@ button.group-control {
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  background: var(--accent);
+  background: var(--accent-hover);
   color: white;
   font-weight: 500;
   transition: background var(--t), opacity var(--t);
@@ -1182,7 +1190,7 @@ button.group-control {
 .modal-content button[data-type="cancel"] {
   background: rgba(255,255,255,0.1);
   border-color: var(--border-default);
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 .modal-content button[data-type="cancel"]:hover {
@@ -1381,7 +1389,10 @@ button.group-control {
   width: 100%;
   height: 100%;
   background-color: rgba(0, 0, 0, 0.7);
-  z-index: 1000;
+  z-index: 10000;
+  overflow-y: auto;
+  padding: 16px;
+  box-sizing: border-box;
 }
 
 .yt-stream-modal-content {
@@ -1394,7 +1405,10 @@ button.group-control {
   width: 80%;
   max-width: 800px;
   border-radius: 8px;
-  color: white;
+  color: var(--text-primary);
+  box-sizing: border-box;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
 }
 
 .yt-stream-close {
@@ -1503,7 +1517,7 @@ button.group-control {
 }
 
 .yt-stream-button.primary {
-  background: #4CAF50;
+  background: #166534;
   color: white;
 }
 
@@ -1535,6 +1549,8 @@ button.group-control {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid var(--border-default);
   color: var(--text-primary);
+  box-sizing: border-box;
+  text-align: start;
 }
 
 .modal-content button.source-choice {
@@ -1603,7 +1619,7 @@ button.group-control {
   padding: 2px 7px;
   border-radius: var(--radius-sm);
   background: rgba(255, 255, 255, 0.1);
-  color: var(--text-secondary);
+  color: var(--text-primary);
   font-size: 11px;
   font-weight: 600;
   line-height: 1;
@@ -1812,7 +1828,7 @@ button.group-control {
   transform: translateY(-50%);
   font-size: 18px;
   color: white;
-  background-color: #4CAF50;
+  background-color: #166534;
   opacity: 0;
   transition: opacity 0.2s ease;
   width: 24px;
@@ -1835,12 +1851,12 @@ button.group-control {
 }
 
 .stream-status-badge.live {
-  background-color: #f44336;
+  background-color: #b91c1c;
   color: white;
 }
 
 .stream-status-badge.upcoming {
-  background-color: #2196F3;
+  background-color: #075985;
   color: white;
 }
 
@@ -1859,7 +1875,7 @@ button.group-control {
 }
 
 .yt-stream-item:not(.selected) {
-  opacity: 0.8;
+  opacity: 1;
 }
 
 .yt-stream-item:hover {
@@ -1917,17 +1933,17 @@ button.group-control {
 }
 
 .stream-active {
-  background-color: #4CAF50;
+  background-color: #166534;
   color: white;
 }
 
 .stream-ended {
-  background-color: #f44336;
+  background-color: #b91c1c;
   color: white;
 }
 
 .stream-checking {
-  background-color: #2196F3;
+  background-color: #075985;
   color: white;
   animation: pulse 1.5s infinite;
 }
@@ -2134,6 +2150,7 @@ to {
 }
 
 .entry .control-panel {
+  box-sizing: border-box;
   flex: 1 1 100% !important;
   display: flex !important;
   flex-direction: row !important;
@@ -3708,10 +3725,81 @@ input:checked + .slider:before {
 .source-setup p, .source-setup li { line-height: 1.5; }
 .source-setup label { display: block; margin: 12px 0 6px; }
 .source-setup input, .source-setup select { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-deep); color: var(--text-primary); }
-.source-setup a { color: var(--accent); text-decoration: underline; }
+.source-setup a { color: #93c5fd; text-decoration: underline; }
 .source-setup-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 #source-setup-error { color: var(--danger, #ff8585); }
 
 .source-setup-help { margin-top: 18px; }
 .source-setup-help summary { cursor: pointer; color: var(--text-secondary); }
 .source-setup-help p { font-size: 0.9em; }
+
+/* Source dialogs must fit the effective viewport at increased OS/text zoom. */
+.tiktok-signing-dialog {
+  width: min(640px, 100%);
+  margin: auto;
+}
+.tiktok-signing-dialog input,
+.tiktok-signing-dialog select { box-sizing: border-box; max-width: 100%; }
+.tiktok-signing-dialog button { margin: 4px 0; white-space: normal; }
+.source-setup input::placeholder,
+.tiktok-signing-dialog input::placeholder { color: #a5b4c7; opacity: 1; }
+.source-setup input[type="text"],
+.tiktok-signing-dialog input { direction: ltr; text-align: start; }
+.entry[data-target="tiktok"] .mode-selector {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px !important;
+  width: 100%;
+  margin: 0;
+}
+.entry[data-target="tiktok"] .mode-selector-label { grid-column: 1; }
+.entry[data-target="tiktok"] .mode-info { grid-column: 2; grid-row: 1; margin: 0; }
+.entry[data-target="tiktok"] .tiktok-connection-select,
+.entry[data-target="tiktok"] .provider-help-text,
+.entry[data-target="tiktok"] .tiktok-fallback-help { grid-column: 1 / -1; }
+.entry[data-target="tiktok"] .provider-help-text { min-height: 0 !important; font-size: 12px !important; }
+.entry[data-target="tiktok"] .tiktok-fallback-help { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.tiktok-fallback-help br { display: none; }
+.tiktok-fallback-help .tiktok-troubleshooting-copy { margin: 0 !important; }
+
+@media (max-width: 900px) {
+  .overlay-expanded #link-overlay-page { width: calc(100% - 106px) !important; min-width: 0 !important; z-index: 20; }
+  .overlay-expanded #sources { right: 0 !important; }
+  #sources { padding: 12px 36px 12px 12px; }
+  .sources-heading { min-width: 0; }
+  .sources-heading h1 { font-size: 1.25rem; }
+}
+@media (max-width: 600px) {
+  .modal, .yt-stream-modal { padding: 10px; }
+  .modal-content, .yt-stream-modal-content { width: 100%; max-height: calc(100dvh - 20px); margin: 0 auto; padding: 16px; }
+  .modal-content button { max-width: 100%; }
+  .yt-stream-thumbnail { width: 72px; height: 48px; margin-inline-end: 10px; }
+  .yt-stream-item { flex-wrap: wrap; gap: 8px; padding: 10px; }
+  .yt-stream-item .stream-status-badge { position: static; }
+  .yt-stream-info { flex: 1 1 140px; margin: 0; }
+  .yt-stream-list { max-height: none; }
+  .addnew { position: fixed; width: 88px !important; height: calc(100vh - 56px); display: block; padding: 4px !important; }
+  .addnew button { display: block; min-width: 0; width: 100%; overflow-wrap: anywhere; }
+  #sources { position: absolute; left: 88px; }
+  .overlay-expanded #link-overlay-page { width: calc(100% - 88px) !important; }
+  .entry > span { min-width: 0; }
+  .entry .control-panel { padding: 8px; gap: 10px !important; }
+}
+
+@media (max-width: 1100px) {
+  /* The version panel must not squeeze the app title into a stack of words. */
+  .beta-toggle { float: none; width: fit-content; margin: 0 0 12px 10px; }
+  .sources-heading { font-size: 1.25rem; }
+}
+@media (max-width: 900px) {
+  .overlay-collapsed #link-overlay-page .overlay-handle {
+    left: 0; width: 28px; height: 56px; font-size: 18px;
+    border-radius: 10px 0 0 10px; animation: none;
+  }
+  .modal-content, .yt-stream-modal-content { margin: 0 auto; }
+}
+
+.tiktok-signing-dialog button { overflow-wrap: normal; word-break: normal; }
+.tiktok-signing-dialog button[style*="flex: 1"] { flex: 1 1 130px !important; }
+
+.addnew p { font-size: 14px; line-height: 1.3; overflow-wrap: anywhere; }

@@ -366,7 +366,7 @@ class YouTubeStreamSelector {
         this.options = options;
         this.currentUsernameForGroup = username;
         this.currentIsShortDefault = isShortDefault;
-        this.activateButton.textContent = options.buttonLabel || 'Activate Selected';
+        this.activateButton.textContent = options.buttonLabel || translate('streams.activate');
         this.activateButton.disabled = false;
 
         if (autoActivate) {
@@ -411,9 +411,7 @@ class YouTubeStreamSelector {
     formatViewers(count) { 
         try {
             if (typeof count !== 'number') return "?";
-            if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
-            if (count >= 1000) return `${(count / 1000).toFixed(1)}K`;
-            return `${count}`;
+            return new Intl.NumberFormat(document.documentElement.lang || undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(count);
         } catch (e) {
             return "?";
         }
@@ -424,28 +422,12 @@ class YouTubeStreamSelector {
             const date = new Date(timeString);
             if (isNaN(date.getTime())) return ""; 
 
-            const options = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true };
-            const now = new Date();
-            const diffMs = date - now;
-            const diffMins = Math.floor(diffMs / (1000 * 60));
-
-            let relativeTime = "";
-            if (diffMins < -60) { 
-                relativeTime = "(already started)";
-            } else if (diffMins < 0) { 
-                relativeTime = "(starting now / recently started)";
-            } else if (diffMins < 1) {
-                relativeTime = "(starting now)";
-            } else if (diffMins < 60) {
-                relativeTime = `(in ${diffMins} minute${diffMins > 1 ? 's' : ''})`;
-            } else if (diffMins < 24 * 60) {
-                const hours = Math.floor(diffMins / 60);
-                relativeTime = `(in ${hours} hour${hours > 1 ? 's' : ''})`;
-            } else {
-                const days = Math.floor(diffMins / (24 * 60));
-                relativeTime = `(in ${days} day${days > 1 ? 's' : ''})`;
-            }
-            return `Starts: ${date.toLocaleString('en-US', options)} ${relativeTime}`;
+            const locale = document.documentElement.lang || undefined;
+            const minutes = Math.round((date.getTime() - Date.now()) / 60000);
+            const unit = Math.abs(minutes) >= 1440 ? 'day' : Math.abs(minutes) >= 60 ? 'hour' : 'minute';
+            const value = Math.round(minutes / (unit === 'day' ? 1440 : unit === 'hour' ? 60 : 1));
+            const relative = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(value, unit);
+            return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date) + ' (' + relative + ')';
         } catch (e) {
             console.error("Error formatting scheduled time:", e);
             return ""; 
@@ -486,9 +468,9 @@ class YouTubeStreamSelector {
             stream.statusDisplay = status; // Store for later use if needed
 
             let statusBadge = '';
-            if (status === 'upcoming') statusBadge = '<span class="stream-status-badge upcoming">Upcoming</span>';
-            else if (status === 'live') statusBadge = '<span class="stream-status-badge live">Live</span>';
-            else if (status === 'ended') statusBadge = '<span class="stream-status-badge ended">Ended</span>';
+            if (status === 'upcoming') statusBadge = `<span class="stream-status-badge upcoming">${translate('streams.upcoming')}</span>`;
+            else if (status === 'live') statusBadge = `<span class="stream-status-badge live">${translate('streams.live')}</span>`;
+            else if (status === 'ended') statusBadge = `<span class="stream-status-badge ended">${translate('streams.ended')}</span>`;
             else statusBadge = '<span class="stream-status-badge video">Video</span>';
 
             const metaBadges = [];
@@ -497,12 +479,12 @@ class YouTubeStreamSelector {
             }
             if (isOwnerDiscoveredYouTubeStream(stream)) {
                 const chatReady = stream.youtubeChatStatus === 'ready' || !!stream.liveChatId;
-                const chatLabel = chatReady ? 'Chat ready' : 'Chat not ready yet';
+                const chatLabel = translate(chatReady ? 'streams.chatReady' : 'streams.chatWaiting');
                 metaBadges.push(`<span class="yt-stream-meta-badge ${chatReady ? 'chat-ready' : 'chat-waiting'}">${chatLabel}</span>`);
             }
             const metaBadgeHtml = metaBadges.length ? `<div class="yt-stream-meta-badges">${metaBadges.join('')}</div>` : '';
             const viewerHtml = ("viewers" in stream && typeof stream.viewers === 'number')
-                ? `<div class="yt-stream-viewers">${this.formatViewers(stream.viewers)} viewers</div>`
+                ? `<div class="yt-stream-viewers">${translateTemplate('streams.viewers', { count: this.formatViewers(stream.viewers) })}</div>`
                 : '';
             const selectable = !isExisting && isSelectableYouTubeStreamStatus(status);
 
@@ -518,7 +500,7 @@ class YouTubeStreamSelector {
                   ${viewerHtml}
                   ${metaBadgeHtml}
                   ${status === 'upcoming' ? '<div class="stream-scheduled-time">' + this.formatScheduledTime(stream.scheduledStartTime) + '</div>' : ''}
-                  ${isExisting ? '<span class="stream-status already-added">Already Added</span>' : ''}
+                  ${isExisting ? `<span class="stream-status already-added">${translate('streams.added')}</span>` : ''}
                 </div>
                 ${this.options?.target ? '' : `<div class="yt-stream-controls">
                   <label class="shorts-toggle-label" title="Mark as YouTube Shorts?">

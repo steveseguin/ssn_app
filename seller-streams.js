@@ -27,12 +27,12 @@ function parseWhatnotSourceInput(value) {
 function showSellerSourceSetup(target, existingSourceId = null) {
     const label = target === 'ebay' ? 'eBay Live' : 'Whatnot';
     let saving = false;
-    const modal = createSourceSetup(existingSourceId ? 'Choose another eBay Live stream' : `Add ${label}`,
-        '<p>Save a seller to choose their streams, or paste a stream link.</p>',
-        `<label for="source-setup-input">${target === 'ebay' ? 'Seller or event link' : 'Username, profile or show link'}</label>
+    const modal = createSourceSetup(existingSourceId ? translate('setup.chooseAgain') : translateTemplate('setup.add', { platform: label }),
+        `<p>${translate('setup.saveSeller')}</p>`,
+        `<label for="source-setup-input">${translate(target === 'ebay' ? 'setup.ebayInput' : 'setup.whatnotInput')}</label>
         <input id="source-setup-input" type="text" required autocomplete="off" spellcheck="false"
             placeholder="${target === 'ebay' ? 'https://www.ebay.com/ebaylive/sellers/…' : 'https://www.whatnot.com/user/…'}">
-        ${target === 'ebay' ? '<p>Use an eBay Live seller link, not a store or /usr/ link. Event IDs also work.</p>' : ''}`,
+        ${target === 'ebay' ? `<p>${translate('setup.ebayHint')}</p>` : ''}`,
         async dialog => {
             if (saving) return;
             const parsed = target === 'ebay' ? parseEbayLiveInput(dialog.querySelector('input').value)
@@ -134,14 +134,14 @@ async function chooseSellerStreams(group, existingSourceId = null) {
     const previousFocus = document.activeElement;
     const selection = picker.show([], group.username, false, false, {
         target: group.target, platformLabel: group.target === 'ebay' ? 'eBay Live' : 'Whatnot',
-        buttonLabel: existingSourceId ? 'Use Selected' : 'Add Selected', singleSelect: !!existingSourceId,
+        buttonLabel: translate(existingSourceId ? 'setup.useSelected' : 'setup.addSelected'), singleSelect: !!existingSourceId,
         isAdded: id => sellerStreamAlreadyAdded(group.target, id)
     });
     const resolver = picker.resolvePromise;
     const current = () => picker.resolvePromise === resolver && (!group.id || stateManager.getGroup(group.id) === group)
         && (!existingSourceId || !!stateManager.getSource(existingSourceId));
     const refresh = document.createElement('button');
-    refresh.type = 'button'; refresh.className = 'yt-stream-button secondary'; refresh.textContent = 'Refresh';
+    refresh.type = 'button'; refresh.className = 'yt-stream-button secondary'; refresh.textContent = translate('setup.refresh');
     picker.cancelButton.before(refresh);
     picker.activateButton.disabled = true;
     const dialog = picker.modal.querySelector('.yt-stream-modal-content');
@@ -170,12 +170,12 @@ async function chooseSellerStreams(group, existingSourceId = null) {
         if (!current() || refresh.disabled) return;
         refresh.disabled = true; picker.activateButton.disabled = true;
         picker.selectedStreams.clear(); picker.streams = [];
-        message('Looking for streams…');
+        message(translate('setup.loading'));
         try {
             const streams = await discoverSellerStreams(group, current);
             if (!current()) { if (picker.resolvePromise === resolver) picker.hide(); return; }
             picker.streams = streams;
-            if (!streams.length) message(group.target === 'whatnot' ? 'No live or upcoming shows. Check again later.' : 'No live streams. Check again later.');
+            if (!streams.length) message(translate('setup.empty'));
             else { picker.streamList.replaceChildren(); await picker.createStreamElements(streams, group.username, false); }
         } catch (error) {
             if (current()) message(error.message || 'Could not load streams. Try Refresh.');

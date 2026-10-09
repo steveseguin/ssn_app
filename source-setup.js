@@ -68,8 +68,8 @@ function createSourceSetup(title, description, fields, save) {
         <h2 id="source-setup-title">${title}</h2>${description}
         <form id="source-setup-form">${fields}
             <p id="source-setup-error" role="alert"></p>
-            <div class="source-setup-buttons"><button type="submit">Add source</button>
-                <button type="button" data-type="cancel">Cancel</button></div>
+            <div class="source-setup-buttons"><button type="submit">${translate("setup.addSource")}</button>
+                <button type="button" data-type="cancel">${translate("setup.cancel")}</button></div>
         </form></div>`);
     modal.querySelector('[data-type="cancel"]').onclick = () => closeModal();
     modal.querySelector('form').onsubmit = async event => {

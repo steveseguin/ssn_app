@@ -483,11 +483,11 @@
     <div class="yt-stream-modal" style="display:none;" id="ytStreamModal">
         <div class="yt-stream-modal-content">
             <span class="yt-stream-close">×</span>
-            <h2>Available Live Streams</h2>
+            <h2 data-i18n="streams.select">Select streams</h2>
             <div class="yt-stream-list" id="ytStreamList"></div>
             <div class="yt-stream-buttons">
-                <button class="yt-stream-button secondary" id="ytCancelButton">Cancel</button>
-                <button class="yt-stream-button primary" id="ytActivateButton">Activate Selected</button>
+                <button class="yt-stream-button secondary" id="ytCancelButton" data-i18n="setup.cancel">Cancel</button>
+                <button class="yt-stream-button primary" id="ytActivateButton" data-i18n="streams.activate">Activate selected</button>
             </div>
         </div>
     </div>
@@ -614,7 +614,7 @@
 
     <div class="modal hidden" id="youtubeAddModeModal">
         <div class="modal-content modal-md youtube-owner-modal">
-            <h2>Add a YouTube source</h2>
+            <h2 data-i18n="youtube.addTitle">Add a YouTube source</h2>
             <div class="youtube-source-choice-list">
                 <button class="youtube-source-choice" data-youtube-add-mode="public" type="button">
                     <span class="youtube-source-choice-icon-wrap">
@@ -622,10 +622,10 @@
                     </span>
                     <span class="youtube-source-choice-copy">
                         <span class="youtube-source-choice-heading">
-                            <span class="youtube-source-choice-title">Track a public channel</span>
-                            <span class="youtube-source-choice-badge">No sign-in</span>
+                            <span class="youtube-source-choice-title" data-i18n="youtube.publicTitle">Track a public channel</span>
+                            <span class="youtube-source-choice-badge" data-i18n="youtube.noSignin">No sign-in</span>
                         </span>
-                        <span class="youtube-source-choice-description">Enter an @handle or channel URL. Finds public live and upcoming streams only, not unlisted.</span>
+                        <span class="youtube-source-choice-description" data-i18n="youtube.publicDescription">Enter an @handle or channel URL. Finds public live and upcoming streams; excludes unlisted videos.</span>
                     </span>
                 </button>
                 <button class="youtube-source-choice" data-youtube-add-mode="owner" type="button">
@@ -634,10 +634,10 @@
                     </span>
                     <span class="youtube-source-choice-copy">
                         <span class="youtube-source-choice-heading">
-                            <span class="youtube-source-choice-title">Use my YouTube account</span>
-                            <span class="youtube-source-choice-badge">Recommended</span>
+                            <span class="youtube-source-choice-title" data-i18n="youtube.ownerTitle">Use my YouTube account</span>
+                            <span class="youtube-source-choice-badge" data-i18n="youtube.recommended">Recommended</span>
                         </span>
-                        <span class="youtube-source-choice-description">Sign in read-only. Reliably finds your own live and scheduled streams, including unlisted.</span>
+                        <span class="youtube-source-choice-description" data-i18n="youtube.ownerDescription">Read-only sign-in. Finds your live and scheduled streams, including unlisted videos.</span>
                     </span>
                 </button>
                 <button class="youtube-source-choice" data-youtube-add-mode="video" type="button">
@@ -646,15 +646,15 @@
                     </span>
                     <span class="youtube-source-choice-copy">
                         <span class="youtube-source-choice-heading">
-                            <span class="youtube-source-choice-title">Paste a video link / ID</span>
-                            <span class="youtube-source-choice-badge">Direct</span>
+                            <span class="youtube-source-choice-title" data-i18n="youtube.videoTitle">Paste a video link or ID</span>
+                            <span class="youtube-source-choice-badge" data-i18n="youtube.direct">Direct</span>
                         </span>
-                        <span class="youtube-source-choice-description">Paste a live video URL or ID. Public or unlisted; the video must already be live.</span>
+                        <span class="youtube-source-choice-description" data-i18n="youtube.videoDescription">Public or unlisted. The video must already be live.</span>
                     </span>
                 </button>
             </div>
             <div class="modal-footer">
-                <button data-youtube-add-mode="cancel" data-type="cancel" type="button">Cancel</button>
+                <button data-youtube-add-mode="cancel" data-i18n="setup.cancel" data-type="cancel" type="button">Cancel</button>
             </div>
         </div>
     </div>
@@ -2697,6 +2697,7 @@
                     activeYouTubeAddModeCleanup = null;
                     buttons.forEach(button => { button.onclick = null; });
                     modal.classList.add('hidden');
+                    deactivateModal(modal);
                     resolve(value);
                 };
                 activeYouTubeAddModeCleanup = cleanup;
@@ -2704,6 +2705,9 @@
                     button.onclick = () => cleanup(button.dataset.youtubeAddMode);
                 });
                 modal.classList.remove('hidden');
+                modal.scrollTop = 0;
+                modal.querySelector('.modal-content').scrollTop = 0;
+                activateModal(modal, () => cleanup(null));
             });
         }
 
@@ -6276,24 +6280,8 @@
             const helpText = selectElement.parentElement.querySelector('.provider-help-text');
             if (!helpText) return;
 
-            const val = selectElement.value;
-            let html = '';
-            if (val === 'auto') {
-                html = 'Recommended: Starts with Euler. If it fails, checks TikTok directly and can switch to non-Euler capture methods.';
-            } else if (val === 'tikfinity') {
-                html = 'Read-only. Open TikFinity Desktop on this computer and connect your LIVE there. Captures the stream selected in TikFinity, regardless of the username entered here. Do not also capture that stream using another source.';
-            } else if (val === 'local') {
-                html = '<strong>Local Signer:</strong> No API key needed. Can read public LIVE chat without signing in. Sign in for replies or if TikTok requires it.';
-            } else if (val === 'polling') {
-                html = `Signing required. No replies. <a href="${ssappEscapeHtml(window.SSAPP_SIGNING_HELP_URL)}" target="_blank">Mode guide</a>.`;
-            } else if (val === 'standard') {
-                html = '<strong>Standard:</strong> Uses the capture browser window. Best for manual sign-in and troubleshooting.';
-            } else if (val === 'euler-ws') {
-                html = "<strong>Euler Proxy:</strong> Uses Euler relay. Requires API key from <a href=\"#\" onclick=\"window.open('https://www.eulerstream.com/dashboard', '_blank'); return false;\" style=\"color: #63a4d8; text-decoration: underline;\">eulerstream.com</a>. No replies.";
-            } else if (val === 'custom') {
-                html = '<strong>Euler Signing:</strong> Bring your own API key/signing URL. Advanced use.';
-            }
-            helpText.innerHTML = html;
+            const key = 'tiktok.help.' + selectElement.value;
+            helpText.textContent = translate(key) === key ? '' : translate(key);
         }
 
         function showWebSocketHelpModal(event) {
@@ -6386,9 +6374,9 @@
                         <div style="color: #d1d5db; font-size: 13px; line-height: 1.7;">
                             <strong style="color: #f8fafc;">Most users</strong> → Start with <strong>AUTO</strong>. If it cannot connect, automatic recovery can try another capture method. The status shows the method actually in use.<br>
                             <strong style="color: #f8fafc;">Need to reply to chat?</strong> → Use <strong>Standard</strong> mode and sign in first.<br>
-                            <strong style="color: #f8fafc;">Standard not working?</strong> → Try <strong>Local Signer (No API key)</strong>. It can read public LIVE chat without signing in. Sign in for replies or if TikTok requires it.<br>
+                            <strong style="color: #f8fafc;">Standard not working?</strong> → Try <strong data-i18n="tiktok.local">${translate("tiktok.local")}</strong>. It can read public LIVE chat without signing in. Sign in for replies or if TikTok requires it.<br>
                             <strong style="color: #f8fafc;">Everything failing?</strong> → Try <strong>Euler Proxy</strong> or <strong>Euler Signing</strong>. These need an Euler API key. Repeated connection attempts through Euler can use your quota. Stop the source when you're not using it.<br>
-                            <strong style="color: #f8fafc;">Need a backup source?</strong> → Choose <strong>TikFinity Desktop (Local API, Beta)</strong> if you already use TikFinity on this computer. Its Activity Feed remains available through <strong>Add other source</strong>.
+                            <strong style="color: #f8fafc;">Need a backup source?</strong> → Choose <strong data-i18n="tiktok.desktop">${translate("tiktok.desktop")}</strong> if you already use TikFinity on this computer. Its Activity Feed remains available through <strong>Add other source</strong>.
                         </div>
                     </div>
 
@@ -6722,25 +6710,24 @@
                     modeSelector = document.createElement('div');
                     modeSelector.className = 'mode-selector';
                     modeSelector.innerHTML = `
-                <div class="mode-selector-label">TikTok Connection:</div>
+                <div class="mode-selector-label" data-i18n="tiktok.connection">${translate("tiktok.connection")}</div>
                 <select aria-label="TikTok connection mode" onchange="setTikTokConnectionPreset(this.closest('.entry'), this.value); updateSigningProviderHelpText(this);" class="tiktok-connection-select" style="width: 100%; margin-top: 4px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.35); background: rgba(15,23,42,0.55); color: #e2e8f0;">
-                    <option value="auto">AUTO (Recommended)</option>
-                    <option value="local">Local Signer (No API key)</option>
-                    <option value="polling">Compatibility (WebSocket)</option>
-                    <option value="standard">Standard (Capture Window)</option>
-                    <option value="euler-ws">Euler Proxy (API Key)</option>
-                    <option value="custom">Euler Signing (Advanced)</option>
-                    <option value="tikfinity">TikFinity Desktop (Local API, Beta)</option>
-                    <option value="tikfinity-guide">TikFinity (Setup guide)</option>
+                    <option value="auto" data-i18n="tiktok.auto">${translate("tiktok.auto")}</option>
+                    <option value="local" data-i18n="tiktok.local">${translate("tiktok.local")}</option>
+                    <option value="polling" data-i18n="tiktok.polling">${translate("tiktok.polling")}</option>
+                    <option value="standard" data-i18n="tiktok.standard">${translate("tiktok.standard")}</option>
+                    <option value="euler-ws" data-i18n="tiktok.proxy">${translate("tiktok.proxy")}</option>
+                    <option value="custom" data-i18n="tiktok.custom">${translate("tiktok.custom")}</option>
+                    <option value="tikfinity" data-i18n="tiktok.desktop">${translate("tiktok.desktop")}</option>
+                    <option value="tikfinity-guide" data-i18n="tiktok.guide">${translate("tiktok.guide")}</option>
                 </select>
                 <div class="provider-help-text" style="font-size: 11px; color: #94a3b8; line-height: 1.35; margin-top: 8px; min-height: 2.8em;"></div>
                 <div class="mode-info">
                     <span class="info-icon" role="button" tabindex="0" aria-label="TikTok connection modes help" style="cursor: pointer;" title="Open TikTok connection mode help" onclick="showTikTokConnectionModesHelpModal(event)" onkeydown="if (event.key === 'Enter' || event.key === ' ') showTikTokConnectionModesHelpModal(event)">ℹ️</span>
                 </div>
                 <div class="tiktok-fallback-help" style="flex: 0 0 100%; font-size: 12px; line-height: 1.5; color: #cbd5e1;">
-                    <button type="button" class="button tiktok-troubleshooting-copy" style="font-size: 12px; padding: 6px 10px; margin: 4px 0 8px;" onclick="copyTikTokTroubleshooting(this.closest('.entry').dataset.sourceId)">Copy troubleshooting details</button><br>
-                    TikTok still not connecting?
-                    <a href="https://socialstream.ninja/docs/tikfinity-setup.html" onclick="event.stopPropagation(); window.open(this.href, '_blank'); return false;" style="color: #c4b5fd; text-decoration: underline;">Set up TikFinity fallback &rarr;</a>
+                    <button type="button" class="button tiktok-troubleshooting-copy" style="font-size: 12px; padding: 6px 10px; margin: 4px 0 8px;" onclick="copyTikTokTroubleshooting(this.closest('.entry').dataset.sourceId)" data-i18n="tiktok.copy">${translate("tiktok.copy")}</button><br>
+                    <a href="https://socialstream.ninja/docs/tikfinity-setup.html" onclick="event.stopPropagation(); window.open(this.href, '_blank'); return false;" style="color: #c4b5fd; text-decoration: underline;" data-i18n="tiktok.fallback">${translate("tiktok.fallback")}</a>
                 </div>`;
                     controlPanel.appendChild(modeSelector);
                 }
@@ -6767,7 +6754,7 @@
                         modeSelector = document.createElement('div');
                         modeSelector.className = 'mode-selector';
                         modeSelector.innerHTML = `
-                    <div class="mode-selector-label">Connection Mode:</div>
+                    <div class="mode-selector-label" data-i18n="header.connectionmodes">${translate("header.connectionmodes")}</div>
                     <div class="mode-options">
                         <div class="mode-option" role="button" tabindex="0" aria-pressed="false"
                              data-mode="classic" 
@@ -10648,22 +10635,13 @@
             const autoValidateEnabled = !!source.tiktokSigningAutoValidate;
 
             // --- Building Blocks ---
-            const credentialsTitle = providerValue === 'custom'
-                ? 'Euler Signing Credentials (Experimental)'
-                : (providerValue === 'euler-ws'
-                    ? 'Euler Proxy Credentials (Experimental)'
-                    : 'Euler API Key (Optional, Experimental)');
-            const credentialsDescription = providerValue === 'custom'
-                ? 'Provide your own Euler API key or custom signing URL.'
-                : (providerValue === 'euler-ws'
-                    ? 'Enter your Euler API key to use the proxy. No replies supported.'
-                    : 'Optional: Add an Euler API key or custom signing URL.');
+            const credentialsTitle = `Euler — ${translate('setup.apiKey')} (${translate(providerValue === 'auto' ? 'setup.optional' : 'setup.experimental')})`;
+            const credentialsDescription = translate(providerValue === 'euler-ws' ? 'tiktok.help.euler-ws' : 'tiktok.help.custom');
 
             // 1. Euler / Custom API Inputs
             const signingHelpBlock = signingHelpUrl
                 ? `<p style="margin: 8px 0 0 0; color: #cbd5f5; font-size: 13px;">
-                Need help with TikTok signing?
-                <a href="${signingHelpUrl}" target="_blank" style="color: #93c5fd;">Open the signing guide</a>.
+                <a href="${signingHelpUrl}" target="_blank" style="color: #93c5fd;">${translate('tiktok.signingGuide')}</a>.
             </p>` : '';
 
             const apiInputsBlock = `
@@ -10673,25 +10651,24 @@
                         ${credentialsDescription}
                     </p>
                     <p style="margin: 0 0 12px 0; font-size: 13px; color: #cbd5f5;">
-                        An Euler API key gives access to Euler's service; it does not sign you into TikTok.
-                        Euler Proxy does not use your saved TikTok login. For a restricted LIVE, check that an eligible account can open it in Standard mode's capture page.
+                        ${translate('tiktok.apiNotice')}
                     </p>
                     <div style="background: rgba(245, 158, 11, 0.12); border-left: 3px solid #f59e0b; padding: 10px 12px; border-radius: 6px; margin: 10px 0 12px 0; font-size: 12px; color: #ffedd5;">
-                        <strong>Experimental:</strong> API key / signing URL support is new and not fully validated. If it fails, switch back to <strong>Auto</strong> or <strong>Compatibility</strong>.
+                        ${translate('tiktok.experimental')}
                     </div>
-                    <label for="${apiKeyInputId}" style="display: block; font-size: 13px; color: #cbd5f5; margin-bottom: 4px;">API key</label>
-                    <input id="${apiKeyInputId}" type="password" autocomplete="off" spellcheck="false" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #f8fafc;" value="${ssappEscapeHtml(existingSigningApiKey)}" placeholder="Euler API key">
-                    <small style="display: block; color: #94a3b8; margin: 4px 0 12px 0;">Stored locally on this device.</small>
-                    <label for="${serviceUrlInputId}" style="display: block; font-size: 13px; color: #cbd5f5; margin-bottom: 4px;">Signing service URL</label>
+                    <label for="${apiKeyInputId}" style="display: block; font-size: 13px; color: #cbd5f5; margin-bottom: 4px;">${translate('setup.apiKey')}</label>
+                    <input id="${apiKeyInputId}" type="password" autocomplete="off" spellcheck="false" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #f8fafc;" value="${ssappEscapeHtml(existingSigningApiKey)}" placeholder="Euler — ${translate('setup.apiKey')}">
+                    <small style="display: block; color: #94a3b8; margin: 4px 0 12px 0;">${translate('setup.storedLocal')}</small>
+                    <label for="${serviceUrlInputId}" style="display: block; font-size: 13px; color: #cbd5f5; margin-bottom: 4px;">${translate('setup.signingUrl')}</label>
                     <input id="${serviceUrlInputId}" type="text" autocomplete="off" spellcheck="false" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #f8fafc;" value="${ssappEscapeHtml(existingSigningServiceUrl)}" placeholder="https://tiktok.eulerstream.com">
                     ${signingHelpBlock}
                     <div style="display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;">
                         <button onclick="saveTikTokSigningConfig('${sourceId}')" class="button" style="background: #2563eb;">
-                            💾 Save
+                            ${translate('setup.save')}
                         </button>
                         ${(existingSigningApiKey || existingSigningServiceUrl) ? `
                             <button onclick="clearTikTokSigningConfig('${sourceId}')" class="button" style="background: #475569;">
-                                ♻️ Clear
+                                ${translate('setup.clear')}
                             </button>` : ''}
                     </div>
                 </div>`;
@@ -10699,88 +10676,81 @@
             // 2. Local Signer Block
             const localSignerBlock = `
                 <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
-                    <h4 style="margin: 0 0 10px 0; font-size: 15px;">Local Signer</h4>
+                    <h4 style="margin: 0 0 10px 0; font-size: 15px;">${translate('tiktok.local')}</h4>
                     <div style="background: rgba(59, 130, 246, 0.12); border-left: 3px solid #3b82f6; padding: 10px 12px; border-radius: 6px; margin: 0 0 12px 0; font-size: 12px; color: #dbeafe; line-height: 1.45;">
-                        No API key needed. Signs requests on this computer using SSN's TikTok browser window. Can read public LIVE chat without signing in. Sign in for replies or if TikTok requires it.
+                        ${translate('tiktok.help.local')}
                     </div>
                     <div id="tiktok-signin-status-${sourceId}" style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px;">
-                        <span style="color: #94a3b8;">Checking status...</span>
+                        <span style="color: #94a3b8;">${translate('setup.checking')}</span>
                     </div>
                     <div style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(148, 163, 184, 0.25); padding: 10px 12px; border-radius: 6px; margin: 0 0 12px 0; font-size: 12px; color: #cbd5f5; line-height: 1.45;">
-                        Current role: <strong>${getAccountRoleLabel(normalizeAccountRole(source.accountRole))}</strong>.
-                        ${normalizeAccountRole(source.accountRole) === 'host'
-                            ? 'Host role uses TikTok anchor identity when Local Signer connects.'
-                            : 'If you are signed in as the streamer, use Set role to Host below.'}
+                        ${translate('tiktok.roleHint')}
                         ${normalizeAccountRole(source.accountRole) === 'host' ? '' : `
                             <div style="margin-top: 8px;">
                                 <button onclick="setTikTokSourceHostRole('${sourceId}')" class="button" style="background: #475569; font-size: 12px; padding: 6px 10px;">
-                                    Set role to Host
+                                    ${translate('tiktok.setHost')}
                                 </button>
                             </div>
                         `}
                     </div>
                     <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;">
                         <button onclick="tiktokShowSigningWindow('${sourceId}')" class="button" style="background: #2563eb; flex: 1; justify-content: center;">
-                            Open TikTok Sign-in
+                            ${translate('tiktok.signin')}
                         </button>
-                        <button id="tiktok-signing-generate-${sourceId}" onclick="tiktokGenerateSigningParameters('${sourceId}')" class="button" style="background: #0ea5e9; flex: 1; justify-content: center;">
-                            Collect Session
+                        <button id="tiktok-signing-generate-${sourceId}" onclick="tiktokGenerateSigningParameters('${sourceId}')" class="button" style="background: #0369a1; flex: 1; justify-content: center;">
+                            ${translate('setup.collectSession')}
                         </button>
                     </div>
                     <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
                         <button id="tiktok-signing-reveal-${sourceId}" onclick="tiktokSigningWindowControl('${sourceId}', 'toggle-visibility')" class="button" style="background: #334155; flex: 1; justify-content: center;">
-                            Show window
+                            ${translate('setup.showWindow')}
                         </button>
                         <button id="tiktok-signing-refresh-${sourceId}" onclick="tiktokSigningWindowControl('${sourceId}', 'refresh')" class="button" style="background: #1e293b; flex: 1; justify-content: center;">
-                            Refresh
+                            ${translate('setup.refresh')}
                         </button>
                         <button id="tiktok-signing-mute-${sourceId}" onclick="tiktokSigningWindowControl('${sourceId}', 'toggle-mute')" class="button" style="background: #334155; flex: 1; justify-content: center;">
-                            Mute
+                            ${translate('setup.mute')}
                         </button>
-                        <button id="tiktok-signing-stop-${sourceId}" onclick="tiktokSigningWindowControl('${sourceId}', 'stop')" class="button" style="background: #ef4444; flex: 1; justify-content: center;">
-                            Close window
+                        <button id="tiktok-signing-stop-${sourceId}" onclick="tiktokSigningWindowControl('${sourceId}', 'stop')" class="button" style="background: #b91c1c; flex: 1; justify-content: center;">
+                            ${translate('setup.closeWindow')}
                         </button>
                     </div>
                     <div style="background: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6; padding: 8px 12px; margin: 12px 0; font-size: 13px; color: #dbeafe;">
-                        <strong>Replies:</strong> Keep the signing window open if you want the app to send TikTok chat replies.
+                        ${translate('tiktok.repliesHint')}
                     </div>
-                    <ol style="margin: 8px 0 0 18px; padding: 0; font-size: 12px; color: #94a3b8; line-height: 1.5;">
-                        <li>Open TikTok Sign-in and log into TikTok.</li>
-                        <li>Collect Session to save the current TikTok cookies.</li>
-                        <li>Activate or restart the source so the websocket uses the saved session.</li>
-                    </ol>
+                    <p style="font-size: 12px; color: #94a3b8; line-height: 1.5;">${translate('tiktok.sessionSteps')}</p>
                     <div id="tiktok-signing-result-${sourceId}" style="margin-top: 12px; font-size: 12px; color: #e2e8f0;"></div>
                 </div>`;
 
             // 3. Manual Session & Debug Block
             const manualAndDebugBlock = `
                 <div style="margin-bottom: 18px;">
-                    <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #e2e8f0;">Manual Session Cookie</h4>
+                    <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #e2e8f0;">${translate('setup.manualSession')}</h4>
                     <p style="margin: 0 0 10px 0; font-size: 13px; color: #94a3b8;">
-                        If the local signer fails, you can manually copy the <code>sessionid</code> and <code>tt-target-idc</code> cookies. Both are needed for an authenticated connection.
+                        ${translate('tiktok.cookiesHint')}
                     </p>
                     <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                         <button onclick="tiktokManualSignIn('${sourceId}')" class="button" style="background: #475569; font-size: 13px;">
-                            📝 Enter Session ID
+                            ${translate('setup.enterSession')}
                         </button>
                         ${hasSavedSession ? `
-                        <button onclick="clearTikTokAuth('${sourceId}')" class="button" style="background: #ef4444; font-size: 13px;">
-                            🗑️ Clear Authentication
+                        <button onclick="clearTikTokAuth('${sourceId}')" class="button" style="background: #b91c1c; font-size: 13px;">
+                            ${translate('setup.clearAuth')}
                         </button>` : ''}
                     </div>
                 </div>
 
                 <div style="margin-bottom: 18px;">
-                    <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #e2e8f0;">Debug Tools</h4>
+                    <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #e2e8f0;">${translate('setup.debug')}</h4>
                     <div style="margin-bottom: 10px;">
                         <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #e2e8f0;">
                             <input id="${autoValidateInputId}" type="checkbox" ${autoValidateEnabled ? 'checked' : ''} style="accent-color: #0ea5e9;">
-                            Ping TikTok's fetch endpoint after collecting the session
+                            ${translate('tiktok.debugPing')}
                         </label>
                     </div>
                     <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                         <button onclick="copyTikTokSigningPayload('${sourceId}')" class="button" style="background: #334155; font-size: 13px;">
-                            📋 Copy Payload
+                            ${translate('setup.copyPayload')}
                         </button>
                     </div>
                 </div>`;
@@ -10790,48 +10760,48 @@
 
             let mainContent = '';
             let advancedContent = '';
-            let headerTitle = 'Manage TikTok Signing';
+            let headerTitle = translate('tiktok.connection');
 
             if (providerValue === 'auto') {
                 const isPolling = getEffectiveConnectionMode(source) === 'tiktok-legacy';
-                headerTitle = isPolling ? 'TikTok Signing: Compatibility' : 'TikTok Signing: Auto';
+                headerTitle = 'TikTok: ' + translate(isPolling ? 'tiktok.polling' : 'tiktok.auto');
                 const sessionBanner = hasSavedSession
                     ? `<div style="background: ${hasSavedIdc ? 'rgba(34, 197, 94, 0.12)' : 'rgba(245, 158, 11, 0.12)'}; border-left: 3px solid ${hasSavedIdc ? '#22c55e' : '#f59e0b'}; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px;">
-                        <h4 style="margin: 0 0 4px 0; color: ${hasSavedIdc ? '#4ade80' : '#fbbf24'}; font-size: 14px;">${hasSavedIdc ? 'TikTok session saved' : 'TikTok sign-in incomplete'}</h4>
+                        <h4 style="margin: 0 0 4px 0; color: ${hasSavedIdc ? '#4ade80' : '#fbbf24'}; font-size: 14px;">${translate(hasSavedIdc ? 'tiktok.session.saved' : 'tiktok.signin')}</h4>
                         <p style="margin: 0 0 10px 0; font-size: 13px; color: #e2e8f0;">
                             ${hasSavedIdc
-                                ? 'Your saved cookies will be used when connecting. If they expire, sign in again.'
-                                : 'The tt-target-idc cookie is missing, so this source connects anonymously. Sign in again or enter both cookies manually.'}
+                                ? translate('tiktok.sessionRefresh')
+                                : translate('tiktok.sessionMissing')}
                         </p>
                         <button onclick="tiktokSignIn('${sourceId}', { forceRefresh: true })" class="button" style="background: #2563eb; font-size: 13px;">
-                            Re-authenticate
+                            ${translate('tiktok.signin')}
                         </button>
                         <button onclick="tiktokManualSignIn('${sourceId}')" class="button" style="background: #475569; font-size: 13px;">
-                            Enter cookies manually
+                            ${translate('setup.enterSession')}
                         </button>
                     </div>`
                     : `<div style="background: rgba(59, 130, 246, 0.12); border-left: 3px solid #3b82f6; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px;">
-                        <h4 style="margin: 0 0 6px 0; color: #93c5fd; font-size: 14px;">Sign in for more messages</h4>
+                        <h4 style="margin: 0 0 6px 0; color: #93c5fd; font-size: 14px;">${translate('tiktok.signin')}</h4>
                         <p style="margin: 0 0 10px 0; font-size: 13px; color: #dbeafe;">
-                            Connecting with your TikTok account can significantly increase the number of chat messages you receive from live streams.
+                            ${translate('tiktok.signin.title')}
                         </p>
                         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                             <button onclick="tiktokSignIn('${sourceId}')" class="button" style="background: #2563eb;">
                                 ${translate('tiktok.signin')}
                             </button>
                             <button onclick="tiktokManualSignIn('${sourceId}')" class="button" style="background: #475569; font-size: 13px;">
-                                📝 Enter Session ID manually
+                                ${translate('setup.enterSession')}
                             </button>
                         </div>
                     </div>`;
                 mainContent = `
                     ${sessionBanner}
                     <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
-                        <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #94a3b8;">${isPolling ? 'Compatibility (WebSocket)' : 'Auto Mode'}</h4>
+                        <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #94a3b8;">${translate(isPolling ? 'tiktok.polling' : 'tiktok.auto')}</h4>
                         <p style="margin: 0; font-size: 13px; color: #94a3b8;">
                             ${isPolling
-                                ? 'Uses a signed WebSocket to receive chat messages. Sign in to improve message coverage.'
-                                : 'Tries Euler signing, falls back to Compatibility if it fails. Adding an API key can help avoid rate limits.'}
+                                ? translate('tiktok.help.polling')
+                                : translate('tiktok.help.auto')}
                         </p>
                     </div>
                     ${apiInputsBlock}
@@ -10839,24 +10809,24 @@
                 advancedContent = localSignerBlock + manualAndDebugBlock;
 
             } else if (providerValue === 'local') {
-                headerTitle = 'TikTok Signing: Local Signer (Experimental)';
+                headerTitle = 'TikTok: ' + translate('tiktok.local');
                 mainContent = localSignerBlock;
                 advancedContent = manualAndDebugBlock;
 
             } else if (providerValue === 'euler-ws') {
-                headerTitle = 'TikTok Signing: Euler Proxy (Experimental)';
+                headerTitle = 'TikTok: ' + translate('tiktok.proxy');
                 mainContent = `
                     <div style="background: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6; padding: 12px 16px; border-radius: 6px; margin-bottom: 20px;">
                         <h4 style="margin: 0 0 6px 0; color: #93c5fd; font-size: 15px;">Euler Proxy</h4>
                         <p style="margin: 0; font-size: 13px; color: #dbeafe; line-height: 1.5;">
-                            Connects through Euler's hosted proxy server. No replies supported.
+                            ${translate('tiktok.help.euler-ws')}
                         </p>
                         <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbeafe; line-height: 1.5;">
-                            <strong>Get your API key:</strong> 
+                            <strong>${translate('setup.apiKey')}:</strong>
                             <a href="#" onclick="window.open('https://www.eulerstream.com/dashboard', '_blank'); return false;" style="color: #63a4d8; text-decoration: underline;">
                                 eulerstream.com/dashboard
                             </a>
-                            <br><span style="color: #94a3b8; font-size: 12px;">Free tier available (Community plan)</span>
+
                         </p>
                     </div>
                     ${apiInputsBlock}
@@ -10864,20 +10834,20 @@
                 advancedContent = localSignerBlock + manualAndDebugBlock;
 
             } else if (providerValue === 'custom') {
-                headerTitle = 'TikTok Signing: Euler Signing (Experimental)';
+                headerTitle = 'TikTok: ' + translate('tiktok.custom');
                 mainContent = apiInputsBlock;
                 advancedContent = localSignerBlock + manualAndDebugBlock;
             }
 
             const menuContent = `
-                <div style="padding: 20px; background: #2a2a2a; border-radius: 8px; max-height: 90vh; overflow-y: auto; width: 100%; max-width: 600px;">
+                <div class="modal-content tiktok-signing-dialog">
                     <h3 style="margin-bottom: 15px;">${headerTitle}</h3>
                     
                     ${mainContent}
 
                     <details style="background: rgba(0, 0, 0, 0.2); border-radius: 8px; overflow: hidden;">
                         <summary style="padding: 12px 16px; cursor: pointer; font-weight: 500; user-select: none; color: #cbd5f5;">
-                            Advanced & Fallback Options
+                            ${translate('setup.advanced')}
                         </summary>
                         <div style="padding: 16px; border-top: 1px solid rgba(255, 255, 255, 0.1);">
                             ${advancedContent}
@@ -10886,7 +10856,7 @@
 
                     <div style="display: flex; justify-content: flex-end; margin-top: 20px;">
                         <button onclick="closeModal()" class="button" style="background: #374151;">
-                            Close
+                            ${translate('setup.close')}
                         </button>
                     </div>
                 </div>
@@ -11198,7 +11168,7 @@
 
             if (revealBtn) {
                 const visible = !!state?.visible;
-                revealBtn.innerHTML = visible ? 'Hide window' : 'Show window';
+                revealBtn.textContent = translate(visible ? 'setup.hideWindow' : 'setup.showWindow');
                 revealBtn.title = visible ? 'Hide the TikTok signing window' : 'Show the TikTok signing window';
             }
             if (refreshBtn) {
@@ -11208,7 +11178,7 @@
             if (muteBtn) {
                 muteBtn.disabled = !hasWindow;
                 const muted = !!state?.muted;
-                muteBtn.innerHTML = muted ? 'Unmute' : 'Mute';
+                muteBtn.textContent = translate(muted ? 'setup.unmute' : 'setup.mute');
                 muteBtn.title = muted ? 'Unmute the signing window' : 'Mute the signing window';
             }
             if (stopBtn) {
@@ -11748,7 +11718,7 @@
                 case 'info':
                     lockProvider(false);
                     statusElement.classList.add('info');
-                    statusElement.innerHTML = `<i class="las la-info-circle"></i> ${statusText(message || '')}`;
+                    statusElement.innerHTML = `<i class="las la-info-circle"></i> <span${message === translate('source.manualTip') ? ' data-i18n="source.manualTip"' : ''}>${statusText(message || '')}</span>`;
                     if (!options.persistent) {
                         statusElement._autoHideTimer = setTimeout(() => {
                             if (statusElement.classList.contains('info')) statusElement.style.display = 'none';
@@ -11773,30 +11743,30 @@
             const content = `
                 <div class="modal-content signin-method-dialog" role="dialog" aria-modal="true"
                     aria-labelledby="signin-method-title" aria-describedby="signin-method-context signin-method-note">
-                    <h2 id="signin-method-title">Choose a sign-in method</h2>
+                    <h2 id="signin-method-title">${translate('signin.choose')}</h2>
                     <p id="signin-method-context" class="signin-method-context" data-signin-choice-context></p>
                     <div class="source-choice-list">
                         <button type="button" class="source-choice signin-method-option signin-method-option-primary"
                             data-signin-choice="chrome">
                             <span class="signin-method-option-icon" aria-hidden="true">🌐</span>
                             <span class="signin-method-option-text">
-                                <strong class="signin-method-option-title">Use Chrome</strong>
-                                <span class="signin-method-option-description">Experimental; recommended when Google rejects the SSApp sign-in window.</span>
+                                <strong class="signin-method-option-title">${translate('signin.chrome')}</strong>
+                                <span class="signin-method-option-description">${translate('signin.chromeHelp')}</span>
                             </span>
                         </button>
                         <button type="button" class="source-choice signin-method-option" data-signin-choice="ssapp">
                             <span class="signin-method-option-icon" aria-hidden="true">🔑</span>
                             <span class="signin-method-option-text">
-                                <strong class="signin-method-option-title">Use the SSApp sign-in window</strong>
-                                <span class="signin-method-option-description">The usual sign-in method for this source.</span>
+                                <strong class="signin-method-option-title">${translate('signin.ssapp')}</strong>
+                                <span class="signin-method-option-description">${translate('signin.ssappHelp')}</span>
                             </span>
                         </button>
                     </div>
                     <p id="signin-method-note" class="signin-method-note" data-signin-window-note>
-                        After signing in through the SSApp window, close that sign-in window. If you use Chrome, leave Chrome open until SSApp finishes importing; the temporary Chrome window closes automatically.
+                        ${translate('signin.closeHelp')}
                     </p>
                     <div class="signin-method-actions">
-                        <button type="button" data-type="cancel" data-signin-choice="cancel">Cancel</button>
+                        <button type="button" data-type="cancel" data-signin-choice="cancel">${translate('setup.cancel')}</button>
                     </div>
                 </div>
             `;
@@ -11806,7 +11776,7 @@
 
             const sessionLabel = getSessionDisplayNameForSource(source);
             const context = modal.querySelector('[data-signin-choice-context]');
-            if (context) context.textContent = `${platformLabel} · Browser session: ${sessionLabel}`;
+            if (context) context.textContent = `${platformLabel} · ${translate('signin.session')}: ${sessionLabel}`;
 
             const runChoice = choice => {
                 closeModal();
@@ -12921,7 +12891,7 @@
                     if (allowTip) {
                         updateConnectionStatus(element, 'info', target === 'tikfinity'
                             ? 'Use the Activity Feed URL from TikFinity → Overlays → OBS Docks, then activate. Keep TikFinity open and connected to LIVE.'
-                            : 'Tip: Sign in on the site if needed, then press ▶️ Activate and make sure the chat is visible.');
+                            : translate('source.manualTip'));
                         element.dataset.tipShown = '1';
                     }
                 } catch (_) { }
@@ -12946,7 +12916,7 @@
                 try {
                     if (element && source && source.target === 'tiktok' && !element.dataset.tipShown) {
                         if ('connectionMode' in updates && updates.connectionMode === 'classic') {
-                            updateConnectionStatus(element, 'info', 'Tip: Sign in on the site if needed, then press ▶️ Activate and make sure the chat is visible.');
+                            updateConnectionStatus(element, 'info', translate('source.manualTip'));
                             element.dataset.tipShown = '1';
                         }
                     }
@@ -13292,6 +13262,9 @@
                 const frame1 = document.getElementById('frame1');
                 if (!linkOverlay || !handle) return;
 
+                const compactLayout = window.matchMedia('(max-width: 900px)');
+                let compactExpanded = false;
+
                 function applyCollapsedState(collapsed) {
                     try {
                         document.body.classList.toggle('overlay-collapsed', !!collapsed);
@@ -13308,9 +13281,10 @@
                 }
 
                 function toggle() {
-                    const collapsed = localStorage.getItem('popupCollapsed') === 'true';
+                    const collapsed = document.body.classList.contains('overlay-collapsed');
                     const next = !collapsed;
-                    localStorage.setItem('popupCollapsed', String(next));
+                    if (compactLayout.matches) compactExpanded = !next;
+                    else localStorage.setItem('popupCollapsed', String(next));
                     applyCollapsedState(next);
                 }
 
@@ -13323,8 +13297,10 @@
                 });
 
                 // Initialize from saved state
-                const savedCollapsed = localStorage.getItem('popupCollapsed') === 'true';
-                applyCollapsedState(savedCollapsed);
+                const applyResponsiveState = () => applyCollapsedState(compactLayout.matches
+                    ? !compactExpanded : localStorage.getItem('popupCollapsed') === 'true');
+                compactLayout.addEventListener('change', applyResponsiveState);
+                applyResponsiveState();
             })();
 
             if (ipcRenderer) {
@@ -17272,7 +17248,97 @@
                 "sessions.delete.confirm": "Are you sure you want to delete this session? This cannot be undone.",
                 "sessions.delete.failed": "Failed to delete session",
                 "sessions.rename.prompt": "Enter new name:",
-                "sessions.rename.failed": "Failed to rename session"
+                "sessions.rename.failed": "Failed to rename session",
+                "setup.add": "Add {platform}",
+                "setup.saveSeller": "Save a seller to choose their streams, or paste a stream link.",
+                "setup.ebayInput": "Seller or event link",
+                "setup.whatnotInput": "Username, profile or show link",
+                "setup.ebayHint": "Use an eBay Live seller link, not a store or /usr/ link. Event IDs also work.",
+                "setup.addSource": "Add source",
+                "setup.cancel": "Cancel",
+                "setup.refresh": "Refresh",
+                "setup.loading": "Looking for streams…",
+                "setup.empty": "No streams available. Check again later.",
+                "setup.addSelected": "Add selected",
+                "setup.useSelected": "Use selected",
+                "setup.chooseAgain": "Choose another eBay Live stream",
+                "youtube.addTitle": "Add a YouTube source",
+                "youtube.publicTitle": "Track a public channel",
+                "youtube.noSignin": "No sign-in",
+                "youtube.publicDescription": "Enter an @handle or channel URL. Finds public live and upcoming streams; excludes unlisted videos.",
+                "youtube.ownerTitle": "Use my YouTube account",
+                "youtube.recommended": "Recommended",
+                "youtube.ownerDescription": "Read-only sign-in. Finds your live and scheduled streams, including unlisted videos.",
+                "youtube.videoTitle": "Paste a video link or ID",
+                "youtube.direct": "Direct",
+                "youtube.videoDescription": "Public or unlisted. The video must already be live.",
+                "tiktok.connection": "TikTok connection",
+                "tiktok.auto": "Auto (recommended)",
+                "tiktok.local": "Local signer",
+                "tiktok.polling": "Compatibility (WebSocket)",
+                "tiktok.standard": "Standard (capture window)",
+                "tiktok.proxy": "Euler Proxy (API key)",
+                "tiktok.custom": "Euler Signing (advanced)",
+                "tiktok.desktop": "TikFinity Desktop (beta)",
+                "tiktok.guide": "TikFinity setup guide",
+                "tiktok.copy": "Copy troubleshooting details",
+                "tiktok.fallback": "Set up TikFinity fallback →",
+                "tiktok.help.auto": "Starts with Euler; tries other capture methods if it fails.",
+                "tiktok.help.local": "No API key needed for public LIVE chat. Sign in for replies or restricted streams.",
+                "tiktok.help.polling": "Requires signing. Replies are not supported.",
+                "tiktok.help.standard": "Reads chat from a browser window. Use it for manual sign-in and troubleshooting.",
+                "tiktok.help.euler-ws": "Requires an Euler API key. Uses Euler’s relay, not your saved TikTok login. No replies.",
+                "tiktok.help.custom": "Advanced: use your own Euler API key or signing URL.",
+                "tiktok.help.tikfinity": "Open TikFinity Desktop and connect your LIVE there. Reads the stream selected in TikFinity, regardless of the username here. Avoid capturing it twice.",
+                "setup.close": "Close",
+                "setup.save": "Save",
+                "setup.clear": "Clear",
+                "setup.advanced": "Advanced and fallback options",
+                "setup.optional": "Optional",
+                "setup.experimental": "Experimental",
+                "setup.apiKey": "API key",
+                "setup.signingUrl": "Signing URL",
+                "setup.manualSession": "Manual session cookies",
+                "setup.enterSession": "Enter session cookies",
+                "setup.clearAuth": "Clear authentication",
+                "setup.debug": "Debug tools",
+                "setup.copyPayload": "Copy payload",
+                "setup.collectSession": "Collect session",
+                "setup.showWindow": "Show window",
+                "setup.closeWindow": "Close window",
+                "setup.mute": "Mute",
+                "setup.checking": "Checking status…",
+                "streams.live": "Live",
+                "streams.upcoming": "Upcoming",
+                "streams.ended": "Ended",
+                "streams.added": "Already added",
+                "streams.activate": "Activate selected",
+                "streams.select": "Select streams",
+                "setup.hideWindow": "Hide window",
+                "setup.unmute": "Unmute",
+                "tiktok.signingGuide": "Signing guide",
+                "tiktok.apiNotice": "An Euler key is not a TikTok login. Euler Proxy ignores saved TikTok cookies. For restricted streams, first check access with an eligible account in Standard mode.",
+                "tiktok.experimental": "Experimental. If the key or signing URL fails, return to Auto or Compatibility.",
+                "tiktok.roleHint": "If you signed in as the streamer, select Host to use the streamer identity.",
+                "tiktok.setHost": "Set role to Host",
+                "tiktok.repliesHint": "Keep the signing window open to send chat replies.",
+                "tiktok.sessionSteps": "Open TikTok sign-in, log in, then collect the session. Activate or restart the source to use the saved cookies.",
+                "tiktok.cookiesHint": "If the local signer fails, enter both sessionid and tt-target-idc cookies manually.",
+                "tiktok.debugPing": "Check TikTok’s fetch endpoint after collecting the session",
+                "tiktok.sessionMissing": "The tt-target-idc cookie is missing. This source connects anonymously. Sign in again or enter both cookies.",
+                "tiktok.sessionRefresh": "Saved cookies are used when connecting. Sign in again when they expire.",
+                "signin.choose": "Choose a sign-in method",
+                "signin.chrome": "Use Chrome",
+                "signin.chromeHelp": "Experimental. Try this if Google rejects the SSApp window.",
+                "signin.ssapp": "Use the SSApp window",
+                "signin.ssappHelp": "The usual sign-in method for this source.",
+                "signin.closeHelp": "After signing in, close the SSApp sign-in window. With Chrome, wait for the import to finish; its temporary window closes automatically.",
+                "setup.storedLocal": "Stored locally on this device.",
+                "signin.session": "Browser session",
+                "streams.viewers": "{count} viewers",
+                "streams.chatReady": "Chat ready",
+                "streams.chatWaiting": "Chat not ready yet",
+                "source.manualTip": "Sign in on the site if needed, then activate the source and check that chat is visible."
             },
             "pt-BR": {
                 "nav.streamdeck": "🎛️ Stream Deck Configuração",
@@ -17305,7 +17371,97 @@
                 "sessions.delete.confirm": "Tem certeza de que deseja excluir esta sessão? Isto não pode ser desfeito.",
                 "sessions.delete.failed": "Falha ao excluir sessão",
                 "sessions.rename.prompt": "Insira o novo nome:",
-                "sessions.rename.failed": "Falha ao renomear sessão"
+                "sessions.rename.failed": "Falha ao renomear sessão",
+                "setup.add": "Adicionar {platform}",
+                "setup.saveSeller": "Salve um vendedor para escolher as transmissões ou cole um link de transmissão.",
+                "setup.ebayInput": "Link de vendedor ou evento",
+                "setup.whatnotInput": "Usuário, link de perfil ou transmissão",
+                "setup.ebayHint": "Use um link de vendedor do eBay Live, não de loja ou /usr/. IDs de evento também funcionam.",
+                "setup.addSource": "Adicionar fonte",
+                "setup.cancel": "Cancelar",
+                "setup.refresh": "Atualizar",
+                "setup.loading": "Buscando transmissões…",
+                "setup.empty": "Nenhuma transmissão disponível. Verifique novamente mais tarde.",
+                "setup.addSelected": "Adicionar seleção",
+                "setup.useSelected": "Usar seleção",
+                "setup.chooseAgain": "Escolher outra transmissão do eBay Live",
+                "youtube.addTitle": "Adicionar fonte do YouTube",
+                "youtube.publicTitle": "Acompanhar um canal público",
+                "youtube.noSignin": "Sem login",
+                "youtube.publicDescription": "Digite um @usuário ou URL do canal. Encontra transmissões públicas ao vivo e agendadas; exclui vídeos não listados.",
+                "youtube.ownerTitle": "Usar minha conta do YouTube",
+                "youtube.recommended": "Recomendado",
+                "youtube.ownerDescription": "Login somente para leitura. Encontra suas transmissões ao vivo e agendadas, inclusive não listadas.",
+                "youtube.videoTitle": "Colar link ou ID do vídeo",
+                "youtube.direct": "Direto",
+                "youtube.videoDescription": "Público ou não listado. O vídeo já deve estar ao vivo.",
+                "tiktok.connection": "Conexão do TikTok",
+                "tiktok.auto": "Auto (recomendado)",
+                "tiktok.local": "Assinatura local",
+                "tiktok.polling": "Compatibilidade (WebSocket)",
+                "tiktok.standard": "Padrão (janela de captura)",
+                "tiktok.proxy": "Euler Proxy (chave API)",
+                "tiktok.custom": "Euler Signing (avançado)",
+                "tiktok.desktop": "TikFinity Desktop (beta)",
+                "tiktok.guide": "Configurar TikFinity",
+                "tiktok.copy": "Copiar diagnóstico",
+                "tiktok.fallback": "Configurar TikFinity como alternativa →",
+                "tiktok.help.auto": "Começa com Euler; tenta outros métodos se falhar.",
+                "tiktok.help.local": "Não exige chave API para chats LIVE públicos. Entre para responder ou acessar transmissões restritas.",
+                "tiktok.help.polling": "Exige assinatura. Não permite respostas.",
+                "tiktok.help.standard": "Lê o chat em uma janela do navegador. Para login manual e diagnóstico.",
+                "tiktok.help.euler-ws": "Exige chave API do Euler. Usa o retransmissor do Euler, não seu login salvo do TikTok. Sem respostas.",
+                "tiktok.help.custom": "Avançado: use sua chave API do Euler ou URL de assinatura.",
+                "tiktok.help.tikfinity": "Abra o TikFinity Desktop e conecte sua LIVE. Lê a transmissão selecionada no TikFinity, independentemente do usuário aqui. Evite capturá-la duas vezes.",
+                "setup.close": "Fechar",
+                "setup.save": "Salvar",
+                "setup.clear": "Limpar",
+                "setup.advanced": "Opções avançadas e alternativas",
+                "setup.optional": "Opcional",
+                "setup.experimental": "Experimental",
+                "setup.apiKey": "Chave API",
+                "setup.signingUrl": "URL de assinatura",
+                "setup.manualSession": "Cookies de sessão manuais",
+                "setup.enterSession": "Inserir cookies de sessão",
+                "setup.clearAuth": "Limpar autenticação",
+                "setup.debug": "Ferramentas de diagnóstico",
+                "setup.copyPayload": "Copiar dados",
+                "setup.collectSession": "Coletar sessão",
+                "setup.showWindow": "Mostrar janela",
+                "setup.closeWindow": "Fechar janela",
+                "setup.mute": "Silenciar",
+                "setup.checking": "Verificando status…",
+                "streams.live": "Ao vivo",
+                "streams.upcoming": "Em breve",
+                "streams.ended": "Encerrado",
+                "streams.added": "Já adicionado",
+                "streams.activate": "Ativar seleção",
+                "streams.select": "Selecionar transmissões",
+                "setup.hideWindow": "Ocultar janela",
+                "setup.unmute": "Ativar som",
+                "tiktok.signingGuide": "Guia de assinatura",
+                "tiktok.apiNotice": "Uma chave Euler não faz login no TikTok. Euler Proxy ignora os cookies salvos do TikTok. Para transmissões restritas, verifique o acesso com uma conta autorizada no modo Padrão.",
+                "tiktok.experimental": "Experimental. Se a chave ou URL de assinatura falhar, volte para Auto ou Compatibilidade.",
+                "tiktok.roleHint": "Se entrou como criador da transmissão, escolha Anfitrião para usar essa identidade.",
+                "tiktok.setHost": "Usar função Anfitrião",
+                "tiktok.repliesHint": "Mantenha a janela de assinatura aberta para enviar respostas ao chat.",
+                "tiktok.sessionSteps": "Abra o login do TikTok, entre e colete a sessão. Ative ou reinicie a fonte para usar os cookies salvos.",
+                "tiktok.cookiesHint": "Se a assinatura local falhar, insira manualmente os dois cookies: sessionid e tt-target-idc.",
+                "tiktok.debugPing": "Verificar o endpoint fetch do TikTok após coletar a sessão",
+                "tiktok.sessionMissing": "O cookie tt-target-idc está ausente. Esta fonte conecta anonimamente. Entre novamente ou insira os dois cookies.",
+                "tiktok.sessionRefresh": "Os cookies salvos são usados na conexão. Entre novamente quando expirarem.",
+                "signin.choose": "Escolher método de login",
+                "signin.chrome": "Usar Chrome",
+                "signin.chromeHelp": "Experimental. Tente se o Google rejeitar a janela do SSApp.",
+                "signin.ssapp": "Usar a janela do SSApp",
+                "signin.ssappHelp": "O método de login habitual desta fonte.",
+                "signin.closeHelp": "Após entrar, feche a janela de login do SSApp. No Chrome, espere a importação terminar; a janela temporária fecha automaticamente.",
+                "setup.storedLocal": "Salvo localmente neste dispositivo.",
+                "signin.session": "Sessão do navegador",
+                "streams.viewers": "{count} espectadores",
+                "streams.chatReady": "Chat pronto",
+                "streams.chatWaiting": "Chat ainda não disponível",
+                "source.manualTip": "Entre no site se necessário, ative a fonte e verifique se o chat está visível."
             },
             "es": {
                 "nav.streamdeck": "🎛️ Stream Deck Configuración",
@@ -17338,7 +17494,97 @@
                 "sessions.delete.confirm": "¿Está seguro de que desea eliminar esta sesión? Esto no se puede deshacer.",
                 "sessions.delete.failed": "No se pudo eliminar la sesión",
                 "sessions.rename.prompt": "Ingrese un nuevo nombre:",
-                "sessions.rename.failed": "No se pudo cambiar el nombre de la sesión"
+                "sessions.rename.failed": "No se pudo cambiar el nombre de la sesión",
+                "setup.add": "Añadir {platform}",
+                "setup.saveSeller": "Guarda un vendedor para elegir sus directos o pega un enlace a un directo.",
+                "setup.ebayInput": "Enlace de vendedor o evento",
+                "setup.whatnotInput": "Usuario, enlace de perfil o directo",
+                "setup.ebayHint": "Usa un enlace de vendedor de eBay Live, no de tienda ni /usr/. También se admiten ID de evento.",
+                "setup.addSource": "Añadir fuente",
+                "setup.cancel": "Cancelar",
+                "setup.refresh": "Actualizar",
+                "setup.loading": "Buscando directos…",
+                "setup.empty": "No hay directos disponibles. Vuelve a comprobarlo más tarde.",
+                "setup.addSelected": "Añadir selección",
+                "setup.useSelected": "Usar selección",
+                "setup.chooseAgain": "Elegir otro directo de eBay Live",
+                "youtube.addTitle": "Añadir una fuente de YouTube",
+                "youtube.publicTitle": "Seguir un canal público",
+                "youtube.noSignin": "Sin iniciar sesión",
+                "youtube.publicDescription": "Introduce un @usuario o URL de canal. Encuentra directos públicos actuales y programados; excluye vídeos no listados.",
+                "youtube.ownerTitle": "Usar mi cuenta de YouTube",
+                "youtube.recommended": "Recomendado",
+                "youtube.ownerDescription": "Acceso de solo lectura. Encuentra tus directos actuales y programados, incluidos los no listados.",
+                "youtube.videoTitle": "Pegar enlace o ID de vídeo",
+                "youtube.direct": "Directo",
+                "youtube.videoDescription": "Público o no listado. El vídeo ya debe estar en directo.",
+                "tiktok.connection": "Conexión de TikTok",
+                "tiktok.auto": "Auto (recomendado)",
+                "tiktok.local": "Firma local",
+                "tiktok.polling": "Compatibilidad (WebSocket)",
+                "tiktok.standard": "Estándar (ventana de captura)",
+                "tiktok.proxy": "Euler Proxy (clave API)",
+                "tiktok.custom": "Euler Signing (avanzado)",
+                "tiktok.desktop": "TikFinity Desktop (beta)",
+                "tiktok.guide": "Configurar TikFinity",
+                "tiktok.copy": "Copiar diagnóstico",
+                "tiktok.fallback": "Configurar TikFinity como alternativa →",
+                "tiktok.help.auto": "Empieza con Euler; prueba otros métodos si falla.",
+                "tiktok.help.local": "No requiere clave API para chats LIVE públicos. Inicia sesión para responder o ver directos restringidos.",
+                "tiktok.help.polling": "Requiere firma. No admite respuestas.",
+                "tiktok.help.standard": "Lee el chat desde una ventana del navegador. Para iniciar sesión manualmente y diagnosticar problemas.",
+                "tiktok.help.euler-ws": "Requiere clave API de Euler. Usa su retransmisión, no tu sesión guardada de TikTok. Sin respuestas.",
+                "tiktok.help.custom": "Avanzado: usa tu clave API de Euler o URL de firma.",
+                "tiktok.help.tikfinity": "Abre TikFinity Desktop y conecta tu LIVE allí. Lee el directo elegido en TikFinity, sin importar el usuario aquí. Evita capturarlo dos veces.",
+                "setup.close": "Cerrar",
+                "setup.save": "Guardar",
+                "setup.clear": "Borrar",
+                "setup.advanced": "Opciones avanzadas y alternativas",
+                "setup.optional": "Opcional",
+                "setup.experimental": "Experimental",
+                "setup.apiKey": "Clave API",
+                "setup.signingUrl": "URL de firma",
+                "setup.manualSession": "Cookies de sesión manuales",
+                "setup.enterSession": "Introducir cookies de sesión",
+                "setup.clearAuth": "Borrar autenticación",
+                "setup.debug": "Herramientas de diagnóstico",
+                "setup.copyPayload": "Copiar datos",
+                "setup.collectSession": "Recopilar sesión",
+                "setup.showWindow": "Mostrar ventana",
+                "setup.closeWindow": "Cerrar ventana",
+                "setup.mute": "Silenciar",
+                "setup.checking": "Comprobando estado…",
+                "streams.live": "En directo",
+                "streams.upcoming": "Próximamente",
+                "streams.ended": "Finalizado",
+                "streams.added": "Ya añadido",
+                "streams.activate": "Activar selección",
+                "streams.select": "Elegir directos",
+                "setup.hideWindow": "Ocultar ventana",
+                "setup.unmute": "Activar sonido",
+                "tiktok.signingGuide": "Guía de firma",
+                "tiktok.apiNotice": "Una clave Euler no inicia sesión en TikTok. Euler Proxy ignora las cookies guardadas de TikTok. Para directos restringidos, comprueba primero el acceso con una cuenta autorizada en modo Estándar.",
+                "tiktok.experimental": "Experimental. Si falla la clave o URL de firma, vuelve a Auto o Compatibilidad.",
+                "tiktok.roleHint": "Si has iniciado sesión como creador, elige Anfitrión para usar esa identidad.",
+                "tiktok.setHost": "Usar rol de anfitrión",
+                "tiktok.repliesHint": "Mantén abierta la ventana de firma para enviar respuestas al chat.",
+                "tiktok.sessionSteps": "Abre el inicio de sesión de TikTok, entra y recopila la sesión. Activa o reinicia la fuente para usar las cookies guardadas.",
+                "tiktok.cookiesHint": "Si falla la firma local, introduce manualmente ambas cookies: sessionid y tt-target-idc.",
+                "tiktok.debugPing": "Comprobar el punto de acceso fetch de TikTok tras recopilar la sesión",
+                "tiktok.sessionMissing": "Falta la cookie tt-target-idc. Esta fuente se conecta de forma anónima. Inicia sesión de nuevo o introduce ambas cookies.",
+                "tiktok.sessionRefresh": "Se usan las cookies guardadas al conectar. Vuelve a iniciar sesión cuando caduquen.",
+                "signin.choose": "Elegir método de inicio de sesión",
+                "signin.chrome": "Usar Chrome",
+                "signin.chromeHelp": "Experimental. Pruébalo si Google rechaza la ventana de SSApp.",
+                "signin.ssapp": "Usar la ventana de SSApp",
+                "signin.ssappHelp": "El método habitual para esta fuente.",
+                "signin.closeHelp": "Tras iniciar sesión, cierra la ventana de SSApp. Con Chrome, espera a que termine la importación; la ventana temporal se cierra sola.",
+                "setup.storedLocal": "Guardado localmente en este dispositivo.",
+                "signin.session": "Sesión del navegador",
+                "streams.viewers": "{count} espectadores",
+                "streams.chatReady": "Chat listo",
+                "streams.chatWaiting": "Chat aún no disponible",
+                "source.manualTip": "Inicia sesión en el sitio si es necesario, activa la fuente y comprueba que el chat sea visible."
             },
             "cs": {
                 "nav.streamdeck": "🎛️ Stream Deck Nastavení",
@@ -17371,7 +17617,101 @@
                 "sessions.delete.confirm": "Opravdu chcete smazat tuto relaci? Toto nelze vrátit zpět.",
                 "sessions.delete.failed": "Smazání relace se nezdařilo",
                 "sessions.rename.prompt": "Zadejte nový název:",
-                "sessions.rename.failed": "Přejmenování relace se nezdařilo"
+                "sessions.rename.failed": "Přejmenování relace se nezdařilo",
+                "setup.add": "Přidat {platform}",
+                "setup.saveSeller": "Uložte prodejce a vyberte jeho přenosy, nebo vložte odkaz na přenos.",
+                "setup.ebayInput": "Odkaz na prodejce nebo událost",
+                "setup.whatnotInput": "Uživatelské jméno, profil nebo přenos",
+                "setup.ebayHint": "Použijte odkaz na prodejce eBay Live, ne na obchod nebo /usr/. Lze zadat i ID události.",
+                "setup.addSource": "Přidat zdroj",
+                "setup.cancel": "Zrušit",
+                "setup.refresh": "Obnovit",
+                "setup.loading": "Hledání přenosů…",
+                "setup.empty": "Žádné dostupné přenosy. Zkuste to později.",
+                "setup.addSelected": "Přidat vybrané",
+                "setup.useSelected": "Použít vybrané",
+                "setup.chooseAgain": "Vybrat jiný přenos eBay Live",
+                "youtube.addTitle": "Přidat zdroj YouTube",
+                "youtube.publicTitle": "Sledovat veřejný kanál",
+                "youtube.noSignin": "Bez přihlášení",
+                "youtube.publicDescription": "Zadejte @jméno nebo URL kanálu. Najde veřejné živé a plánované přenosy, ne neveřejná videa.",
+                "youtube.ownerTitle": "Použít můj účet YouTube",
+                "youtube.recommended": "Doporučeno",
+                "youtube.ownerDescription": "Přihlášení pouze pro čtení. Najde vaše živé a plánované přenosy včetně neveřejných.",
+                "youtube.videoTitle": "Vložit odkaz nebo ID videa",
+                "youtube.direct": "Přímo",
+                "youtube.videoDescription": "Veřejné nebo neveřejné. Video už musí být živě.",
+                "tiktok.connection": "Připojení TikTok",
+                "tiktok.auto": "Auto (doporučeno)",
+                "tiktok.local": "Místní podepisování",
+                "tiktok.polling": "Kompatibilita (WebSocket)",
+                "tiktok.standard": "Standardní (okno snímání)",
+                "tiktok.proxy": "Euler Proxy (klíč API)",
+                "tiktok.custom": "Euler Signing (pokročilé)",
+                "tiktok.desktop": "TikFinity Desktop (beta)",
+                "tiktok.guide": "Nastavení TikFinity",
+                "tiktok.copy": "Kopírovat diagnostiku",
+                "tiktok.fallback": "Nastavit záložní TikFinity →",
+                "useragent.label": "User agent",
+                "session.create": "Vytvořit relaci",
+                "useragent.title": "Vybrat user agent",
+                "session.title": "Vybrat relaci",
+                "tiktok.help.auto": "Začíná přes Euler; při selhání zkusí jiné metody snímání.",
+                "tiktok.help.local": "Pro veřejný LIVE chat není nutný klíč API. Pro odpovědi či omezené přenosy se přihlaste.",
+                "tiktok.help.polling": "Vyžaduje podepisování. Odpovědi nejsou podporovány.",
+                "tiktok.help.standard": "Čte chat z okna prohlížeče. Pro ruční přihlášení a řešení potíží.",
+                "tiktok.help.euler-ws": "Vyžaduje klíč API Euler. Používá přenos Euler, ne uložené přihlášení TikTok. Bez odpovědí.",
+                "tiktok.help.custom": "Pokročilé: použijte vlastní klíč API Euler nebo URL podepisování.",
+                "tiktok.help.tikfinity": "Otevřete TikFinity Desktop a připojte LIVE. Čte přenos vybraný v TikFinity bez ohledu na zdejší jméno. Nesnímejte ho dvakrát.",
+                "setup.close": "Zavřít",
+                "setup.save": "Uložit",
+                "setup.clear": "Vymazat",
+                "setup.advanced": "Pokročilé a záložní možnosti",
+                "setup.optional": "Volitelné",
+                "setup.experimental": "Experimentální",
+                "setup.apiKey": "Klíč API",
+                "setup.signingUrl": "URL podepisování",
+                "setup.manualSession": "Ruční cookies relace",
+                "setup.enterSession": "Zadat cookies relace",
+                "setup.clearAuth": "Vymazat přihlášení",
+                "setup.debug": "Diagnostické nástroje",
+                "setup.copyPayload": "Kopírovat data",
+                "setup.collectSession": "Získat relaci",
+                "setup.showWindow": "Zobrazit okno",
+                "setup.closeWindow": "Zavřít okno",
+                "setup.mute": "Ztlumit",
+                "setup.checking": "Kontrola stavu…",
+                "streams.live": "Živě",
+                "streams.upcoming": "Plánované",
+                "streams.ended": "Ukončeno",
+                "streams.added": "Již přidáno",
+                "streams.activate": "Aktivovat vybrané",
+                "streams.select": "Vybrat přenosy",
+                "setup.hideWindow": "Skrýt okno",
+                "setup.unmute": "Zapnout zvuk",
+                "tiktok.signingGuide": "Průvodce podepisováním",
+                "tiktok.apiNotice": "Klíč Euler nepřihlašuje do TikToku. Euler Proxy ignoruje uložené cookies TikTok. U omezených přenosů nejprve ověřte přístup oprávněného účtu ve standardním režimu.",
+                "tiktok.experimental": "Experimentální. Pokud klíč nebo URL podepisování selže, vraťte se k Auto nebo Kompatibilitě.",
+                "tiktok.roleHint": "Jste přihlášeni jako vysílající? Vyberte roli Host pro použití této identity.",
+                "tiktok.setHost": "Nastavit roli Host",
+                "tiktok.repliesHint": "Pro odesílání odpovědí nechte okno podepisování otevřené.",
+                "tiktok.sessionSteps": "Otevřete přihlášení TikTok, přihlaste se a získejte relaci. Aktivujte nebo restartujte zdroj pro použití uložených cookies.",
+                "tiktok.cookiesHint": "Pokud místní podepisování selže, ručně zadejte oba cookies: sessionid a tt-target-idc.",
+                "tiktok.debugPing": "Po získání relace ověřit koncový bod fetch TikToku",
+                "tiktok.sessionMissing": "Chybí cookie tt-target-idc. Zdroj se připojuje anonymně. Přihlaste se znovu nebo zadejte oba cookies.",
+                "tiktok.sessionRefresh": "Při připojení se používají uložené cookies. Po vypršení se přihlaste znovu.",
+                "signin.choose": "Vybrat způsob přihlášení",
+                "signin.chrome": "Použít Chrome",
+                "signin.chromeHelp": "Experimentální. Zkuste, pokud Google odmítá okno SSApp.",
+                "signin.ssapp": "Použít okno SSApp",
+                "signin.ssappHelp": "Obvyklé přihlášení pro tento zdroj.",
+                "signin.closeHelp": "Po přihlášení zavřete přihlašovací okno SSApp. V Chromu počkejte na dokončení importu; dočasné okno se zavře automaticky.",
+                "setup.storedLocal": "Uloženo místně v tomto zařízení.",
+                "signin.session": "Relace prohlížeče",
+                "streams.viewers": "Diváci: {count}",
+                "streams.chatReady": "Chat připraven",
+                "streams.chatWaiting": "Chat zatím není připraven",
+                "source.manualTip": "V případě potřeby se přihlaste na webu, aktivujte zdroj a ověřte, že je chat viditelný."
             },
             "fr": {
                 "nav.streamdeck": "🎛️ Configuration du Stream Deck",
@@ -17404,7 +17744,97 @@
                 "sessions.delete.confirm": "Êtes-vous sûr de vouloir supprimer cette session ? Cela ne peut pas être annulé.",
                 "sessions.delete.failed": "Échec de la suppression de la session",
                 "sessions.rename.prompt": "Entrez le nouveau nom :",
-                "sessions.rename.failed": "Échec du renommage de la session"
+                "sessions.rename.failed": "Échec du renommage de la session",
+                "setup.add": "Ajouter {platform}",
+                "setup.saveSeller": "Enregistrez un vendeur pour choisir ses directs, ou collez un lien de direct.",
+                "setup.ebayInput": "Lien du vendeur ou de l’événement",
+                "setup.whatnotInput": "Pseudo, lien du profil ou du direct",
+                "setup.ebayHint": "Utilisez un lien vendeur eBay Live, pas un lien boutique ou /usr/. Les identifiants d’événement fonctionnent aussi.",
+                "setup.addSource": "Ajouter la source",
+                "setup.cancel": "Annuler",
+                "setup.refresh": "Actualiser",
+                "setup.loading": "Recherche de directs…",
+                "setup.empty": "Aucun direct disponible. Réessayez plus tard.",
+                "setup.addSelected": "Ajouter la sélection",
+                "setup.useSelected": "Utiliser la sélection",
+                "setup.chooseAgain": "Choisir un autre direct eBay Live",
+                "youtube.addTitle": "Ajouter une source YouTube",
+                "youtube.publicTitle": "Suivre une chaîne publique",
+                "youtube.noSignin": "Sans connexion",
+                "youtube.publicDescription": "Saisissez un @pseudo ou une URL de chaîne. Trouve les directs publics en cours et prévus, pas les vidéos non répertoriées.",
+                "youtube.ownerTitle": "Utiliser mon compte YouTube",
+                "youtube.recommended": "Recommandé",
+                "youtube.ownerDescription": "Connexion en lecture seule. Trouve vos directs en cours et prévus, même non répertoriés.",
+                "youtube.videoTitle": "Coller un lien ou un ID vidéo",
+                "youtube.direct": "Direct",
+                "youtube.videoDescription": "Public ou non répertorié. La vidéo doit déjà être en direct.",
+                "tiktok.connection": "Connexion TikTok",
+                "tiktok.auto": "Auto (recommandé)",
+                "tiktok.local": "Signature locale",
+                "tiktok.polling": "Compatibilité (WebSocket)",
+                "tiktok.standard": "Standard (fenêtre de capture)",
+                "tiktok.proxy": "Euler Proxy (clé API)",
+                "tiktok.custom": "Euler Signing (avancé)",
+                "tiktok.desktop": "TikFinity Desktop (bêta)",
+                "tiktok.guide": "Configurer TikFinity",
+                "tiktok.copy": "Copier le diagnostic",
+                "tiktok.fallback": "Configurer TikFinity en secours →",
+                "tiktok.help.auto": "Commence avec Euler et essaie d’autres méthodes en cas d’échec.",
+                "tiktok.help.local": "Aucune clé API pour les chats LIVE publics. Connectez-vous pour répondre ou accéder aux directs restreints.",
+                "tiktok.help.polling": "Signature requise. Les réponses ne sont pas prises en charge.",
+                "tiktok.help.standard": "Lit le chat dans une fenêtre de navigateur. Pour la connexion manuelle et le dépannage.",
+                "tiktok.help.euler-ws": "Clé API Euler requise. Utilise le relais Euler, pas votre connexion TikTok enregistrée. Sans réponses.",
+                "tiktok.help.custom": "Avancé : utilisez votre clé API Euler ou URL de signature.",
+                "tiktok.help.tikfinity": "Ouvrez TikFinity Desktop et connectez votre LIVE. Lit le direct choisi dans TikFinity, quel que soit le pseudo ici. Évitez de le capturer deux fois.",
+                "setup.close": "Fermer",
+                "setup.save": "Enregistrer",
+                "setup.clear": "Effacer",
+                "setup.advanced": "Options avancées et de secours",
+                "setup.optional": "Facultatif",
+                "setup.experimental": "Expérimental",
+                "setup.apiKey": "Clé API",
+                "setup.signingUrl": "URL de signature",
+                "setup.manualSession": "Cookies de session manuels",
+                "setup.enterSession": "Saisir les cookies de session",
+                "setup.clearAuth": "Effacer l’authentification",
+                "setup.debug": "Outils de diagnostic",
+                "setup.copyPayload": "Copier les données",
+                "setup.collectSession": "Récupérer la session",
+                "setup.showWindow": "Afficher la fenêtre",
+                "setup.closeWindow": "Fermer la fenêtre",
+                "setup.mute": "Couper le son",
+                "setup.checking": "Vérification du statut…",
+                "streams.live": "En direct",
+                "streams.upcoming": "À venir",
+                "streams.ended": "Terminé",
+                "streams.added": "Déjà ajouté",
+                "streams.activate": "Activer la sélection",
+                "streams.select": "Choisir les directs",
+                "setup.hideWindow": "Masquer la fenêtre",
+                "setup.unmute": "Rétablir le son",
+                "tiktok.signingGuide": "Guide de signature",
+                "tiktok.apiNotice": "Une clé Euler ne connecte pas à TikTok. Euler Proxy ignore les cookies TikTok enregistrés. Pour un direct restreint, vérifiez d’abord l’accès avec un compte autorisé en mode Standard.",
+                "tiktok.experimental": "Expérimental. Si la clé ou l’URL de signature échoue, revenez à Auto ou Compatibilité.",
+                "tiktok.roleHint": "Si vous êtes connecté comme diffuseur, choisissez le rôle Hôte pour utiliser cette identité.",
+                "tiktok.setHost": "Définir le rôle Hôte",
+                "tiktok.repliesHint": "Gardez la fenêtre de signature ouverte pour envoyer des réponses.",
+                "tiktok.sessionSteps": "Ouvrez la connexion TikTok, connectez-vous, puis récupérez la session. Activez ou redémarrez la source pour utiliser les cookies enregistrés.",
+                "tiktok.cookiesHint": "Si la signature locale échoue, saisissez les deux cookies sessionid et tt-target-idc manuellement.",
+                "tiktok.debugPing": "Vérifier le point d’accès fetch de TikTok après récupération de la session",
+                "tiktok.sessionMissing": "Le cookie tt-target-idc manque. Cette source se connecte anonymement. Reconnectez-vous ou saisissez les deux cookies.",
+                "tiktok.sessionRefresh": "Les cookies enregistrés sont utilisés à la connexion. Reconnectez-vous à leur expiration.",
+                "signin.choose": "Choisir une méthode de connexion",
+                "signin.chrome": "Utiliser Chrome",
+                "signin.chromeHelp": "Expérimental. À essayer si Google refuse la fenêtre SSApp.",
+                "signin.ssapp": "Utiliser la fenêtre SSApp",
+                "signin.ssappHelp": "La méthode habituelle pour cette source.",
+                "signin.closeHelp": "Après connexion, fermez la fenêtre SSApp. Avec Chrome, attendez la fin de l’importation ; la fenêtre temporaire se ferme automatiquement.",
+                "setup.storedLocal": "Enregistré localement sur cet appareil.",
+                "signin.session": "Session du navigateur",
+                "streams.viewers": "{count} spectateurs",
+                "streams.chatReady": "Chat prêt",
+                "streams.chatWaiting": "Chat pas encore prêt",
+                "source.manualTip": "Connectez-vous au site si nécessaire, puis activez la source et vérifiez que le chat est visible."
             },
             "de": {
                 "nav.streamdeck": "🎛️ Stream Deck Einrichtung",
@@ -17437,7 +17867,98 @@
                 "sessions.delete.confirm": "Sind Sie sicher, dass Sie diese Sitzung löschen möchten? Dies kann nicht rückgängig gemacht werden.",
                 "sessions.delete.failed": "Sitzung konnte nicht gelöscht werden",
                 "sessions.rename.prompt": "Geben Sie einen neuen Namen ein:",
-                "sessions.rename.failed": "Sitzung konnte nicht umbenannt werden"
+                "sessions.rename.failed": "Sitzung konnte nicht umbenannt werden",
+                "setup.add": "{platform} hinzufügen",
+                "setup.saveSeller": "Verkäufer speichern und Streams auswählen oder einen Stream-Link einfügen.",
+                "setup.ebayInput": "Verkäufer- oder Event-Link",
+                "setup.whatnotInput": "Nutzername, Profil- oder Show-Link",
+                "setup.ebayHint": "eBay-Live-Verkäufer-Link verwenden, keinen Shop- oder /usr/-Link. Event-IDs sind auch möglich.",
+                "setup.addSource": "Quelle hinzufügen",
+                "setup.cancel": "Abbrechen",
+                "setup.refresh": "Aktualisieren",
+                "setup.loading": "Streams werden gesucht…",
+                "setup.empty": "Keine Streams verfügbar. Später erneut prüfen.",
+                "setup.addSelected": "Auswahl hinzufügen",
+                "setup.useSelected": "Auswahl verwenden",
+                "setup.chooseAgain": "Anderen eBay-Live-Stream wählen",
+                "youtube.addTitle": "YouTube-Quelle hinzufügen",
+                "youtube.publicTitle": "Öffentlichen Kanal verfolgen",
+                "youtube.noSignin": "Ohne Anmeldung",
+                "youtube.publicDescription": "@Handle oder Kanal-URL eingeben. Findet öffentliche laufende und geplante Streams, keine ungelisteten Videos.",
+                "youtube.ownerTitle": "Mein YouTube-Konto verwenden",
+                "youtube.recommended": "Empfohlen",
+                "youtube.ownerDescription": "Anmeldung mit Lesezugriff. Findet eigene laufende und geplante Streams, auch ungelistete Videos.",
+                "youtube.videoTitle": "Video-Link oder ID einfügen",
+                "youtube.direct": "Direkt",
+                "youtube.videoDescription": "Öffentlich oder ungelistet. Das Video muss bereits live sein.",
+                "tiktok.connection": "TikTok-Verbindung",
+                "tiktok.auto": "Automatisch (empfohlen)",
+                "tiktok.local": "Lokaler Signierer",
+                "tiktok.polling": "Kompatibilität (WebSocket)",
+                "tiktok.standard": "Standard (Aufnahmefenster)",
+                "tiktok.proxy": "Euler Proxy (API-Schlüssel)",
+                "tiktok.custom": "Euler Signing (erweitert)",
+                "tiktok.desktop": "TikFinity Desktop (Beta)",
+                "tiktok.guide": "TikFinity-Einrichtung",
+                "tiktok.copy": "Diagnosedaten kopieren",
+                "tiktok.fallback": "TikFinity als Alternative einrichten →",
+                "tiktok.help.auto": "Startet mit Euler und versucht bei Fehlern andere Aufnahmemethoden.",
+                "tiktok.help.local": "Kein API-Schlüssel für öffentliche LIVE-Chats nötig. Für Antworten oder eingeschränkte Streams anmelden.",
+                "tiktok.help.polling": "Signierung erforderlich. Antworten werden nicht unterstützt.",
+                "tiktok.help.standard": "Liest Chat aus einem Browserfenster. Für manuelle Anmeldung und Fehlersuche.",
+                "tiktok.help.euler-ws": "Euler-API-Schlüssel erforderlich. Nutzt Eulers Relay, nicht die gespeicherte TikTok-Anmeldung. Keine Antworten.",
+                "tiktok.help.custom": "Erweitert: eigenen Euler-API-Schlüssel oder Signierungs-URL verwenden.",
+                "tiktok.help.tikfinity": "TikFinity Desktop öffnen und dort LIVE verbinden. Liest den dort gewählten Stream unabhängig vom Nutzernamen hier. Doppelte Aufnahme vermeiden.",
+                "setup.close": "Schließen",
+                "setup.save": "Speichern",
+                "setup.clear": "Löschen",
+                "setup.advanced": "Erweiterte und alternative Optionen",
+                "setup.optional": "Optional",
+                "setup.experimental": "Experimentell",
+                "setup.apiKey": "API-Schlüssel",
+                "setup.signingUrl": "Signierungs-URL",
+                "setup.manualSession": "Manuelle Sitzungscookies",
+                "setup.enterSession": "Sitzungscookies eingeben",
+                "setup.clearAuth": "Anmeldung löschen",
+                "setup.debug": "Diagnosewerkzeuge",
+                "setup.copyPayload": "Daten kopieren",
+                "setup.collectSession": "Sitzung erfassen",
+                "setup.showWindow": "Fenster anzeigen",
+                "setup.closeWindow": "Fenster schließen",
+                "setup.mute": "Stummschalten",
+                "setup.checking": "Status wird geprüft…",
+                "streams.live": "Live",
+                "streams.upcoming": "Geplant",
+                "streams.ended": "Beendet",
+                "streams.added": "Bereits hinzugefügt",
+                "streams.activate": "Auswahl aktivieren",
+                "streams.select": "Streams auswählen",
+                "setup.hideWindow": "Fenster ausblenden",
+                "setup.unmute": "Ton einschalten",
+                "tiktok.signingGuide": "Signierungsanleitung",
+                "tiktok.apiNotice": "Ein Euler-Schlüssel ist keine TikTok-Anmeldung. Euler Proxy ignoriert gespeicherte TikTok-Cookies. Bei eingeschränkten Streams zuerst den Zugriff mit einem berechtigten Konto im Standardmodus prüfen.",
+                "tiktok.experimental": "Experimentell. Falls Schlüssel oder Signierungs-URL nicht funktionieren, Auto oder Kompatibilität verwenden.",
+                "tiktok.roleHint": "Als Streamer angemeldet? Host wählen, um die Streamer-Identität zu verwenden.",
+                "tiktok.setHost": "Rolle auf Host setzen",
+                "tiktok.repliesHint": "Signierungsfenster geöffnet lassen, um Chatantworten zu senden.",
+                "tiktok.sessionSteps": "TikTok-Anmeldung öffnen, anmelden und Sitzung erfassen. Danach die Quelle aktivieren oder neu starten, um die gespeicherten Cookies zu nutzen.",
+                "tiktok.cookiesHint": "Falls der lokale Signierer fehlschlägt, beide Cookies sessionid und tt-target-idc manuell eingeben.",
+                "tiktok.debugPing": "Nach Sitzungserfassung TikToks Fetch-Endpunkt prüfen",
+                "tiktok.sessionMissing": "Das Cookie tt-target-idc fehlt. Diese Quelle verbindet sich anonym. Erneut anmelden oder beide Cookies eingeben.",
+                "tiktok.sessionRefresh": "Gespeicherte Cookies werden beim Verbinden verwendet. Nach Ablauf erneut anmelden.",
+                "signin.choose": "Anmeldemethode wählen",
+                "signin.chrome": "Chrome verwenden",
+                "signin.chromeHelp": "Experimentell. Falls Google das SSApp-Fenster ablehnt.",
+                "signin.ssapp": "SSApp-Fenster verwenden",
+                "signin.ssappHelp": "Die übliche Anmeldung für diese Quelle.",
+                "signin.closeHelp": "Nach der Anmeldung das SSApp-Anmeldefenster schließen. Bei Chrome den Import abwarten; das temporäre Fenster schließt sich automatisch.",
+                "setup.storedLocal": "Lokal auf diesem Gerät gespeichert.",
+                "signin.session": "Browsersitzung",
+                "streams.viewers": "{count} Zuschauer",
+                "streams.chatReady": "Chat bereit",
+                "streams.chatWaiting": "Chat noch nicht bereit",
+                "source.manualTip": "Bei Bedarf auf der Website anmelden, dann die Quelle aktivieren und prüfen, ob der Chat sichtbar ist.",
+                "source.add": "Neue Quelle"
             },
             "tr": {
                 "nav.streamdeck": "🎛️ Stream Deck Kurulum",
@@ -17470,7 +17991,97 @@
                 "sessions.delete.confirm": "Bu oturumu silmek istediğinizden emin misiniz? Bu geri alınamaz.",
                 "sessions.delete.failed": "Oturum silinemedi",
                 "sessions.rename.prompt": "Yeni adı girin:",
-                "sessions.rename.failed": "Oturum yeniden adlandırılamadı"
+                "sessions.rename.failed": "Oturum yeniden adlandırılamadı",
+                "setup.add": "{platform} ekle",
+                "setup.saveSeller": "Yayınlarını seçmek için satıcıyı kaydedin veya yayın bağlantısı yapıştırın.",
+                "setup.ebayInput": "Satıcı veya etkinlik bağlantısı",
+                "setup.whatnotInput": "Kullanıcı adı, profil veya yayın bağlantısı",
+                "setup.ebayHint": "Mağaza veya /usr/ yerine eBay Live satıcı bağlantısı kullanın. Etkinlik kimliği de kullanılabilir.",
+                "setup.addSource": "Kaynak ekle",
+                "setup.cancel": "İptal",
+                "setup.refresh": "Yenile",
+                "setup.loading": "Yayınlar aranıyor…",
+                "setup.empty": "Yayın yok. Daha sonra tekrar kontrol edin.",
+                "setup.addSelected": "Seçilenleri ekle",
+                "setup.useSelected": "Seçilenleri kullan",
+                "setup.chooseAgain": "Başka eBay Live yayını seç",
+                "youtube.addTitle": "YouTube kaynağı ekle",
+                "youtube.publicTitle": "Herkese açık kanalı izle",
+                "youtube.noSignin": "Giriş gerekmez",
+                "youtube.publicDescription": "@kullanıcı adı veya kanal URL’si girin. Herkese açık canlı ve planlanan yayınları bulur; liste dışı videoları bulmaz.",
+                "youtube.ownerTitle": "YouTube hesabımı kullan",
+                "youtube.recommended": "Önerilen",
+                "youtube.ownerDescription": "Salt okunur giriş. Liste dışı olanlar dahil canlı ve planlanan yayınlarınızı bulur.",
+                "youtube.videoTitle": "Video bağlantısı veya kimliği yapıştır",
+                "youtube.direct": "Doğrudan",
+                "youtube.videoDescription": "Herkese açık veya liste dışı. Video canlı yayında olmalıdır.",
+                "tiktok.connection": "TikTok bağlantısı",
+                "tiktok.auto": "Otomatik (önerilen)",
+                "tiktok.local": "Yerel imzalayıcı",
+                "tiktok.polling": "Uyumluluk (WebSocket)",
+                "tiktok.standard": "Standart (yakalama penceresi)",
+                "tiktok.proxy": "Euler Proxy (API anahtarı)",
+                "tiktok.custom": "Euler Signing (gelişmiş)",
+                "tiktok.desktop": "TikFinity Desktop (beta)",
+                "tiktok.guide": "TikFinity kurulumu",
+                "tiktok.copy": "Tanı bilgilerini kopyala",
+                "tiktok.fallback": "Yedek TikFinity kurulumu →",
+                "tiktok.help.auto": "Euler ile başlar; başarısız olursa diğer yakalama yöntemlerini dener.",
+                "tiktok.help.local": "Herkese açık LIVE sohbeti için API anahtarı gerekmez. Yanıtlar veya kısıtlı yayınlar için giriş yapın.",
+                "tiktok.help.polling": "İmzalama gerekir. Yanıtlar desteklenmez.",
+                "tiktok.help.standard": "Sohbeti tarayıcı penceresinden okur. Elle giriş ve sorun giderme için kullanın.",
+                "tiktok.help.euler-ws": "Euler API anahtarı gerekir. Kayıtlı TikTok girişiniz yerine Euler aktarımını kullanır. Yanıt yoktur.",
+                "tiktok.help.custom": "Gelişmiş: kendi Euler API anahtarınızı veya imzalama URL’nizi kullanın.",
+                "tiktok.help.tikfinity": "TikFinity Desktop uygulamasını açıp LIVE bağlantısını kurun. Buradaki kullanıcı adından bağımsız olarak TikFinity’de seçilen yayını okur. İki kez yakalamaktan kaçının.",
+                "setup.close": "Kapat",
+                "setup.save": "Kaydet",
+                "setup.clear": "Temizle",
+                "setup.advanced": "Gelişmiş ve yedek seçenekler",
+                "setup.optional": "İsteğe bağlı",
+                "setup.experimental": "Deneysel",
+                "setup.apiKey": "API anahtarı",
+                "setup.signingUrl": "İmzalama URL’si",
+                "setup.manualSession": "Elle oturum çerezleri",
+                "setup.enterSession": "Oturum çerezlerini gir",
+                "setup.clearAuth": "Kimlik doğrulamayı temizle",
+                "setup.debug": "Tanı araçları",
+                "setup.copyPayload": "Verileri kopyala",
+                "setup.collectSession": "Oturumu al",
+                "setup.showWindow": "Pencereyi göster",
+                "setup.closeWindow": "Pencereyi kapat",
+                "setup.mute": "Sesi kapat",
+                "setup.checking": "Durum kontrol ediliyor…",
+                "streams.live": "Canlı",
+                "streams.upcoming": "Yaklaşan",
+                "streams.ended": "Bitti",
+                "streams.added": "Zaten eklendi",
+                "streams.activate": "Seçilenleri etkinleştir",
+                "streams.select": "Yayınları seç",
+                "setup.hideWindow": "Pencereyi gizle",
+                "setup.unmute": "Sesi aç",
+                "tiktok.signingGuide": "İmzalama kılavuzu",
+                "tiktok.apiNotice": "Euler anahtarı TikTok girişi değildir. Euler Proxy kayıtlı TikTok çerezlerini kullanmaz. Kısıtlı yayınlarda önce Standart modda yetkili bir hesapla erişimi kontrol edin.",
+                "tiktok.experimental": "Deneysel. Anahtar veya imzalama URL’si çalışmazsa Otomatik ya da Uyumluluk moduna dönün.",
+                "tiktok.roleHint": "Yayıncı olarak giriş yaptıysanız bu kimliği kullanmak için Yayıncı rolünü seçin.",
+                "tiktok.setHost": "Yayıncı rolünü seç",
+                "tiktok.repliesHint": "Sohbet yanıtları göndermek için imzalama penceresini açık tutun.",
+                "tiktok.sessionSteps": "TikTok girişini açın, giriş yapıp oturumu alın. Kayıtlı çerezleri kullanmak için kaynağı etkinleştirin veya yeniden başlatın.",
+                "tiktok.cookiesHint": "Yerel imzalama çalışmazsa sessionid ve tt-target-idc çerezlerinin ikisini de elle girin.",
+                "tiktok.debugPing": "Oturum alındıktan sonra TikTok fetch uç noktasını kontrol et",
+                "tiktok.sessionMissing": "tt-target-idc çerezi eksik. Kaynak anonim bağlanır. Yeniden giriş yapın veya iki çerezi de girin.",
+                "tiktok.sessionRefresh": "Bağlanırken kayıtlı çerezler kullanılır. Süreleri dolduğunda yeniden giriş yapın.",
+                "signin.choose": "Giriş yöntemini seç",
+                "signin.chrome": "Chrome kullan",
+                "signin.chromeHelp": "Deneysel. Google SSApp penceresini reddederse deneyin.",
+                "signin.ssapp": "SSApp penceresini kullan",
+                "signin.ssappHelp": "Bu kaynak için normal giriş yöntemi.",
+                "signin.closeHelp": "Giriş yaptıktan sonra SSApp giriş penceresini kapatın. Chrome’da içe aktarmanın bitmesini bekleyin; geçici pencere otomatik kapanır.",
+                "setup.storedLocal": "Bu cihazda yerel olarak saklanır.",
+                "signin.session": "Tarayıcı oturumu",
+                "streams.viewers": "{count} izleyici",
+                "streams.chatReady": "Sohbet hazır",
+                "streams.chatWaiting": "Sohbet henüz hazır değil",
+                "source.manualTip": "Gerekirse sitede giriş yapın, kaynağı etkinleştirin ve sohbetin görünür olduğunu kontrol edin."
             },
             "uk": {
                 "nav.streamdeck": "🎛️ Stream Deck Налаштування",
@@ -17503,7 +18114,97 @@
                 "sessions.delete.confirm": "Ви впевнені, що хочете видалити цей сеанс? Це неможливо скасувати.",
                 "sessions.delete.failed": "Не вдалося видалити сеанс",
                 "sessions.rename.prompt": "Введіть нову назву:",
-                "sessions.rename.failed": "Не вдалося перейменувати сеанс"
+                "sessions.rename.failed": "Не вдалося перейменувати сеанс",
+                "setup.add": "Додати {platform}",
+                "setup.saveSeller": "Збережіть продавця, щоб вибрати його трансляції, або вставте посилання на трансляцію.",
+                "setup.ebayInput": "Посилання на продавця або подію",
+                "setup.whatnotInput": "Ім’я користувача, профіль або трансляція",
+                "setup.ebayHint": "Використовуйте посилання на продавця eBay Live, а не на магазин чи /usr/. ID подій також підтримуються.",
+                "setup.addSource": "Додати джерело",
+                "setup.cancel": "Скасувати",
+                "setup.refresh": "Оновити",
+                "setup.loading": "Пошук трансляцій…",
+                "setup.empty": "Трансляцій немає. Перевірте пізніше.",
+                "setup.addSelected": "Додати вибрані",
+                "setup.useSelected": "Використати вибрані",
+                "setup.chooseAgain": "Вибрати іншу трансляцію eBay Live",
+                "youtube.addTitle": "Додати джерело YouTube",
+                "youtube.publicTitle": "Стежити за публічним каналом",
+                "youtube.noSignin": "Без входу",
+                "youtube.publicDescription": "Введіть @ім’я або URL каналу. Знаходить публічні поточні й заплановані трансляції, крім відео за посиланням.",
+                "youtube.ownerTitle": "Використати мій акаунт YouTube",
+                "youtube.recommended": "Рекомендовано",
+                "youtube.ownerDescription": "Вхід лише для читання. Знаходить ваші поточні й заплановані трансляції, включно з відео за посиланням.",
+                "youtube.videoTitle": "Вставити посилання або ID відео",
+                "youtube.direct": "Напряму",
+                "youtube.videoDescription": "Публічне або за посиланням. Відео вже має транслюватися.",
+                "tiktok.connection": "Підключення TikTok",
+                "tiktok.auto": "Авто (рекомендовано)",
+                "tiktok.local": "Локальний підпис",
+                "tiktok.polling": "Сумісність (WebSocket)",
+                "tiktok.standard": "Стандартне (вікно захоплення)",
+                "tiktok.proxy": "Euler Proxy (ключ API)",
+                "tiktok.custom": "Euler Signing (додатково)",
+                "tiktok.desktop": "TikFinity Desktop (бета)",
+                "tiktok.guide": "Налаштування TikFinity",
+                "tiktok.copy": "Копіювати діагностику",
+                "tiktok.fallback": "Налаштувати резервний TikFinity →",
+                "tiktok.help.auto": "Починає з Euler; у разі збою пробує інші способи захоплення.",
+                "tiktok.help.local": "Для публічного LIVE-чату ключ API не потрібен. Увійдіть для відповідей або обмежених трансляцій.",
+                "tiktok.help.polling": "Потрібен підпис. Відповіді не підтримуються.",
+                "tiktok.help.standard": "Читає чат із вікна браузера. Для ручного входу та діагностики.",
+                "tiktok.help.euler-ws": "Потрібен ключ API Euler. Використовує ретранслятор Euler, а не збережений вхід TikTok. Без відповідей.",
+                "tiktok.help.custom": "Додатково: власний ключ API Euler або URL підпису.",
+                "tiktok.help.tikfinity": "Відкрийте TikFinity Desktop і підключіть LIVE. Читає вибрану там трансляцію незалежно від імені тут. Уникайте подвійного захоплення.",
+                "setup.close": "Закрити",
+                "setup.save": "Зберегти",
+                "setup.clear": "Очистити",
+                "setup.advanced": "Додаткові й резервні параметри",
+                "setup.optional": "Необов’язково",
+                "setup.experimental": "Експериментально",
+                "setup.apiKey": "Ключ API",
+                "setup.signingUrl": "URL підпису",
+                "setup.manualSession": "Ручні cookie сеансу",
+                "setup.enterSession": "Ввести cookie сеансу",
+                "setup.clearAuth": "Очистити авторизацію",
+                "setup.debug": "Засоби діагностики",
+                "setup.copyPayload": "Копіювати дані",
+                "setup.collectSession": "Зібрати сеанс",
+                "setup.showWindow": "Показати вікно",
+                "setup.closeWindow": "Закрити вікно",
+                "setup.mute": "Вимкнути звук",
+                "setup.checking": "Перевірка стану…",
+                "streams.live": "Наживо",
+                "streams.upcoming": "Заплановано",
+                "streams.ended": "Завершено",
+                "streams.added": "Уже додано",
+                "streams.activate": "Активувати вибрані",
+                "streams.select": "Вибрати трансляції",
+                "setup.hideWindow": "Сховати вікно",
+                "setup.unmute": "Увімкнути звук",
+                "tiktok.signingGuide": "Посібник із підпису",
+                "tiktok.apiNotice": "Ключ Euler не є входом у TikTok. Euler Proxy ігнорує збережені cookie TikTok. Для обмежених трансляцій перевірте доступ відповідного акаунта в стандартному режимі.",
+                "tiktok.experimental": "Експериментально. Якщо ключ або URL підпису не працює, поверніться до Авто або Сумісності.",
+                "tiktok.roleHint": "Якщо ви ввійшли як автор трансляції, виберіть роль Ведучий, щоб використовувати цю особу.",
+                "tiktok.setHost": "Установити роль Ведучий",
+                "tiktok.repliesHint": "Залиште вікно підпису відкритим для надсилання відповідей у чат.",
+                "tiktok.sessionSteps": "Відкрийте вхід TikTok, увійдіть і зберіть сеанс. Активуйте або перезапустіть джерело, щоб використати збережені cookie.",
+                "tiktok.cookiesHint": "Якщо локальний підпис не працює, вручну введіть обидва cookie: sessionid і tt-target-idc.",
+                "tiktok.debugPing": "Перевірити кінцеву точку fetch TikTok після збору сеансу",
+                "tiktok.sessionMissing": "Cookie tt-target-idc відсутній. Джерело підключається анонімно. Увійдіть знову або введіть обидва cookie.",
+                "tiktok.sessionRefresh": "Для підключення використовуються збережені cookie. Після завершення їх дії ввійдіть знову.",
+                "signin.choose": "Вибрати спосіб входу",
+                "signin.chrome": "Використати Chrome",
+                "signin.chromeHelp": "Експериментально. Спробуйте, якщо Google відхиляє вікно SSApp.",
+                "signin.ssapp": "Використати вікно SSApp",
+                "signin.ssappHelp": "Звичайний спосіб входу для цього джерела.",
+                "signin.closeHelp": "Після входу закрийте вікно входу SSApp. У Chrome дочекайтеся завершення імпорту; тимчасове вікно закриється автоматично.",
+                "setup.storedLocal": "Збережено локально на цьому пристрої.",
+                "signin.session": "Сеанс браузера",
+                "streams.viewers": "Глядачі: {count}",
+                "streams.chatReady": "Чат готовий",
+                "streams.chatWaiting": "Чат ще не готовий",
+                "source.manualTip": "За потреби ввійдіть на сайт, активуйте джерело й перевірте, що чат видно."
             },
             "zh-CN": {
                 "nav.streamdeck": "🎛️ Stream Deck 设置",
@@ -17536,7 +18237,97 @@
                 "sessions.delete.confirm": "您确定要删除此会话吗？此操作无法撤消。",
                 "sessions.delete.failed": "删除会话失败",
                 "sessions.rename.prompt": "输入新名称：",
-                "sessions.rename.failed": "无法重命名会话"
+                "sessions.rename.failed": "无法重命名会话",
+                "setup.add": "添加 {platform}",
+                "setup.saveSeller": "保存卖家以选择其直播，或粘贴直播链接。",
+                "setup.ebayInput": "卖家或活动链接",
+                "setup.whatnotInput": "用户名、主页或直播链接",
+                "setup.ebayHint": "请使用 eBay Live 卖家链接，而非商店或 /usr/ 链接。也可输入活动 ID。",
+                "setup.addSource": "添加来源",
+                "setup.cancel": "取消",
+                "setup.refresh": "刷新",
+                "setup.loading": "正在查找直播…",
+                "setup.empty": "暂无可用直播，请稍后重试。",
+                "setup.addSelected": "添加所选",
+                "setup.useSelected": "使用所选",
+                "setup.chooseAgain": "选择其他 eBay Live 直播",
+                "youtube.addTitle": "添加 YouTube 来源",
+                "youtube.publicTitle": "关注公开频道",
+                "youtube.noSignin": "无需登录",
+                "youtube.publicDescription": "输入 @用户名或频道网址。查找公开的当前及预定直播，不含不公开列出的视频。",
+                "youtube.ownerTitle": "使用我的 YouTube 账号",
+                "youtube.recommended": "推荐",
+                "youtube.ownerDescription": "仅申请读取权限。查找您的当前及预定直播，包括不公开列出的视频。",
+                "youtube.videoTitle": "粘贴视频链接或 ID",
+                "youtube.direct": "直接添加",
+                "youtube.videoDescription": "支持公开或不公开列出的视频，但必须已开播。",
+                "tiktok.connection": "TikTok 连接",
+                "tiktok.auto": "自动（推荐）",
+                "tiktok.local": "本地签名",
+                "tiktok.polling": "兼容模式（WebSocket）",
+                "tiktok.standard": "标准（捕获窗口）",
+                "tiktok.proxy": "Euler Proxy（API 密钥）",
+                "tiktok.custom": "Euler Signing（高级）",
+                "tiktok.desktop": "TikFinity Desktop（测试版）",
+                "tiktok.guide": "TikFinity 设置指南",
+                "tiktok.copy": "复制诊断信息",
+                "tiktok.fallback": "设置 TikFinity 备用连接 →",
+                "tiktok.help.auto": "先使用 Euler；失败时尝试其他捕获方式。",
+                "tiktok.help.local": "公开 LIVE 聊天无需 API 密钥。回复或受限直播需要登录。",
+                "tiktok.help.polling": "需要签名。不支持回复。",
+                "tiktok.help.standard": "从浏览器窗口读取聊天。用于手动登录和排查问题。",
+                "tiktok.help.euler-ws": "需要 Euler API 密钥。通过 Euler 中转，不使用已保存的 TikTok 登录。不支持回复。",
+                "tiktok.help.custom": "高级：使用自己的 Euler API 密钥或签名网址。",
+                "tiktok.help.tikfinity": "打开 TikFinity Desktop 并连接 LIVE。读取 TikFinity 中选中的直播，与此处用户名无关。请避免重复捕获。",
+                "setup.close": "关闭",
+                "setup.save": "保存",
+                "setup.clear": "清除",
+                "setup.advanced": "高级与备用选项",
+                "setup.optional": "可选",
+                "setup.experimental": "实验性",
+                "setup.apiKey": "API 密钥",
+                "setup.signingUrl": "签名网址",
+                "setup.manualSession": "手动会话 Cookie",
+                "setup.enterSession": "输入会话 Cookie",
+                "setup.clearAuth": "清除登录信息",
+                "setup.debug": "诊断工具",
+                "setup.copyPayload": "复制数据",
+                "setup.collectSession": "采集会话",
+                "setup.showWindow": "显示窗口",
+                "setup.closeWindow": "关闭窗口",
+                "setup.mute": "静音",
+                "setup.checking": "正在检查状态…",
+                "streams.live": "直播中",
+                "streams.upcoming": "即将开始",
+                "streams.ended": "已结束",
+                "streams.added": "已添加",
+                "streams.activate": "激活所选",
+                "streams.select": "选择直播",
+                "setup.hideWindow": "隐藏窗口",
+                "setup.unmute": "取消静音",
+                "tiktok.signingGuide": "签名指南",
+                "tiktok.apiNotice": "Euler 密钥不是 TikTok 登录凭据。Euler Proxy 不使用已保存的 TikTok Cookie。对于受限直播，请先在标准模式中用有权限的账号验证能否观看。",
+                "tiktok.experimental": "实验性功能。密钥或签名网址失效时，请切回自动或兼容模式。",
+                "tiktok.roleHint": "若以主播身份登录，请将角色设为主播以使用该身份。",
+                "tiktok.setHost": "设为主播角色",
+                "tiktok.repliesHint": "保持签名窗口开启以发送聊天回复。",
+                "tiktok.sessionSteps": "打开 TikTok 登录窗口，登录后采集会话。激活或重启来源以使用已保存的 Cookie。",
+                "tiktok.cookiesHint": "本地签名失败时，请手动输入 sessionid 和 tt-target-idc 两个 Cookie。",
+                "tiktok.debugPing": "采集会话后检查 TikTok 的 fetch 接口",
+                "tiktok.sessionMissing": "缺少 tt-target-idc Cookie，此来源将匿名连接。请重新登录或输入两个 Cookie。",
+                "tiktok.sessionRefresh": "连接时使用已保存的 Cookie。过期后请重新登录。",
+                "signin.choose": "选择登录方式",
+                "signin.chrome": "使用 Chrome",
+                "signin.chromeHelp": "实验性功能。Google 拒绝 SSApp 窗口时可尝试。",
+                "signin.ssapp": "使用 SSApp 窗口",
+                "signin.ssappHelp": "此来源的常规登录方式。",
+                "signin.closeHelp": "登录后关闭 SSApp 登录窗口。使用 Chrome 时，请等待导入完成；临时窗口会自动关闭。",
+                "setup.storedLocal": "保存在此设备本地。",
+                "signin.session": "浏览器会话",
+                "streams.viewers": "{count} 位观众",
+                "streams.chatReady": "聊天已就绪",
+                "streams.chatWaiting": "聊天尚未就绪",
+                "source.manualTip": "如有需要，请先登录网站，再激活来源并确认聊天可见。"
             },
             "zh-TW": {
                 "nav.streamdeck": "🎛️ Stream Deck 設定",
@@ -17569,7 +18360,101 @@
                 "sessions.delete.confirm": "您確定要刪除此會話嗎？此操作無法撤銷。",
                 "sessions.delete.failed": "刪除會話失敗",
                 "sessions.rename.prompt": "輸入新名稱：",
-                "sessions.rename.failed": "無法重新命名會話"
+                "sessions.rename.failed": "無法重新命名會話",
+                "setup.add": "新增 {platform}",
+                "setup.saveSeller": "儲存賣家以選擇其直播，或貼上直播連結。",
+                "setup.ebayInput": "賣家或活動連結",
+                "setup.whatnotInput": "使用者名稱、個人檔案或直播連結",
+                "setup.ebayHint": "請使用 eBay Live 賣家連結，而非商店或 /usr/ 連結。也可輸入活動 ID。",
+                "setup.addSource": "新增來源",
+                "setup.cancel": "取消",
+                "setup.refresh": "重新整理",
+                "setup.loading": "正在尋找直播…",
+                "setup.empty": "目前沒有可用直播，請稍後再試。",
+                "setup.addSelected": "新增所選",
+                "setup.useSelected": "使用所選",
+                "setup.chooseAgain": "選擇其他 eBay Live 直播",
+                "youtube.addTitle": "新增 YouTube 來源",
+                "youtube.publicTitle": "追蹤公開頻道",
+                "youtube.noSignin": "無需登入",
+                "youtube.publicDescription": "輸入 @使用者名稱或頻道網址。尋找公開的目前及預定直播，不含非公開影片。",
+                "youtube.ownerTitle": "使用我的 YouTube 帳號",
+                "youtube.recommended": "建議",
+                "youtube.ownerDescription": "僅申請讀取權限。尋找您的目前及預定直播，包含非公開影片。",
+                "youtube.videoTitle": "貼上影片連結或 ID",
+                "youtube.direct": "直接新增",
+                "youtube.videoDescription": "支援公開或非公開影片，但必須已開播。",
+                "tiktok.connection": "TikTok 連線",
+                "tiktok.auto": "自動（建議）",
+                "tiktok.local": "本機簽署",
+                "tiktok.polling": "相容模式（WebSocket）",
+                "tiktok.standard": "標準（擷取視窗）",
+                "tiktok.proxy": "Euler Proxy（API 金鑰）",
+                "tiktok.custom": "Euler Signing（進階）",
+                "tiktok.desktop": "TikFinity Desktop（測試版）",
+                "tiktok.guide": "TikFinity 設定指南",
+                "tiktok.copy": "複製診斷資訊",
+                "tiktok.fallback": "設定 TikFinity 備用連線 →",
+                "useragent.label": "使用者代理",
+                "session.create": "建立工作階段",
+                "useragent.title": "選擇使用者代理",
+                "session.title": "選擇工作階段",
+                "tiktok.help.auto": "先使用 Euler；失敗時嘗試其他擷取方式。",
+                "tiktok.help.local": "公開 LIVE 聊天無需 API 金鑰。回覆或受限直播需要登入。",
+                "tiktok.help.polling": "需要簽署。不支援回覆。",
+                "tiktok.help.standard": "從瀏覽器視窗讀取聊天。用於手動登入及排查問題。",
+                "tiktok.help.euler-ws": "需要 Euler API 金鑰。透過 Euler 轉送，不使用已儲存的 TikTok 登入。不支援回覆。",
+                "tiktok.help.custom": "進階：使用自己的 Euler API 金鑰或簽署網址。",
+                "tiktok.help.tikfinity": "開啟 TikFinity Desktop 並連接 LIVE。讀取 TikFinity 中選取的直播，與此處使用者名稱無關。請避免重複擷取。",
+                "setup.close": "關閉",
+                "setup.save": "儲存",
+                "setup.clear": "清除",
+                "setup.advanced": "進階與備用選項",
+                "setup.optional": "選填",
+                "setup.experimental": "實驗性",
+                "setup.apiKey": "API 金鑰",
+                "setup.signingUrl": "簽署網址",
+                "setup.manualSession": "手動工作階段 Cookie",
+                "setup.enterSession": "輸入工作階段 Cookie",
+                "setup.clearAuth": "清除登入資訊",
+                "setup.debug": "診斷工具",
+                "setup.copyPayload": "複製資料",
+                "setup.collectSession": "擷取工作階段",
+                "setup.showWindow": "顯示視窗",
+                "setup.closeWindow": "關閉視窗",
+                "setup.mute": "靜音",
+                "setup.checking": "正在檢查狀態…",
+                "streams.live": "直播中",
+                "streams.upcoming": "即將開始",
+                "streams.ended": "已結束",
+                "streams.added": "已新增",
+                "streams.activate": "啟用所選",
+                "streams.select": "選擇直播",
+                "setup.hideWindow": "隱藏視窗",
+                "setup.unmute": "取消靜音",
+                "tiktok.signingGuide": "簽署指南",
+                "tiktok.apiNotice": "Euler 金鑰不是 TikTok 登入憑證。Euler Proxy 不使用已儲存的 TikTok Cookie。對於受限直播，請先在標準模式中用有權限的帳號確認能否觀看。",
+                "tiktok.experimental": "實驗性功能。金鑰或簽署網址失效時，請切回自動或相容模式。",
+                "tiktok.roleHint": "若以主播身分登入，請將角色設為主播以使用該身分。",
+                "tiktok.setHost": "設為主播角色",
+                "tiktok.repliesHint": "保持簽署視窗開啟以傳送聊天回覆。",
+                "tiktok.sessionSteps": "開啟 TikTok 登入視窗，登入後擷取工作階段。啟用或重新啟動來源以使用已儲存的 Cookie。",
+                "tiktok.cookiesHint": "本機簽署失敗時，請手動輸入 sessionid 和 tt-target-idc 兩個 Cookie。",
+                "tiktok.debugPing": "擷取工作階段後檢查 TikTok 的 fetch 介面",
+                "tiktok.sessionMissing": "缺少 tt-target-idc Cookie，此來源將匿名連線。請重新登入或輸入兩個 Cookie。",
+                "tiktok.sessionRefresh": "連線時使用已儲存的 Cookie。到期後請重新登入。",
+                "signin.choose": "選擇登入方式",
+                "signin.chrome": "使用 Chrome",
+                "signin.chromeHelp": "實驗性功能。Google 拒絕 SSApp 視窗時可嘗試。",
+                "signin.ssapp": "使用 SSApp 視窗",
+                "signin.ssappHelp": "此來源的一般登入方式。",
+                "signin.closeHelp": "登入後關閉 SSApp 登入視窗。使用 Chrome 時，請等待匯入完成；暫時視窗會自動關閉。",
+                "setup.storedLocal": "儲存在此裝置本機。",
+                "signin.session": "瀏覽器工作階段",
+                "streams.viewers": "{count} 位觀眾",
+                "streams.chatReady": "聊天已就緒",
+                "streams.chatWaiting": "聊天尚未就緒",
+                "source.manualTip": "如有需要，請先登入網站，再啟用來源並確認聊天可見。"
             },
             "ar": {
                 "nav.streams": "🎭 المصادر والإعدادات",
@@ -17692,7 +18577,97 @@
                 "sessions.delete.confirm": "هل أنت متأكد من رغبتك في حذف هذه الجلسة؟ لا يمكن التراجع عن هذا.",
                 "sessions.delete.failed": "فشل في حذف الجلسة",
                 "sessions.rename.prompt": "أدخل الاسم الجديد:",
-                "sessions.rename.failed": "فشل في إعادة تسمية الجلسة"
+                "sessions.rename.failed": "فشل في إعادة تسمية الجلسة",
+                "setup.add": "إضافة {platform}",
+                "setup.saveSeller": "احفظ البائع لاختيار بثوثه أو الصق رابط بث.",
+                "setup.ebayInput": "رابط البائع أو الحدث",
+                "setup.whatnotInput": "اسم المستخدم أو رابط الملف أو البث",
+                "setup.ebayHint": "استخدم رابط بائع eBay Live، وليس رابط متجر أو /usr/. يمكن أيضًا استخدام معرّف الحدث.",
+                "setup.addSource": "إضافة مصدر",
+                "setup.cancel": "إلغاء",
+                "setup.refresh": "تحديث",
+                "setup.loading": "جارٍ البحث عن بثوث…",
+                "setup.empty": "لا توجد بثوث متاحة. تحقق لاحقًا.",
+                "setup.addSelected": "إضافة المحدد",
+                "setup.useSelected": "استخدام المحدد",
+                "setup.chooseAgain": "اختيار بث eBay Live آخر",
+                "youtube.addTitle": "إضافة مصدر YouTube",
+                "youtube.publicTitle": "متابعة قناة عامة",
+                "youtube.noSignin": "دون تسجيل دخول",
+                "youtube.publicDescription": "أدخل @اسم المستخدم أو رابط القناة. يعثر على البثوث العامة الحالية والمجدولة، باستثناء الفيديوهات غير المدرجة.",
+                "youtube.ownerTitle": "استخدام حسابي على YouTube",
+                "youtube.recommended": "موصى به",
+                "youtube.ownerDescription": "تسجيل دخول للقراءة فقط. يعثر على بثوثك الحالية والمجدولة، بما فيها غير المدرجة.",
+                "youtube.videoTitle": "لصق رابط الفيديو أو معرّفه",
+                "youtube.direct": "مباشر",
+                "youtube.videoDescription": "عام أو غير مدرج. يجب أن يكون الفيديو مباشرًا بالفعل.",
+                "tiktok.connection": "اتصال TikTok",
+                "tiktok.auto": "تلقائي (موصى به)",
+                "tiktok.local": "توقيع محلي",
+                "tiktok.polling": "التوافق (WebSocket)",
+                "tiktok.standard": "قياسي (نافذة الالتقاط)",
+                "tiktok.proxy": "Euler Proxy (مفتاح API)",
+                "tiktok.custom": "Euler Signing (متقدم)",
+                "tiktok.desktop": "TikFinity Desktop (تجريبي)",
+                "tiktok.guide": "دليل إعداد TikFinity",
+                "tiktok.copy": "نسخ معلومات التشخيص",
+                "tiktok.fallback": "إعداد TikFinity كبديل ←",
+                "tiktok.help.auto": "يبدأ بـ Euler، ويجرب طرق التقاط أخرى عند الفشل.",
+                "tiktok.help.local": "لا يلزم مفتاح API للدردشة العامة. سجّل الدخول للرد أو للبثوث المقيّدة.",
+                "tiktok.help.polling": "يتطلب التوقيع. الردود غير مدعومة.",
+                "tiktok.help.standard": "يقرأ الدردشة من نافذة المتصفح. للدخول اليدوي وتشخيص المشاكل.",
+                "tiktok.help.euler-ws": "يتطلب مفتاح API من Euler. يستخدم خدمة Euler، وليس دخول TikTok المحفوظ. دون ردود.",
+                "tiktok.help.custom": "متقدم: استخدم مفتاح API من Euler أو رابط التوقيع الخاص بك.",
+                "tiktok.help.tikfinity": "افتح TikFinity Desktop ووصل بثك هناك. يقرأ البث المختار في TikFinity بغض النظر عن الاسم هنا. تجنب التقاطه مرتين.",
+                "setup.close": "إغلاق",
+                "setup.save": "حفظ",
+                "setup.clear": "مسح",
+                "setup.advanced": "خيارات متقدمة وبديلة",
+                "setup.optional": "اختياري",
+                "setup.experimental": "تجريبي",
+                "setup.apiKey": "مفتاح API",
+                "setup.signingUrl": "رابط التوقيع",
+                "setup.manualSession": "ملفات تعريف ارتباط الجلسة يدويًا",
+                "setup.enterSession": "إدخال ملفات تعريف ارتباط الجلسة",
+                "setup.clearAuth": "مسح تسجيل الدخول",
+                "setup.debug": "أدوات التشخيص",
+                "setup.copyPayload": "نسخ البيانات",
+                "setup.collectSession": "جمع الجلسة",
+                "setup.showWindow": "إظهار النافذة",
+                "setup.closeWindow": "إغلاق النافذة",
+                "setup.mute": "كتم الصوت",
+                "setup.checking": "جارٍ التحقق من الحالة…",
+                "streams.live": "مباشر",
+                "streams.upcoming": "قادم",
+                "streams.ended": "انتهى",
+                "streams.added": "مضاف بالفعل",
+                "streams.activate": "تفعيل المحدد",
+                "streams.select": "اختيار البثوث",
+                "setup.hideWindow": "إخفاء النافذة",
+                "setup.unmute": "إلغاء الكتم",
+                "tiktok.signingGuide": "دليل التوقيع",
+                "tiktok.apiNotice": "مفتاح Euler ليس تسجيل دخول إلى TikTok. يتجاهل Euler Proxy ملفات TikTok المحفوظة. للبثوث المقيّدة، تحقق أولًا من الوصول بحساب مؤهل في الوضع القياسي.",
+                "tiktok.experimental": "تجريبي. إذا فشل المفتاح أو رابط التوقيع، ارجع إلى تلقائي أو التوافق.",
+                "tiktok.roleHint": "إذا دخلت بصفتك صاحب البث، اختر دور المضيف لاستخدام هذه الهوية.",
+                "tiktok.setHost": "تعيين دور المضيف",
+                "tiktok.repliesHint": "أبقِ نافذة التوقيع مفتوحة لإرسال الردود إلى الدردشة.",
+                "tiktok.sessionSteps": "افتح تسجيل دخول TikTok، وسجّل الدخول ثم اجمع الجلسة. فعّل المصدر أو أعد تشغيله لاستخدام ملفات الجلسة المحفوظة.",
+                "tiktok.cookiesHint": "إذا فشل التوقيع المحلي، أدخل يدويًا كلا الملفين sessionid وtt-target-idc.",
+                "tiktok.debugPing": "فحص نقطة fetch في TikTok بعد جمع الجلسة",
+                "tiktok.sessionMissing": "ملف tt-target-idc مفقود. يتصل المصدر دون حساب. سجّل الدخول مجددًا أو أدخل الملفين.",
+                "tiktok.sessionRefresh": "تُستخدم ملفات الجلسة المحفوظة عند الاتصال. سجّل الدخول مجددًا عند انتهاء صلاحيتها.",
+                "signin.choose": "اختيار طريقة تسجيل الدخول",
+                "signin.chrome": "استخدام Chrome",
+                "signin.chromeHelp": "تجريبي. جرّبه إذا رفض Google نافذة SSApp.",
+                "signin.ssapp": "استخدام نافذة SSApp",
+                "signin.ssappHelp": "الطريقة المعتادة لتسجيل الدخول إلى هذا المصدر.",
+                "signin.closeHelp": "بعد الدخول، أغلق نافذة دخول SSApp. في Chrome انتظر اكتمال الاستيراد؛ تُغلق النافذة المؤقتة تلقائيًا.",
+                "setup.storedLocal": "محفوظ محليًا على هذا الجهاز.",
+                "signin.session": "جلسة المتصفح",
+                "streams.viewers": "المشاهدون: {count}",
+                "streams.chatReady": "الدردشة جاهزة",
+                "streams.chatWaiting": "الدردشة ليست جاهزة بعد",
+                "source.manualTip": "سجّل الدخول إلى الموقع عند الحاجة، ثم فعّل المصدر وتأكد من ظهور الدردشة."
             },
             "th": {
                 "nav.streams": "🎭 แหล่งที่มาและการตั้งค่า",
@@ -17815,7 +18790,97 @@
                 "sessions.delete.confirm": "คุณแน่ใจหรือไม่ว่าต้องการลบเซสชันนี้ สิ่งนี้ไม่สามารถยกเลิกได้",
                 "sessions.delete.failed": "ไม่สามารถลบเซสชัน",
                 "sessions.rename.prompt": "ป้อนชื่อใหม่:",
-                "sessions.rename.failed": "ไม่สามารถเปลี่ยนชื่อเซสชันได้"
+                "sessions.rename.failed": "ไม่สามารถเปลี่ยนชื่อเซสชันได้",
+                "setup.add": "เพิ่ม {platform}",
+                "setup.saveSeller": "บันทึกผู้ขายเพื่อเลือกไลฟ์ หรือวางลิงก์ไลฟ์",
+                "setup.ebayInput": "ลิงก์ผู้ขายหรือกิจกรรม",
+                "setup.whatnotInput": "ชื่อผู้ใช้ ลิงก์โปรไฟล์ หรือไลฟ์",
+                "setup.ebayHint": "ใช้ลิงก์ผู้ขาย eBay Live ไม่ใช่ลิงก์ร้านค้าหรือ /usr/ ใช้รหัสกิจกรรมได้เช่นกัน",
+                "setup.addSource": "เพิ่มแหล่งที่มา",
+                "setup.cancel": "ยกเลิก",
+                "setup.refresh": "รีเฟรช",
+                "setup.loading": "กำลังค้นหาไลฟ์…",
+                "setup.empty": "ไม่มีไลฟ์ที่พร้อมใช้งาน โปรดตรวจสอบภายหลัง",
+                "setup.addSelected": "เพิ่มรายการที่เลือก",
+                "setup.useSelected": "ใช้รายการที่เลือก",
+                "setup.chooseAgain": "เลือกไลฟ์ eBay Live อื่น",
+                "youtube.addTitle": "เพิ่มแหล่งที่มา YouTube",
+                "youtube.publicTitle": "ติดตามช่องสาธารณะ",
+                "youtube.noSignin": "ไม่ต้องลงชื่อเข้าใช้",
+                "youtube.publicDescription": "ป้อน @ชื่อผู้ใช้หรือ URL ช่อง ค้นหาไลฟ์สาธารณะที่กำลังถ่ายทอดและกำหนดเวลาไว้ ไม่รวมวิดีโอแบบไม่เป็นสาธารณะ",
+                "youtube.ownerTitle": "ใช้บัญชี YouTube ของฉัน",
+                "youtube.recommended": "แนะนำ",
+                "youtube.ownerDescription": "ลงชื่อเข้าใช้แบบอ่านอย่างเดียว ค้นหาไลฟ์ของคุณที่กำลังถ่ายทอดและกำหนดเวลาไว้ รวมถึงแบบไม่เป็นสาธารณะ",
+                "youtube.videoTitle": "วางลิงก์หรือรหัสวิดีโอ",
+                "youtube.direct": "โดยตรง",
+                "youtube.videoDescription": "สาธารณะหรือไม่เป็นสาธารณะ วิดีโอต้องกำลังไลฟ์อยู่",
+                "tiktok.connection": "การเชื่อมต่อ TikTok",
+                "tiktok.auto": "อัตโนมัติ (แนะนำ)",
+                "tiktok.local": "ลงนามในเครื่อง",
+                "tiktok.polling": "โหมดเข้ากันได้ (WebSocket)",
+                "tiktok.standard": "มาตรฐาน (หน้าต่างจับภาพ)",
+                "tiktok.proxy": "Euler Proxy (คีย์ API)",
+                "tiktok.custom": "Euler Signing (ขั้นสูง)",
+                "tiktok.desktop": "TikFinity Desktop (เบต้า)",
+                "tiktok.guide": "คู่มือตั้งค่า TikFinity",
+                "tiktok.copy": "คัดลอกข้อมูลวินิจฉัย",
+                "tiktok.fallback": "ตั้งค่า TikFinity สำรอง →",
+                "tiktok.help.auto": "เริ่มด้วย Euler หากล้มเหลวจะลองวิธีจับภาพอื่น",
+                "tiktok.help.local": "แชต LIVE สาธารณะไม่ต้องใช้คีย์ API ลงชื่อเข้าใช้เพื่อตอบหรือเข้าถึงไลฟ์ที่จำกัดสิทธิ์",
+                "tiktok.help.polling": "ต้องมีการลงนาม ไม่รองรับการตอบกลับ",
+                "tiktok.help.standard": "อ่านแชตจากหน้าต่างเบราว์เซอร์ ใช้สำหรับลงชื่อเข้าใช้ด้วยตนเองและแก้ปัญหา",
+                "tiktok.help.euler-ws": "ต้องใช้คีย์ API ของ Euler ใช้ระบบส่งต่อของ Euler ไม่ใช่บัญชี TikTok ที่บันทึกไว้ ไม่รองรับการตอบ",
+                "tiktok.help.custom": "ขั้นสูง: ใช้คีย์ API ของ Euler หรือ URL ลงนามของคุณ",
+                "tiktok.help.tikfinity": "เปิด TikFinity Desktop แล้วเชื่อมต่อ LIVE ที่นั่น อ่านไลฟ์ที่เลือกใน TikFinity โดยไม่ขึ้นกับชื่อผู้ใช้ที่นี่ หลีกเลี่ยงการจับภาพซ้ำ",
+                "setup.close": "ปิด",
+                "setup.save": "บันทึก",
+                "setup.clear": "ล้าง",
+                "setup.advanced": "ตัวเลือกขั้นสูงและสำรอง",
+                "setup.optional": "ไม่บังคับ",
+                "setup.experimental": "ทดลอง",
+                "setup.apiKey": "คีย์ API",
+                "setup.signingUrl": "URL ลงนาม",
+                "setup.manualSession": "คุกกี้เซสชันแบบป้อนเอง",
+                "setup.enterSession": "ป้อนคุกกี้เซสชัน",
+                "setup.clearAuth": "ล้างข้อมูลเข้าสู่ระบบ",
+                "setup.debug": "เครื่องมือวินิจฉัย",
+                "setup.copyPayload": "คัดลอกข้อมูล",
+                "setup.collectSession": "เก็บเซสชัน",
+                "setup.showWindow": "แสดงหน้าต่าง",
+                "setup.closeWindow": "ปิดหน้าต่าง",
+                "setup.mute": "ปิดเสียง",
+                "setup.checking": "กำลังตรวจสอบสถานะ…",
+                "streams.live": "กำลังไลฟ์",
+                "streams.upcoming": "กำลังจะเริ่ม",
+                "streams.ended": "จบแล้ว",
+                "streams.added": "เพิ่มแล้ว",
+                "streams.activate": "เปิดใช้รายการที่เลือก",
+                "streams.select": "เลือกไลฟ์",
+                "setup.hideWindow": "ซ่อนหน้าต่าง",
+                "setup.unmute": "เปิดเสียง",
+                "tiktok.signingGuide": "คู่มือการลงนาม",
+                "tiktok.apiNotice": "คีย์ Euler ไม่ใช่ข้อมูลเข้าสู่ระบบ TikTok โดย Euler Proxy ไม่ใช้คุกกี้ TikTok ที่บันทึกไว้ สำหรับไลฟ์ที่จำกัดสิทธิ์ ให้ตรวจสอบการเข้าถึงด้วยบัญชีที่มีสิทธิ์ในโหมดมาตรฐานก่อน",
+                "tiktok.experimental": "ฟีเจอร์ทดลอง หากคีย์หรือ URL ลงนามใช้ไม่ได้ ให้กลับไปโหมดอัตโนมัติหรือเข้ากันได้",
+                "tiktok.roleHint": "หากลงชื่อเข้าใช้เป็นผู้ไลฟ์ ให้เลือกบทบาทโฮสต์เพื่อใช้ตัวตนนั้น",
+                "tiktok.setHost": "ตั้งบทบาทเป็นโฮสต์",
+                "tiktok.repliesHint": "เปิดหน้าต่างลงนามไว้เพื่อส่งคำตอบในแชต",
+                "tiktok.sessionSteps": "เปิดหน้าลงชื่อเข้าใช้ TikTok เข้าสู่ระบบ แล้วเก็บเซสชัน เปิดใช้หรือเริ่มแหล่งที่มาใหม่เพื่อใช้คุกกี้ที่บันทึกไว้",
+                "tiktok.cookiesHint": "หากการลงนามในเครื่องล้มเหลว ให้ป้อนคุกกี้ทั้ง sessionid และ tt-target-idc เอง",
+                "tiktok.debugPing": "ตรวจสอบปลายทาง fetch ของ TikTok หลังเก็บเซสชัน",
+                "tiktok.sessionMissing": "ไม่มีคุกกี้ tt-target-idc แหล่งที่มานี้จะเชื่อมต่อแบบไม่ระบุตัวตน ลงชื่อเข้าใช้อีกครั้งหรือป้อนคุกกี้ทั้งสอง",
+                "tiktok.sessionRefresh": "ใช้คุกกี้ที่บันทึกไว้เมื่อเชื่อมต่อ ลงชื่อเข้าใช้อีกครั้งเมื่อหมดอายุ",
+                "signin.choose": "เลือกวิธีลงชื่อเข้าใช้",
+                "signin.chrome": "ใช้ Chrome",
+                "signin.chromeHelp": "ฟีเจอร์ทดลอง ลองใช้หาก Google ปฏิเสธหน้าต่าง SSApp",
+                "signin.ssapp": "ใช้หน้าต่าง SSApp",
+                "signin.ssappHelp": "วิธีลงชื่อเข้าใช้ตามปกติสำหรับแหล่งที่มานี้",
+                "signin.closeHelp": "หลังเข้าสู่ระบบ ให้ปิดหน้าต่างลงชื่อเข้าใช้ SSApp หากใช้ Chrome ให้รอจนการนำเข้าเสร็จ หน้าต่างชั่วคราวจะปิดเอง",
+                "setup.storedLocal": "บันทึกไว้ในอุปกรณ์นี้เท่านั้น",
+                "signin.session": "เซสชันเบราว์เซอร์",
+                "streams.viewers": "ผู้ชม {count} คน",
+                "streams.chatReady": "แชตพร้อมแล้ว",
+                "streams.chatWaiting": "แชตยังไม่พร้อม",
+                "source.manualTip": "ลงชื่อเข้าใช้เว็บไซต์หากจำเป็น จากนั้นเปิดใช้แหล่งที่มาและตรวจสอบว่าแชตแสดงอยู่"
             }
         };
         // END GENERATED TRANSLATION COVERAGE
@@ -18175,6 +19240,8 @@
                 toggle.querySelector('input[data-state-key="autoActivate"]')?.setAttribute('aria-label', text);
             });
 
+            document.querySelectorAll('.tiktok-connection-select').forEach(updateSigningProviderHelpText);
+
             // Update source buttons
             const sourceTypeMap = {
                 'youtube-username': 'source.youtube.username',
@@ -18194,7 +19261,8 @@
                 if (sourceTypeMap[sourceType]) {
                     const img = btn.querySelector('img');
                     if (img) {
-                        btn.innerHTML = img.outerHTML + translate(sourceTypeMap[sourceType]);
+                        const brands = { twitch: 'Twitch', kick: 'Kick', velora: 'Velora', vpzone: 'VPZone', instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok' };
+                        btn.innerHTML = img.outerHTML + (brands[sourceType] || translate(sourceTypeMap[sourceType]));
                     }
                 }
             });
