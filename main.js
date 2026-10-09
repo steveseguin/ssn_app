@@ -13740,6 +13740,22 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             view.tabID = generateUniqueWindowId();;
             browserViews[view.tabID] = view;
+            if (platform === 'youtube' || args.platform === 'youtube' || args.platform === 'youtubeshorts') {
+                const youtubeTabId = view.tabID;
+                // Closing the title bar only hides capture; forget the source on destruction.
+                view.once('closed', () => {
+                    if (!mainWindow || mainWindow.isDestroyed()) return;
+                    try {
+                        mainWindow.webContents.mainFrame.frames.forEach(frame => {
+                            if (matchesSocialStreamPagePath(frame.url, 'background')) {
+                                frame.postMessage('youtube-source-closed', youtubeTabId);
+                            }
+                        });
+                    } catch (error) {
+                        console.warn('[YouTube] Failed to clear closed source:', error?.message || error);
+                    }
+                });
+            }
             if (sourceObservationService) sourceObservationService.trackView(view);
             const sourceWindowMode = args.wss ? "wss" : "classic";
             const rememberedSourceWindowBounds = loadRememberedSourceWindowBounds(args, sourceWindowMode);

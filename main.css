@@ -2618,11 +2618,8 @@ button[data-activatehtml].hidden {
   color: #82e0aa !important;
   font-size: 12px;
   font-weight: 500 !important;
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
+  display: inline-block;
   margin: 0 8px 0 0;
-  gap: 5px;
   vertical-align: middle;
   line-height: 1.35;
 }
@@ -3160,7 +3157,6 @@ input:checked + .slider:before {
   opacity: 0.85;
   font-size: 11px;
   display: block;
-  flex-basis: 100%;
   margin-left: 18px;
   margin-top: 2px;
   line-height: 1.3;
