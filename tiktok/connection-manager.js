@@ -8922,10 +8922,13 @@ class ConnectionManager {
         const lookupDetail = live === false ? 'TikTok reports that this stream is offline.'
             : (live === true ? 'TikTok is live, but the Euler connection failed.' : 'The backup TikTok live check failed.');
         const status = Number(primaryError?.status || primaryError?.response?.status);
-        const rejectedKey = status === 401 || status === 403 || /invalid.*(?:api key|jwt)|unauthorized/i.test(primaryError?.message || '');
+        const rejectedKey = status === 401 || status === 403 || primaryError?.code === 4401 || primaryError?.code === 4403
+            || /invalid.*(?:api key|jwt)|unauthorized/i.test(primaryError?.message || '');
         const planRestricted = status === 402 || /requires (?:a |an )?\w+ plan|payment required/i.test(primaryError?.message || '');
         const detail = limit ? this.getEulerRateLimitMessage(limit)
-            : (rejectedKey ? 'Euler rejected the credentials. Check your Euler API key or JWT.'
+            : (rejectedKey ? (primaryError?.code === 4403
+                ? 'Euler denied access to this creator. Check the permissions on your Euler key or JWT.'
+                : 'Euler rejected the credentials. Check your Euler API key or JWT.')
                 : (planRestricted ? 'This Euler key does not include access to the requested endpoint. Choose another TikTok connection mode.' : lookupDetail));
         if (this.autoMode && await this.tryFallbackToLocalSigner(new Error(detail), 'euler_backup')) {
             return this.restartConnectionAttempt(primaryError, 'euler_backup_local');
@@ -9196,7 +9199,7 @@ class ConnectionManager {
             if (this.usesEulerForConnection()) {
                 const stable = this.lastConnectTimestamp && Date.now() - this.lastConnectTimestamp >= CONFIG.CONNECTION.RAPID_DISCONNECT_THRESHOLD_MS;
                 if (stable) this.eulerBackupReconnectUsed = false;
-                const error = Object.assign(new Error(failureMessage), code === 4429 ? { status: 429, eulerRateLimit: true } : {});
+                const error = Object.assign(new Error(failureMessage), { code }, code === 4429 ? { status: 429, eulerRateLimit: true } : {});
                 this.handleEulerConnectionFailure(error, !!stable || code === 4404 || code === 4005)
                     .catch(error => this.handleFatalError(error));
                 return;

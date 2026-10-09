@@ -5944,12 +5944,11 @@
                     } else {
                         signinButton.onclick = null;
                     }
-                    const needsApiKeyPrompt = providerRequiresApiKey && !hasCustomSigningConfig;
-                    if (needsApiKeyPrompt) {
-                        signinButton.innerHTML = provider === 'euler-ws'
-                            ? '🧪 Enter Euler API key/JWT'
-                            : '🧪 Enter API key / signing URL';
-                        signinButton.title = 'Experimental: Configure TikTok signing credentials for WebSocket mode.';
+                    if (providerRequiresApiKey) {
+                        signinButton.textContent = provider === 'euler-ws'
+                            ? (hasCustomSigningConfig ? '🧪 Edit Euler API key/JWT' : '🧪 Enter Euler API key/JWT')
+                            : (hasCustomSigningConfig ? '🧪 Edit API key / signing URL' : '🧪 Enter API key / signing URL');
+                        signinButton.title = 'Configure the API key used by this TikTok connection mode.';
                     } else if (hasSession) {
                         signinButton.innerHTML = translate('tiktok.session.saved');
                         signinButton.title = translate('tiktok.session.title.saved');
@@ -5957,7 +5956,7 @@
                         signinButton.innerHTML = translate('tiktok.signin');
                         signinButton.title = translate('tiktok.signin.title');
                     }
-                    signinButton.classList.toggle('authenticated', hasSession);
+                    signinButton.classList.toggle('authenticated', !providerRequiresApiKey && hasSession);
                     if (provider === 'tikfinity') {
                         signinButton.classList.add('hidden');
                         signinButton.style.display = 'none';
@@ -6806,7 +6805,8 @@
             const autoActivateToggleDiv = controlPanel?.querySelector('.auto-activate-toggle');
             if (autoActivateToggleDiv) {
                 const checkbox = autoActivateToggleDiv.querySelector('input[type="checkbox"]');
-                if (checkbox) {
+                // Keep TikTok's source handler: it also cancels a pending connection.
+                if (checkbox && !(target === 'tiktok' && sourceId && checkbox.hasAttribute('data-handler-set'))) {
                     checkbox.onchange = () => {
                         if (sourceId) {
                             stateManager.updateSource(sourceId, { autoActivate: checkbox.checked });
