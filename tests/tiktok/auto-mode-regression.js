@@ -324,159 +324,100 @@ async function testInstalledConnectorHasNoRuntimePollingPath() {
 	);
 }
 
-async function testAutoFallsBackFromLocalSignerToEulerProxy() {
-	const { manager, plan } = createHarness({
-		auto: [{ error: createRateLimitError() }, { error: createRateLimitError() }],
-		local: [{ error: createRateLimitError({ name: 'TikTokRateLimitError', source: 'local_signer' }) }],
-		proxy: [{ ok: true }]
-	});
-
-	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
-
-	assert.strictEqual(result, true);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy']);
-	assert.deepStrictEqual(getReconnectingReasons(plan), [
-		'Sign server unavailable. Trying local signer.',
-		'Local signer failed. Trying Euler signing.',
-		'Sign server unavailable. Trying Euler Proxy with shared Euler proxy key.'
-	]);
-	assert.strictEqual(plan.reconnects.length, 0);
-
-	const connected = getLastStatus(plan, 'connected');
-	assert(connected, 'expected a connected status');
-	assert.strictEqual(connected.connectionMethod, 'Euler WS relay (API key)');
-	assert.strictEqual(connected.connectionLabel, 'Websocket connected via Euler WS relay (API key)');
-}
-
-async function testAutoRestoresEulerSigningAfterLocalSignerFailure() {
-	const { manager, plan } = createHarness({
+async function testAutoStopsAfterLocalRateLimit() {
+const { manager, plan } = createHarness({
 		auto: [{ error: createRateLimitError() }, { ok: true }],
-		local: [{ error: createLocalSignerTimeoutError() }]
-	}, {
-		allowProxy: false
+		local: [{ error: createRateLimitError({ name: 'TikTokRateLimitError', source: 'local_signer' }) }], proxy: [{ ok: true }], polling: [{ ok: true }]
 	});
-
+	manager.sharedEulerApiKeyPool = [{ key: 'other-shared-key', scope: 'signing' }];
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
-
-	assert.strictEqual(result, true);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto']);
-	assert.strictEqual(manager.signingProvider, 'auto');
-	assert.strictEqual(manager.autoLocalSignerFallbackActive, false);
-	assert.strictEqual(manager.autoLocalSignerFallbackAttempted, true);
+	assert.strictEqual(result, false);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local']);
 	assert.strictEqual(plan.reconnects.length, 0);
-
-	const reasons = getReconnectingReasons(plan);
-	assert.ok(reasons.includes('Sign server unavailable. Trying local signer.'));
-	assert.ok(reasons.includes('Local signer failed. Trying Euler signing.'));
-
-	const connected = getLastStatus(plan, 'connected');
-	assert(connected, 'expected a connected status');
-	assert.strictEqual(connected.connectionMethod, 'Euler signing (auto)');
-}
-
-async function testAutoCanUseSharedEulerAfterLocalSignerFailure() {
-	const { manager, plan } = createHarness({
-		auto: [
-			{ error: createRateLimitError() },
-			{ error: createRateLimitError() },
-			{ ok: true }
-		],
-		local: [{ error: createLocalSignerTimeoutError() }]
-	}, {
-		allowProxy: false
-	});
-	manager.sharedEulerApiKeyPool = [
-		{ key: 'shared-signing-key', label: 'shared Euler signing key', scope: 'signing' }
-	];
-
-	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
-
-	assert.strictEqual(result, true);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'auto']);
-	assert.strictEqual(countStatuses(plan, entry => entry.sharedKeyRetry === true), 1);
-	assert.strictEqual(manager.signingConfig.apiKey, 'shared-signing-key');
-}
-
-async function testConfiguredEulerApiKeyIsReusedForProxyFallback() {
-	const configuredKey = 'user-euler-key';
-	const { manager, plan } = createHarness({
-		auto: [{ error: createRateLimitError() }],
-		proxy: [{ ok: true }]
-	}, {
-		localSignerEnabled: false,
-		signing: { apiKey: configuredKey }
-	});
-
-	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
-
-	assert.strictEqual(result, true);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'proxy']);
-	assert.deepStrictEqual(getReconnectingReasons(plan), [
-		'Sign server unavailable. Trying Euler Proxy with configured Euler API key.'
-	]);
 	assert.strictEqual(countStatuses(plan, entry => entry.sharedKeyRetry === true), 0);
-	assert.strictEqual(manager.signingConfig.apiKey, configuredKey);
+	const failed = getLastStatus(plan, 'failed');
+	assert.strictEqual(failed.skipEulerFallback, true);
+	assert.match(failed.error, /Euler retries paused/);
+	assert.strictEqual(manager.isStopped, true);
+}
 
-	const connected = getLastStatus(plan, 'connected');
-	assert(connected, 'expected a connected status');
-	assert.strictEqual(connected.connectionMethod, 'Euler WS relay (API key)');
+async function testAutoStopsAfterLocalSignerTimeout() {
+const { manager, plan } = createHarness({
+		auto: [{ error: createRateLimitError() }, { ok: true }],
+		local: [{ error: createLocalSignerTimeoutError() }], proxy: [{ ok: true }], polling: [{ ok: true }]
+	});
+	manager.sharedEulerApiKeyPool = [{ key: 'other-shared-key', scope: 'signing' }];
+	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
+	assert.strictEqual(result, false);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local']);
+	assert.strictEqual(plan.reconnects.length, 0);
+	assert.strictEqual(countStatuses(plan, entry => entry.sharedKeyRetry === true), 0);
+	const failed = getLastStatus(plan, 'failed');
+	assert.strictEqual(failed.skipEulerFallback, true);
+	assert.match(failed.error, /Euler retries paused/);
+	assert.strictEqual(manager.isStopped, true);
+}
+
+async function testAutoDoesNotRotateSharedKeysAfterFailure() {
+const { manager, plan } = createHarness({
+		auto: [{ error: createRateLimitError() }, { ok: true }],
+		local: [{ error: createLocalSignerTimeoutError() }], proxy: [{ ok: true }], polling: [{ ok: true }]
+	});
+	manager.sharedEulerApiKeyPool = [{ key: 'other-shared-key', scope: 'signing' }];
+	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
+	assert.strictEqual(result, false);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local']);
+	assert.strictEqual(plan.reconnects.length, 0);
+	assert.strictEqual(countStatuses(plan, entry => entry.sharedKeyRetry === true), 0);
+	const failed = getLastStatus(plan, 'failed');
+	assert.strictEqual(failed.skipEulerFallback, true);
+	assert.match(failed.error, /Euler retries paused/);
+	assert.strictEqual(manager.isStopped, true);
+}
+
+async function testConfiguredEulerKeyIsNotReusedForProxyFallback() {
+const configuredKey = 'user-euler-key';
+	const { manager, plan } = createHarness({auto:[{error:createRateLimitError()}],proxy:[{ok:true}]},
+		{localSignerEnabled:false,signing:{apiKey:configuredKey}});
+	assert.strictEqual(await withPatchedEulerProxy(plan,()=>manager.initialize()),false);
+	assert.deepStrictEqual(getConnectModes(plan),['auto']);
+	assert.strictEqual(manager.signingConfig.apiKey,configuredKey);
+	assert.strictEqual(plan.reconnects.length,0);
+	assert.strictEqual(getLastStatus(plan,'failed').skipEulerFallback,true);
 }
 
 async function testAutoSkipsPollingAfterSharedEulerQuota() {
-	const proxyRateLimit = createRateLimitError();
-	const { manager, plan } = createHarness({
-		auto: [{ error: createRateLimitError() }, { error: createRateLimitError() }],
-		local: [{ error: createRateLimitError({ name: 'TikTokRateLimitError', source: 'local_signer' }) }],
-		proxy: [{ error: proxyRateLimit }],
-		polling: [{ ok: true }]
+const { manager, plan } = createHarness({
+		auto: [{ error: createRateLimitError() }, { ok: true }],
+		local: [{ error: createRateLimitError({ name: 'TikTokRateLimitError', source: 'local_signer' }) }], proxy: [{ ok: true }], polling: [{ ok: true }]
 	});
-
+	manager.sharedEulerApiKeyPool = [{ key: 'other-shared-key', scope: 'signing' }];
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
-
 	assert.strictEqual(result, false);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy']);
-	assert.deepStrictEqual(getReconnectingReasons(plan), [
-		'Sign server unavailable. Trying local signer.',
-		'Local signer failed. Trying Euler signing.',
-		'Sign server unavailable. Trying Euler Proxy with shared Euler proxy key.'
-	]);
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local']);
 	assert.strictEqual(plan.reconnects.length, 0);
-
-	assert.strictEqual(getLastStatus(plan, 'fallback_polling'), null);
-	assert.strictEqual(getLastStatus(plan, 'connected'), null);
+	assert.strictEqual(countStatuses(plan, entry => entry.sharedKeyRetry === true), 0);
 	const failed = getLastStatus(plan, 'failed');
 	assert.strictEqual(failed.skipEulerFallback, true);
-	assert.deepStrictEqual(failed.eulerLimit, { keySource: 'shared', period: 'daily' });
-	assert.strictEqual(failed.error, 'The shared Euler key has reached its daily limit.');
+	assert.match(failed.error, /Euler retries paused/);
+	assert.strictEqual(manager.isStopped, true);
 }
 
 async function testAutoExhaustionSurfacesFailureMessage() {
-	const pollingRateLimit = createRateLimitError();
-	const { manager, plan } = createHarness({
-		auto: [{ error: createRateLimitError() }, { error: createRateLimitError() }],
-		local: [{ error: createRateLimitError({ name: 'TikTokRateLimitError', source: 'local_signer' }) }],
-		proxy: [{ error: createRateLimitError() }],
-		polling: [{ error: pollingRateLimit }]
-	}, {
-		signing: { apiKey: 'user-euler-key' }
+const { manager, plan } = createHarness({
+		auto: [{ error: createRateLimitError() }, { ok: true }],
+		local: [{ error: new Error("Local signer unavailable") }], proxy: [{ ok: true }], polling: [{ ok: true }]
 	});
-
+	manager.sharedEulerApiKeyPool = [{ key: 'other-shared-key', scope: 'signing' }];
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
-
 	assert.strictEqual(result, false);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy', 'polling']);
-
+	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local']);
+	assert.strictEqual(plan.reconnects.length, 0);
+	assert.strictEqual(countStatuses(plan, entry => entry.sharedKeyRetry === true), 0);
 	const failed = getLastStatus(plan, 'failed');
-	assert(failed, 'expected a failed status');
-	assert.strictEqual(failed.error, 'Your Euler key has reached its daily limit.');
-
-	const pollingFallback = getLastStatus(plan, 'fallback_polling');
-	assert(pollingFallback, 'expected a polling fallback status before final failure');
-
-	assert.strictEqual(plan.reconnects.length, 1);
-	assert.strictEqual(plan.reconnects[0].reason, 'Your Euler key has reached its daily limit.');
-	assert.strictEqual(plan.reconnects[0].fixed, true);
-	assert.strictEqual(plan.reconnects[0].immediate, true);
+	assert.strictEqual(failed.skipEulerFallback, true);
+	assert.match(failed.error, /Euler retries paused/);
+	assert.strictEqual(manager.isStopped, true);
 }
 
 async function testEulerQuotaWithSavedTikTokSession() {
@@ -490,28 +431,18 @@ async function testEulerQuotaWithSavedTikTokSession() {
 	})), null, 'TikTok local signer limits must not be labeled Euler');
 }
 
-async function testOfflineFailureStatusCarriesOfflineFlag() {
-	const { manager, plan } = createHarness({
-		auto: [{ error: createOfflineError() }]
-	}, {
-		allowProxy: false,
-		localSignerEnabled: false
-	});
-
-	const result = await manager.initialize();
-
-	assert.strictEqual(result, false);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto']);
-	assert.strictEqual(plan.reconnects.length, 1);
-	assert.strictEqual(plan.reconnects[0].fixed, true);
-	assert.strictEqual(plan.reconnects[0].offline, true);
-
-	const failed = getLastStatus(plan, 'failed');
-	assert(failed, 'expected an offline failed status');
-	assert.strictEqual(failed.offline, true);
-	assert.strictEqual(failed.rateLimited, false);
-	assert.strictEqual(failed.connectionMethod, 'Euler signing (auto)');
-	assert.strictEqual(failed.error, "The requested user isn't online :(");
+async function testOfflineBackupStopsEulerRetries() {
+const { manager, plan } = createHarness({auto:[{error:createOfflineError()}]},
+		{allowProxy:false,localSignerEnabled:false});
+	let checks=0;
+	manager.localSigner={checkLiveStatus:async()=>{checks++;return false;}};
+	assert.strictEqual(await manager.initialize(),false);
+	assert.deepStrictEqual(getConnectModes(plan),['auto']);
+	assert.strictEqual(checks,1);
+	assert.strictEqual(plan.reconnects.length,0);
+	const failed=getLastStatus(plan,'failed');
+	assert.strictEqual(failed.skipEulerFallback,true);
+	assert.match(failed.error,/stream is offline/);
 }
 
 async function testOfflineAutoActivateRetryCadenceBacksOff() {
@@ -627,32 +558,13 @@ async function testInvalidBootstrapUrlGetsUsefulMessages() {
 	);
 }
 
-async function testInvalidBootstrapUrlFallsBackToPollingImmediately() {
-	const bootstrapError = createInvalidBootstrapUrlError();
-	const { manager, plan } = createHarness({
-		auto: [{ error: bootstrapError }],
-		polling: [{ ok: true }]
-	}, {
-		allowProxy: false,
-		localSignerEnabled: false
-	});
-
-	const result = await manager.initialize();
-
-	assert.strictEqual(result, true);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'polling']);
-	assert.strictEqual(plan.reconnects.length, 0);
-
-	const pollingFallback = getLastStatus(plan, 'fallback_polling');
-	assert(pollingFallback, 'expected a polling fallback status');
-	assert.strictEqual(
-		pollingFallback.error,
-		'TikTok returned invalid websocket bootstrap data. Switching to compatibility mode.'
-	);
-
-	const connected = getLastStatus(plan, 'connected');
-	assert(connected, 'expected a connected status');
-	assert.strictEqual(connected.connectionMethod, 'Polling (legacy fallback)');
+async function testInvalidBootstrapDoesNotRetryThroughPolling() {
+const {manager,plan}=createHarness({auto:[{error:createInvalidBootstrapUrlError()}],polling:[{ok:true}]},
+		{allowProxy:false,localSignerEnabled:false});
+	assert.strictEqual(await manager.initialize(),false);
+	assert.deepStrictEqual(getConnectModes(plan),['auto']);
+	assert.strictEqual(getLastStatus(plan,'fallback_polling'),null);
+	assert.strictEqual(getLastStatus(plan,'failed').skipEulerFallback,true);
 }
 
 async function testUserNotFoundStopsWithoutReconnectSpam() {
@@ -710,7 +622,7 @@ async function testUiDoesNotAutoFallbackAfterOfflineFailure() {
 		'expected renderer to recognize TikTok offline text'
 	);
 	assert.ok(
-		src.includes('const offlineFailure = isTikTokOfflineFailureStatus(data)'),
+		src.includes('const offlineFailure = !data.skipEulerFallback && isTikTokOfflineFailureStatus(data)'),
 		'expected failed status handler to classify offline failures'
 	);
 	assert.ok(
@@ -885,21 +797,16 @@ async function testConnectRehydratesMissingConnectionInstance() {
 }
 
 async function testConnectErrorEventDoesNotDuplicateFallbackRecovery() {
-	const configuredKey = 'user-euler-key';
-	const { manager, plan } = createHarness({
-		auto: [{ error: createRateLimitError(), emitErrorEvent: true }],
-		proxy: [{ ok: true }]
-	}, {
-		localSignerEnabled: false,
-		signing: { apiKey: configuredKey }
-	});
-
-	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
-
-	assert.strictEqual(result, true);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'proxy']);
-	assert.strictEqual(countStatuses(plan, entry => entry.proxyFallback === true), 1);
-	assert.strictEqual(countStatuses(plan, entry => entry.status === 'connected'), 1);
+const {manager,plan}=createHarness({auto:[{error:createRateLimitError(),emitErrorEvent:true}],proxy:[{ok:true}]},
+		{localSignerEnabled:false,signing:{apiKey:'user-euler-key'}});
+	let checks=0;
+	manager.localSigner={checkLiveStatus:async()=>{checks++;return null;}};
+	await withPatchedEulerProxy(plan,()=>manager.initialize());
+	await new Promise(resolve=>setImmediate(resolve));
+	assert.deepStrictEqual(getConnectModes(plan),['auto']);
+	assert.strictEqual(checks,1);
+	assert.strictEqual(countStatuses(plan,entry=>entry.status==='failed'),1);
+	assert.strictEqual(plan.reconnects.length,0);
 }
 
 async function testHandleConnectIgnoresDuplicateConnectedEmission() {
@@ -922,6 +829,9 @@ async function testInstalledConnectorRecoversAfterSocketClose() {
 		localSignerEnabled: false,
 		connectorOverride: require('tiktok-live-connector')
 	});
+	// This fixture's socket does not use Euler; ordinary transport recovery stays unchanged.
+	manager.signingProvider = 'custom';
+	manager.signingConfig = { serviceUrl: 'http://127.0.0.1/sign' };
 	const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
 	await new Promise((resolve, reject) => {
 		server.once('listening', resolve);
@@ -964,16 +874,17 @@ async function testInstalledConnectorRecoversAfterSocketClose() {
 	}
 }
 
-async function testEulerProxyDisconnectStillReconnects() {
-	const { manager, plan } = createHarness({}, { localSignerEnabled: false });
-	manager.signingProvider = 'euler-ws';
-	manager.connection = new __test.EulerWebsocketServerConnection('tester', { apiKey: 'fixture' });
-	manager.setupEventHandlers();
-	manager.handleConnect();
-	manager.connection.emit('disconnect', { code: 4500, codeLabel: 'TIKTOK_CLOSED_CONNECTION' });
-	assert.strictEqual(plan.reconnects.length, 1);
-	assert.strictEqual(getLastStatus(plan, 'disconnected').disconnectCode, 4500);
-	manager.disconnect();
+async function testEulerProxyDisconnectUsesBackupThenStops() {
+const {manager,plan}=createHarness({},{localSignerEnabled:false});
+	manager.signingProvider='euler-ws';
+	manager.localSigner={checkLiveStatus:async()=>false};
+	manager.connection=new __test.EulerWebsocketServerConnection('tester',{apiKey:'fixture'});
+	manager.setupEventHandlers();manager.handleConnect();
+	manager.connection.emit('disconnect',{code:4500,codeLabel:'TIKTOK_CLOSED_CONNECTION'});
+	await new Promise(resolve=>setImmediate(resolve));
+	assert.strictEqual(plan.reconnects.length,0);
+	assert.strictEqual(getLastStatus(plan,'failed').skipEulerFallback,true);
+	assert.strictEqual(manager.isStopped,true);
 }
 
 async function testFallbackRestartDelayIsApplied() {
@@ -1017,8 +928,8 @@ async function run() {
 			fn: testInstalledConnectorRecoversAfterSocketClose
 		},
 		{
-			name: 'Euler proxy disconnect still schedules recovery',
-			fn: testEulerProxyDisconnectStillReconnects
+			name: 'Euler proxy disconnect uses backup then stops',
+			fn: testEulerProxyDisconnectUsesBackupThenStops
 		},
 		{
 			name: 'installed connector has no runtime polling path',
@@ -1029,20 +940,20 @@ async function run() {
 			fn: testAutoFallsBackToLocalSigner
 		},
 		{
-			name: 'auto falls back from local signer to Euler proxy',
-			fn: testAutoFallsBackFromLocalSignerToEulerProxy
+			name: 'auto stops after local rate limit',
+			fn: testAutoStopsAfterLocalRateLimit
 		},
 		{
-			name: 'auto restores Euler signing after local signer failure',
-			fn: testAutoRestoresEulerSigningAfterLocalSignerFailure
+			name: 'auto stops after local signer timeout',
+			fn: testAutoStopsAfterLocalSignerTimeout
 		},
 		{
-			name: 'auto can use shared Euler after local signer failure',
-			fn: testAutoCanUseSharedEulerAfterLocalSignerFailure
+			name: 'auto does not rotate shared keys after failure',
+			fn: testAutoDoesNotRotateSharedKeysAfterFailure
 		},
 		{
-			name: 'configured Euler API key is reused for proxy fallback',
-			fn: testConfiguredEulerApiKeyIsReusedForProxyFallback
+			name: 'configured Euler key is not reused for proxy fallback',
+			fn: testConfiguredEulerKeyIsNotReusedForProxyFallback
 		},
 		{
 			name: 'auto skips polling after shared Euler quota',
@@ -1057,8 +968,8 @@ async function run() {
 			fn: testAutoExhaustionSurfacesFailureMessage
 		},
 		{
-			name: 'offline failure status carries offline flag',
-			fn: testOfflineFailureStatusCarriesOfflineFlag
+			name: 'offline backup stops Euler retries',
+			fn: testOfflineBackupStopsEulerRetries
 		},
 		{
 			name: 'offline auto-activate retry cadence backs off',
@@ -1081,8 +992,8 @@ async function run() {
 			fn: testInvalidBootstrapUrlGetsUsefulMessages
 		},
 		{
-			name: 'invalid bootstrap URL falls back to polling immediately',
-			fn: testInvalidBootstrapUrlFallsBackToPollingImmediately
+			name: 'invalid bootstrap does not retry through polling',
+			fn: testInvalidBootstrapDoesNotRetryThroughPolling
 		},
 		{
 			name: 'user not found stops without reconnect spam',

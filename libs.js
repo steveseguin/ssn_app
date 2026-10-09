@@ -329,6 +329,19 @@ function mergeSavedSourceFilesWithManifest(str, sourceFiles) {
 }
 
 const tipsContent = {
+  tikfinity: `
+    <div class="tips-section">
+      <h3>Connect an OBS Dock</h3>
+      <ol>
+        <li>In TikFinity, open <strong>Overlays → OBS Docks</strong>.</li>
+        <li>Enable <strong>Show Chat</strong> in the dock settings, save, and copy the Activity Feed URL.</li>
+        <li>In this source, click <strong>Set OBS Dock URL</strong>, paste the link, and save. Stop a running source before changing its URL.</li>
+        <li>Click <strong>Activate source</strong>. Keep TikFinity open and connected to your LIVE.</li>
+      </ol>
+      <p>Signing in to the TikFinity dashboard alone does not configure this source. Use the feed URL, not the dashboard URL. This source receives chat and events; it cannot send replies.</p>
+      <p><a href="https://socialstream.ninja/docs/tikfinity-setup.html#dock" target="_blank" rel="noopener">OBS Dock setup guide</a></p>
+    </div>
+  `,
 	tiktok: `
 	<div class="tips-section">
 	  <h3>You Must Be Live</h3>
@@ -345,7 +358,7 @@ const tipsContent = {
 		<tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
 		  <td style="padding: 6px 8px;"><strong>TikTok WS</strong></td>
 		  <td style="text-align:center; padding: 6px 8px;">⚙️</td>
-		  <td style="padding: 6px 8px;">Recommended default — smooth + auto-fallback</td>
+		  <td style="padding: 6px 8px;">Automatic recovery with Auto</td>
 		</tr>
 		<tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
 		  <td style="padding: 6px 8px;"><strong>Standard</strong></td>
@@ -353,12 +366,12 @@ const tipsContent = {
 		  <td style="padding: 6px 8px;">Need to reply (requires sign-in)</td>
 		</tr>
 	<tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
-	  <td style="padding: 6px 8px;"><strong>Polling</strong></td>
+	  <td style="padding: 6px 8px;"><strong>Compatibility (WebSocket)</strong></td>
 	  <td style="text-align:center; padding: 6px 8px;">❌</td>
-	  <td style="padding: 6px 8px;">Fallback only — messages arrive in batches</td>
+	  <td style="padding: 6px 8px;">Default for new installations — signed WebSocket</td>
 	</tr>
 	  </table>
-	  <p style="font-size: 0.85em; opacity: 0.8;"><strong>TikTok WS</strong> with <strong>Auto</strong> is the default. It tries WebSocket first and falls back to Polling if needed. Reply support depends on the signing provider.</p>
+	  <p style="font-size: 0.85em; opacity: 0.8;">New installations start with <strong>Compatibility (WebSocket)</strong>. <strong>Auto</strong> can try other capture methods if a connection fails. Reply support depends on the signing provider.</p>
 	  <p style="font-size: 0.85em; opacity: 0.8;"><strong>Backup option:</strong> If TikTok modes keep failing or miss messages, use a <strong>TikFinity OBS Dock</strong> URL as an <strong>Other chat site</strong> in SSN. In TikFinity, go to <strong>Overlay -> OBS Docks</strong>, set one dock to chat, copy the URL, and keep TikFinity open.</p>
 	</div>
 	<div class="tips-section">
@@ -720,8 +733,8 @@ const sourceGuideTipsContent = {
 	en: {
 		tiktok: `
 	<div class="tips-section">
-	  <h3>Important: Sign In to TikTok</h3>
-	  <p>For reliable chat capture, click <strong>🔑 Sign-in</strong> and sign in before activating the source. Without signing in, TikTok may provide only around 30% of messages.</p>
+	  <h3>Reading Chat and Signing In</h3>
+	  <p><strong>Local Signer (No API key)</strong> can read public LIVE chat without signing in. Sign in for replies or if TikTok requires it.</p>
 	</div>
 	<div class="tips-section">
 	  <h3>What To Enter</h3>
@@ -730,16 +743,18 @@ const sourceGuideTipsContent = {
 	<div class="tips-section">
 	  <h3>Connection Modes</h3>
 	  <ul>
-		<li><span class="tips-highlight">TikTok WS / Auto:</span> Best first choice. It tries WebSocket and can fall back to Polling.</li>
+		<li><span class="tips-highlight">AUTO:</span> Tries other capture methods if a connection fails.</li>
+		<li><span class="tips-highlight">Local Signer (No API key):</span> Signs requests on this computer using SSN's TikTok browser window.</li>
 		<li><span class="tips-highlight">Standard:</span> Opens TikTok in the app browser. Use this when you need to sign in, solve a CAPTCHA, or reply to chat.</li>
-		<li><span class="tips-highlight">Polling:</span> Backup mode. No replies, and messages can arrive in batches.</li>
+		<li><span class="tips-highlight">Compatibility (WebSocket):</span> Default for new installations. Uses signed WebSocket requests. No replies.</li>
+		<li><span class="tips-highlight">Euler Proxy / Euler Signing:</span> Require an Euler API key. Repeated connection attempts through Euler can use your quota. Stop the source when you're not using it.</li>
 	  </ul>
 	</div>
 	<div class="tips-section">
 	  <h3>If Chat Does Not Appear</h3>
 	  <ol>
 		<li>Make sure the TikTok stream is actually live.</li>
-		<li>Click <strong>Show capture page</strong>.</li>
+		<li>Choose <strong>Standard</strong> mode, then click <strong>Show capture page</strong>.</li>
 		<li>Sign in or complete any verification TikTok shows.</li>
 		<li>Make sure the live chat is visible, then click <strong>Reload</strong> if needed.</li>
 	  </ol>

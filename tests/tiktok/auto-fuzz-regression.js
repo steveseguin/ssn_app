@@ -393,18 +393,21 @@ async function runScenario(seed) {
 			assert.strictEqual(plan.reconnects.length, 0);
 			break;
 		case 'rate_limit_proxy':
-			assert.strictEqual(result, true, `seed ${seed}: proxy fallback scenario should connect`);
-			assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy']);
+			assert.strictEqual(result, false, `seed ${seed}: proxy must not retry Euler after local failure`);
+			assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local']);
+			assert.strictEqual(getLastStatus(plan, 'failed').skipEulerFallback, true);
 			assert.strictEqual(plan.reconnects.length, 0);
 			break;
 		case 'rate_limit_polling':
-			assert.strictEqual(result, true, `seed ${seed}: polling fallback scenario should connect`);
-			assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local', 'auto', 'proxy', 'polling']);
+			assert.strictEqual(result, false, `seed ${seed}: polling must not retry Euler after local failure`);
+			assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local']);
+			assert.strictEqual(getLastStatus(plan, 'failed').skipEulerFallback, true);
 			assert.strictEqual(plan.reconnects.length, 0);
 			break;
 		case 'invalid_url_polling':
-			assert.strictEqual(result, true, `seed ${seed}: invalid bootstrap URL should reach polling`);
-			assert.deepStrictEqual(getConnectModes(plan), ['auto', 'polling']);
+			assert.strictEqual(result, false, `seed ${seed}: invalid bootstrap must not retry Euler through polling`);
+			assert.deepStrictEqual(getConnectModes(plan), ['auto']);
+			assert.strictEqual(getLastStatus(plan, 'failed').skipEulerFallback, true);
 			assert.strictEqual(plan.reconnects.length, 0);
 			break;
 		case 'user_not_found': {
@@ -419,8 +422,8 @@ async function runScenario(seed) {
 		case 'offline':
 			assert.strictEqual(result, false, `seed ${seed}: offline should not connect`);
 			assert.deepStrictEqual(getConnectModes(plan), ['auto']);
-			assert.strictEqual(plan.reconnects.length, 1);
-			assert.strictEqual(plan.reconnects[0].offline, true);
+			assert.strictEqual(plan.reconnects.length, 0);
+			assert.strictEqual(getLastStatus(plan, 'failed').skipEulerFallback, true);
 			assert.strictEqual(countStatuses(plan, entry => entry.status === 'fatal_error'), 0);
 			break;
 		case 'sign_then_local':

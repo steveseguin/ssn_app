@@ -846,6 +846,9 @@
         }
         var isBetaMode = false;
         const pendingTikTokStatusQueue = new Map();
+        const tikTokTroubleshooting = new Map();
+        const tikTokTroubleshootingTools = typeof require === 'function'
+            ? require('./resources/tiktok-troubleshooting') : null;
         var session = {};
         var ipcRenderer = null;
         let autoActivateCaptureEnsured = false;
@@ -3702,6 +3705,10 @@
                     URL = 'https://' + URL;
                 }
                 URL = (await cleanUpURL(URL)).trim();
+                if (target === 'tikfinity' || isTikfinitySiteUrl(URL)) {
+                    try { URL = normalizeTikfinityDockUrl(URL); }
+                    catch (_) { showTikfinityDockSetup(); return; }
+                }
                 let typeGuess = target;
                 const initialState = {};
                 const normalizeSourceScriptPath = (value) => {
@@ -5953,6 +5960,14 @@
                         signinButton.classList.add('hidden');
                         signinButton.style.display = 'none';
                     }
+                } else if (target === 'tikfinity') {
+                    signinButton.classList.remove('hidden', 'authenticated');
+                    signinButton.style.display = '';
+                    signinButton.style.cursor = '';
+                    signinButton.disabled = false;
+                    signinButton.textContent = 'Set OBS Dock URL';
+                    signinButton.title = 'Set or replace the TikFinity Activity Feed URL';
+                    signinButton.onclick = () => showTikfinityDockSetup(sourceId);
                 } else if (isWebsocketMode && !isYouTubeWebSocketSigninContext(source)) {
                     // Hide for other websocket modes
                     signinButton.classList.add("hidden");
@@ -6262,11 +6277,11 @@
             const val = selectElement.value;
             let html = '';
             if (val === 'auto') {
-                html = 'Recommended: WebSocket with automatic signing. If signing fails, fallback can switch to compatibility modes.';
+                html = 'Recommended: Starts with Euler. If it fails, checks TikTok directly and can switch to non-Euler capture methods.';
             } else if (val === 'tikfinity') {
                 html = 'Read-only. Open TikFinity Desktop on this computer and connect your LIVE there. Captures the stream selected in TikFinity, regardless of the username entered here. Do not also capture that stream using another source.';
             } else if (val === 'local') {
-                html = '<strong>Local Signer:</strong> Uses a lightweight TikTok signing window. Anonymous mode is best effort; signed-in Host mode is recommended for full chat capture.';
+                html = '<strong>Local Signer:</strong> No API key needed. Can read public LIVE chat without signing in. Sign in for replies or if TikTok requires it.';
             } else if (val === 'polling') {
                 html = `Signing required. No replies. <a href="${ssappEscapeHtml(window.SSAPP_SIGNING_HELP_URL)}" target="_blank">Mode guide</a>.`;
             } else if (val === 'standard') {
@@ -6369,8 +6384,8 @@
                         <div style="color: #d1d5db; font-size: 13px; line-height: 1.7;">
                             <strong style="color: #f8fafc;">Most users</strong> → Start with <strong>AUTO</strong>. If it cannot connect, automatic recovery can try another capture method. The status shows the method actually in use.<br>
                             <strong style="color: #f8fafc;">Need to reply to chat?</strong> → Use <strong>Standard</strong> mode and sign in first.<br>
-                            <strong style="color: #f8fafc;">Standard not working?</strong> → Try <strong>Local Signer (Replies)</strong>. Replies require a signed-in TikTok session in SSN.<br>
-                            <strong style="color: #f8fafc;">Everything failing?</strong> → Try <strong>Euler Proxy</strong> or <strong>Euler Signing</strong> with an API key.<br>
+                            <strong style="color: #f8fafc;">Standard not working?</strong> → Try <strong>Local Signer (No API key)</strong>. It can read public LIVE chat without signing in. Sign in for replies or if TikTok requires it.<br>
+                            <strong style="color: #f8fafc;">Everything failing?</strong> → Try <strong>Euler Proxy</strong> or <strong>Euler Signing</strong>. These need an Euler API key. Repeated connection attempts through Euler can use your quota. Stop the source when you're not using it.<br>
                             <strong style="color: #f8fafc;">Need a backup source?</strong> → Choose <strong>TikFinity Desktop (Local API, Beta)</strong> if you already use TikFinity on this computer. Its Activity Feed remains available through <strong>Add other source</strong>.
                         </div>
                     </div>
@@ -6442,7 +6457,7 @@
                                 <span style="font-size: 10px; background: rgba(251,191,36,0.2); color: #fcd34d; padding: 2px 6px; border-radius: 4px;">Experimental</span>
                             </div>
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
-                                Signs requests using SSN's TikTok browser session. <strong style="color: #d1d5db;">Replies require sign-in.</strong> Anonymous capture is best effort. A TikFinity login is separate from your SSN login.
+                                <strong style="color: #d1d5db;">No API key needed.</strong> Signs requests on this computer using SSN's TikTok browser window. Can read public LIVE chat without signing in. Sign in for replies or if TikTok requires it. A TikFinity login is separate from your SSN login.
                             </div>
                         </div>
 
@@ -6708,7 +6723,7 @@
                 <div class="mode-selector-label">TikTok Connection:</div>
                 <select aria-label="TikTok connection mode" onchange="setTikTokConnectionPreset(this.closest('.entry'), this.value); updateSigningProviderHelpText(this);" class="tiktok-connection-select" style="width: 100%; margin-top: 4px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.35); background: rgba(15,23,42,0.55); color: #e2e8f0;">
                     <option value="auto">AUTO (Recommended)</option>
-                    <option value="local">Local Signer (Replies)</option>
+                    <option value="local">Local Signer (No API key)</option>
                     <option value="polling">Compatibility (WebSocket)</option>
                     <option value="standard">Standard (Capture Window)</option>
                     <option value="euler-ws">Euler Proxy (API Key)</option>
@@ -6721,6 +6736,7 @@
                     <span class="info-icon" role="button" tabindex="0" aria-label="TikTok connection modes help" style="cursor: pointer;" title="Open TikTok connection mode help" onclick="showTikTokConnectionModesHelpModal(event)" onkeydown="if (event.key === 'Enter' || event.key === ' ') showTikTokConnectionModesHelpModal(event)">ℹ️</span>
                 </div>
                 <div class="tiktok-fallback-help" style="flex: 0 0 100%; font-size: 12px; line-height: 1.5; color: #cbd5e1;">
+                    <button type="button" class="button tiktok-troubleshooting-copy" style="font-size: 12px; padding: 6px 10px; margin: 4px 0 8px;" onclick="copyTikTokTroubleshooting(this.closest('.entry').dataset.sourceId)">Copy troubleshooting details</button><br>
                     TikTok still not connecting?
                     <a href="https://socialstream.ninja/docs/tikfinity-setup.html" onclick="event.stopPropagation(); window.open(this.href, '_blank'); return false;" style="color: #c4b5fd; text-decoration: underline;">Set up TikFinity fallback &rarr;</a>
                 </div>`;
@@ -7226,6 +7242,10 @@
             }
             const sourceId = parentElement.dataset.sourceId;
             const source = sourceId ? stateManager.getSource(sourceId) : null;
+            if (source?.target === 'tikfinity' && !hasConnectionHandles(source)) {
+                try { normalizeTikfinityDockUrl(source.url); }
+                catch (_) { showTikfinityDockSetup(sourceId); return; }
+            }
             const isTikTokWebsocketAttempt = !!(source && source.target === 'tiktok' && (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy') && !source.tiktokWssId);
 
             if (isTikTokWebsocketAttempt) {
@@ -7263,7 +7283,9 @@
             try {
                 const sid = parentElement.dataset.sourceId;
                 const src = sid ? stateManager.getSource(sid) : null;
-                if (src && (src.connectionMode === 'classic') && (src.target !== 'ebay' || windowId)) {
+                if (src && src.target === 'tikfinity') {
+                    updateConnectionStatus(parentElement, 'info', 'Keep TikFinity open and connected to LIVE. Use Set OBS Dock URL if this source does not show the Activity Feed.');
+                } else if (src && (src.connectionMode === 'classic') && (src.target !== 'ebay' || windowId)) {
                     updateConnectionStatus(parentElement, 'info', 'Reminder: After the window opens, sign in (if required) and confirm the chat is visible.');
                 }
             } catch (_) { }
@@ -8953,8 +8975,9 @@
 
                 lastError = result.error;
                 if (result.error && result.error.message === 'Activation canceled') {
-                    break;
+                    return false;
                 }
+                if (result.error?.code === 'SSAPP_TIKTOK_STOPPED') break;
                 const fallbackInfo = result.fallbackInfo;
 
                 if (fallbackDisabled) {
@@ -8978,7 +9001,7 @@
                 if (resolvedEntry) {
                     updateConnectionStatus(resolvedEntry, 'error', lastError.message || 'TikTok activation failed');
                 }
-                if (!fallbackDisabled || attempted.size > 1) {
+                if ((!fallbackDisabled || attempted.size > 1) && !['SSAPP_TIKTOK_EULER_PAUSED', 'SSAPP_TIKTOK_STOPPED'].includes(lastError.code)) {
                     const message = lastError.message || 'All TikTok modes failed to connect.';
                     Toast.error('TikTok Error', message);
                 }
@@ -9265,7 +9288,7 @@
             return !shouldPreserveTikTokClassicHandles(source, statusPayload, hasRetryScheduled);
         }
 
-        function autoFallbackToNextTikTokMode(sourceId, failureStatus, errorMessage = null) {
+        function autoFallbackToNextTikTokMode(sourceId, failureStatus, errorMessage = null, skipEulerFallback = false) {
             if (!sourceId) return;
             const source = stateManager.getSource(sourceId);
             if (!source || source.target !== 'tiktok') return;
@@ -9307,6 +9330,10 @@
 
             const attempted = (fallbackState.attempted instanceof Set) ? fallbackState.attempted : new Set();
             fallbackState.attempted = attempted;
+            if (skipEulerFallback) {
+                attempted.add('tiktok-websocket');
+                attempted.add('tiktok-legacy');
+            }
             const sequence = Array.isArray(fallbackState.sequence) && fallbackState.sequence.length
                 ? fallbackState.sequence
                 : buildTikTokFallbackSequence(preferredMode, preferredMode, source);
@@ -10346,6 +10373,13 @@
                 return wssID;
             } catch (error) {
                 const fallbackInfo = resolveTikTokFallbackInfo(error);
+                const pausedMessage = String(error.message || '').match(/SSAPP_TIKTOK_(EULER_PAUSED|STOPPED):\s*([\s\S]*)/);
+                if (pausedMessage) {
+                    error.message = pausedMessage[2];
+                    error.code = `SSAPP_TIKTOK_${pausedMessage[1]}`;
+                    throw error;
+                }
+                if (stateManager.getSource(source.id)?.status === 'inactive') throw error;
                 const isLegacyAttempt = strategy === 'legacy';
                 if (!fallbackInfo || fallbackInfo.mode !== 'classic') {
                     console.error('Error in TikTok connector from source:', error);
@@ -10636,6 +10670,10 @@
                     <p style="margin: 0 0 12px 0; font-size: 13px; color: #e2e8f0;">
                         ${credentialsDescription}
                     </p>
+                    <p style="margin: 0 0 12px 0; font-size: 13px; color: #cbd5f5;">
+                        An Euler API key gives access to Euler's service; it does not sign you into TikTok.
+                        Euler Proxy does not use your saved TikTok login. For a restricted LIVE, check that an eligible account can open it in Standard mode's capture page.
+                    </p>
                     <div style="background: rgba(245, 158, 11, 0.12); border-left: 3px solid #f59e0b; padding: 10px 12px; border-radius: 6px; margin: 10px 0 12px 0; font-size: 12px; color: #ffedd5;">
                         <strong>Experimental:</strong> API key / signing URL support is new and not fully validated. If it fails, switch back to <strong>Auto</strong> or <strong>Compatibility</strong>.
                     </div>
@@ -10661,7 +10699,7 @@
                 <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
                     <h4 style="margin: 0 0 10px 0; font-size: 15px;">Local Signer</h4>
                     <div style="background: rgba(59, 130, 246, 0.12); border-left: 3px solid #3b82f6; padding: 10px 12px; border-radius: 6px; margin: 0 0 12px 0; font-size: 12px; color: #dbeafe; line-height: 1.45;">
-                        Uses a lightweight TikTok signing window instead of Euler. Anonymous mode can connect, but signed-in Host mode is recommended for full chat capture.
+                        No API key needed. Signs requests on this computer using SSN's TikTok browser window. Can read public LIVE chat without signing in. Sign in for replies or if TikTok requires it.
                     </div>
                     <div id="tiktok-signin-status-${sourceId}" style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px;">
                         <span style="color: #94a3b8;">Checking status...</span>
@@ -10670,7 +10708,7 @@
                         Current role: <strong>${getAccountRoleLabel(normalizeAccountRole(source.accountRole))}</strong>.
                         ${normalizeAccountRole(source.accountRole) === 'host'
                             ? 'Host role uses TikTok anchor identity when Local Signer connects.'
-                            : 'For full capture from your own stream, use Set role to Host below.'}
+                            : 'If you are signed in as the streamer, use Set role to Host below.'}
                         ${normalizeAccountRole(source.accountRole) === 'host' ? '' : `
                             <div style="margin-top: 8px;">
                                 <button onclick="setTikTokSourceHostRole('${sourceId}')" class="button" style="background: #475569; font-size: 12px; padding: 6px 10px;">
@@ -10705,7 +10743,7 @@
                         <strong>Replies:</strong> Keep the signing window open if you want the app to send TikTok chat replies.
                     </div>
                     <ol style="margin: 8px 0 0 18px; padding: 0; font-size: 12px; color: #94a3b8; line-height: 1.5;">
-                        <li>Open TikTok Sign-in and sign in if full capture is needed.</li>
+                        <li>Open TikTok Sign-in and log into TikTok.</li>
                         <li>Collect Session to save the current TikTok cookies.</li>
                         <li>Activate or restart the source so the websocket uses the saved session.</li>
                     </ol>
@@ -10920,6 +10958,88 @@
     `;
         }
 
+        function recordTikTokTroubleshooting(source, data) {
+            if (source?.target !== 'tiktok' || !tikTokTroubleshootingTools) return null;
+            const trackedStatuses = ['connecting', 'connected', 'disconnected', 'reconnecting', 'error', 'failed', 'fatal_error', 'euler_rate_limit', 'stopped_by_user'];
+            let record = tikTokTroubleshooting.get(source.id);
+            if (!trackedStatuses.includes(data.status)) return record || null;
+            if (!record) {
+                record = { lastFailure: '', method: '', hasSession: null, recent: [] };
+                tikTokTroubleshooting.set(source.id, record);
+                if (tikTokTroubleshooting.size > 100) tikTokTroubleshooting.delete(tikTokTroubleshooting.keys().next().value);
+            }
+            const clean = value => tikTokTroubleshootingTools.sanitizeTikTokDiagnosticText(value, source);
+            const message = clean(data.error || data.reason || data.disconnectReason || data.message || '');
+            const method = clean(data.connectionMethod || data.effectiveMode || '');
+            if (method) record.method = method;
+            if (typeof data.hasSession === 'boolean') record.hasSession = data.hasSession;
+            if (data.status === 'connected') {
+                record.lastFailure = '';
+            } else if (['error', 'failed', 'fatal_error', 'euler_rate_limit', 'disconnected'].includes(data.status)
+                || (data.status === 'reconnecting' && !record.lastFailure)) {
+                if (!tikTokTroubleshootingTools.isGenericTikTokFailure(message)) record.lastFailure = message;
+            }
+            const event = { at: new Date().toISOString(), status: data.status, message, method: record.method };
+            if (Number.isInteger(data.disconnectCode)) event.disconnectCode = data.disconnectCode;
+            if (Number.isFinite(data.attempt)) event.attempt = data.attempt;
+            if (Number.isFinite(data.nextAttemptIn)) event.nextAttemptInMs = data.nextAttemptIn;
+            record.recent.push(event);
+            if (record.recent.length > 20) record.recent.shift();
+            return record;
+        }
+
+        function buildTikTokTroubleshootingDetails(sourceId) {
+            const source = stateManager?.getSource(sourceId);
+            if (source?.target !== 'tiktok' || !tikTokTroubleshootingTools) return null;
+            const record = tikTokTroubleshooting.get(sourceId);
+            const clean = value => tikTokTroubleshootingTools.sanitizeTikTokDiagnosticText(value, source);
+            const selector = document.querySelector(`[data-source-id="${sourceId}"] .tiktok-connection-select`);
+            let version = '';
+            try { version = ipcRenderer?.sendSync('getVersion') || ''; } catch (_) { }
+            return {
+                app: 'SSApp',
+                generatedAt: new Date().toISOString(),
+                version: clean(version),
+                platform: typeof process === 'undefined' ? 'unknown' : process.platform,
+                selectedMode: clean(selector?.selectedOptions[0]?.textContent || resolveTikTokConnectionPreset(source, source.connectionMode)),
+                actualMethod: clean(record?.method || source.tiktokConnectionMethod || 'Not established'),
+                status: clean(source.status || 'inactive'),
+                hasSavedTikTokSession: !!source.tiktokSessionId,
+                activeConnectionHasSession: source.status === 'active' ? (record?.hasSession ?? null) : null,
+                hasEulerApiKey: !!source.tiktokSigningApiKey,
+                hasCustomSigningUrl: !!source.tiktokSigningServiceUrl,
+                lastError: clean(record?.lastFailure || source.error || ''),
+                recentEvents: (record?.recent || []).map(event => ({ ...event, message: clean(event.message), method: clean(event.method) })),
+                note: 'Recent connection events from this app session. Saved TikTok credentials do not establish login in Euler Proxy or the Standard capture page.'
+            };
+        }
+
+        async function copyTikTokTroubleshooting(sourceId) {
+            const details = buildTikTokTroubleshootingDetails(sourceId);
+            if (!details) return;
+            const text = JSON.stringify(details, null, 2);
+            let copied = false;
+            try {
+                await navigator.clipboard.writeText(text);
+                copied = true;
+            } catch (_) { }
+            if (!copied) {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.cssText = 'position:fixed;opacity:0';
+                document.body.appendChild(textarea);
+                try {
+                    textarea.focus();
+                    textarea.select();
+                    copied = document.execCommand('copy');
+                } catch (_) {
+                    copied = false;
+                } finally { textarea.remove(); }
+            }
+            if (copied) Toast.success('TikTok', 'Troubleshooting details copied. Keys and login cookies are excluded.');
+            else Toast.error('TikTok', 'Could not copy troubleshooting details. Please try again.');
+        }
+
         async function copyTikTokSigningPayload(sourceId) {
             if (!stateManager) return;
             const source = stateManager.getSource(sourceId);
@@ -10989,7 +11109,9 @@
                 const warnings = Array.isArray(response.warnings)
                     ? response.warnings.filter(item => typeof item === 'string' && item.trim())
                     : [];
-                if (warnings.length) {
+                // Signed out: one clear sign-in toast below instead of technical signature warnings
+                // (they stay saved and visible in the signing results).
+                if (warnings.length && response.parameters.sessionid) {
                     warnings.forEach(warning => {
                         Toast.warning("TikTok Signing", warning);
                     });
@@ -11031,7 +11153,7 @@
                     }
                 }
                 if (!response.parameters.sessionid) {
-                    Toast.warning("No signed-in TikTok session was found in the signing window. Sign in there, then collect again.", "TikTok Sign-in Needed");
+                    Toast.warning("Not signed in. Click Open TikTok Sign-in, log into TikTok in that window, then click Collect Session again. Local Signer can read public LIVE chat without signing in.", "TikTok Sign-in Needed");
                 } else if (!response.parameters.tt_target_idc) {
                     Toast.warning("Session cookie collected, but tt-target-idc is missing. Sign in again or enter both cookies manually.", "TikTok Sign-in Incomplete");
                 } else if (!restarted) {
@@ -11058,7 +11180,7 @@
                     return;
                 }
                 tiktokSigningWindowControl(sourceId, 'state', { silent: true });
-                Toast.info('TikTok Signing', 'TikTok sign-in window opened. Sign in if needed, then click Collect Session.');
+                Toast.info('TikTok window opened. If you are not logged in, use the Log in button on the TikTok page, then click Collect Session.', 'TikTok Signing');
             } catch (error) {
                 console.error('Failed to show TikTok signing window:', error);
                 Toast.error('TikTok Signing', error.message || 'Unable to show the TikTok window.');
@@ -12795,7 +12917,9 @@
                     const connMode = source.connectionMode;
                     const allowTip = isManual && !source.discordNative && !source.shareplayNative && element && !element.dataset.tipShown && ((target !== 'tiktok') || (connMode === 'classic'));
                     if (allowTip) {
-                        updateConnectionStatus(element, 'info', 'Tip: Sign in on the site if needed, then press ▶️ Activate and make sure the chat is visible.');
+                        updateConnectionStatus(element, 'info', target === 'tikfinity'
+                            ? 'Use the Activity Feed URL from TikFinity → Overlays → OBS Docks, then activate. Keep TikFinity open and connected to LIVE.'
+                            : 'Tip: Sign in on the site if needed, then press ▶️ Activate and make sure the chat is visible.');
                         element.dataset.tipShown = '1';
                     }
                 } catch (_) { }
@@ -13921,7 +14045,7 @@
                                 : `${baseMsg} - watching for the stream to go live.${attemptInfo}`;
                             updateConnectionStatus(entryElement, 'info', msg, { persistent: true });
                         } else {
-                            const msg = `${fallbackMessage || 'Connection error'} - retrying in ${formatRetryDelay(remainingMs)}...${attemptInfo}`;
+                            const msg = `${entryElement._tiktokRetryBaseMessage || fallbackMessage || 'Connection error'} - retrying in ${formatRetryDelay(remainingMs)}...${attemptInfo}`;
                             updateConnectionStatus(entryElement, 'retry', msg);
                         }
                         setConnectingStopUI();
@@ -13936,6 +14060,19 @@
 
                     if (currentState.status === 'inactive' && !currentState.vid && !currentState.wssId && !currentState.tiktokWssId && (data.status === 'error' || data.status === 'failed' || data.status === 'disconnected')) {
                         return;
+                    }
+
+                    const troubleshooting = recordTikTokTroubleshooting(currentState, data);
+                    // Keep the original payload for offline, fallback and window-lifecycle decisions.
+                    const diagnosticText = value => tikTokTroubleshootingTools
+                        ? tikTokTroubleshootingTools.sanitizeTikTokDiagnosticText(value, currentState) : value;
+                    const displayError = diagnosticText(tikTokTroubleshootingTools?.isGenericTikTokFailure(data.error)
+                        ? (troubleshooting?.lastFailure || data.disconnectReason || data.error) : data.error);
+                    let retryReason = diagnosticText(data.reason);
+                    if (data.status === 'reconnecting' && troubleshooting?.lastFailure) {
+                        retryReason = tikTokTroubleshootingTools.isGenericTikTokFailure(retryReason)
+                            ? troubleshooting.lastFailure
+                            : (retryReason.includes(troubleshooting.lastFailure) ? retryReason : `${retryReason} Last error: ${troubleshooting.lastFailure}`);
                     }
 
                     switch (data.status) {
@@ -13971,7 +14108,9 @@
                             }
                             if (entryElement) {
                                 clearTikTokRetryState();
-                                updateConnectionStatus(entryElement, 'connecting', data.message || null);
+                                const lastFailure = troubleshooting?.lastFailure;
+                                updateConnectionStatus(entryElement, 'connecting', lastFailure
+                                    ? `${diagnosticText(data.message) || 'Connecting...'} Last error: ${lastFailure}` : (diagnosticText(data.message) || null));
                                 setConnectingStopUI();
                             }
                             break;
@@ -14026,7 +14165,7 @@
                                 const classicTabId = normalizeNumericId(data.tabID);
                                 const updatePayload = {
                                     status: hasOfflineRetryScheduled ? 'activating' : 'error',
-                                    error: hasOfflineRetryScheduled ? null : (data.error || 'Connection lost.'),
+                                    error: hasOfflineRetryScheduled ? null : (displayError || 'Connection lost.'),
                                     tiktokFallbackMode: null,
                                     tiktokConnectionMethod: null
                                 };
@@ -14044,8 +14183,8 @@
                                 }
                                 stateManager.updateSource(sourceId, updatePayload);
                             }
-                            if (entryElement && !renderScheduledTikTokRetryStatus(data.error || 'Connection lost')) {
-                                updateConnectionStatus(entryElement, 'error', data.error || 'Connection lost. Will attempt to reconnect if configured.');
+                            if (entryElement && !renderScheduledTikTokRetryStatus(displayError || 'Connection lost')) {
+                                updateConnectionStatus(entryElement, 'error', displayError || 'Connection lost. Will attempt to reconnect if configured.');
                                 restoreActivateUI();
                             }
                             break;
@@ -14057,7 +14196,7 @@
                                 const classicTabId = normalizeNumericId(data.tabID);
                                 const updatePayload = {
                                     status: hasOfflineRetryScheduled ? 'activating' : 'error',
-                                    error: hasOfflineRetryScheduled ? null : (data.error || 'Connection error'),
+                                    error: hasOfflineRetryScheduled ? null : (displayError || 'Connection error'),
                                     tiktokFallbackMode: null,
                                     tiktokConnectionMethod: null
                                 };
@@ -14075,8 +14214,8 @@
                                 }
                                 stateManager.updateSource(sourceId, updatePayload);
                             }
-                            if (entryElement && !renderScheduledTikTokRetryStatus(data.error || 'Connection error')) {
-                                updateConnectionStatus(entryElement, 'error', data.error || 'Connection error');
+                            if (entryElement && !renderScheduledTikTokRetryStatus(displayError || 'Connection error')) {
+                                updateConnectionStatus(entryElement, 'error', displayError || 'Connection error');
                                 restoreActivateUI();
                             }
                             break;
@@ -14087,13 +14226,14 @@
                             break;
                         case 'failed':
                             {
+                                if (data.skipEulerFallback) clearTikTokRetryState();
                                 if (data.skipEulerFallback && entryElement?._tiktokFallback) {
                                     // Compatibility uses Euler too; advance to Standard
                                     // after the backend has tried the available local signer.
                                     entryElement._tiktokFallback.attempted.add('tiktok-legacy');
                                 }
                                 const isSigningIssue = data.sessionRejected === true;
-                                const offlineFailure = isTikTokOfflineFailureStatus(data);
+                                const offlineFailure = !data.skipEulerFallback && isTikTokOfflineFailureStatus(data);
                                 const offlineRetryExhausted = offlineFailure && isTikTokOfflineRetryExhaustedStatus(data);
                                 const hasRetryScheduled = !!(entryElement && entryElement._tiktokRetryEndAt);
                                 const hasOfflineRetryScheduled = !!(entryElement && entryElement._tiktokRetryOffline);
@@ -14133,7 +14273,7 @@
                                     } else {
                                         updatePayload.vid = null;
                                     }
-                                    if (shouldReleaseTikTokClassicHandles(currentState, data, shouldPreserveRetryState)) {
+                                    if (data.skipEulerFallback || shouldReleaseTikTokClassicHandles(currentState, data, shouldPreserveRetryState)) {
                                         updatePayload.wssId = null;
                                         updatePayload.tiktokWssId = null;
                                         updatePayload.vid = null;
@@ -14175,7 +14315,7 @@
                                     }
                                     const activationAttemptInProgress = !!entryElement?._tiktokFallback?.inProgress;
                                     if (!activationAttemptInProgress) {
-                                        autoFallbackToNextTikTokMode(sourceId, 'failed', errorMessage || null);
+                                        autoFallbackToNextTikTokMode(sourceId, 'failed', errorMessage || null, !!data.skipEulerFallback);
                                     }
                                 }
                             }
@@ -14271,16 +14411,17 @@
                                     clearTikTokRetryState();
                                     const endAt = Date.now() + (hasNextAttempt ? nextAttemptMs : 0);
                                     const attemptInfo = (data.attempt ? ` (attempt ${data.attempt}${data.maxAttempts ? '/' + data.maxAttempts : ''})` : '');
+                                    const methodPrefix = troubleshooting?.method ? `${troubleshooting.method}: ` : '';
                                     const baseMsg = offlineRetry
-                                        ? (data.reason || (data.connectionMethod ? `User is offline (${data.connectionMethod})` : 'User is offline'))
-                                        : data.reason
-                                            ? `Connection error: ${data.reason}`
-                                            : 'Connection failed';
+                                        ? (diagnosticText(data.reason) || (data.connectionMethod ? `User is offline (${diagnosticText(data.connectionMethod)})` : 'User is offline'))
+                                        : retryReason
+                                            ? `${methodPrefix}${retryReason}`
+                                            : `${methodPrefix}Connection failed`;
                                     entryElement._tiktokRetryEndAt = hasNextAttempt ? endAt : null;
                                     entryElement._tiktokRetryAttempt = data.attempt || null;
                                     entryElement._tiktokRetryMax = data.maxAttempts || null;
                                     entryElement._tiktokRetryOffline = offlineRetry ? true : null;
-                                    entryElement._tiktokRetryBaseMessage = offlineRetry ? baseMsg : null;
+                                    entryElement._tiktokRetryBaseMessage = baseMsg;
                                     const scheduleNextUpdate = (remainingMs) => {
                                         if (!hasNextAttempt || remainingMs <= 0) return;
                                         const delayMs = getTikTokRetryTimerDelay(remainingMs, offlineRetry);
@@ -17955,6 +18096,10 @@
             document.querySelectorAll('[data-signin]').forEach(btn => {
                 const entry = btn.closest('.entry');
                 const sourceId = entry ? entry.dataset.sourceId : null;
+                if (entry?.dataset.target === 'tikfinity') {
+                    btn.textContent = 'Set OBS Dock URL';
+                    return;
+                }
                 const isTikTokEntry = entry && entry.dataset.target === 'tiktok';
 
                 if (!isTikTokEntry) {

@@ -3011,6 +3011,40 @@ try {
     installTikTokSignServerFallback(tiktokConnector);
 
 	    const localSignerImplementation = {
+	        checkLiveStatus: async (username, signal) => {
+                configureTikTokAuthPartition();
+                const fetchSession = session.fromPartition(TIKTOK_AUTH_PARTITION);
+                const user = encodeURIComponent(username);
+                const urls = [
+                    `https://www.tiktok.com/api-live/user/room/?aid=1988&uniqueId=${user}&sourceType=54`,
+                    `https://www.tiktok.com/@${user}/live`
+                ];
+                for (const url of urls) {
+                    if (signal.aborted) return null;
+                    try {
+                        const response = await fetchSession.fetch(url, { signal, redirect: 'error' });
+                        if (!response.ok) continue;
+                        // Electron session.fetch can leave response.url empty.
+                        // Reject redirects in fetch rather than discarding valid responses.
+                        if (response.url && new URL(response.url).pathname !== new URL(url).pathname) continue;
+                        const body = await response.text();
+                        let room;
+                        if (url.includes('/api-live/')) {
+                            const data = JSON.parse(body);
+                            if (data.statusCode !== 0) continue;
+                            room = data.data?.liveRoom;
+                        } else {
+                            const match = body.match(/<script\b[^>]*\bid=["']SIGI_STATE["'][^>]*>([\s\S]*?)<\/script>/i);
+                            if (!match) continue;
+                            const data = JSON.parse(match[1]);
+                            room = (data.LiveRoom || data.liveRoom)?.liveRoomUserInfo?.liveRoom;
+                        }
+                        if (Number(room?.status) === 2) return true;
+                        if (Number(room?.status) === 4) return false;
+                    } catch (_) { /* Try the other direct TikTok lookup. */ }
+                }
+                return null;
+	        },
 	        sign: async (url, options) => {
 	            if (!tikTokSignerHelper) {
 	                throw new Error('TikTok signer helper not available');
@@ -20975,12 +21009,21 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     } catch (e) {
         console.error('Error creating TikTok connection:', e);
         try {
-            cleanupConnection(wssID);
+            cleanupConnection(manager.wssID);
         } catch (cleanupError) {
             console.warn('[TikTok] Failed to clean up failed connection:', cleanupError?.message || cleanupError);
         }
         // Propagate the error to the renderer so the UI can react accordingly
         throw e;
+    }
+
+    // This manager has already cleaned up its own connection. Do not return a
+    // stale virtual tab handle (or clean up another connection created meanwhile).
+    if (manager.eulerRetriesStopped && manager.isStopped) {
+        throw new Error(`SSAPP_TIKTOK_EULER_PAUSED: ${manager.eulerStopReason || 'Euler retries paused to protect your quota.'}`);
+    }
+    if (manager.isStopped) {
+        throw new Error(`SSAPP_TIKTOK_STOPPED: ${manager.terminalError || 'TikTok connection stopped.'}`);
     }
 
     // Return the virtual tab ID instead of wssID so it can be used with browserViews

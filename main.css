@@ -3092,6 +3092,23 @@ input:checked + .slider:before {
   color: #F44336;
 }
 
+.entry[data-target="tiktok"] .ws-status.error {
+  color: #ffb4ab !important;
+  border-color: #f44336 !important;
+}
+
+.entry[data-target="tiktok"] .ws-status.connecting,
+.entry[data-target="tiktok"] .ws-status.retry {
+  color: #90caf9 !important;
+  border-color: #2196f3 !important;
+}
+
+.entry[data-target="tiktok"] .ws-status.info,
+.entry[data-target="tiktok"] .ws-status.stopped {
+  color: #cfd8dc !important;
+  border-color: #90a4ae !important;
+}
+
 /* Subtle informational status for tips/reminders */
 .ws-status.info {
   /* Passive, neutral blue-grey tip */
