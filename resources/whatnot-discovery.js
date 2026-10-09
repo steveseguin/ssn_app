@@ -36,7 +36,7 @@ async function discoverWhatnotStreams(args, session) {
             const headers = { 'Content-Type': 'application/json' };
             if (args.userAgent && args.userAgent !== 'AUTO') headers['User-Agent'] = args.userAgent;
             const response = await network.fetch('https://www.whatnot.com/services/graphql/?operationName=GetUserLiveStreams&ssr=0', {
-                method: 'POST', headers, redirect: 'error', signal: controller.signal,
+                method: 'POST', headers, redirect: 'error', cache: 'no-store', signal: controller.signal,
                 body: JSON.stringify({ operationName: 'GetUserLiveStreams', query: QUERY,
                     variables: { username, first: 50, after } })
             });
@@ -60,7 +60,7 @@ async function discoverWhatnotStreams(args, session) {
                     videoId: node.id.toLowerCase(), title: node.title || node.id,
                     status: node.status === 'PLAYING' ? 'live' : 'upcoming',
                     channelTitle: user.username, scheduledStartTime: node.startTime,
-                    viewers: Number.isFinite(node.activeViewers) ? node.activeViewers : undefined,
+                    viewers: node.status === 'PLAYING' && Number.isFinite(node.activeViewers) ? node.activeViewers : undefined,
                     thumbnails: { medium: { url: thumbnail } }
                 });
             }

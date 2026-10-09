@@ -1441,6 +1441,27 @@ button.group-control {
   border: 2px solid #4CAF50;
 }
 
+/* Seller shows can have long titles; keep their status clear of the text. */
+.yt-stream-item[data-platform] {
+  padding-right: 38px;
+}
+
+.yt-stream-item[data-platform] > .stream-status-badge {
+  position: static;
+  order: 2;
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+
+.yt-stream-item[data-platform] .yt-stream-thumbnail {
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+.yt-stream-item[data-platform] .yt-stream-title {
+  overflow-wrap: anywhere;
+}
+
 .yt-stream-thumbnail {
   width: 120px;
   height: 67px;

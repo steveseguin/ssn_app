@@ -97,17 +97,17 @@ async function saveSellerStream(group, stream, existingSourceId = null) {
         }
         return;
     }
-    if (sellerStreamAlreadyAdded(target, stream.videoId)) return;
+    if (group.id && sellerStreamAlreadyAdded(target, stream.videoId)) return;
     if (group.id) {
         if (stateManager.getGroup(group.id) !== group) return;
         Object.assign(data, { groupId: group.id, isVisible: group.groupVisible, isMuted: group.groupMuted,
             customSession: group.customSession || 'AUTO', userAgent: group.userAgent || 'AUTO',
             mockUserAgentData: group.mockUserAgentData || null });
     }
-    await newOtherSource(target, url, false, data);
+    const element = await newOtherSource(target, url, false, data);
     // newOtherSource normalizes Whatnot's username to its show ID; retain the
     // discovered title for display while capture continues to use url/videoId.
-    const source = stateManager.getSources().find(item => item.target === target && item.videoId === stream.videoId);
+    const source = stateManager.getSource(element?.dataset.sourceId);
     if (source) stateManager.updateSource(source.id, { username: data.username });
 }
 
@@ -203,7 +203,8 @@ async function chooseSellerStreams(group, existingSourceId = null) {
 
 function setupSellerGroupUI(element, group) {
     if (!isSellerGroup(group)) return;
-    element.querySelector('.auto-activate-toggle')?.classList.add('hidden');
+    const controls = element.querySelector('.control-panel');
+    if (controls) controls.style.setProperty('display', 'none', 'important');
     element.querySelector('[onclick="handleYouTubeGroupAutoActivation(this)"]')?.classList.add('hidden');
     element.querySelector('.help-btn')?.classList.add('hidden');
     const check = element.querySelector('[onclick="handleYouTubeGroupActivationPrompt(this)"]');

@@ -242,11 +242,14 @@ class StateManager {
             // Migrate groups
             if (parsed.groups?.length) {
                 parsed.groups.forEach(group => {
-                    const id = `${group.target}-${group.username}`;
+                    const sellerGroup = group.target === 'ebay' || group.target === 'whatnot';
+                    const id = sellerGroup && group.id ? group.id : `${group.target}-${group.username}`;
                     this.state.groups.set(id, {
                         id,
                         target: group.target,
                         username: group.username,
+                        ...(sellerGroup ? { sellerId: group.sellerId || group.username,
+                            sellerOrigin: group.sellerOrigin || (group.target === 'ebay' ? 'https://www.ebay.com' : 'https://www.whatnot.com') } : {}),
                         isChannel: group.isChannel !== "false",
                         connectionMode: group.state?.connectionMode || (group.target === 'tiktok'
                             ? (this.state.global.forceTikTokClassic
@@ -908,6 +911,9 @@ class StateManager {
             settings.groups.push({
                 target: group.target,
                 username: group.username,
+                ...((group.target === 'ebay' || group.target === 'whatnot') ? {
+                    id: group.id, sellerId: group.sellerId, sellerOrigin: group.sellerOrigin
+                } : {}),
                 isChannel: group.isChannel ? "true" : "false",
                 state: {
                     connectionMode: group.connectionMode,

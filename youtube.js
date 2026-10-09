@@ -475,11 +475,13 @@ class YouTubeStreamSelector {
             const element = document.createElement('div');
             element.className = 'yt-stream-item';
             element.dataset.videoId = stream.videoId;
+            if (this.options?.target) element.dataset.platform = this.options.target;
             const initialIsShort = typeof stream.isShort === 'boolean' ? stream.isShort : this.currentIsShortDefault;
             console.log(`Stream ${stream.videoId} initial isShort: ${initialIsShort} (detected: ${stream.isShort}, default: ${this.currentIsShortDefault})`);
 
 
-            const thumbnailUrl = stream.thumbnails?.medium?.url || stream.thumbnails?.default?.url || getSourceIconUrl(this.options?.target || 'youtube');
+            const thumbnailUrl = stream.thumbnails?.medium?.url || stream.thumbnails?.default?.url
+                || (this.options?.target ? getSourceIconUrl(this.options.target) : 'https://cache.socialstream.ninja/sources/images/youtube.png');
             const status = this.getVideoStatus(stream.status, stream.viewers);
             stream.statusDisplay = status; // Store for later use if needed
 
