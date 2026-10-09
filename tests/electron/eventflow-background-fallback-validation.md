@@ -1,5 +1,55 @@
 # Background fallback / Event Flow persistence — September 7, 2026
 
+## Background failure reporting
+
+The background dependency check now sends `background_load_failed` through the
+existing opt-in, rate-limited reporter when the loader reports failure. It includes
+the failed script, loader error, readiness flags, and custom-script presence/enabled
+flags. Background diagnostic URLs omit query strings and fragments; these new
+fields do not include custom script code or selected local file paths. Enabling
+reporting after a failure and manually reporting an issue also collect the current
+background state. The primary Social Stream loader preserves synchronous script
+execution error messages instead of only reporting a generic execution failure.
+
+Functional Electron checks passed with isolated profiles and HTTP 503 / runtime
+execution failures, followed by Retry loading. Uploads were intercepted locally;
+no synthetic reports were sent to Cloudflare. Verified opt-out, failure payload,
+rate limiting, enable-after-failure snapshot, flow persistence, and execution of
+only the active saved flow. Evidence: `%TEMP%/ssapp-script-recovery-S1ZsPD`
+and `%TEMP%/ssapp-script-recovery-l35YMS`. These changes are not published.
+
+## Live mirror and stale-file investigation
+
+Checked 258 resource requests through SSApp's Electron session, covering the local
+editor asset inventory on main/beta across cache.socialstream.ninja, the matching
+hosted site, and raw.githubusercontent.com. Cross-checked against each published
+branch's actual HTML/loader dependencies: all 213 required-resource requests
+returned HTTP 200 and all required JavaScript parsed. Hosted/cache JavaScript had
+JavaScript MIME types; GitHub Raw used text/plain. Optional settings.json,
+badwords.txt, and goodwords.txt returned 404, as did beta-only features probed on
+main; none is evidence of a missing required resource on its published branch.
+Required script hashes matched across mirrors within each branch. Hosted HTML
+adds a robots noindex tag. Main still published its older script-tag loader;
+beta published the recovery loader. Both live editor pages opened in SSApp with
+no banner after 20 seconds. Evidence: `%TEMP%/ssapp-asset-audit-F2CC6V/report.json`
+and the main/beta editor screenshots beside it.
+
+An isolated in-app flow retained a dead remote-image URL, a nonexistent local
+media asset, and custom JS that throws. The profile also retained a missing
+custom.js path, missing saved text-file paths, an uploaded bad-word list, and
+invalid uploaded JavaScript. After two reloads and repeated flow execution, the
+loader remained ready, the saved flow remained available, and no banner appeared.
+The media properties correctly showed File missing / Relink. Bad-word and JS
+uploads are stored as contents; the File-menu custom.js path applies only to
+dock/featured/bot. Evidence: `%TEMP%/ssapp-stale-audit-4RHFRf/report.json` and
+`repeat-reload.png`. These cases do not establish the affected user's exact cause.
+
+Wrong script MIME cases passed (`mime`, `mime-html`, `loader-mime`). A page MIME
+case in the protocol fixture timed out because it bypasses onHeadersReceived;
+the appropriate real HTTPS test subsequently passed both page and loader MIME
+correction. Evidence: `%TEMP%/ssapp-background-mime-W5MC2Y`. Diagnostic scripts
+are `.codex-tmp/eventflow-asset-audit.cjs` and `.codex-tmp/eventflow-stale-audit.cjs`.
+
 ## Follow-up: slow downloads, MIME errors, and mirror recovery
 
 The earlier 0.4.26 fix corrected the cross-origin readiness check, but retained a

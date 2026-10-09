@@ -1,0 +1,167 @@
+--- a/youtube/youtube_helper.php
++++ b/youtube/youtube_helper.php
+@@ -166,7 +166,7 @@
+         return $info;
+     }
+ 	
+-	public function getVideoChannelData($videoId) {
++	public function getVideoChannelData($videoId, $includeVideoDetails = true) {
+ 		$cache_key = "ytvchdata_" . $videoId;
+ 		$cached_data = $this->memcached->get($cache_key);
+ 		
+@@ -177,6 +177,19 @@
+ 		// First check if we have the channel ID cached from this video
+ 		$channelMappingKey = "ytvid_ch_" . $videoId;
+ 		$cachedChannelId = $this->memcached->get($channelMappingKey);
++
++        // Channel-only callers do not need another videos.list request when the
++        // video-to-channel mapping is cached. Keep the full-data cache authoritative
++        // above, and do not store a partial response where full-data callers read it.
++        if (!$includeVideoDetails && $cachedChannelId !== false) {
++            $channelInfo = $this->getChannelInfo($cachedChannelId);
++            return [
++                'channelId' => $cachedChannelId,
++                'channelTitle' => $channelInfo['title'] ?? null,
++                'thumbnailUrl' => $channelInfo['thumbnailUrl'] ?? null,
++                'customUrl' => $channelInfo['customUrl'] ?? null
++            ];
++        }
+ 		
+ 		$channelId = null;
+ 		$snippet = null;
+@@ -884,6 +897,21 @@
+             ]
+         ]);
+ 
++        // Count actual outbound attempts, including failures, rather than infer
++        // usage from cache state after a lookup. These are requests, not quota units.
++        // Keep only endpoint/operation totals; never store keys, video IDs or IPs.
++        if ($this->memcached instanceof Memcached) {
++            try {
++                $endpoint = pathinfo($_SERVER['SCRIPT_NAME'] ?? 'cli', PATHINFO_FILENAME);
++                $operation = basename(parse_url($url, PHP_URL_PATH));
++                $counterKey = 'ytapi_requests:' . gmdate('Y-m-d') . ':' . $endpoint . ':' . $operation;
++                $this->memcached->add($counterKey, 0, 604800);
++                $this->memcached->increment($counterKey);
++            } catch (Throwable $e) {
++                // Metrics must not prevent a lookup when the cache is unavailable.
++            }
++        }
++
+         $response = @file_get_contents($url, false, $context);
+         
+         // Get response headers
+--- a/youtube/channel.php
++++ b/youtube/channel.php
+@@ -5,7 +5,6 @@
+ header('Access-Control-Allow-Origin: ' . ($_SERVER['HTTP_ORIGIN'] ?? $_SERVER['ORIGIN'] ?? 'https://socialstream.ninja'));
+ include('/var/www/config.php');
+ require_once('youtube_helper.php');
+-require_once('quota_rate_limiter.php');
+ 
+ try {
+     $helper = new YouTubeHelper(YOUTUBE_API_KEY);
+@@ -17,15 +16,8 @@
+ 	
+ 	$result = $helper->getChannelThumbnailUrl($params['videoId']);
+ 	
+-	// Only rate limit if this was an uncached request
+-	if (!$result['cached']) {
+-		$memcached = new Memcached();
+-		$memcached->addServer('localhost', 11211);
+-		$quotaLimiter = new QuotaRateLimiter($memcached);
+-		
+-		$limitResult = $quotaLimiter->checkUncachedLimit($params['videoId']);
+-		$quotaLimiter->sendQuotaLimitResponse($limitResult);
+-	}
++	// The helper serves cached data first. An uncached lookup must return its result,
++	// even when this client's earlier lookups would have reached a local quota limit.
+ 	
+ 	// Return just the URL as before
+ 	echo $result['url'];
+@@ -37,4 +29,4 @@
+         'error' => $e->getMessage()
+     ]);
+ }
+-?>
+\ No newline at end of file
++?>
+--- a/youtube/channel_info.php
++++ b/youtube/channel_info.php
+@@ -6,7 +6,6 @@
+ 
+ include('/var/www/config.php');
+ require_once('youtube_helper.php');
+-require_once('quota_rate_limiter.php');
+ 
+ try {
+     $helper = new YouTubeHelper(YOUTUBE_API_KEY);
+@@ -16,8 +15,8 @@
+         throw new Exception('No video ID provided');
+     }
+     
+-    // Get full channel data from video
+-    $data = $helper->getVideoChannelData($params['videoId']);
++    // This response only needs channel metadata, not the video's title or description.
++    $data = $helper->getVideoChannelData($params['videoId'], false);
+     
+     // Extract just the channel info we need
+     $result = [
+@@ -28,26 +27,8 @@
+         'customUrl' => $data['customUrl'] ?? null
+     ];
+     
+-    // Rate limiting for uncached requests
+-    // We need to check if BOTH the video-to-channel mapping AND channel info were cached
+-    $memcached = new Memcached();
+-    $memcached->addServer('localhost', 11211);
+-    
+-    $videoChannelMappingKey = "ytvid_ch_" . $params['videoId'];
+-    $channelInfoKey = "ytchinfo_" . $data['channelId'];
+-    $fullDataCacheKey = "ytvchdata_" . $params['videoId'];
+-    
+-    // Check if we made any API calls
+-    $videoMappingCached = ($memcached->get($videoChannelMappingKey) !== false);
+-    $channelInfoCached = ($memcached->get($channelInfoKey) !== false);
+-    $fullDataCached = ($memcached->get($fullDataCacheKey) !== false);
+-    
+-    // If the full data was not cached AND we needed to make API calls
+-    if (!$fullDataCached && (!$videoMappingCached || !$channelInfoCached)) {
+-        $quotaLimiter = new QuotaRateLimiter($memcached);
+-        $limitResult = $quotaLimiter->checkUncachedLimit($params['videoId']);
+-        $quotaLimiter->sendQuotaLimitResponse($limitResult);
+-    }
++    // Count outgoing calls in the helper, before it fills the cache. Do not
++    // reject a first lookup just because this client reached a local limit.
+     
+     echo json_encode($result);
+     
+@@ -58,4 +39,4 @@
+         'error' => $e->getMessage()
+     ]);
+ }
+-?>
+\ No newline at end of file
++?>
+--- a/youtube/channel_title.php
++++ b/youtube/channel_title.php
+@@ -11,7 +11,6 @@
+ 
+ include('/var/www/config.php');
+ require_once('youtube_helper.php');
+-require_once('quota_rate_limiter.php');
+ 
+ const CHANNEL_TITLE_CACHE_TTL = 2592000; // 30 days
+ 
+@@ -58,10 +57,7 @@
+         exit;
+     }
+ 
+-    // Protect YouTube quota before any uncached channels.list request.
+-    $quotaLimiter = new QuotaRateLimiter($memcached);
+-    $limitResult = $quotaLimiter->checkUncachedLimit($channelId);
+-    $quotaLimiter->sendQuotaLimitResponse($limitResult);
++    // Both caches missed. Allow the first lookup; the helper counts outbound calls.
+ 
+     $helper = new YouTubeHelper(YOUTUBE_API_KEY, $memcached);
+     $channelInfo = $helper->getChannelInfo($channelId);

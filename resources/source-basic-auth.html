@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'unsafe-inline'">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Server sign-in</title>
+    <link rel="stylesheet" href="../main.css">
+    <style>
+        body { margin: 0; background: var(--bg-base); }
+        .source-setup { margin: 20px auto; max-height: calc(100vh - 40px); }
+        #server, #realm { overflow-wrap: anywhere; user-select: text; }
+        #realm, #notice { color: var(--text-secondary); font-size: 0.9em; }
+        [hidden] { display: none !important; }
+    </style>
+</head>
+<body>
+    <main class="modal-content source-setup" aria-labelledby="title">
+        <h2 id="title">Server sign-in</h2>
+        <p id="server"></p>
+        <p id="realm" hidden></p>
+        <p id="source-setup-error" role="alert" hidden>Sign-in was not accepted. Check your username and password.</p>
+        <form id="signin">
+            <label for="username">Username</label>
+            <input id="username" name="username" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="1024" pattern="[^:\r\n]*" autofocus>
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" autocomplete="off" maxlength="4096">
+            <p id="notice">Used for this browser session. Not saved in your source settings.</p>
+            <div class="source-setup-buttons">
+                <button type="submit">Sign in</button>
+                <button type="button" id="cancel" data-type="cancel">Cancel</button>
+            </div>
+        </form>
+    </main>
+    <script>
+        var params = new URLSearchParams(location.search);
+        document.getElementById('server').textContent = params.get('origin') || '';
+        if (params.get('realm')) {
+            document.getElementById('realm').textContent = 'Realm: ' + params.get('realm');
+            document.getElementById('realm').hidden = false;
+        }
+        document.getElementById('source-setup-error').hidden = params.get('retry') !== '1';
+        document.getElementById('signin').addEventListener('submit', function (event) {
+            event.preventDefault();
+            window.serverSignIn.submit(document.getElementById('username').value, document.getElementById('password').value);
+            document.getElementById('password').value = '';
+        });
+        document.getElementById('cancel').onclick = function () { window.serverSignIn.cancel(); };
+        document.addEventListener('keydown', function (event) {
+            if (event.isComposing || event.keyCode === 229) return;
+            if (event.key === 'Escape') { event.preventDefault(); window.serverSignIn.cancel(); }
+        });
+    </script>
+</body>
+</html>

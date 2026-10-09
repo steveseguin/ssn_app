@@ -1441,6 +1441,27 @@ button.group-control {
   border: 2px solid #4CAF50;
 }
 
+/* Seller shows can have long titles; keep their status clear of the text. */
+.yt-stream-item[data-platform] {
+  padding-right: 38px;
+}
+
+.yt-stream-item[data-platform] > .stream-status-badge {
+  position: static;
+  order: 2;
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+
+.yt-stream-item[data-platform] .yt-stream-thumbnail {
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+.yt-stream-item[data-platform] .yt-stream-title {
+  overflow-wrap: anywhere;
+}
+
 .yt-stream-thumbnail {
   width: 120px;
   height: 67px;
@@ -2788,6 +2809,11 @@ button.group-control:hover::after {
   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
 }
 
+#sessionsList > button.session-item {
+  margin-left: 0;
+  margin-right: 0;
+}
+
 .session-item.current {
   border-color: #27ae60;
   background: rgba(46, 125, 50, 0.1);
@@ -3085,6 +3111,23 @@ input:checked + .slider:before {
 .ws-status.error {
   background: rgba(244, 67, 54, 0.2);
   color: #F44336;
+}
+
+.entry[data-target="tiktok"] .ws-status.error {
+  color: #ffb4ab !important;
+  border-color: #f44336 !important;
+}
+
+.entry[data-target="tiktok"] .ws-status.connecting,
+.entry[data-target="tiktok"] .ws-status.retry {
+  color: #90caf9 !important;
+  border-color: #2196f3 !important;
+}
+
+.entry[data-target="tiktok"] .ws-status.info,
+.entry[data-target="tiktok"] .ws-status.stopped {
+  color: #cfd8dc !important;
+  border-color: #90a4ae !important;
 }
 
 /* Subtle informational status for tips/reminders */
@@ -3496,6 +3539,8 @@ input:checked + .slider:before {
 
 /* Sources panel heading & label */
 .sources-heading {
+  display: flow-root;
+  min-width: min(240px, calc(100% - 20px));
   margin: 8px 10px 4px;
   font-weight: 600;
   color: var(--text-primary);

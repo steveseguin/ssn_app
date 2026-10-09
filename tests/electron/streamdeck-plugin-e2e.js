@@ -20,7 +20,7 @@ const pluginRoot = process.env.SSN_STREAMDECK_BUNDLE || path.join(socialStreamRe
 const pluginEntry = path.join(pluginRoot, 'bin', 'plugin.js');
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-streamdeck-plugin-profile-'));
 const token = `streamdeck-plugin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-const sessionId = `streamdeck-plugin-e2e-${Date.now()}`;
+const sessionId = `streamdeckplugine2e${Date.now()}`;
 const sourceId = 'streamdeck-plugin-e2e-source';
 const sourceSecret = 'STREAMDECK_PLUGIN_SOURCE_SECRET';
 const pluginUuid = 'streamdeck-plugin-e2e-runtime';
@@ -697,6 +697,40 @@ async function run() {
 			30000
 		);
 
+		// Verify the four dock-owned presets with real dock and featured documents
+		// before switching to the protocol fixture for the exhaustive route matrix.
+		await execInRenderer(remotePort, mainWindow.id, `
+			(async () => {
+				for (const name of ['qaDock','qaFeatured']) {
+					const frame = document.createElement('iframe'); frame.id=name;
+					frame.style='width:650px;height:450px';
+					frame.src=${JSON.stringify(socialStreamRoot)}+(name==='qaFeatured'?'featured.html':'dock.html')+'?session='+${JSON.stringify(sessionId)}+'&server='+encodeURIComponent('ws://127.0.0.1:${relay.port}/api')+(name==='qaFeatured'?'&transition=fade':'&queue');
+					document.body.appendChild(frame);
+					await new Promise(resolve=>frame.onload=resolve);
+				}
+				return true;
+			})()
+		`, 'open actual dock and featured overlay');
+		await waitFor(() => relay.joinedClientCount() >= 4, 'actual dock and featured connections', 15000);
+		await execInRenderer(remotePort, mainWindow.id, `
+			(() => {
+				const d=document.getElementById('qaDock').contentWindow;
+				const queued=d.processInput({id:'qa-queue-1',chatname:'QA viewer',chatmessage:'Queued fixture',type:'youtube',textonly:true},true);
+				d.selectedMessage({which:1,ctrlKey:true},queued);
+				return true;
+			})()
+		`, 'queue a message through actual dock selection');
+		const realQueue=await pressPreset(streamDeck,relay,'getQueueSize');
+		assert.equal(realQueue.callback.callback.result.payload.queueLength,1,'actual dock queue count');
+		await pressPreset(streamDeck,relay,'nextInQueue');
+		await waitFor(()=>execInRenderer(remotePort,mainWindow.id,`document.getElementById('qaFeatured').contentDocument.body.textContent.includes('Queued fixture')`,'featured queue message'),'queue message displayed',10000);
+		await pressPreset(streamDeck,relay,'clearOverlay');
+		await waitFor(()=>execInRenderer(remotePort,mainWindow.id,`(() => { const w=document.getElementById('qaFeatured').contentWindow;return w.getComputedStyle(w.document.getElementById('output')).opacity==='0'; })()`,'cleared featured message'),'overlay cleared',10000);
+		await execInRenderer(remotePort,mainWindow.id,`(() => {const d=document.getElementById('qaDock').contentWindow;const item=d.processInput({id:'qa-pin-1',chatname:'QA viewer',chatmessage:'Pinned fixture',type:'youtube',textonly:true},true);d.selectedMessage({which:1,altKey:true},item);return true;})()`,'pin actual dock message');
+		await pressPreset(streamDeck,relay,'nextPinned');
+		await waitFor(()=>execInRenderer(remotePort,mainWindow.id,`document.getElementById('qaFeatured').contentDocument.body.textContent.includes('Pinned fixture')`,'featured pinned message'),'pinned message displayed',10000);
+		await execInRenderer(remotePort,mainWindow.id,`document.getElementById('qaDock').remove();document.getElementById('qaFeatured').remove();true`,'close isolated dock overlays');
+		console.log('[streamdeck-plugin-e2e] actual dock queue, feature, clear and pinned controls passed');
 		dockClient = await createDockClient(relay.port);
 		await waitFor(() => relay.joinedClientCount() >= 3, 'isolated Dock relay connection', 15000);
 

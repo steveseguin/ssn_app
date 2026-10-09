@@ -127,11 +127,75 @@ function showBilibiliSourceSetup() {
         });
 }
 
+function showWhatnotSourceSetup() {
+    return showSellerSourceSetup('whatnot');
+}
+
+function isTikfinitySiteUrl(value) {
+    try {
+        const host = new URL(value).hostname;
+        return host === 'tikfinity.zerody.one' || host === 'tikfinity.com' ||
+            host.endsWith('.tikfinity.com') || host.endsWith('.tikfinity-browser-source.com');
+    } catch (_) { return false; }
+}
+
+function normalizeTikfinityDockUrl(value) {
+    let url;
+    try { url = new URL(String(value || '').trim()); } catch (_) { }
+    if (url && url.protocol === 'https:' && !url.username && !url.password && !url.port) {
+        const widget = url.hostname === 'widgets.tikfinity.com' && url.pathname !== '/';
+        const legacy = url.hostname === 'tikfinity.zerody.one' && (
+            (/^\/widget\/activity-feed\/?$/.test(url.pathname) && !!url.searchParams.get('cid')) ||
+            url.pathname.startsWith('/widget/vite/src/activity-feed/'));
+        const activityFrame = url.hostname === '44d4d505-b6f1-46fe-94e3-8b61a456f875.tikfinity-browser-source.com';
+        if (widget || legacy || activityFrame) return url.href;
+    }
+    throw new Error('Copy the Activity Feed URL from TikFinity → Overlays → OBS Docks, not the dashboard or OBS Docks settings page.');
+}
+
+function showTikfinityDockSetup(sourceId = null) {
+    const source = sourceId ? stateManager.getSource(sourceId) : null;
+    if (sourceId && (!source || source.target !== 'tikfinity')) return;
+    const modal = createSourceSetup('TikFinity OBS Dock',
+        `<ol><li>In TikFinity, open <strong>Overlays → OBS Docks</strong>.</li>
+            <li>Enable <strong>Show Chat</strong> in the dock settings, save, and copy its Activity Feed URL.</li>
+            <li>Paste the complete URL below, then activate this source in SSApp.</li></ol>
+        <p>Keep TikFinity open and connected to your LIVE. Signing in to its dashboard alone does not set up this source.</p>
+        <p><a href="https://app.tikfinity.com/overlays/obs-docks" target="_blank" rel="noopener">Open TikFinity OBS Docks</a>
+            · <a href="https://socialstream.ninja/docs/tikfinity-setup.html#dock" target="_blank" rel="noopener">Setup guide</a></p>`,
+        `<label for="source-setup-input">OBS Dock URL</label>
+        <input id="source-setup-input" type="text" required aria-label="OBS Dock URL" autocomplete="off" spellcheck="false" placeholder="https://widgets.tikfinity.com/…">
+        <p>Keep this link private. To change a running source, stop it first.</p>`,
+        async dialog => {
+            const url = normalizeTikfinityDockUrl(dialog.querySelector('input').value);
+            if (sourceId) {
+                const current = stateManager.getSource(sourceId);
+                if (!current || current.target !== 'tikfinity') throw new Error('This TikFinity source no longer exists.');
+                if (hasConnectionHandles(current) || current.status === 'activating') {
+                    throw new Error('Stop this source before changing its OBS Dock URL.');
+                }
+                stateManager.updateSource(sourceId, {
+                    url, urlGeneratedFromUsername: false, sourceFile: 'sources/tikfinity.js',
+                    sourceFiles: ['sources/tikfinity.js'], status: 'inactive', error: null
+                });
+                closeModal();
+                Toast.info('OBS Dock URL saved', 'Activate this source and keep TikFinity open and connected to your LIVE.');
+            } else {
+                closeModal();
+                await addOtherSourceFromUrl('tikfinity', url);
+            }
+        });
+    if (source) {
+        modal.querySelector('input').value = source.url || '';
+        modal.querySelector('[type="submit"]').textContent = 'Save OBS Dock URL';
+    }
+}
+
 function newOtherSourcePrompt(target = '') {
     createSourceSetup('Add other source',
         '<p>Paste the URL of the page showing your chat.</p>',
         `<label for="source-setup-input">Chat page URL</label>
-        <input id="source-setup-input" type="text" required autocomplete="off" spellcheck="false" placeholder="https://...">
+        <input id="source-setup-input" type="text" required aria-label="Chat page URL" autocomplete="off" spellcheck="false" placeholder="https://...">
         <details class="source-setup-help">
             <summary>Which URL should I use?</summary>
             <p>Use the chat pop-out if supported. Some sites need the full watch or live event page with chat visible instead.</p>

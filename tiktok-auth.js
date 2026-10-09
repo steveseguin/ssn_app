@@ -427,7 +427,7 @@ class TikTokAuth {
       type: 'info',
       title: 'TikTok Authentication',
       message: 'To use authenticated features, you need to provide your TikTok session cookies.',
-      detail: 'Instructions:\n1. Open TikTok in your browser and log in\n2. Open DevTools (F12)\n3. Go to Application → Cookies → tiktok.com\n4. Copy the value of the "sessionid" cookie (required)\n5. Optionally copy "tt-target-idc" if it is present',
+      detail: 'Instructions:\n1. Open TikTok in your browser and log in\n2. Open DevTools (F12)\n3. Go to Application → Cookies → tiktok.com\n4. Copy the value of the "sessionid" cookie\n5. Copy the value of the "tt-target-idc" cookie\n\nBoth cookies are needed for an authenticated connection. Without tt-target-idc, the app connects anonymously.',
       buttons: ['Enter Cookies', 'Cancel'],
       defaultId: 0
     });
@@ -450,7 +450,7 @@ class TikTokAuth {
 
       const ttTargetIdc = await prompt({
         title: 'Enter Target IDC',
-        label: 'tt-target-idc:',
+        label: 'tt-target-idc (needed for an authenticated connection):',
         value: '',
         inputAttrs: {
           type: 'text'

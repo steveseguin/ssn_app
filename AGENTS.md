@@ -19,6 +19,14 @@ Electron desktop application for aggregating social media live stream chat. Comm
 - When Steve asks to remember an instruction, save it into the relevant instruction file or memory mechanism when possible; do not merely say it will be kept in mind.
 - If Steve says "remember", treat it as a request to persist the instruction. Check for writable instruction targets, especially the repo `AGENTS.md` for project-specific behavior and `C:\Users\steve\.codex\AGENTS.md` for global behavior. Update the most appropriate file, or both when the instruction applies globally and to the current repo. Do not say memory tools are unavailable unless no writable instruction or memory target exists after checking.
 
+## Platform Fix Scope (CRITICAL)
+
+- Fixes for one source must affect only that source. Prefer its existing settings in `C:\Users\steve\Code\social_stream\settings\config*.json`; when those cannot express the fix, use source-specific code with explicit platform/window/request guards.
+- Never remove or alter `app.commandLine.appendSwitch('--disable-web-security', 'false')` without Steve's explicit approval for that exact change. It is an intentional compatibility setting. A site working after its removal is not evidence that the rest of SSApp remains compatible.
+- Do not change app-wide Electron flags, security defaults, preload behavior, headers, sessions, or shared navigation behavior to fix one source without Steve approving that broader scope first. This includes temporary diagnostic edits in the main checkout.
+- Before editing, identify the full behavioral scope. A change in `main.js` is acceptable when narrowly gated; a global behavior change is not authorized by a platform-specific bug report.
+- Before finishing, review the diff and verify that unrelated sources, windows, and requests retain their existing behavior. Passing a source test or general capture test does not establish that other platforms' authentication flows are unaffected.
+
 ## Source Of Truth
 
 - Social Stream source edits must be made in `C:\Users\steve\Code\social_stream`.
@@ -29,6 +37,8 @@ Electron desktop application for aggregating social media live stream chat. Comm
   This folder is disposable/rebuilt on every build/update (`npm run update:fallback`), so spending time on it is not productive.
 
 ## Social Stream Payload Rules
+
+- `donoValue` is always a numeric USD amount, supplied optionally by the source when it has better context. Consumers must honor a valid override (including zero) before using `currency.js` to estimate USD from `hasDonation` and the source. Keep the original display amount/unit in `hasDonation`; do not put raw coins or foreign-currency amounts in `donoValue`. Unpriced TikTok gifts default to one coin per gift at the existing USD-per-coin rate.
 
 - Donation-style chat rows should use `hasDonation` and optional `donoValue`; do not set `event: "donation"` just because a chat/tip row has a donation value.
 - Use existing payload fields first. Only populate `meta` when there is additional structured data that downstream consumers actually need and no existing field handles it well.
@@ -58,6 +68,8 @@ Electron desktop application for aggregating social media live stream chat. Comm
 
 ## Testing
 
+Never run SSApp tests through WSL on Steve's PC. Use native Windows for local testing; do not launch WSL as a testing workaround.
+
 No formal test framework (Jest/Mocha). Manual integration tests only.
 
 ### LLM Control Maintenance
@@ -77,7 +89,20 @@ No formal test framework (Jest/Mocha). Manual integration tests only.
 - For website-loading and capture issues, reproduce them in SSApp's real Electron source window using the same session, user agent, preload, request hooks, and injected source configuration. Do not use the OpenAI in-app Browser or an unrelated browser as evidence of SSApp behavior.
 - `tests/electron/window-state-diagnostics.js` may use the normal Social Stream profile. Do not report that profile choice as an issue by itself; only flag a concrete unintended settings change, data loss, or corruption reproduced by the diagnostic.
 
+### Source Delivery Completeness (All Platforms and Modes)
+
+- Whenever any source is tested, include explicit checks for missing messages and duplicate delivery. This applies to every platform and capture mode, including Standard/DOM, polling, and WebSocket. A source is not validated merely because traffic continues, a window stays responsive, or total counts match.
+- Establish expected input independently of the capture code: use controlled fixture IDs or source network/API events. Track native IDs scoped to the source and stream; if unavailable, use unambiguous fixture tokens or a validated occurrence-aware identity. Distinct messages with identical author/text must remain distinct. A ledger taken only after capture cannot detect messages already lost upstream.
+- Compare each eligible input with captured output and the actual dock/destination in the real runtime. Require exactly one delivery per intended destination. Report expected, received, missing, duplicate, and unexpected IDs/counts at each observed stage. Define the observation interval and allow pending messages to drain before comparison; periodic samples are not a complete ledger.
+- Define history, settings/filter, and moderation exclusions before evaluating results, and verify them separately. Confirm deleted messages are suppressed or removed as intended without deleting unrelated messages. Do not invent exclusions to make a failing run pass.
+- Exercise relevant failure conditions: bursts, delayed/partial rows, list replacement/pruning, edits/moves, hidden windows, pauses/resume, reload/reconnect/replay, stream changes, and long-session buffer/cache limits. Use deterministic stress cases alongside live validation; a short quiet run does not cover these transitions. State which modes and conditions were actually covered.
+- Automated delivery tests must return failure for unexplained loss or duplication. Missing input evidence, disabled capture, zero eligible messages, unavailable destination observations, or incomplete collection means inconclusive delivery validation, never a pass. Liveness-only diagnostics remain supporting checks and must not be presented as full source validation.
+- For a loss/duplication fix, demonstrate the regression on the original code and passing delivery checks on the final code. Retain reproducible commands, message counts, runtime/mode, source revision or hash, and results outside the public checkout. Do not claim untested sources, modes, or the reporter's session are confirmed fixed.
+- Fixes for source message loss or duplication require regression validation against actual live chat for each affected source and capture mode in SSApp's real runtime, in addition to controlled fixtures. Compare independently established eligible live messages with capture and actual destination output, checking missing messages and duplicates. Complete this validation before shipping or declaring the fix complete; a quiet, unavailable, or inconclusive live run does not satisfy the requirement.
+
 ### TikTok Connection Tests
+
+- A reusable Euler testing key is stored locally in the gitignored root `.secret` file as `EULER_TEST_API_KEY`. Test tooling may use that value (or an environment override). Never print the key, include it in reports, commit it, or package/upload the secrets file. Preserve other entries in `.secret` when updating it.
 
 ```bash
 cd tests/tiktok
@@ -282,7 +307,7 @@ ssapp/
 ## Key Dependencies
 
 - **Electron**: ^43.2.0
-- **tiktok-live-connector**: 2.4.3
+- **tiktok-live-connector**: 2.5.0
 - **@eulerstream/euler-websocket-sdk**: ^0.0.6
 - **ws**: ^8.21.0
 - **electron-store**: 8.2.0

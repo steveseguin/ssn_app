@@ -25,6 +25,13 @@ const socialStreamRoot = path.resolve(repoRoot, '..', 'social_stream');
 const stamp = Date.now();
 const reportPath = process.env.SOAK_REPORT || path.join(os.tmpdir(), `ssapp-hidden-capture-soak-${stamp}.jsonl`);
 const userDataDir = path.join(os.tmpdir(), `ssapp-soak-profile-${stamp}`);
+fs.mkdirSync(userDataDir, { recursive: true });
+fs.writeFileSync(path.join(userDataDir, 'savedSync.json'), JSON.stringify({
+	streamID: `hidden_capture_soak_${stamp}`,
+	password: 'false',
+	state: true,
+	settings: {}
+}));
 
 function argValues(name) {
 	return process.argv
@@ -39,6 +46,7 @@ const minutes = Math.max(1, parseInt(minutesArg || '30', 10) || 30);
 const args = [
 	'.',
 	'--running-from-source',
+	'--num-raster-threads=2',
 	'--hidden-capture-soak',
 	`--hidden-capture-soak-minutes=${minutes}`,
 	`--hidden-capture-soak-report=${reportPath}`
@@ -68,7 +76,7 @@ console.log(`[soak] report: ${reportPath}`);
 const child = spawn(electronPath, args, {
 	cwd: repoRoot,
 	stdio: 'inherit',
-	env: { ...process.env, SSAPP_USER_DATA_DIR: userDataDir }
+	env: { ...process.env, SSAPP_USER_DATA_DIR: userDataDir, UV_THREADPOOL_SIZE: '2' }
 });
 
 // Generous ceiling: the run itself plus startup, page loads and teardown.

@@ -213,6 +213,35 @@ async function runInstance(mediaPort, verifyPlayback) {
 		assert.strictEqual(selectedAsset.status, 'available');
 		assert.strictEqual(Object.prototype.hasOwnProperty.call(selectedAsset, 'approvedPath'), false);
 
+		const previewUrl = await execInWindow(remotePort, editorWindow.id, `
+			(async () => {
+				const result = await window.ninjafy.localMedia.getMediaUrl(${JSON.stringify(editorUi.assetId)});
+				document.getElementById('previewLocalMediaBtn').click();
+				return result.url;
+			})()
+		`);
+		const previewWindow = await waitForWindow(remotePort, (item) => item.url === previewUrl);
+		const preview = await execInWindow(remotePort, previewWindow.id, `
+			(async () => {
+				const started = Date.now();
+				while (!window.__ssappPreviewScriptRan && Date.now() - started < 10000) {
+					await new Promise(resolve => setTimeout(resolve, 100));
+				}
+				return {
+					scriptRan: !!window.__ssappPreviewScriptRan,
+					hasImage: !!document.querySelector('svg rect'),
+					hasOpener: !!window.opener,
+					hasNode: typeof require === 'function',
+					hasBridge: !!window.ninjafy
+				};
+			})()
+		`);
+		assert.strictEqual(preview.scriptRan, true, 'The selected SVG must exercise active document content.');
+		assert.strictEqual(preview.hasImage, true, 'The media preview must still render.');
+		assert.strictEqual(preview.hasOpener, false, 'An active media preview must not reach the editor through window.opener.');
+		assert.strictEqual(preview.hasNode, false);
+		assert.strictEqual(preview.hasBridge, false);
+
 		await execInWindow(remotePort, mainWindow.id, `window.open(${JSON.stringify(bridge.flow.url)}, '_blank'); true`);
 		const actionsWindow = await waitForWindow(remotePort, (item) => String(item.url || '').startsWith(bridge.flow.url));
 		const playback = await execInWindow(remotePort, actionsWindow.id, `
@@ -281,7 +310,7 @@ async function runInstance(mediaPort, verifyPlayback) {
 
 async function run() {
 	const mediaPort = await getFreePort();
-	fs.writeFileSync(imagePath, '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="24"><rect width="32" height="24" fill="#4caf50"/></svg>');
+	fs.writeFileSync(imagePath, '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="24"><rect width="32" height="24" fill="#4caf50"/><script>window.__ssappPreviewScriptRan = true;</script></svg>');
 	fs.copyFileSync(path.join(repoRoot, 'tests', 'electron', 'fixtures', 'cohost-stt.wav'), audioPath);
 	fs.writeFileSync(path.join(profileDir, 'config.json'), JSON.stringify({
 		localMediaLibrary: {
@@ -290,7 +319,7 @@ async function run() {
 			assets: {
 				asset_audio_e2e: {
 					id: 'asset_audio_e2e', displayName: 'E2E Audio', fileName: path.basename(audioPath),
-					mediaType: 'audio', mimeType: 'audio/wav', approvedPath: audioPath,
+					mediaType: 'audio', mimeType: 'audio/wav', approvedPath: await fs.promises.realpath(audioPath),
 					size: fs.statSync(audioPath).size, modifiedAt: fs.statSync(audioPath).mtimeMs,
 				},
 			},
@@ -302,6 +331,9 @@ async function run() {
 		await runInstance(mediaPort, false);
 		console.log('Local media Electron end-to-end checks passed, including restart persistence.');
 	} finally {
+		const tempRoot = path.resolve(os.tmpdir()) + path.sep;
+		assert.ok(path.resolve(profileDir).startsWith(tempRoot) && path.basename(profileDir).startsWith('ssapp-local-media-e2e-profile-'));
+		assert.ok(path.resolve(fixtureDir).startsWith(tempRoot) && path.basename(fixtureDir).startsWith('ssapp-local-media-e2e-fixtures-'));
 		fs.rmSync(profileDir, { recursive: true, force: true });
 		fs.rmSync(fixtureDir, { recursive: true, force: true });
 	}

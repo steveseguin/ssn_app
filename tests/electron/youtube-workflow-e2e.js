@@ -224,6 +224,268 @@ const rendererWorkflow = String.raw`
 	stateManager.clearAllSourcesAndGroups();
 	await Promise.resolve();
 
+	const ownershipChannelId = 'UCBJycsmduvYEL83R_U4JriQ';
+	const otherChannelId = 'UCSJ4gkVC6NrvII8umztf0Ow';
+	const liveCard = (videoId, channelId) => ({ videoRenderer: {
+		videoId,
+		title: { simpleText: 'Ownership regression fixture' },
+		ownerText: channelId ? { runs: [{ navigationEndpoint: { browseEndpoint: { browseId: channelId } } }] } : undefined,
+		badges: [{ metadataBadgeRenderer: { style: 'BADGE_STYLE_TYPE_LIVE_NOW' } }],
+		navigationEndpoint: { commandMetadata: { webCommandMetadata: { url: '/watch?v=' + videoId } } }
+	} });
+	const ownCard = liveCard('ownstream01', ownershipChannelId);
+	const foreignCard = liveCard('rFZHOHl-L8A', otherChannelId);
+	const ownerlessCard = liveCard('ownstream02');
+	const channelPage = (items = []) => ({
+		metadata: { channelMetadataRenderer: { externalId: ownershipChannelId, ownerUrls: ['https://www.youtube.com/@mkbhd'] } },
+		contents: { twoColumnBrowseResultsRenderer: { tabs: [{ tabRenderer: {
+			title: 'Live', endpoint: { browseEndpoint: { browseId: ownershipChannelId } },
+			content: { richGridRenderer: { contents: items.map(content => ({ richItemRenderer: { content } })) } }
+		} }] } },
+		secondaryContents: { recommendations: [foreignCard, ownerlessCard] }
+	});
+	let ownershipPage = channelPage();
+	let ownershipRawHtml = null;
+	const originalOwnershipInvoke = ipcRenderer.invoke;
+	const ownershipRequests = [];
+	ipcRenderer.invoke = function (channel, payload, ...rest) {
+		if (channel === 'nodefetch') {
+			ownershipRequests.push(payload.url);
+			return Promise.resolve({ status: 200, data: ownershipRawHtml ?? '<script>var ytInitialData = ' + JSON.stringify(ownershipPage) + ';</script>' });
+		}
+		return originalOwnershipInvoke.call(this, channel, payload, ...rest);
+	};
+	const ownershipGroupId = stateManager.addGroup({
+		id: 'youtube-ownership-e2e', target: 'youtube', username: '@mkbhd',
+		isChannel: false, connectionMode: 'classic', autoActivate: true, streams: []
+	});
+	try {
+		await checkYouTubeGroupForNewStreams(ownershipGroupId);
+		await new Promise(resolve => setTimeout(resolve, 750));
+		assertRenderer(stateManager.getGroup(ownershipGroupId).streams.length === 0,
+			'an empty channel must not add or auto-activate another channel from recommendations');
+		ownershipPage = channelPage([ownCard, ownerlessCard, foreignCard]);
+		const owned = await fetchYoutube('@mkbhd');
+		assertRenderer(owned.length === 2 && owned.every(video => video.channelId === ownershipChannelId),
+			'channel uploads should retain ownership and exclude cards with a different explicit owner');
+		assertRenderer(!(await fetchYoutube(otherChannelId))?.length, 'a page for a different requested channel ID must be rejected');
+		assertRenderer(!(await fetchYoutube('@different-handle'))?.length, 'a page for a different requested handle must be rejected');
+		ownershipPage.metadata.channelMetadataRenderer.ownerUrls = ['https://www.youtube.com/@cafe犬'];
+		assertRenderer(!(await fetchYoutube('@cafe猫'))?.length, 'international handles with the same ASCII prefix must not match');
+		assertRenderer((await fetchYoutube('@cafe犬'))?.length === 2, 'the complete matching international handle must work');
+		assertRenderer(selectYouTubeChannelCandidate([
+			{ channelId: otherChannelId, title: 'Different channel', url: '/@cafe犬' }
+		], 'cafe') === null, 'search must not truncate an international handle into an exact ASCII match');
+		for (const channelUrl of ['https://www.youtube.com/@cafe犬/streams', 'https://www.youtube.com/@cafe%E7%8A%AC/streams']) {
+			const normalized = normalizeYouTubePublicSourceInput(channelUrl);
+			assertRenderer(normalized.value === '@cafe犬', 'pasted channel URLs must preserve the entire international handle');
+		}
+		const upcomingCard = liveCard('upcoming001');
+		upcomingCard.videoRenderer.badges = [{ metadataBadgeRenderer: { label: 'UPCOMING' } }];
+		upcomingCard.videoRenderer.upcomingEventData = { startTime: String(Math.floor(Date.now() / 1000) + 600) };
+		ownershipPage = channelPage([upcomingCard]);
+		assertRenderer((await fetchYoutube('@mkbhd'))?.[0]?.status === 'upcoming', 'owned scheduled streams must remain discoverable');
+		const endedCard = liveCard('endedlive01');
+		endedCard.videoRenderer.badges = [];
+		endedCard.videoRenderer.publishedTimeText = { simpleText: 'Streamed yesterday' };
+		endedCard.videoRenderer.thumbnailOverlays = [{ thumbnailOverlayTimeStatusRenderer: { style: 'DEFAULT', text: { simpleText: '1:00:00' } } }];
+		ownershipPage = channelPage([endedCard]);
+		assertRenderer((await fetchYoutube('@mkbhd'))?.[0]?.status === 'ended', 'owned ended streams must retain their status');
+		ownershipPage.contents.twoColumnBrowseResultsRenderer.tabs[0].tabRenderer.content.richGridRenderer.contents = [
+			{ richSectionRenderer: { content: { shelfRenderer: { content: { items: [ownerlessCard, foreignCard] } } } } }
+		];
+		assertRenderer(!(await fetchYoutube('@mkbhd'))?.length, 'a shelf must not inherit ownership from its surrounding channel page');
+		ownershipRawHtml = '<script>{"videoId":"rFZHOHl-L8A"}</script>';
+		assertRenderer(!(await fetchYoutube('@mkbhd'))?.length, 'a bare video ID without ownership must not become a stream');
+		ownershipRawHtml = null;
+		ownershipPage = { contents: { twoColumnWatchNextResults: { results: { results: { contents: [
+			{ videoPrimaryInfoRenderer: { title: { simpleText: 'Live' }, viewCount: { videoViewCountRenderer: { isLive: true } } } },
+			{ videoSecondaryInfoRenderer: { owner: { videoOwnerRenderer: { navigationEndpoint: {
+				browseEndpoint: { browseId: ownershipChannelId, canonicalBaseUrl: '/@mkbhd' }
+			} } } } }
+		] } } } }, currentVideoEndpoint: { watchEndpoint: { videoId: 'ownstream01' },
+			commandMetadata: { webCommandMetadata: { url: '/watch?v=ownstream01' } } },
+			secondaryContents: { recommendations: [foreignCard] } };
+		const primaryStream = await fetchYoutube('@mkbhd', true);
+		assertRenderer(primaryStream.length === 1 && primaryStream[0].videoId === 'ownstream01',
+			'/live should return only its verified primary video');
+		assertRenderer(!(await fetchYoutube('@different-handle', true))?.length,
+			'/live must reject a primary video owned by another channel');
+		ownershipPage = { contents: [{ channelRenderer: { channelId: otherChannelId, title: { simpleText: 'MKBHD fan streams' } } }] };
+		assertRenderer(!(await fetchYoutube('MKBHD', false, { forceSearch: true }))?.length,
+			'channel search must not choose a partial match or first unrelated result');
+		assertRenderer(selectYouTubeChannelCandidate([
+			{ channelId: ownershipChannelId, title: 'Same name' }, { channelId: otherChannelId, title: 'Same name' }
+		], 'Same name') === null, 'ambiguous display names must not silently pick a channel');
+		assertRenderer(selectYouTubeChannelCandidate([
+			{ channelId: otherChannelId, title: 'mkbhd' }, { channelId: ownershipChannelId, title: 'Marques Brownlee', url: '/@mkbhd' }
+		], 'mkbhd')?.channelId === ownershipChannelId, 'an exact handle should take precedence over another channel display name');
+		assertRenderer(ownershipRequests.every(url => new URL(url).hostname === 'www.youtube.com'),
+			'ownership verification must not add Data API requests');
+
+		ownershipPage = channelPage([ownCard]);
+		const fixtureInvoke = ipcRenderer.invoke;
+		let releaseDiscovery;
+		ipcRenderer.invoke = function (channel, payload, ...rest) {
+			if (channel === 'nodefetch') return new Promise(resolve => { releaseDiscovery = resolve; });
+			return fixtureInvoke.call(this, channel, payload, ...rest);
+		};
+		const pendingDiscovery = checkYouTubeGroupForNewStreams(ownershipGroupId);
+		stateManager.removeGroup(ownershipGroupId);
+		releaseDiscovery({ status: 200, data: '<script>var ytInitialData = ' + JSON.stringify(ownershipPage) + ';</script>' });
+		await pendingDiscovery;
+		await new Promise(resolve => setTimeout(resolve, 750));
+		assertRenderer(!stateManager.getSources().some(source => source.groupId === ownershipGroupId),
+			'removing a group during discovery must not recreate or activate its sources');
+		ipcRenderer.invoke = fixtureInvoke;
+		stateManager.addGroup({
+			id: ownershipGroupId, target: 'youtube', username: '@mkbhd',
+			isChannel: false, connectionMode: 'classic', autoActivate: true, streams: []
+		});
+		await checkYouTubeGroupForNewStreams(ownershipGroupId);
+		document.querySelector('[data-group-id="' + ownershipGroupId + '"] .auto-activate-toggle input').click();
+		await new Promise(resolve => setTimeout(resolve, 750));
+		assertRenderer(stateManager.getGroup(ownershipGroupId).autoActivate === false
+			&& stateManager.getSources().filter(source => source.groupId === ownershipGroupId).every(source => !source.vid),
+			'turning off auto-activate before a scheduled window opens must cancel that activation');
+	} finally {
+		ipcRenderer.invoke = originalOwnershipInvoke;
+		stateManager.removeGroup(ownershipGroupId);
+	}
+	const originalManualFetch = window.fetch;
+	const originalPickerInvoke = ipcRenderer.invoke;
+	const originalPickerCreateWindow = createWindow;
+	const pickerGroupId = stateManager.addGroup({
+		id: 'youtube-picker-e2e', target: 'youtube', username: '@mkbhd',
+		isChannel: false, connectionMode: 'classic', autoActivate: false, streams: []
+	});
+	try {
+		let apiRequests = 0;
+		let pageRequests = 0;
+		let releasePage;
+		const activatedIds = [];
+		window.fetch = function (url, ...rest) {
+			if (String(url).startsWith('https://api.socialstream.ninja/youtube/streams?')) {
+				apiRequests++;
+				return Promise.resolve(new Response(JSON.stringify({ success: true, data: [
+					{ videoId: 'ownstream01', status: 'live', isShort: false, title: 'API result' }
+				] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+			}
+			return originalManualFetch.call(this, url, ...rest);
+		};
+		ipcRenderer.invoke = function (channel, payload, ...rest) {
+			if (channel === 'nodefetch') {
+				pageRequests++;
+				return new Promise(resolve => { releasePage = resolve; });
+			}
+			return originalPickerInvoke.call(this, channel, payload, ...rest);
+		};
+		createWindow = async button => {
+			activatedIds.push(stateManager.getSource(button.closest('[data-source-id]').dataset.sourceId).videoId);
+		};
+		manualYouTubeDiscoveryCache.clear();
+		const pickerTask = handleYouTubeActivation('@mkbhd', false, true, false, false,
+			{ manualTrigger: true, groupId: pickerGroupId });
+		await waitFor(() => document.getElementById('ytStreamModal').style.display === 'block' && releasePage,
+			'picker must display API results while the channel page is still loading');
+		const firstRow = document.querySelector('#ytStreamList [data-video-id="ownstream01"]');
+		assertRenderer(firstRow && document.querySelectorAll('#ytStreamList .yt-stream-item').length === 1,
+			'partial API results should be usable before page discovery finishes');
+		firstRow.querySelector('.shorts-toggle-checkbox').click();
+		firstRow.click();
+		const sharedPageCheck = discoverYouTubeStreamsForManualAction('@mkbhd', false, false, { includePageResults: true });
+		releasePage({ status: 200, data: '<script>var ytInitialData = ' + JSON.stringify(channelPage([ownCard, ownerlessCard, foreignCard])) + ';</script>' });
+		await sharedPageCheck;
+		await waitFor(() => document.querySelectorAll('#ytStreamList .yt-stream-item').length === 2,
+			'channel page must add the missing owned stream to the open picker');
+		assertRenderer(!window.streamSelector.selectedStreams.has('ownstream01')
+			&& window.streamSelector.streams.find(stream => stream.videoId === 'ownstream01').isShort === true,
+			'page results must preserve the selection and Shorts edits already made');
+		assertRenderer(!window.streamSelector.selectedStreams.has('ownstream02')
+			&& !document.querySelector('#ytStreamList [data-video-id="rFZHOHl-L8A"]'),
+			'late results must not select themselves or include unrelated streamers');
+		await discoverYouTubeStreamsForManualAction('@mkbhd', false, false, { includePageResults: true });
+		assertRenderer(apiRequests === 1 && pageRequests === 1,
+			'page enrichment, concurrent checks and cached repeats must share one API call and one page fetch');
+		document.querySelector('#ytStreamList [data-video-id="ownstream02"]').click();
+		document.getElementById('ytActivateButton').click();
+		await pickerTask;
+		assertRenderer(activatedIds.length === 1 && activatedIds[0] === 'ownstream02',
+			'the user must be able to activate the stream found only on the channel page');
+		stateManager.getSources().filter(source => source.videoId === 'ownstream02').forEach(source => stateManager.removeSource(source.id));
+
+		manualYouTubeDiscoveryCache.clear();
+		releasePage = null;
+		const closingPicker = handleYouTubeActivation('@mkbhd', false, true, false, false,
+			{ manualTrigger: true, groupId: pickerGroupId });
+		await waitFor(() => releasePage, 'second picker should start its page check');
+		window.streamSelector.selectedStreams.clear();
+		document.getElementById('ytCancelButton').click();
+		await closingPicker;
+		const otherPicker = window.streamSelector.show([{ videoId: 'newpicker01', status: 'live', title: 'Another channel' }], '@different');
+		releasePage({ status: 200, data: '<script>var ytInitialData = ' + JSON.stringify(channelPage([ownCard, ownerlessCard])) + ';</script>' });
+		await new Promise(resolve => setTimeout(resolve, 150));
+		assertRenderer(window.streamSelector.streams.length === 1 && window.streamSelector.streams[0].videoId === 'newpicker01',
+			'a late page result must not alter a closed or replaced picker');
+		window.streamSelector.selectedStreams.clear();
+		window.streamSelector.hide();
+		await otherPicker;
+
+		manualYouTubeDiscoveryCache.clear();
+		releasePage = null;
+		const failedPagePicker = handleYouTubeActivation('@mkbhd', false, true, false, false,
+			{ manualTrigger: true, groupId: pickerGroupId });
+		await waitFor(() => releasePage, 'failure case should start its page check');
+		releasePage({ status: 0, error: 'ETIMEDOUT: fixture connection timeout' });
+		await waitFor(() => document.querySelector('#ytStreamList .yt-stream-discovery-message')?.textContent.includes('Could not finish'),
+			'a page failure should explain that the listed streams remain usable');
+		document.getElementById('ytActivateButton').click();
+		await failedPagePicker;
+		assertRenderer(activatedIds[activatedIds.length - 1] === 'ownstream01',
+			'page discovery failure must not prevent activation of a valid API result');
+		stateManager.getSources().filter(source => source.videoId === 'ownstream01').forEach(source => stateManager.removeSource(source.id));
+
+		manualYouTubeDiscoveryCache.clear();
+		const manualAutoActivate = handleYouTubeActivation('@mkbhd', false, false, true, false,
+			{ manualTrigger: true, groupId: pickerGroupId });
+		const previousRelease = releasePage;
+		await waitFor(() => releasePage !== previousRelease, 'manual auto-activate should check the page before selecting all');
+		releasePage({ status: 200, data: '<script>var ytInitialData = ' + JSON.stringify(channelPage([ownCard, ownerlessCard, foreignCard])) + ';</script>' });
+		await manualAutoActivate;
+		assertRenderer(activatedIds.slice(-2).join(',') === 'ownstream01,ownstream02',
+			'manual auto-activate must include missing owned page results');
+		stateManager.getSources().filter(source => ['ownstream01', 'ownstream02'].includes(source.videoId)).forEach(source => stateManager.removeSource(source.id));
+	} finally {
+		window.fetch = originalManualFetch;
+		ipcRenderer.invoke = originalPickerInvoke;
+		createWindow = originalPickerCreateWindow;
+		stateManager.removeGroup(pickerGroupId);
+		manualYouTubeDiscoveryCache.clear();
+	}
+	try {
+		let releaseManual;
+		window.fetch = function (url, ...rest) {
+			if (String(url).startsWith('https://api.socialstream.ninja/youtube/streams?')) {
+				return new Promise(resolve => { releaseManual = resolve; });
+			}
+			return originalManualFetch.call(this, url, ...rest);
+		};
+		manualYouTubeDiscoveryCache.clear();
+		await newSource('youtube', '@manual-cancel-e2e', false, {}, false);
+		const manualGroupId = 'youtube-@manual-cancel-e2e';
+		const pendingManual = handleYouTubeActivation('@manual-cancel-e2e', false, false, true, false,
+			{ manualTrigger: true, groupId: manualGroupId });
+		stateManager.removeGroup(manualGroupId);
+		releaseManual(new Response(JSON.stringify({ success: true, data: [{ videoId: 'ownstream01', status: 'live', isShort: false }] }),
+			{ status: 200, headers: { 'Content-Type': 'application/json' } }));
+		assertRenderer((await pendingManual).type === 'cancelled_or_empty'
+			&& !stateManager.getGroup(manualGroupId)
+			&& !stateManager.getSources().some(source => source.videoId === 'ownstream01'),
+			'manual discovery must not recreate a group removed while the API request was pending');
+	} finally {
+		window.fetch = originalManualFetch;
+	}
+
 	const originalConfirm = window.confirm;
 	const originalPrompt = window.prompt;
 	const confirmMessages = [];
@@ -309,10 +571,40 @@ const rendererWorkflow = String.raw`
 			{ manualTrigger: true, groupId: ownerGroupId }
 		);
 		assertRenderer(ownerActivationResult?.type === 'auth_error', 'expired owner auth should return a visible auth error');
+		const originalOwnerBridge = getYouTubeOwnerBridge;
+		const ownerSwitchGroupId = 'youtube-owner-switch-e2e';
+		try {
+			let releaseOwner;
+			getYouTubeOwnerBridge = () => ({ fetchYouTubeOwnerBroadcasts: () => new Promise(resolve => { releaseOwner = resolve; }) });
+			const profileA = { channelId: ownershipChannelId, channelTitle: 'Owner A', authRef: 'owner-switch-a' };
+			const profileB = { channelId: otherChannelId, channelTitle: 'Owner B', authRef: 'owner-switch-b' };
+			const broadcast = { videoId: 'switchown01', channelId: ownershipChannelId, status: 'live', statusDisplay: 'live',
+				isShort: false, liveChatId: 'switch-chat', youtubeChatStatus: 'ready', lifeCycleStatus: 'live' };
+			for (const manual of [false, true]) {
+				const group = createOrUpdateYouTubeOwnerGroup(profileA, 'youtube', ownerSwitchGroupId);
+				const pending = manual
+					? handleYouTubeActivation(group.username, false, false, true, false, { manualTrigger: true, groupId: group.id })
+					: checkYouTubeGroupForNewStreams(group.id);
+				createOrUpdateYouTubeOwnerGroup(profileB, 'youtube', group.id);
+				releaseOwner({ success: true, profile: profileA, broadcasts: [broadcast] });
+				await pending;
+				assertRenderer(group.channelId === profileB.channelId && group.channelTitle === profileB.channelTitle && group.streams.length === 0,
+					'switching the signed-in channel must discard the previous channel response and profile');
+			}
+			const currentGroup = stateManager.getGroup(ownerSwitchGroupId);
+			const current = fetchYouTubeOwnerStreamsForGroup(currentGroup);
+			releaseOwner({ success: true, profile: { ...profileB, channelTitle: 'Owner B renamed' }, broadcasts: [{ ...broadcast, channelId: profileB.channelId }] });
+			assertRenderer((await current).length === 1 && currentGroup.channelTitle === 'Owner B renamed',
+				'a display-name update for the same signed-in channel must still accept its broadcasts');
+		} finally {
+			getYouTubeOwnerBridge = originalOwnerBridge;
+			stateManager.removeGroup(ownerSwitchGroupId);
+		}
 
 		const schedulerGroupId = stateManager.addGroup({
 			id: 'youtube-owner-e2e-scheduler',
 			target: 'youtube',
+			connectionMode: 'classic',
 			username: 'Scheduler E2E',
 			channelId: 'UCowner000000000000000002',
 			youtubeDiscoveryMode: 'owner',

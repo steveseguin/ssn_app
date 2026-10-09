@@ -237,6 +237,19 @@ socialstreamninja_win_v<version>_installer.zip
 socialstreamninja_win_v<version>_portable.zip
 ```
 
+## Adding macOS to an existing numbered pre-release
+
+Build the bundled Social Stream source from that release's tag, not the default `main`
+branch. For example, when adding Mac downloads to v0.4.28:
+
+```bash
+SSN_SOCIALSTREAM_BRANCH=v0.4.28 SSN_SOCIALSTREAM_OUTPUT_BRANCH=main npm run build:darwin
+```
+
+Provide signing credentials through the existing local environment. Verify the installed
+signed app and upload the Mac DMG/ZIP files to the existing `steveseguin/social_stream`
+pre-release. Preserve its Windows/Linux assets and add the Mac download links to its notes.
+
 ## VirusTotal
 
 - Keep the local VirusTotal key in `.secret` at the repo root as `VT_API_KEY=...`.

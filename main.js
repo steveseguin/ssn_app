@@ -8,6 +8,8 @@ const path = require("path");
 const os = require("os");
 const { pathToFileURL, fileURLToPath } = require("url");
 const { getSocialStreamSourceUrls } = require('./resources/social-stream-source-mirrors');
+const { normalizeMissingOriginRule, applyMissingOriginRule } = require('./resources/signin-origin-rule');
+const { attachSourceBasicAuth } = require('./resources/source-basic-auth');
 const {
     cleanVisibleString,
     firstNonEmptyVisibleString,
@@ -200,6 +202,7 @@ const { setupExternalBrowserSigninHandler } = require('./resources/electron-rumb
 const { setupVpzoneOAuthHandler } = require('./resources/electron-vpzone-handler');
 const { setupMediaUploadHandler } = require('./resources/electron-media-upload-handler');
 const { setupDiscordHandler, clearDiscordBotAuthStore } = require('./resources/electron-discord-handler');
+const { setupSharePlayHandler, clearSharePlayAuthStore } = require('./resources/electron-shareplay-handler');
 const { setupElectronLocalMedia } = require('./resources/electron-local-media-server');
 const { createControlApiRouter } = require('./resources/electron-control-api');
 const { SourceObservationService } = require('./resources/source-observation-service');
@@ -244,6 +247,61 @@ function isSocialStreamRemoteUrl(urlValue) {
     }
 }
 
+// Classify the download's window, not individual embedded frames. Preserve local/app
+// exports and configured main-page recordings; protect against external-window collisions.
+function isExternalAutoDownload(webContents, filesource) {
+    if (!webContents || webContents.isDestroyed()) return true;
+    if (mainWindow && webContents === mainWindow.webContents) return false;
+    try {
+        let sourceUrl = webContents.getURL();
+        if (sourceUrl.startsWith('blob:')) sourceUrl = sourceUrl.slice(5);
+        const source = new URL(sourceUrl);
+        // Local pages and their snapshot/blob windows retain existing export behavior.
+        if (source.protocol === 'file:') return false;
+        if (source.protocol !== 'https:' && source.protocol !== 'http:') return true;
+        if (!source.port && isSocialStreamRemoteUrl(source.href)) return false;
+        if (filesource) {
+            try {
+                if (source.origin === new URL(filesource).origin) return false;
+            } catch (_) { }
+        }
+        if (localMediaService && localMediaService.isRunning()
+            && source.origin === new URL(localMediaService.getBaseUrl()).origin) return false;
+    } catch (_) { }
+    return true;
+}
+
+const autoDownloadPaths = new Set();
+const autoDownloadItems = new WeakMap();
+
+function reserveAutoDownloadPath(item, requestedPath) {
+    if (autoDownloadItems.has(item)) return autoDownloadItems.get(item);
+    const parsed = path.parse(requestedPath);
+    // Reserve names until completion so concurrent downloads cannot select the same path.
+    for (let suffix = 0; suffix < 110; suffix++) {
+        const label = suffix < 100 ? suffix : crypto.randomUUID();
+        const candidate = suffix === 0 ? requestedPath
+            : path.join(parsed.dir, `${parsed.name} (${label})${parsed.ext}`);
+        const resolved = path.resolve(candidate);
+        const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+        if (autoDownloadPaths.has(key)) continue;
+        try {
+            fs.lstatSync(candidate); // Treat directories and dangling symlinks as occupied too.
+            continue;
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+        autoDownloadPaths.add(key);
+        autoDownloadItems.set(item, candidate);
+        item.once('done', () => {
+            autoDownloadPaths.delete(key);
+            autoDownloadItems.delete(item);
+        });
+        return candidate;
+    }
+    throw new Error('Unable to choose an unused download filename');
+}
+
 const {
     fetch: undiciFetch
 } = require('undici');
@@ -254,6 +312,7 @@ const { Worker } = require('worker_threads');
 
 const Store = require("electron-store");
 const store = new Store();
+const ninjaChatterAudienceStore = new Store({ name: 'ninjachatter-audience' });
 const localWebSocketConfig = resolveLocalWebSocketConfig({
     argv: process.argv,
     env: process.env,
@@ -2041,6 +2100,19 @@ const discordIntegration = setupDiscordHandler({
     }
 });
 
+const shareplayIntegration = setupSharePlayHandler({
+    getMainWindow: () => mainWindow,
+    getBrowserViews: () => browserViews,
+    getSettings: getCachedSettings,
+    forwardMessage: relayNativeSourcePayloadToBackground,
+    recordCapture: (payload, context) => {
+        if (sourceObservationService) sourceObservationService.recordCapture(payload, context);
+    },
+    recordStatus: (payload, context) => {
+        if (sourceObservationService) sourceObservationService.recordStatus(payload, context);
+    }
+});
+
 function normalizeSourceAccountRole(role) {
     const value = String(role || 'normal').trim().toLowerCase();
     return ['host', 'bot', 'relay'].includes(value) ? value : 'normal';
@@ -2921,6 +2993,7 @@ let usingLegacyTikTokConnector = false;
 let ConnectionManager = null;
 let cleanupConnection = () => { };
 let registerActiveTikTokSourceConnection = () => [];
+let getActiveTikTokWssIdForSource = () => null;
 let sendToBackground = () => { };
 let sendBatchToBackground = () => { };
 let logTikTokForwardedMessage = () => { };
@@ -2938,6 +3011,40 @@ try {
     installTikTokSignServerFallback(tiktokConnector);
 
 	    const localSignerImplementation = {
+	        checkLiveStatus: async (username, signal) => {
+                configureTikTokAuthPartition();
+                const fetchSession = session.fromPartition(TIKTOK_AUTH_PARTITION);
+                const user = encodeURIComponent(username);
+                const urls = [
+                    `https://www.tiktok.com/api-live/user/room/?aid=1988&uniqueId=${user}&sourceType=54`,
+                    `https://www.tiktok.com/@${user}/live`
+                ];
+                for (const url of urls) {
+                    if (signal.aborted) return null;
+                    try {
+                        const response = await fetchSession.fetch(url, { signal, redirect: 'error' });
+                        if (!response.ok) continue;
+                        // Electron session.fetch can leave response.url empty.
+                        // Reject redirects in fetch rather than discarding valid responses.
+                        if (response.url && new URL(response.url).pathname !== new URL(url).pathname) continue;
+                        const body = await response.text();
+                        let room;
+                        if (url.includes('/api-live/')) {
+                            const data = JSON.parse(body);
+                            if (data.statusCode !== 0) continue;
+                            room = data.data?.liveRoom;
+                        } else {
+                            const match = body.match(/<script\b[^>]*\bid=["']SIGI_STATE["'][^>]*>([\s\S]*?)<\/script>/i);
+                            if (!match) continue;
+                            const data = JSON.parse(match[1]);
+                            room = (data.LiveRoom || data.liveRoom)?.liveRoomUserInfo?.liveRoom;
+                        }
+                        if (Number(room?.status) === 2) return true;
+                        if (Number(room?.status) === 4) return false;
+                    } catch (_) { /* Try the other direct TikTok lookup. */ }
+                }
+                return null;
+	        },
 	        sign: async (url, options) => {
 	            if (!tikTokSignerHelper) {
 	                throw new Error('TikTok signer helper not available');
@@ -2959,7 +3066,7 @@ try {
 	                : null;
 
             let activeUrlUsed = primaryUrl;
-            let win = await ensureTikTokSigningWindow(primaryUrl, { allowNavigation: false, mode: 'background' });
+            let win = await ensureTikTokSigningWindow(primaryUrl, { allowNavigation: !!options?.performFetch, mode: 'background' });
             let parameters;
 
             try {
@@ -3040,6 +3147,7 @@ try {
     ConnectionManager = tikTokEnv.ConnectionManager;
     cleanupConnection = tikTokEnv.cleanupConnection;
     registerActiveTikTokSourceConnection = tikTokEnv.registerActiveTikTokSourceConnection;
+    getActiveTikTokWssIdForSource = tikTokEnv.getActiveTikTokWssIdForSource;
     sendToBackground = tikTokEnv.sendToBackground;
     sendBatchToBackground = tikTokEnv.sendBatchToBackground;
     logTikTokForwardedMessage = tikTokEnv.logTikTokForwardedMessage;
@@ -3461,7 +3569,8 @@ const USER_SESSION_PERSISTED_STORE_KEYS = [
     'cachedStateBackupTime',
     'localStorageBackup',
     'localStorageBackupTime',
-    'pendingImport'
+    'pendingImport',
+    'legacySettingsMigration'
 ];
 const PENDING_USER_SESSION_PARTITION_CLEANUP_KEY = 'pendingUserSessionPartitionCleanup';
 
@@ -3506,8 +3615,14 @@ function clearUserSessionPersistence(sessionName) {
         } catch (_) { }
     });
 
+    try {
+        ninjaChatterAudienceStore.delete(getUserSessionStoreKey('connection', sessionName));
+    } catch (error) {
+        console.warn('[NinjaChatter] Failed to clear deleted session pairing:', error?.message || error);
+    }
+
     const paths = getSavedSyncPaths(sessionName);
-    [paths.mainPath, paths.tmpPath, paths.bakPath].forEach((filePath) => {
+    [paths.mainPath, paths.tmpPath, paths.bakPath, `${paths.mainPath}.before-legacy-recovery`].forEach((filePath) => {
         try {
             if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
         } catch (error) {
@@ -4263,6 +4378,95 @@ async function resolveBundledSocialStreamRoot(branch = 'main') {
     return null;
 }
 
+async function getBackgroundDiagnostics(expectedUrl) {
+    if (!mainWindow || mainWindow.isDestroyed()) return null;
+    const frame = mainWindow.webContents.mainFrame.frames.find(child => expectedUrl
+        ? child.url === expectedUrl && matchesSocialStreamPagePath(child.url, 'background')
+        : matchesSocialStreamPagePath(child.url, 'background'));
+    if (!frame) return null;
+    const dependencies = await frame.executeJavaScript(`(() => {
+        let customScripts = {};
+        try {
+            customScripts = {
+                enabled: typeof settings !== 'undefined' && !!settings.customJsEnabled,
+                uploaded: !!localStorage.getItem('customJavaScript'),
+                functionLoaded: typeof window.customUserFunction === 'function'
+            };
+        } catch (_) {}
+        return { backgroundLoaded: typeof window.processIncomingMessage === 'function',
+            sanitizerLoaded: typeof window.filterXSS === 'function',
+            loader: window.ssappBackgroundLoadState || null, customScripts };
+    })()`);
+    return { ...dependencies, url: frame.url };
+}
+
+function backgroundReportContext(dependencies) {
+    if (!dependencies) return null;
+    // Page query strings can contain session IDs/passwords. Keep only the
+    // resource address, and bound error text supplied by the remote loader.
+    const clean = value => String(value || '').replace(/[?#][^\s;"'<>)]*/g, '').slice(0, 2000);
+    return {
+        url: clean(dependencies.url),
+        backgroundLoaded: dependencies.backgroundLoaded === true,
+        sanitizerLoaded: dependencies.sanitizerLoaded === true,
+        customScripts: {
+            enabled: dependencies.customScripts?.enabled === true,
+            uploaded: dependencies.customScripts?.uploaded === true,
+            functionLoaded: dependencies.customScripts?.functionLoaded === true,
+            localFileConfigured: !!getStoredCustomJsFilePath()
+        },
+        loader: dependencies.loader ? {
+            status: clean(dependencies.loader.status),
+            currentScript: clean(dependencies.loader.currentScript),
+            failures: Array.isArray(dependencies.loader.failures)
+                ? dependencies.loader.failures.slice(0, 30).map(failure => ({
+                    script: clean(failure?.script), error: clean(failure?.error)
+                })) : []
+        } : null
+    };
+}
+
+async function getBackgroundReportContext() {
+    try {
+        return backgroundReportContext(await getBackgroundDiagnostics());
+    } catch (error) {
+        return { error: 'Background diagnostics unavailable' };
+    }
+}
+
+ipcMain.handle('ninjachatter:audience-room', async (event, request = {}) => {
+    const frame = event.senderFrame;
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents
+        || !frame || !mainWindow.webContents.mainFrame.frames.includes(frame)
+        || !(frame.url.startsWith('file://') || isSocialStreamRemoteUrl(frame.url))) {
+        throw new Error('Audience connection requires the app settings or background.');
+    }
+    if (matchesSocialStreamPagePath(frame.url, 'background')) {
+        const connectionKey = getUserSessionStoreKey('connection');
+        if (request.op === 'load') return ninjaChatterAudienceStore.get(connectionKey);
+        if (request.op === 'save') {
+            ninjaChatterAudienceStore.set(connectionKey, request.config);
+            return;
+        }
+    } else if (matchesSocialStreamPagePath(frame.url, 'popup') && request.op === 'command') {
+        const background = mainWindow.webContents.mainFrame.frames.find(candidate =>
+            matchesSocialStreamPagePath(candidate.url, 'background')
+            && (candidate.url.startsWith('file://') || isSocialStreamRemoteUrl(candidate.url)));
+        if (!background) throw new Error('Start SSN to connect an audience room.');
+        // The popup can poll while the background scripts are still loading.
+        // Check and call in the same frame evaluation so a reload cannot race
+        // a separate readiness probe. Reject early commands without replaying them.
+        const result = await background.executeJavaScript(`(async () => {
+            const connector = window.ncAudience;
+            if (!connector || typeof connector.handle !== 'function') return { ready: false };
+            return { ready: true, value: await connector.handle(${JSON.stringify(request.command)}) };
+        })()`);
+        if (!result.ready) throw new Error('Audience room is still starting. Try again shortly.');
+        return result.value;
+    }
+    throw new Error('Unsupported audience connection operation.');
+});
+
 ipcMain.handle('socialstream:background-dependencies', async (event, expectedUrl) => {
     if (!mainWindow || mainWindow.isDestroyed()
         || event.sender !== mainWindow.webContents
@@ -4271,9 +4475,11 @@ ipcMain.handle('socialstream:background-dependencies', async (event, expectedUrl
     }
     // Read only the selected child frame. The file:// app UI cannot inspect a
     // healthy HTTPS background directly because of browser origin isolation.
-    const frame = mainWindow.webContents.mainFrame.frames.find(child => child.url === expectedUrl);
-    if (!frame) return null;
-    return await frame.executeJavaScript('({backgroundLoaded: typeof window.processIncomingMessage === "function", sanitizerLoaded: typeof window.filterXSS === "function", loader: window.ssappBackgroundLoadState || null})');
+    const dependencies = await getBackgroundDiagnostics(expectedUrl);
+    if (dependencies?.loader?.status === 'failed') {
+        reporter.report('background_load_failed', 'Background initialization failed', backgroundReportContext(dependencies));
+    }
+    return dependencies;
 });
 
 ipcMain.handle('socialstream:fetch-background-script', async (event, relativePath) => {
@@ -7160,10 +7366,12 @@ class WebSocketServer {
                         } else {
                             this.callback[msg.callback.get].resolve("null");
                         }
+                        return;
                     }
-                    return;
                 }
 
+                // Replies owned by page clients still need normal room/channel
+                // delivery; only the relay's own pending calls are consumed above.
                 const outChannel = msg.out || out;
 
                 this.server.clients.forEach(client => {
@@ -7427,6 +7635,7 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
 
     const hooks = {
         passkeyBlockWebContentsIds: new Set(),
+        signInOriginRulesByWebContentsId: new Map(),
         headerOverrideByWebContentsId: new Map()
     };
 
@@ -7457,6 +7666,11 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
             try {
                 const webContentsId = typeof details?.webContentsId === 'number' ? details.webContentsId : null;
                 if (webContentsId !== null) {
+                    const originRule = hooks.signInOriginRulesByWebContentsId.get(webContentsId);
+                    if (originRule) {
+                        const pageUrl = details.frame?.url || electron.webContents.fromId(webContentsId)?.getURL();
+                        applyMissingOriginRule(requestHeaders, details, pageUrl, originRule);
+                    }
                     const override = hooks.headerOverrideByWebContentsId.get(webContentsId);
                     if (override) {
                         if (override.origin) {
@@ -7482,6 +7696,19 @@ function getOrCreateActivatedWindowSessionHooks(ses) {
 
     activatedWindowSessionHooks.set(ses, hooks);
     return hooks;
+}
+
+function trackSignInOriginRule(view, rule) {
+    if (isBrowserViewDestroyed(view)) return;
+    const wc = view.webContents;
+    const hooks = getOrCreateActivatedWindowSessionHooks(wc.session);
+    if (!hooks || hooks.signInOriginRulesByWebContentsId.has(wc.id)) return;
+    const id = wc.id;
+    hooks.signInOriginRulesByWebContentsId.set(id, rule);
+    wc.once('destroyed', () => hooks.signInOriginRulesByWebContentsId.delete(id));
+    if (rule.includePopups) {
+        wc.on('did-create-window', popup => trackSignInOriginRule(popup, rule));
+    }
 }
 
 function registerClientHintFiltering(ses, webContentsId, shouldFilter = () => true, options = {}) {
@@ -7761,6 +7988,12 @@ async function clearAllData() {
         }
 
         try {
+            ninjaChatterAudienceStore.clear();
+        } catch (audienceStoreError) {
+            console.error('Failed to clear NinjaChatter audience store during reset:', audienceStoreError);
+        }
+
+        try {
             clearYouTubeOwnerAuthStore();
         } catch (ownerAuthStoreError) {
             console.error('Failed to clear YouTube owner auth store during reset:', ownerAuthStoreError);
@@ -7770,6 +8003,12 @@ async function clearAllData() {
             clearDiscordBotAuthStore();
         } catch (discordAuthStoreError) {
             console.error('Failed to clear Discord bot auth store during reset:', discordAuthStoreError);
+        }
+
+        try {
+            clearSharePlayAuthStore();
+        } catch (shareplayAuthStoreError) {
+            console.error('Failed to clear SharePlay auth store during reset:', shareplayAuthStoreError);
         }
 
         try {
@@ -9028,15 +9267,35 @@ ipcMain.handle('getSessions', () => {
     };
 });
 
+// The main page calls this before its source-list code can replace the old
+// localStorage settings mirror. Source windows and subframes cannot request it.
+ipcMain.on('user-session:recover-legacy-settings', (event, localStorageData) => {
+    let recovered = false;
+    try {
+        if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents
+            || event.senderFrame !== mainWindow.webContents.mainFrame
+            || fileURLToPath(event.senderFrame.url) !== path.join(__dirname, 'index.html')) return;
+        recovered = recoverLegacyUserSessionSettings(localStorageData);
+    } catch (error) {
+        console.warn('[User Sessions] Legacy settings recovery skipped:', error?.message || error);
+    } finally {
+        event.returnValue = recovered;
+    }
+});
+
 ipcMain.handle('createSession', (event, sessionData) => {
     const sessions = store.get('sessions', {});
     const sessionId = sessionData.id || `session-${Date.now()}`;
+    const isNewSession = !Object.prototype.hasOwnProperty.call(sessions, sessionId);
     sessions[sessionId] = {
         name: sessionData.name,
         description: sessionData.description || '',
         created: Date.now()
     };
     store.set('sessions', sessions);
+    if (isNewSession && sessionId !== 'default') {
+        setUserSessionStoreValue('legacySettingsMigration', { version: 1, outcome: 'new-session' }, sessionId);
+    }
     return {
         success: true,
         sessionId
@@ -10063,6 +10322,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
             url,
             features
         }) => {
+            // Keep NinjaChatter's dashboard and provider sign-in in the system browser.
+            if (/^https:\/\/ninjachatter\.com\/dashboard\.html(?:[?#]|$)/.test(url)) {
+                shell.openExternal(url).catch(error => {
+                    console.error('[NinjaChatter] Failed to open dashboard in system browser:', error);
+                });
+                return { action: 'deny' };
+            }
 
             var frame = !shouldUseFramelessForUrl(url);
             log(url);
@@ -10710,8 +10976,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
         }
 
-        // Forward response to popup frame
-        if (mainWindow && mainWindow.webContents) {
+        // A queued settings reply may arrive after the main window closes.
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
             mainWindow.webContents.mainFrame.frames.forEach((frame) => {
                 if (matchesSocialStreamPagePath(frame.url, "popup")) {
                     frame.postMessage("fromMain", value);
@@ -10722,7 +10988,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
         eventRet.returnValue = value;
     });
 
-    ipcMain.on("fromBackgroundResponse", function (eventRet, value) {
+    ipcMain.on("fromBackgroundResponse", function (eventRet, value, reply) {
+        // Only the background may answer a source request. Frame IDs come from main,
+        // and the preload's per-document request ID rejects replies after navigation.
+        if (reply) {
+            if (!mainWindow || mainWindow.isDestroyed() || eventRet.sender !== mainWindow.webContents ||
+                !matchesSocialStreamPagePath(eventRet.senderFrame?.url || '', "background") ||
+                typeof reply.id !== 'string') return;
+            try {
+                const frame = webFrameMain.fromId(reply.processId, reply.routingId);
+                if (frame && !frame.detached) frame.send('ssapp:capture-response', reply.id, value);
+            } catch (_) { } // The source may have closed while background was processing.
+            return; // State was mirrored when background first produced this response.
+        }
         // log("\nBackgroundResponsed");
         //log(value)
 
@@ -11044,8 +11322,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
 
             if (dir !== null) {
-                log("Auto saving too " + dir + item.getFilename());
-                item.setSavePath(dir + item.getFilename());
+                let savePath = dir + item.getFilename();
+                if (isExternalAutoDownload(webContents, args.filesource || Argv.filesource)) {
+                    try {
+                        savePath = reserveAutoDownloadPath(item, savePath);
+                    } catch (error) {
+                        // Let the normal save dialog handle an unreadable directory instead
+                        // of falling back to an unchecked automatic overwrite.
+                        console.warn('[Downloads] Could not choose a safe auto-save path:', error.message);
+                        return;
+                    }
+                }
+                log("Auto saving to " + savePath);
+                item.setSavePath(savePath);
             }
         }
     });
@@ -11404,9 +11693,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
         };
 
         if (args.length >= 2) {
+            options = args[1] || {};
             if (args[1] && args[1].tabID) {
                 tabID = args[1].tabID;
-                options = args[1];
             }
         }
 
@@ -11561,6 +11850,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             let backgroundPayload = dockResponsePayload !== undefined ? dockResponsePayload : args[0];
             backgroundPayload = attachSourceAccountMetaToPayload(backgroundPayload, tabID);
+            let captureReply = null;
+            if (backgroundPayload?.message && typeof options.captureReplyId === 'string' &&
+                options.captureReplyId.length <= 100 && eventRet.senderFrame) {
+                captureReply = {
+                    id: options.captureReplyId,
+                    processId: eventRet.senderFrame.processId,
+                    routingId: eventRet.senderFrame.routingId
+                };
+            }
             if (backgroundPayload !== null) {
                 if (sourceObservationService) {
                     const sourceId = sourceIdForObservedMessage(tabID, eventRet.sender);
@@ -11572,7 +11870,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     if (matchesSocialStreamPagePath(frame.url, "background")) {
                         frame.postMessage("fromMainSender", [backgroundPayload, {
                             ...sender
-                        }]);
+                        }, captureReply]);
                     }
                 });
             }
@@ -11849,6 +12147,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 Accept: "application/json,text/plain;q=0.9,*/*;q=0.8"
             }
         });
+        if (response.status === 429) {
+            const error = new Error("Rate limited by Rumble (HTTP 429). Backing off.");
+            error.status = response.status;
+            error.retryAfter = response.headers.get("Retry-After");
+            throw error;
+        }
         const text = await response.text();
         let data = null;
         try {
@@ -11878,6 +12182,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             return {
                 ok: false,
                 status: error && typeof error.status !== "undefined" ? error.status : undefined,
+                retryAfter: error && error.retryAfter,
                 error: error?.message || "Rumble fetch failed"
             };
         }
@@ -12014,6 +12319,18 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 llmRequestDiagnostics.fail(tracked.diagnostic, error);
                 eventRet.returnValue = normalizeNodeFetchError(error);
             });
+    });
+
+    ipcMain.handle('discover-whatnot-streams', async (event, args) => {
+        if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents
+            || event.senderFrame !== mainWindow.webContents.mainFrame) {
+            throw new Error('Seller discovery requires the app source list.');
+        }
+        try {
+            return await require('./resources/whatnot-discovery').discoverWhatnotStreams(args, session);
+        } catch (error) {
+            return { error: error.message || 'Could not load Whatnot shows. Try Refresh.' };
+        }
     });
 
     // Add async version
@@ -12688,6 +13005,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
 
             const view = new BrowserWindow(windowOptions);
+            attachSourceBasicAuth(view, args, { parent: mainWindow, headless: headlessControlEnabled });
 
 			// Chrome's loading behavior
             view.once('ready-to-show', () => {
@@ -12751,6 +13069,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
             browserViews[view.tabID] = view;
             if (sourceObservationService) sourceObservationService.trackView(view);
             const releaseSignInWindowSessionHooks = registerActivatedWindowSessionHooks(view, args);
+            // Read only the explicit source setting; global defaults must not enable this.
+            const originRule = normalizeMissingOriginRule(args.configs?.[args.platform]?.signin?.fillMissingOrigin);
+            if (originRule) trackSignInOriginRule(view, originRule);
             let releaseSignInClientHintFiltering = () => { };
 
 
@@ -13254,6 +13575,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
         if (args.sourceId) {
             for (const [id, view] of Object.entries(browserViews)) {
                 if (view.args && view.args.sourceId === args.sourceId && !isBrowserViewDestroyed(view)) {
+                    // Standard fallback needs a real capture window, not the failed connector's virtual tab.
+                    if (args.platform === 'tiktok' && !args.wss && view.isTikTokVirtual) {
+                        cleanupConnection(view.wssID);
+                        continue;
+                    }
                     log("Window already exists for source: " + args.sourceId);
                     eventRet.returnValue = id;
                     return;
@@ -13396,6 +13722,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             //log(args);
             view.args = args;
             view.__ss_visible = !!visibibility;
+            attachSourceBasicAuth(view, args, { parent: mainWindow, headless: headlessControlEnabled });
             const releaseActivatedWindowSessionHooks = registerActivatedWindowSessionHooks(view, args);
             view.once('closed', () => {
                 try {
@@ -14189,6 +14516,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 const selectedSourceFiles = explicitSourceFiles.length
                     ? explicitSourceFiles
                     : (args.source ? [normalizeSelectedSourcePath(args.source)] : []);
+                // Standard TikTok capture needs the native gift reader in the same world.
+                const tikTokSourceIndex = selectedSourceFiles.indexOf("sources/tiktok.js");
+                if (tikTokSourceIndex !== -1 && !selectedSourceFiles.includes("sources/inject/tiktok-gift.js")) {
+                    selectedSourceFiles.splice(tikTokSourceIndex, 0, "sources/inject/tiktok-gift.js");
+                }
                 let sourceInjectionHandled = false;
 
                 if (runningLocally && selectedSourceFiles.length && selectedSourceFiles.every((value) => value && !isAbsoluteScriptUrl(value))) {
@@ -14360,9 +14692,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
 									// Use postMessage to communicate with preload script
 									const messageData = b || a;
 									
-									// Handle getSettings synchronously from cached data
+									// Read current settings through the bridge, with a startup snapshot fallback.
 									if (messageData && messageData.getSettings && c) {
-										c(cachedSettings);
+										if (window.ninjafy && window.ninjafy.sendMessage) {
+											window.ninjafy.sendMessage(null, messageData, c, window.__SSAPP_TAB_ID__);
+										} else {
+											c(cachedSettings);
+										}
 										return;
 									}
 
@@ -14647,9 +14983,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
 												// Use postMessage to communicate with preload script
 												const messageData = b || a;
 												
-												// Handle getSettings synchronously from cached data
+												// Read current settings through the bridge, with a startup snapshot fallback.
 												if (messageData && messageData.getSettings && c) {
-													c(cachedSettings);
+													if (window.ninjafy && window.ninjafy.sendMessage) {
+														window.ninjafy.sendMessage(null, messageData, c, window.__SSAPP_TAB_ID__);
+													} else {
+														c(cachedSettings);
+													}
 													return;
 												}
 												try {
@@ -14855,6 +15195,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
 								}
 							}
 						} catch(_){}
+						if (messageData && messageData.message && typeof c === "function" && window.ninjafy && window.ninjafy.sendMessage) {
+							window.ninjafy.sendMessage(null, messageData, c, window.__SSAPP_TAB_ID__);
+							return;
+						}
 						const outgoingMessage = {
 							...messageData
 						};
@@ -14868,6 +15212,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
 							setTimeout(() => c({}), 0);
 						}
 					};
+                    // Electron cannot clone the function assigned by the final statement.
+                    void 0;
                     `;
                     runWithWebContents("Default script injection", (wc) => {
                         setAllFrameInjectionCode(wc, code);
@@ -15128,6 +15474,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
         log("sendToTab-async");
         const view = getActiveBrowserView(args.tab);
         if (view && view.webContents) {
+            if (view.isVirtualSource && view.virtualSourceTarget === 'shareplay') {
+                return args.message === 'getSource' ? 'shareplay' : false;
+            }
             if (view.isVirtualSource && view.virtualSourceTarget === 'discord') {
                 if (args.message === 'getSource') return 'discord';
                 if (args.message?.type === 'SEND_MESSAGE') {
@@ -15638,7 +15987,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
 }
 
 contextMenu({
-    prepend: (defaultActions, params, browserWindow) => [{
+    prepend: (defaultActions, params, browserWindow) => {
+        // The context-menu package's Copy Link action uses the pre-Electron 44 clipboard API.
+        defaultActions.copyLink().click = () => clipboard.write([
+            new electron.ClipboardItem({
+                'text/plain': params.linkURL,
+                'electron application/bookmark': { title: params.linkText, url: params.linkURL }
+            })
+        ]).catch(error => console.error('[Clipboard] Failed to copy link:', error));
+        return [{
         label: "🔙 Go Back",
         // Only show it when right-clicking text
         visible: browserWindow.webContents.navigationHistory.canGoBack(),
@@ -16441,7 +16798,8 @@ contextMenu({
             browserWindow.close(); // hide, and wait 2 second before really closing; this allows for saving of files.
         },
     },
-    ],
+    ];
+    },
 });
 
 app.on("second-instance", (event, commandLine, workingDirectory, argv2) => {
@@ -16513,6 +16871,9 @@ app.on("before-quit", (event) => {
     if (discordIntegration) {
         discordIntegration.closeAll();
     }
+    if (shareplayIntegration) {
+        shareplayIntegration.closeAll();
+    }
 });
 
 app.on("will-quit", () => {
@@ -16540,6 +16901,110 @@ function getSavedSyncPaths(sessionName = currentSessionName) {
 		tmpPath: `${mainPath}.tmp`,
 		bakPath: `${mainPath}.bak`
 	};
+}
+
+function isLegacyUserSessionSettingsPlaceholder(settings) {
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return false;
+    if (!Array.isArray(settings.urls) || !Array.isArray(settings.groups)) return false;
+    const emptyDefaults = new Set(['botReply', 'chatCommand', 'timedMessage', 'midiCommand']);
+    return Object.entries(settings).every(([key, value]) => key === 'urls' || key === 'groups'
+        || (emptyDefaults.has(key) && Array.isArray(value) && value.length === 0));
+}
+
+function hasUserSessionChatSettings(settings) {
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return false;
+    const emptyDefaults = new Set(['botReply', 'chatCommand', 'timedMessage', 'midiCommand']);
+    return Object.entries(settings).some(([key, value]) => {
+        if ((key === 'urls' || key === 'groups') && Array.isArray(value)) return false;
+        return !emptyDefaults.has(key) || !Array.isArray(value) || value.length > 0;
+    });
+}
+
+/**
+ * Recover settings saved before named User Sessions had separate settings files.
+ * A partition's own saved room/password must match; a current setting (even a
+ * false value) blocks recovery. Never use the shared file as a general fallback.
+ */
+function recoverLegacyUserSessionSettings(localStorageData) {
+    if (currentSessionName === 'default' || shouldSuppressCurrentUserSessionPersistence()
+        || !cachedStateReady || getUserSessionStoreValue('legacySettingsMigration')
+        || getUserSessionStoreValue('pendingImport')) return false;
+
+    const finish = (outcome) => {
+        setUserSessionStoreValue('legacySettingsMigration', { version: 1, outcome });
+        return false;
+    };
+    const scopedPaths = getSavedSyncPaths();
+    const scopedCandidates = collectCachedStateCandidates();
+    const scopedStates = [cachedState, ...scopedCandidates.map(candidate => candidate.state)];
+    if (scopedStates.some(state => hasUserSessionChatSettings(state.settings))) return finish('existing-settings');
+
+    const hasScopedPersistence = [scopedPaths.mainPath, scopedPaths.tmpPath, scopedPaths.bakPath].some(file => fs.existsSync(file))
+        || USER_SESSION_PERSISTED_STORE_KEYS.some(key => getUserSessionStoreValue(key) !== undefined);
+    // Empty/cleared settings alone are not evidence of this bug. Only repair the
+    // source-list placeholder produced by the broken upgrade, or a first upgrade.
+    if (hasScopedPersistence && !scopedStates.some(state => isLegacyUserSessionSettingsPlaceholder(state.settings))) {
+        return finish('no-upgrade-placeholder');
+    }
+    const localState = parseCachedStateFromLocalStorageRecord(localStorageData);
+    const room = normalizeStreamIdValue(localState?.streamID);
+    if (!room) return finish('no-session-identity');
+    const aliasRoom = normalizeStreamIdValue(localStorageData.ssninja_stream_id);
+    if (aliasRoom && aliasRoom !== room) return finish('conflicting-session-identity');
+    const password = normalizePasswordValue(localState.password);
+    if (scopedStates.some(state => {
+        const scopedRoom = normalizeStreamIdValue(state.streamID);
+        return (scopedRoom && scopedRoom !== room)
+            || (Object.prototype.hasOwnProperty.call(state, 'password') && normalizePasswordValue(state.password) !== password);
+    })) return finish('conflicting-session-identity');
+
+    let source = 'session-localStorage';
+    let recoveredSettings = localState.settings;
+    if (!hasUserSessionChatSettings(recoveredSettings)) {
+        const legacy = readCachedStateFileCandidate(getSavedSyncPaths('default').mainPath, 'legacy shared settings');
+        if (!legacy || normalizeStreamIdValue(legacy.state.streamID) !== room
+            || normalizePasswordValue(legacy.state.password) !== password
+            || !hasUserSessionChatSettings(legacy.state.settings)) return finish('no-matching-legacy-settings');
+        source = 'legacy-shared-file';
+        recoveredSettings = legacy.state.settings;
+    }
+
+    // Keep a separate, never-overwritten copy of the target's state and backups.
+    // The original shared file is read only and remains available for downgrade.
+    const backupPath = `${scopedPaths.mainPath}.before-legacy-recovery`;
+    const backup = {
+        version: 1,
+        session: currentSessionName,
+        savedAt: new Date().toISOString(),
+        cachedState,
+        files: {},
+        store: {}
+    };
+    for (const file of [scopedPaths.mainPath, scopedPaths.tmpPath, scopedPaths.bakPath]) {
+        if (fs.existsSync(file)) backup.files[path.basename(file)] = fs.readFileSync(file, 'utf8');
+    }
+    for (const key of USER_SESSION_PERSISTED_STORE_KEYS) {
+        const value = getUserSessionStoreValue(key);
+        if (value !== undefined) backup.store[key] = value;
+    }
+    try {
+        fs.writeFileSync(backupPath, JSON.stringify(backup), { flag: 'wx' });
+    } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        // An interrupted attempt may have saved its backup before persisting
+        // the recovered settings. Reuse that backup without ever replacing it.
+        const previous = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+        if (previous.version !== 1 || previous.session !== currentSessionName
+            || !previous.files || !previous.store || !previous.cachedState) throw error;
+    }
+
+    const next = { ...localState, ...cachedState, settings: recoveredSettings };
+    const result = persistCachedStateSafely(next, { reason: 'legacy-user-session-migration' });
+    if (!result.saved) return false;
+    updateLocalStorageBackup(buildLocalStorageMirrorPayload(next));
+    setUserSessionStoreValue('legacySettingsMigration', { version: 1, outcome: 'recovered', source });
+    console.log('[User Sessions] Recovered settings for the active named session.');
+    return true;
 }
 
 function getCachedStateSettingsKeyCount(state) {
@@ -18214,6 +18679,7 @@ app.on("ready", () => {
     });
 
     app.on("browser-window-focus", (event, win) => {
+        syncAlwaysOnTopMenu(win);
         // Initially keep window non-clickable
         //win.setIgnoreMouseEvents(true);
 
@@ -18245,6 +18711,11 @@ app.on("activate", function () {
 });
 
 app.on('browser-window-created', (event, window) => {
+    window.on('always-on-top-changed', () => {
+        if (window.isFocused()) syncAlwaysOnTopMenu(window);
+    });
+    window.on('closed', () => syncAlwaysOnTopMenu());
+
     window.webContents.on('will-prevent-unload', (event) => {
         event.preventDefault();
     });
@@ -19237,6 +19708,7 @@ async function sendErrorReportingEnabledSnapshot() {
             {
                 trigger: 'enable_error_reporting',
                 platform: process.platform,
+                backgroundDiagnostics: await getBackgroundReportContext(),
                 tiktokDiagnostics: getTikTokDiagnosticReportContext(),
                 llmDiagnostics: llmRequestDiagnostics.getRecent()
             }
@@ -19300,6 +19772,7 @@ async function promptAndSendManualIssueReport() {
                 trigger: 'manual_issue_report',
                 description: cleanedDescription,
                 platform: process.platform,
+                backgroundDiagnostics: await getBackgroundReportContext(),
                 tiktokDiagnostics: getTikTokDiagnosticReportContext(),
                 llmDiagnostics: llmRequestDiagnostics.getRecent()
             }
@@ -19314,6 +19787,15 @@ async function promptAndSendManualIssueReport() {
     } catch (error) {
         await showDiagnosticReportUploadError(error);
     }
+}
+
+function syncAlwaysOnTopMenu(window = BrowserWindow.getFocusedWindow()) {
+    const item = Menu.getApplicationMenu()?.getMenuItemById('window-always-on-top');
+    if (!item) return;
+
+    const hasWindow = !!window && !window.isDestroyed();
+    item.enabled = hasWindow;
+    item.checked = hasWindow && window.isAlwaysOnTop();
 }
 
 function createMenu() {
@@ -19733,15 +20215,19 @@ function createMenu() {
                 type: 'separator'
             },
             {
+                id: 'window-always-on-top',
                 label: 'Always on Top',
                 type: 'checkbox',
-                checked: mainWindow ? mainWindow.isAlwaysOnTop() : false,
-                click: () => {
-                    if (mainWindow) {
-                        const shouldPin = !mainWindow.isAlwaysOnTop();
-                        mainWindow.setAlwaysOnTop(shouldPin);
-                        mainWindow.setVisibleOnAllWorkspaces(shouldPin);
+                click: (menuItem, window) => {
+                    if (!window || window.isDestroyed()) {
+                        syncAlwaysOnTopMenu();
+                        return;
                     }
+
+                    const shouldPin = !window.isAlwaysOnTop();
+                    window.setAlwaysOnTop(shouldPin);
+                    window.setVisibleOnAllWorkspaces(shouldPin);
+                    syncAlwaysOnTopMenu(window);
                 }
             },
             {
@@ -19933,6 +20419,7 @@ function createMenu() {
 
     const menu = Menu.buildFromTemplate(template);
     Menu.setApplicationMenu(menu);
+    syncAlwaysOnTopMenu();
 }
 
 electron.powerMonitor.on("on-battery", () => {
@@ -20265,6 +20752,8 @@ async function ensureTikTokSigningWindow(targetUrl, options = {}) {
         } catch (_) { }
         attachSigningWindow(tiktokSigningWindow);
         installTikTokSigningWindowPopupHandling(tiktokSigningWindow);
+        await tiktokSigningWindow.loadURL('about:blank');
+        await tikTokSignerHelper.observeChatBootstrap(tiktokSigningWindow);
         await tiktokSigningWindow.loadURL(landingUrl);
     } else {
         installTikTokSigningWindowPopupHandling(tiktokSigningWindow);
@@ -20419,25 +20908,29 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     const sessionId = rawSessionId || null;
     const ttTargetIdc = rawTtTargetIdc || null;
     const signing = normalizeTikTokSigningArgs(args?.signing);
-    const signingProvider = args?.signingProvider || 'auto';
+    const requestedStrategy = args && args.strategy === 'websocket' ? 'websocket' : 'legacy';
+    const signingProvider = args?.signingProvider === 'tikfinity' && requestedStrategy === 'legacy'
+        ? 'auto' : (args?.signingProvider || 'auto');
     const autoActivate = args?.autoActivate === true;
+    if (signingProvider === 'tikfinity' && Object.values(websocketConnections).some(connection =>
+        connection && !connection.isStopped && connection.signingProvider === 'tikfinity'
+        && connection.sourceId !== sourceIdFromRenderer)) {
+        throw new Error('TikFinity Desktop is already captured by another source. Stop that source first to avoid duplicate messages.');
+    }
     
     // Debug: Log signing config received from renderer
     console.log('[TikTok] Signing config received:', {
-        rawSigning: args?.signing,
-        normalizedSigning: signing,
         signingProvider,
         hasApiKey: !!(signing && signing.apiKey),
         hasServiceUrl: !!(signing && signing.serviceUrl)
     });
 
-    const requestedStrategy = args && args.strategy === 'websocket' ? 'websocket' : 'legacy';
     const manager = new ConnectionManager(
         username,
         wssID,
         sessionId,
         ttTargetIdc,
-        { forceLegacyConnector: requestedStrategy === 'legacy', signing, signingProvider, autoActivate }
+        { forceLegacyConnector: requestedStrategy === 'legacy', signing, signingProvider, autoActivate, autoMode: args.autoMode }
     );
     if (args && args.replyOnly === true) {
         manager.replyOnly = true;
@@ -20528,7 +21021,7 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     } catch (e) {
         console.error('Error creating TikTok connection:', e);
         try {
-            cleanupConnection(wssID);
+            cleanupConnection(manager.wssID);
         } catch (cleanupError) {
             console.warn('[TikTok] Failed to clean up failed connection:', cleanupError?.message || cleanupError);
         }
@@ -20536,27 +21029,40 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
         throw e;
     }
 
+    // This manager has already cleaned up its own connection. Do not return a
+    // stale virtual tab handle (or clean up another connection created meanwhile).
+    if (manager.eulerRetriesStopped && manager.isStopped) {
+        throw new Error(`SSAPP_TIKTOK_EULER_PAUSED: ${manager.eulerStopReason || 'Euler retries paused to protect your quota.'}`);
+    }
+    if (manager.isStopped) {
+        throw new Error(`SSAPP_TIKTOK_STOPPED: ${manager.terminalError || 'TikTok connection stopped.'}`);
+    }
+
     // Return the virtual tab ID instead of wssID so it can be used with browserViews
     return virtualTabId;
 });
 
 ipcMain.on("disconnectTikTokConnection", function (eventRet, args) {
-    if (!args.wssID) {
+    const requestedWssID = args.wssID || getActiveTikTokWssIdForSource(args.sourceId);
+    if (!requestedWssID) {
         eventRet.returnValue = false;
         return;
     }
 
     try {
-        const normalizedWssID = normalizeTikTokConnectionHandle(args.wssID) || args.wssID;
-        const managerMeta = websocketConnections[normalizedWssID] || websocketConnections[args.wssID];
+        const normalizedWssID = normalizeTikTokConnectionHandle(requestedWssID) || requestedWssID;
+        const managerMeta = websocketConnections[normalizedWssID] || websocketConnections[requestedWssID];
         const sourceId = managerMeta && managerMeta.sourceId ? managerMeta.sourceId : null;
         try {
-            // Notify renderer to clear UI/countdowns
-            mainWindow.webContents.send('tiktokConnectionStatus', {
-                wssID: normalizedWssID,
-                status: 'stopped_by_user',
-                sourceId
-            });
+            // Pending source cancellation already updates the renderer and can
+            // accompany a switch to Standard. Do not overwrite its newer state.
+            if (args.wssID) {
+                mainWindow.webContents.send('tiktokConnectionStatus', {
+                    wssID: normalizedWssID,
+                    status: 'stopped_by_user',
+                    sourceId
+                });
+            }
         } catch (_) { }
         cleanupConnection(normalizedWssID);
         eventRet.returnValue = true;
@@ -20609,7 +21115,7 @@ ipcMain.handle("tiktokShowSigningWindow", async (_event, args = {}) => {
         const landingUrl = typeof args?.landingUrl === 'string' && args.landingUrl.trim()
             ? args.landingUrl.trim()
             : null;
-        await ensureTikTokSigningWindow(landingUrl, { allowNavigation: Boolean(landingUrl) });
+        await ensureTikTokSigningWindow(landingUrl, { mode: 'login', allowNavigation: Boolean(landingUrl) });
         return { success: true, state: getTikTokSigningWindowState() };
     } catch (error) {
         console.error('[TikTok] Failed to show signing window:', error);

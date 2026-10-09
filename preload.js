@@ -599,6 +599,9 @@ window.addEventListener('message', (event) => {
 		delete messageData._messageId;
 		
 		if (needsResponse && messageId) {
+			if (sendCaptureWithResponse(messageData, response => {
+				window.postMessage({ _isResponse: true, _messageId: messageId, response }, '*');
+			})) return;
 			// Send with callback expectation
 			const response = ipcRenderer.sendSync('postMessage', messageData);
 			
@@ -652,21 +655,55 @@ window.addEventListener('error', (event) => {
 	return ipcRenderer.send('alert', {title, val}); // call if needed in the future
 }; */
 
-var actualHandler = null;
+const incomingMessageHandlers = [];
 var doSomethingInWebApp = function(callback){
-	if (callback){
-		actualHandler = callback;
+	if (typeof callback === 'function' && !incomingMessageHandlers.includes(callback)) {
+		incomingMessageHandlers.push(callback);
 	}
 };
 
-// Create a wrapper that always delegates to the current handler
 var doSomethingInWebAppWrapper = function(message, sender, sendResponse) {
-	if (actualHandler) {
-		try {
-			actualHandler(message, sender, sendResponse);
-		} catch (_) {}
-	}
+	let answered = false;
+	const respond = function(response) {
+		if (answered) return;
+		answered = true;
+		sendResponse(response);
+	};
+	incomingMessageHandlers.slice().forEach(function(callback) {
+		try { callback(message, sender, respond); } catch (_) {}
+	});
 };
+
+// Capture callbacks need the background's answer, not the immediate main-process ack.
+const pendingCaptureReplies = new Map();
+const captureReplyPrefix = Date.now().toString(36) + Math.random().toString(36).slice(2) + ':';
+let captureReplyCounter = 0;
+
+ipcRenderer.on('ssapp:capture-response', (_event, requestId, response) => {
+	const pending = pendingCaptureReplies.get(requestId);
+	if (!pending) return;
+	pendingCaptureReplies.delete(requestId);
+	clearTimeout(pending.timer);
+	pending.callback(response);
+});
+
+function sendCaptureWithResponse(data, callback) {
+	if (!data || !data.message || typeof data.message !== 'object' || typeof callback !== 'function') return false;
+	const requestId = captureReplyPrefix + (++captureReplyCounter);
+	const timer = setTimeout(() => {
+		pendingCaptureReplies.delete(requestId);
+		callback({ error: 'Background capture response timed out' });
+	}, 30000);
+	pendingCaptureReplies.set(requestId, { callback, timer });
+	try {
+		ipcRenderer.send('postMessage', data, { captureReplyId: requestId });
+	} catch (error) {
+		pendingCaptureReplies.delete(requestId);
+		clearTimeout(timer);
+		callback({ error: error.message });
+	}
+	return true;
+}
 
 function extractBackgroundCommandRequest(data) {
 	if (!data || typeof data !== 'object') return null;
@@ -757,6 +794,21 @@ const localMediaBridge = {
 	rotateToken: async () => ipcRenderer.invoke('local-media:rotate-token'),
 };
 
+const shareplayBridge = {
+	accounts: () => ipcRenderer.invoke('shareplay-accounts'),
+	signIn: (payload) => ipcRenderer.invoke('shareplay-signin', payload),
+	cancelSignIn: () => ipcRenderer.invoke('shareplay-cancel-signin'),
+	forget: (authRef) => ipcRenderer.invoke('shareplay-forget', authRef),
+	connect: (payload) => ipcRenderer.invoke('shareplay-connect', payload),
+	disconnect: (sourceId) => ipcRenderer.invoke('shareplay-disconnect', sourceId),
+	onStatus(callback) {
+		if (typeof callback !== 'function') return () => {};
+		const listener = (_event, status) => callback(status);
+		ipcRenderer.on('shareplayConnectionStatus', listener);
+		return () => ipcRenderer.removeListener('shareplayConnectionStatus', listener);
+	},
+};
+
 const discordBridge = {
 	listBots: async () => ipcRenderer.invoke('discord-bots-list'),
 	saveBot: async (payload = {}) => ipcRenderer.invoke('discord-bot-save', payload),
@@ -804,6 +856,7 @@ function configureContextBridge(){
 			if (tabID !== false && tabID !== null && tabID !== undefined) {
 				authenticatedData.__tabID__ = tabID;
 			}
+			if (sendCaptureWithResponse(authenticatedData, callback)) return;
 			
 			if (callback) {
 			  const response = ipcRenderer.sendSync('postMessage', authenticatedData);
@@ -825,6 +878,7 @@ function configureContextBridge(){
 		  localMedia: localMediaBridge,
 
 		  discord: discordBridge,
+		  shareplay: shareplayBridge,
 
 		  getSttCapabilities: async () => {
 			return await ipcRenderer.invoke('stt:get-capabilities');
@@ -1068,6 +1122,7 @@ try {
 			localMedia: localMediaBridge,
 
 			discord: discordBridge,
+			shareplay: shareplayBridge,
 			
 			sendMessage: (a, b, c, tabID) => {
 				const messageData = b || a;
@@ -1081,6 +1136,7 @@ try {
 				if (tabID !== undefined && tabID !== null && tabID !== false) {
 					outgoingData.__tabID__ = tabID;
 				}
+				if (sendCaptureWithResponse(outgoingData, c)) return;
 				
 				// If callback is provided, use synchronous IPC to get response
 				if (c) {
@@ -1096,7 +1152,7 @@ try {
 			
 			// Add other necessary methods
 			exposeDoSomethingInWebApp: (callback) => {
-				window.doSomethingInWebApp = callback;
+				doSomethingInWebApp(callback);
 			},
 			
 			sendDeviceList: (response) => {

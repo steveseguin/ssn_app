@@ -495,6 +495,26 @@ async function runSetupWorkflow() {
 
 	await verifyRelayAndTextOnly(active);
 
+	// Reloading the app UI must retain the native connection's handles, otherwise
+	// Stop/Delete can leave its virtual dock destination and Gateway running.
+	const identifiesBeforeReload = identifyPayloads.length;
+	const socketsBeforeReload = [...gatewaySockets];
+	await execInMain('setTimeout(() => location.reload(), 0); true;');
+	await sleep(500);
+	await waitForApp();
+	await waitFor(() => execInMain("ipcRenderer.listenerCount('tiktokConnectionStatus') > 0"), 'source initialization after reload');
+	const afterReload = await execInMain(`stateManager.getSource('${source.id}')`);
+	assert.strictEqual(afterReload.vid, active.vid, 'Reload lost the native Discord virtual tab ID.');
+	assert.strictEqual(afterReload.wssId, active.wssId, 'Reload lost the native Discord connection handle.');
+	assert.deepStrictEqual([...gatewaySockets], socketsBeforeReload, 'Reload replaced the running Discord Gateway.');
+	assert.strictEqual(identifyPayloads.length, identifiesBeforeReload, 'Reload reconnected an already-running bot.');
+	const sentBeforeReloadCheck = outboundMessages.length;
+	await execInMain(`require('electron').ipcRenderer.sendSync('sendToTab', {
+		tab: ${active.vid}, message: { text: 'Still connected after UI reload' }
+	}); true;`);
+	await waitFor(() => outboundMessages.length > sentBeforeReloadCheck, 'Discord outbound message after reload');
+	console.log('Discord native connection and outbound messaging survive UI reload.');
+
 	await execInMain(`stateManager.updateSource('${source.id}', { autoActivate: true }); true;`);
 	await sleep(1200);
 	return source.id;
@@ -619,6 +639,10 @@ async function closeFixtures() {
 
 async function main() {
 	try {
+		// Browser capture follows the current SSN state, including on a fresh profile.
+		fs.writeFileSync(path.join(profileDir, 'savedSync.json'), JSON.stringify({
+			streamID: 'discord_native_' + Date.now(), state: true, settings: {},
+		}));
 		remotePort = await getFreePort();
 		await startDiscordFixture();
 		launchApp();

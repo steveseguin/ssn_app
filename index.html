@@ -8,6 +8,18 @@
         content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=yes" />
     <meta http-equiv="Content-Security-Policy"
         content="script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; worker-src 'self' 'unsafe-inline' 'unsafe-eval' blob:;" />
+    <script>
+        // Read this partition's legacy settings before source-list initialization.
+        // Recovery is checked once and is restricted to this main app page.
+        try {
+            const legacySessionStorage = {};
+            for (const key of ['settings', 'streamID', 'ssninja_stream_id', 'password', 'state', 'ssninja_state']) {
+                const value = localStorage.getItem(key);
+                if (value !== null) legacySessionStorage[key] = value;
+            }
+            require('electron').ipcRenderer.sendSync('user-session:recover-legacy-settings', legacySessionStorage);
+        } catch (_) { }
+    </script>
     <link rel="stylesheet" type="text/css" href="main.css" />
     <script src="resources/social_stream_fallback/main/thirdparty/vdoninja-sdk.js"></script>
     <script>
@@ -135,59 +147,63 @@
                             src="https://cache.socialstream.ninja/sources/images/youtube.png" class="icon" />YouTube</button></span>
                 <span><button onclick="newSourcePrompt('twitch');" data-source-type="twitch"><img
                             src="https://cache.socialstream.ninja/sources/images/twitch.png" class="icon" />Twitch</button></span>
+                <span><button onclick="newSourcePrompt('tiktok');" data-source-type="tiktok"><img
+                            src="https://cache.socialstream.ninja/sources/images/tiktok.png" class="icon" />TikTok</button></span>
+                <span><button onclick="newSourcePrompt('facebook');" data-source-type="facebook"><img
+                            src="https://cache.socialstream.ninja/sources/images/facebook.png" class="icon" />Facebook</button></span>
+                <span><button onclick="newSourcePrompt('instagramlive');" data-source-type="instagram"><img
+                            src="https://cache.socialstream.ninja/sources/images/instagramlive.png"
+                            class="icon" />Instagram Live</button></span>
                 <span><button onclick="newSourcePrompt('kick');" data-source-type="kick"><img
                             src="https://cache.socialstream.ninja/sources/images/kick.png" class="icon" />Kick</button></span>
                 <span><button onclick="showDiscordAddSourcePrompt();" data-source-type="discord"><img
                             src="https://cache.socialstream.ninja/sources/images/discord.png" class="icon" />Discord</button></span>
-                <span><button onclick="newSourcePrompt('instagramlive');" data-source-type="instagram"><img
-                            src="https://cache.socialstream.ninja/sources/images/instagramlive.png"
-                            class="icon" />Instagram Live</button></span>
-                <span><button onclick="newSourcePrompt('facebook');" data-source-type="facebook"><img
-                            src="https://cache.socialstream.ninja/sources/images/facebook.png" class="icon" />Facebook</button></span>
-                <span><button onclick="newSourcePrompt('tiktok');" data-source-type="tiktok"><img
-                            src="https://cache.socialstream.ninja/sources/images/tiktok.png" class="icon" />TikTok</button></span>
                 <span><button onclick="newSourcePrompt('x');"><img src="https://cache.socialstream.ninja/sources/images/x.png"
                             class="icon" />X.com</button></span>
-                <span><button onclick="newSourcePrompt('mixcloud');"><img
-                            src="https://cache.socialstream.ninja/sources/images/mixcloud.png" class="icon" />Mixcloud</button></span>
-                <span><button onclick="newSourcePrompt('twitcasting');"><img
-                            src="https://cache.socialstream.ninja/sources/images/twitcasting.png" class="icon" />TwitCasting</button></span>
-                <span><button onclick="newSourcePrompt('younow');"><img
-                            src="https://cache.socialstream.ninja/sources/images/younow.png" class="icon" />YouNow</button></span>
-                <span><button onclick="newSourcePrompt('chzzk');"><img
-                            src="https://cache.socialstream.ninja/sources/images/chzzk.png" class="icon" />CHZZK</button></span>
-                <span><button onclick="newSourcePrompt('nimo');"><img
-                            src="https://cache.socialstream.ninja/sources/images/nimo.png" class="icon" />Nimo</button></span>
-                <span><button onclick="newSourcePrompt('sooplive');"><img
-                            src="https://cache.socialstream.ninja/sources/images/sooplive.png" class="icon" />SOOP Live</button></span>
                 <span><button onclick="showRumbleAddSourcePrompt();" data-source-type="rumble"><img
                             src="https://cache.socialstream.ninja/sources/images/rumble.png" class="icon" />Rumble</button></span>
-                <span><button onclick="newSourcePrompt('beamstream');"><img
-                            src="https://cache.socialstream.ninja/sources/images/beamstream.png" class="icon" />Beamstream</button></span>
-                <span><button onclick="newSourcePrompt('parti');"><img
-                            src="https://cache.socialstream.ninja/sources/images/parti.png" class="icon" />Parti</button></span>
-                <span><button onclick="newSourcePrompt('arenasocial');"><img
-                            src="https://cache.socialstream.ninja/sources/images/arenasocial.png" class="icon" />Arena Social</button></span>
-                <span class="hidden"><button onclick="newSourcePrompt('pilled');"><img
-                            src="https://cache.socialstream.ninja/sources/images/pilled.png" class="icon" />Pilled</button></span>
                 <span><button onclick="showBilibiliSourceSetup();" data-source-type="bilibili"><img
                             src="https://cache.socialstream.ninja/sources/images/bilibili.png" class="icon" />Bilibili</button></span>
+                <span><button onclick="newSourcePrompt('chzzk');"><img
+                            src="https://cache.socialstream.ninja/sources/images/chzzk.png" class="icon" />CHZZK</button></span>
+                <span><button onclick="newSourcePrompt('sooplive');"><img
+                            src="https://cache.socialstream.ninja/sources/images/sooplive.png" class="icon" />SOOP Live</button></span>
+                <span><button onclick="newSourcePrompt('nimo');"><img
+                            src="https://cache.socialstream.ninja/sources/images/nimo.png" class="icon" />Nimo</button></span>
                 <span><button onclick="showNamedSourceSetup('bigo');" data-source-type="bigo"><img
                             src="https://cache.socialstream.ninja/sources/images/bigo.png" class="icon" />BIGO Live</button></span>
-                <span><button onclick="showNamedSourceSetup('loco');" data-source-type="loco"><img
-                            src="https://cache.socialstream.ninja/sources/images/loco.png" class="icon" />Loco</button></span>
-                <span><button onclick="showNamedSourceSetup('vkvideo');" data-source-type="vkvideo"><img
-                            src="https://cache.socialstream.ninja/sources/images/vkvideo.png" class="icon" />VK Video Live</button></span>
                 <span><button onclick="showEbayAddSourcePrompt();" data-source-type="ebay"><img
                             src="https://cache.socialstream.ninja/sources/images/ebay.png" class="icon" />eBay Live</button></span>
+                <span><button onclick="showWhatnotSourceSetup();" data-source-type="whatnot"><img
+                            src="https://cache.socialstream.ninja/sources/images/whatnot.png" class="icon" />Whatnot</button></span>
+                <span><button onclick="newSourcePrompt('twitcasting');"><img
+                            src="https://cache.socialstream.ninja/sources/images/twitcasting.png" class="icon" />TwitCasting</button></span>
+                <span><button onclick="newSourcePrompt('mixcloud');"><img
+                            src="https://cache.socialstream.ninja/sources/images/mixcloud.png" class="icon" />Mixcloud</button></span>
+                <span><button onclick="newSourcePrompt('younow');"><img
+                            src="https://cache.socialstream.ninja/sources/images/younow.png" class="icon" />YouNow</button></span>
+                <span><button onclick="showNamedSourceSetup('loco');" data-source-type="loco"><img
+                            src="https://cache.socialstream.ninja/sources/images/loco.png" class="icon" />Loco</button></span>
+                <span><button onclick="newSourcePrompt('picarto');"><img
+                            src="https://cache.socialstream.ninja/sources/images/picarto.png" class="icon" />Picarto</button></span>
+                <span><button onclick="showSharePlaySetup();" data-source-type="shareplay"><img
+                            src="https://cache.socialstream.ninja/sources/images/shareplay.png" class="icon" />SharePlay</button></span>
+                <span><button onclick="newSourcePrompt('parti');"><img
+                            src="https://cache.socialstream.ninja/sources/images/parti.png" class="icon" />Parti</button></span>
+                <span><button onclick="newSourcePrompt('beamstream');"><img
+                            src="https://cache.socialstream.ninja/sources/images/beamstream.png" class="icon" />Beamstream</button></span>
+                <span><button onclick="newSourcePrompt('arenasocial');"><img
+                            src="https://cache.socialstream.ninja/sources/images/arenasocial.png" class="icon" />Arena Social</button></span>
                 <span><button onclick="newSourcePrompt('vpzone');" data-source-type="vpzone"><img
                             src="https://cache.socialstream.ninja/sources/images/vpzone.png" class="icon" />VPZONE</button></span>
                 <span><button onclick="newSourcePrompt('velora');" data-source-type="velora"><img
                             src="https://velora.tv/favicon.ico" class="icon" />Velora</button></span>
-                <span><button onclick="newSourcePrompt('picarto');"><img
-                            src="https://cache.socialstream.ninja/sources/images/picarto.png" class="icon" />Picarto</button></span>
                 <span><button onclick="newOtherSourcePrompt('peertube');"><img
                             src="https://cache.socialstream.ninja/sources/images/peertube.png" class="icon" />Peertube</button></span>
+                <span><button onclick="showNamedSourceSetup('vkvideo');" data-source-type="vkvideo"><img
+                            src="https://cache.socialstream.ninja/sources/images/vkvideo.png" class="icon" />VK Video Live</button></span>
+                <span class="hidden"><button onclick="newSourcePrompt('pilled');"><img
+                            src="https://cache.socialstream.ninja/sources/images/pilled.png" class="icon" />Pilled</button></span>
                 <span><button title="Add a chat source that isn't listed by providing the chat URL"
                         onclick="newOtherSourcePrompt();" data-source-type="other"><img
                             src="https://cache.socialstream.ninja/sources/images/unknown.png" class="icon" />Add other source</button></span>
@@ -780,8 +796,10 @@
     <script type="text/javascript" src="thumbnail.js"></script>
     <script type="text/javascript" src="youtube.js"></script>
     <script type="text/javascript" src="ebay.js"></script>
+    <script type="text/javascript" src="seller-streams.js"></script>
     <script type="text/javascript" src="source-setup.js"></script>
     <script type="text/javascript" src="discord.js"></script>
+    <script type="text/javascript" src="resources/shareplay-ui.js"></script>
     <!-- Temporarily disabled performance monitor to fix loading issue -->
     <!-- <script type="text/javascript" src="performance-monitor.js"></script> -->
     <script>
@@ -829,6 +847,9 @@
         }
         var isBetaMode = false;
         const pendingTikTokStatusQueue = new Map();
+        const tikTokTroubleshooting = new Map();
+        const tikTokTroubleshootingTools = typeof require === 'function'
+            ? require('./resources/tiktok-troubleshooting') : null;
         var session = {};
         var ipcRenderer = null;
         let autoActivateCaptureEnsured = false;
@@ -983,6 +1004,31 @@
                 return input;
             }
             return (input.endsWith('/') || input.endsWith('\\')) ? input : `${input}/`;
+        }
+
+        function updateFrameLocalServerConnection(frame) {
+            if (!frame || !frame.getAttribute('src')) return false;
+            try {
+                const url = new URL(frame.src);
+                if (!/\/(background|popup)\.html$/.test(url.pathname)) return false;
+                // A relay toggle must not reselect a website mirror/database.
+                // Keep every other parameter and the already selected origin.
+                if (localServer) {
+                    url.searchParams.set('localserver', '');
+                    if (localWebSocketPort !== 3000) url.searchParams.set('localserverport', String(localWebSocketPort));
+                    else url.searchParams.delete('localserverport');
+                } else {
+                    url.searchParams.delete('localserver');
+                    url.searchParams.delete('localserverport');
+                }
+                if (frame.src !== url.href) {
+                    if (frame.id === 'frame1') postLanguageToPopupFrameAfterLoad(frame);
+                    frame.src = url.href;
+                }
+                return true;
+            } catch (_) {
+                return false;
+            }
         }
 
         function getDevSocialStreamBase() {
@@ -1681,9 +1727,25 @@
             return "";
         }
 
+        function normalizeWhatnotShowId(value) {
+            let showId = typeof value === 'string' ? value.trim() : '';
+            const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+            if (uuid.test(showId)) return showId.toLowerCase();
+            try {
+                const url = new URL(/^https?:\/\//i.test(showId) ? showId : 'https://' + showId);
+                if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.port
+                    || !/^(?:www\.)?whatnot\.com$/i.test(url.hostname)) return '';
+                const match = url.pathname.match(/^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?(?:dashboard\/)?live\/([^/]+)\/?$/i);
+                return match && uuid.test(match[1]) ? match[1].toLowerCase() : '';
+            } catch (_) {
+                return '';
+            }
+        }
+
         function getWebSocketChannelForSource(source) {
             if (!source || typeof source !== "object") return "";
             if (source.target === "vpzone") return getVpzoneChannelForSource(source);
+            if (source.target === 'whatnot') return normalizeWhatnotShowId(source.url || source.videoId || source.username);
             const sourceUrl = source.url || source.URL || "";
             const urlIdentifier = extractSourceUrlIdentifier(sourceUrl);
             const storedIdentifier = getExplicitSourceIdentifier(source, sourceUrl);
@@ -1972,7 +2034,7 @@
 
             // Update data-target attribute
             element.dataset.target = source.target;
-            element.querySelector('[data-ebay-choose-stream]')?.classList.toggle('hidden', source.target !== 'ebay');
+            element.querySelector('[data-ebay-choose-stream]')?.classList.toggle('hidden', source.target !== 'ebay' || !!source.groupId);
 
             element.querySelector("[data-sourceicon]").src = getSourceIconUrl(source.target);
             element.querySelector("[data-sourceicon]").title = source.target || "unknown";
@@ -2014,6 +2076,8 @@
 
             // Hide sign-in button when in websocket mode
             const effectiveMode = getEffectiveConnectionMode(source);
+            const isYouTubeStandard = (source.target === 'youtube' || source.target === 'youtubeshorts') && effectiveMode === 'classic';
+            const hasYouTubeStandardWindow = isYouTubeStandard && !!source.vid;
             const isTikTokLocalSigner = source.target === 'tiktok' && source.tiktokSigningProvider === 'local';
 
             const signinButton = element.querySelector("[data-signin]");
@@ -2059,7 +2123,7 @@
             if (visibilityControl) {
                 const isTikTokApiMode = source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy');
                 const showDuringConnect = (effectiveMode === 'websocket' && !!source.vid);
-                const showWhenActive = (source.status === 'active' && !!source.vid);
+                const showWhenActive = (source.status === 'active' && !!source.vid) || hasYouTubeStandardWindow;
                 const showManualTikTokStandardWindow = hasManualTikTokStandardCaptureWindow(source);
                 const hide = (!isTikTokLocalSigner && isTikTokApiMode) || (!isTikTokApiMode && !showDuringConnect && !showWhenActive && !showManualTikTokStandardWindow);
                 visibilityControl.classList.toggle('hidden', hide);
@@ -2116,8 +2180,10 @@
                     : (source.status === 'active' || source.status === 'activating' || !!source.vid || !!source.tiktokWssId);
                 stopButton.classList.toggle('hidden', !showStop);
                 if (isTikTokLocalSigner && source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy')) {
+                    stopButton.title = 'Close TikTok signing window';
                     stopButton.onclick = () => tiktokSigningWindowControl(source.id, 'stop');
                 } else {
+                    if (source.target === 'tiktok') stopButton.title = 'Stop and close this source';
                     stopButton.onclick = () => stopThis(stopButton);
                 }
             }
@@ -2168,18 +2234,21 @@
             const shouldManageConnectionStatus = effectiveMode === 'websocket'
                 || effectiveMode === 'tiktok-websocket'
                 || effectiveMode === 'tiktok-legacy'
-                || source.target === 'tiktok';
+                || source.target === 'tiktok'
+                || isYouTubeStandard;
             const hasTikTokConnectedContext = source.target === 'tiktok'
                 && !!(source.vid || activeWssHandle || source.tiktokConnectionMethod);
             if (shouldManageConnectionStatus) {
-                if (source.status === 'active' && (activeWssHandle || hasTikTokConnectedContext)) {
+                if (isYouTubeStandard && source.status === 'error' && source.error) {
+                    updateConnectionStatus(element, 'error', source.error);
+                } else if (source.status === 'active' && (activeWssHandle || hasTikTokConnectedContext || hasYouTubeStandardWindow)) {
                     updateConnectionStatus(element, 'connected');
                 } else if (source.status === 'activating') {
                     // Show connecting for supported WSS sources.
                     const t = (source.target || '').toLowerCase();
                     const supports = t === 'tiktok' || t.startsWith('youtube') || t === 'twitch' || t === 'vpzone' || t === 'velora';
                     if (supports) updateConnectionStatus(element, 'connecting');
-                } else if (source.status === 'inactive' && wsStatusElement && !wsStatusElement.classList.contains('error')) {
+                } else if (source.status === 'inactive' && wsStatusElement && (isYouTubeStandard || !wsStatusElement.classList.contains('error'))) {
                     updateConnectionStatus(element, 'clear');
                 }
             } else {
@@ -2197,7 +2266,7 @@
                 setActivateButtonConnecting(element);
                 stopButton?.classList.add('hidden');
                 if (reloadButton) reloadButton.classList.add('hidden');
-            } else if (source.status === 'active' && (source.vid || activeWssHandle)) {
+            } else if ((source.status === 'active' && (source.vid || activeWssHandle)) || hasYouTubeStandardWindow) {
                 const isTikTokApiMode = source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy');
                 if (isTikTokApiMode && activateButton) {
                     activateButton.classList.remove('hidden');
@@ -2241,7 +2310,7 @@
                         if (mode === 'tiktok-websocket' && source.target === 'tiktok') {
                             activateButton.textContent = 'Connect TikTok WebSocket';
                         } else if (mode === 'tiktok-legacy' && source.target === 'tiktok') {
-                            activateButton.textContent = 'Connect TikTok Polling';
+                            activateButton.textContent = 'Connect TikTok Compatibility';
                         } else if (mode === 'websocket') {
                             activateButton.textContent = translate('btn.connectwebsocket');
                         } else {
@@ -2252,7 +2321,7 @@
                 }
                 delete element.dataset.vid;
             }
-            updateSourceUIAfterModeChange(element, source.connectionMode, (source.status === 'active'));
+            updateSourceUIAfterModeChange(element, source.connectionMode, (source.status === 'active' || hasYouTubeStandardWindow));
 
             // Show/hide YouTube type toggle based on source type and status
             const youtubeTypeToggle = element.querySelector('.youtube-type-toggle');
@@ -2270,10 +2339,14 @@
             if (source.discordNative && typeof window.applyDiscordNativeSourceUI === 'function') {
                 window.applyDiscordNativeSourceUI(element, source);
             }
+            if (source.shareplayNative && typeof window.applySharePlaySourceUI === 'function') {
+                window.applySharePlaySourceUI(element, source);
+            }
         }
 
         function updateGroupUI(element, group) {
             if (!element || !group) return;
+            setupSellerGroupUI(element, group);
 
             element.querySelector("[data-sourceicon]").src = getSourceIconUrl(group.target);
             element.querySelector("[data-sourceicon]").title = group.target;
@@ -2389,6 +2462,9 @@
                 }
             }
 
+            if (source.shareplayNative && typeof window.applySharePlaySourceUI === 'function') {
+                window.applySharePlaySourceUI(ele, source);
+            }
             return ele;
         }
 
@@ -2918,11 +2994,14 @@
             if (!group.youtubeAuthRef) {
                 throw new Error('This YouTube group needs sign-in before owner discovery can run.');
             }
+            const discoveryIdentity = getYouTubeGroupDiscoveryIdentity(group);
             const result = await bridge.fetchYouTubeOwnerBroadcasts({
                 authRef: group.youtubeAuthRef,
                 channelId: group.channelId,
                 statuses: ['active', 'upcoming']
             });
+            if (stateManager.getGroup(group.id) !== group
+                || getYouTubeGroupDiscoveryIdentity(group) !== discoveryIdentity) return [];
             if (result?.success === false) {
                 const detail = result.error && typeof result.error === 'object' ? result.error : {};
                 const error = new Error(detail.message || 'YouTube owner discovery failed.');
@@ -3628,6 +3707,10 @@
                     URL = 'https://' + URL;
                 }
                 URL = (await cleanUpURL(URL)).trim();
+                if (target === 'tikfinity' || isTikfinitySiteUrl(URL)) {
+                    try { URL = normalizeTikfinityDockUrl(URL); }
+                    catch (_) { showTikfinityDockSetup(); return; }
+                }
                 let typeGuess = target;
                 const initialState = {};
                 const normalizeSourceScriptPath = (value) => {
@@ -4012,7 +4095,8 @@
                                 group.target === "youtubeshorts",
                                 false,
                                 true,
-                                group.isChannel
+                                group.isChannel,
+                                { groupId: group.id }
                             );
                         }, 2500 + Math.random() * 1000);
                     }
@@ -4268,6 +4352,20 @@
                         // New rule: remove all grouped YouTube video entries on startup (ephemeral)
                         if (source.groupId) {
                             console.log("Removing grouped YouTube video source on startup:", source.id, "videoId:", source.videoId, "groupId:", source.groupId);
+
+                            // A renderer reload leaves capture windows running in the main
+                            // process. Close the window before discarding its only UI handle.
+                            if (source.vid && ipcRenderer) {
+                                try {
+                                    if (!ipcRenderer.sendSync('closeWindow', { vid: source.vid })) {
+                                        console.warn('[YouTube] Keeping source because its window could not be closed:', source.id);
+                                        return;
+                                    }
+                                } catch (error) {
+                                    console.warn('[YouTube] Failed to close source during startup cleanup:', source.id, error);
+                                    return;
+                                }
+                            }
 
                             // Remove the source element from DOM if it exists
                             const sourceElement = document.querySelector(`[data-source-id="${source.id}"]`);
@@ -4578,7 +4676,7 @@
             if (skipped > 0) {
                 Toast.warning('Partial Mode Update', `Updated inactive streams; ${skipped} active source(s) unchanged. Stop them to switch modes.`);
             } else {
-                Toast.info('Connection Mode Updated', `All streams in ${group.username} now use ${mode === 'websocket' ? 'WebSocket' : (mode === 'tiktok-websocket' ? 'TikTok WS' : (mode === 'tiktok-legacy' ? 'TikTok Polling' : 'Standard'))} mode`);
+                Toast.info('Connection Mode Updated', `All streams in ${group.username} now use ${mode === 'websocket' ? 'WebSocket' : (mode === 'tiktok-websocket' ? 'TikTok WS' : (mode === 'tiktok-legacy' ? 'TikTok Compatibility (WebSocket)' : 'Standard'))} mode`);
             }
         }
 
@@ -4690,7 +4788,7 @@
         function getYouTubeGroupDiscoveryIdentity(group) {
             if (!group) return '';
             return JSON.stringify({
-                username: String(group.username || '').trim(),
+                username: isYouTubeOwnerGroup(group) ? '' : String(group.username || '').trim(),
                 target: group.target || '',
                 isChannel: !!group.isChannel,
                 youtubeDiscoveryMode: group.youtubeDiscoveryMode || '',
@@ -5099,6 +5197,7 @@
         async function checkYouTubeGroupForNewStreams(groupId) {
             const group = stateManager.getGroup(groupId);
             if (!group || (group.target !== "youtube" && group.target !== "youtubeshorts")) return false;
+            const discoveryIdentity = getYouTubeGroupDiscoveryIdentity(group);
             const ownerBackedGroup = isYouTubeOwnerGroup(group);
             const useApiBootstrap = !ownerBackedGroup && shouldUseYouTubeGroupApiBootstrap(group);
 
@@ -5126,6 +5225,8 @@
                     return false;
                 }
             } catch (error) {
+                if (stateManager.getGroup(groupId) !== group
+                    || getYouTubeGroupDiscoveryIdentity(group) !== discoveryIdentity) return false;
                 console.error("YouTube group discovery failed:", error);
                 if (typeof isYouTubeOwnerAuthError === 'function' && isYouTubeOwnerAuthError(error)) {
                     return {
@@ -5136,8 +5237,15 @@
                 if (typeof isYouTubeDiscoveryNetworkError === 'function' && isYouTubeDiscoveryNetworkError(error)) {
                     return { type: 'network_error', message: error.message };
                 }
+                if (ownerBackedGroup) {
+                    return { type: 'discovery_error', message: error.message || 'YouTube could not check this channel. Try again later.' };
+                }
                 return false;
             }
+
+            // A removed, replaced or switched group must not consume an earlier response.
+            if (stateManager.getGroup(groupId) !== group
+                || getYouTubeGroupDiscoveryIdentity(group) !== discoveryIdentity) return false;
 
             // Filter streams based on type
             const isShorts = group.target === "youtubeshorts";
@@ -5212,6 +5320,8 @@
 
                     // Auto-activate the new source when chat is available. Owner-backed upcoming broadcasts stay as waiting rows.
                     setTimeout(async () => {
+                        if (stateManager.getGroup(groupId) !== group
+                            || getYouTubeGroupDiscoveryIdentity(group) !== discoveryIdentity) return;
                         const addedSource = stateManager.getSources().find(s => s.videoId === stream.videoId);
                         console.log(`[Auto-add TIMEOUT] Looking for source with videoId: ${stream.videoId}`);
                         console.log(`[Auto-add TIMEOUT] addedSource:`, addedSource ? JSON.stringify({ id: addedSource.id, isVisible: addedSource.isVisible, isMuted: addedSource.isMuted }) : 'NOT FOUND');
@@ -5223,7 +5333,7 @@
                                 setYouTubeSourceWaitingForChat(addedSource.id, stream);
                                 return;
                             }
-                            if (!shouldAutoOpen) {
+                            if (!shouldAutoOpen || group.autoActivate !== true) {
                                 return;
                             }
                             if (activateButton) {
@@ -5518,7 +5628,8 @@
             } else if (eventName === 'disconnected') {
                 Toast.success('Twitch reply account', 'Automatic replies will use the main account.');
             } else if (eventName === 'error' && status.error) {
-                Toast.error('Twitch reply account', status.error);
+                // OAuth errors are plain text; Toast renders its title and message as HTML.
+                Toast.error('Twitch reply account', ssappEscapeHtml(status.error));
             }
         }
 
@@ -5660,7 +5771,7 @@
                     Toast.info('Twitch reply account', 'Choose your bot account in the Twitch window that just opened.');
                 }
             } catch (error) {
-                Toast.error('Twitch reply account', error?.message || 'Unable to connect the bot account.');
+                Toast.error('Twitch reply account', ssappEscapeHtml(error?.message || 'Unable to connect the bot account.'));
             }
         }
 
@@ -5682,7 +5793,7 @@
                 }
                 applyTwitchBotAccountStatus(sourceId, status);
             } catch (error) {
-                Toast.error('Twitch reply account', error?.message || 'Unable to disconnect the bot account.');
+                Toast.error('Twitch reply account', ssappEscapeHtml(error?.message || 'Unable to disconnect the bot account.'));
             }
         }
 
@@ -5732,9 +5843,11 @@
                             ? '⏹️ Disconnect'
                             : translate('btn.stop');
                     } else if (displayMode === 'tiktok-legacy') {
-                        activateButton.innerText = 'Connect TikTok Polling';
+                        activateButton.innerText = 'Connect TikTok Compatibility';
                     } else if (displayMode === 'tiktok-websocket') {
-                        if (provider === 'local') {
+                        if (provider === 'tikfinity') {
+                            activateButton.innerText = 'Connect TikFinity Desktop';
+                        } else if (provider === 'local') {
                             activateButton.innerText = 'Connect TikTok Local Signer';
                         } else if (provider === 'euler-ws') {
                             activateButton.innerText = 'Connect TikTok Euler Proxy';
@@ -5805,7 +5918,7 @@
             if (signinButton) {
                 const isWebsocketMode = signinMode === 'websocket' || signinMode === 'tiktok-websocket' || signinMode === 'tiktok-legacy';
 
-                if (target === 'tiktok' && signinMode === 'tiktok-websocket') {
+                if (target === 'tiktok' && (signinMode === 'tiktok-websocket' || signinMode === 'tiktok-legacy')) {
                     const resolvedSourceId = (source && source.id) || (sourceElement?.dataset?.sourceId || null);
                     let tikTokSource = source;
                     if (!tikTokSource && resolvedSourceId && window.stateManager) {
@@ -5845,7 +5958,19 @@
                         signinButton.title = translate('tiktok.signin.title');
                     }
                     signinButton.classList.toggle('authenticated', hasSession);
-                } else if (isWebsocketMode) {
+                    if (provider === 'tikfinity') {
+                        signinButton.classList.add('hidden');
+                        signinButton.style.display = 'none';
+                    }
+                } else if (target === 'tikfinity') {
+                    signinButton.classList.remove('hidden', 'authenticated');
+                    signinButton.style.display = '';
+                    signinButton.style.cursor = '';
+                    signinButton.disabled = false;
+                    signinButton.textContent = 'Set OBS Dock URL';
+                    signinButton.title = 'Set or replace the TikFinity Activity Feed URL';
+                    signinButton.onclick = () => showTikfinityDockSetup(sourceId);
+                } else if (isWebsocketMode && !isYouTubeWebSocketSigninContext(source)) {
                     // Hide for other websocket modes
                     signinButton.classList.add("hidden");
                     signinButton.style.display = '';
@@ -6017,6 +6142,7 @@
                 return 'polling';
             }
             if (normalizedMode === 'tiktok-websocket') {
+                if (provider === 'tikfinity') return 'tikfinity';
                 if (provider === 'local') return 'local';
                 if (provider === 'euler-ws') return 'euler-ws';
                 if (provider === 'custom') return 'custom';
@@ -6031,6 +6157,12 @@
             if (!sourceId || !stateManager) return;
             const source = stateManager.getSource(sourceId);
             if (!source || source.target !== 'tiktok') return;
+            if (preset === 'tikfinity-guide') {
+                const presetSelect = sourceElement.querySelector('.tiktok-connection-select');
+                if (presetSelect) presetSelect.value = resolveTikTokConnectionPreset(source);
+                window.open('https://socialstream.ninja/docs/tikfinity-setup.html', '_blank');
+                return;
+            }
             if (hasConnectionHandles(source)) {
                 Toast.warning('Mode Locked', 'Stop the current connection before changing modes.');
                 const presetSelect = sourceElement.querySelector('.tiktok-connection-select');
@@ -6046,6 +6178,10 @@
             let nextProvider = source.tiktokSigningProvider || 'auto';
 
             switch (preset) {
+                case 'tikfinity':
+                    nextMode = 'tiktok-websocket';
+                    nextProvider = 'tikfinity';
+                    break;
                 case 'auto':
                     nextMode = 'tiktok-websocket';
                     nextProvider = 'auto';
@@ -6064,7 +6200,7 @@
                     break;
                 case 'polling':
                     nextMode = 'tiktok-legacy';
-                    nextProvider = source.tiktokSigningProvider || 'auto';
+                    nextProvider = source.tiktokSigningProvider === 'tikfinity' ? 'auto' : (source.tiktokSigningProvider || 'auto');
                     break;
                 case 'standard':
                 default:
@@ -6143,11 +6279,13 @@
             const val = selectElement.value;
             let html = '';
             if (val === 'auto') {
-                html = 'Recommended: WebSocket with automatic signing. If signing fails, fallback can switch to compatibility modes.';
+                html = 'Recommended: Starts with Euler. If it fails, checks TikTok directly and can switch to non-Euler capture methods.';
+            } else if (val === 'tikfinity') {
+                html = 'Read-only. Open TikFinity Desktop on this computer and connect your LIVE there. Captures the stream selected in TikFinity, regardless of the username entered here. Do not also capture that stream using another source.';
             } else if (val === 'local') {
-                html = '<strong>Local Signer:</strong> Uses a lightweight TikTok signing window. Anonymous mode is best effort; signed-in Host mode is recommended for full chat capture.';
+                html = '<strong>Local Signer:</strong> No API key needed. Can read public LIVE chat without signing in. Sign in for replies or if TikTok requires it.';
             } else if (val === 'polling') {
-                html = '<strong>Polling:</strong> HTTP compatibility mode. No signing needed. No replies.';
+                html = `Signing required. No replies. <a href="${ssappEscapeHtml(window.SSAPP_SIGNING_HELP_URL)}" target="_blank">Mode guide</a>.`;
             } else if (val === 'standard') {
                 html = '<strong>Standard:</strong> Uses the capture browser window. Best for manual sign-in and troubleshooting.';
             } else if (val === 'euler-ws') {
@@ -6246,11 +6384,11 @@
                     <div style="margin-top: 16px; background: rgba(34, 197, 94, 0.08); border: 1px solid rgba(34, 197, 94, 0.3); border-radius: 8px; padding: 14px;">
                         <div style="font-weight: 600; color: #86efac; margin-bottom: 8px; font-size: 14px;">Which should I use?</div>
                         <div style="color: #d1d5db; font-size: 13px; line-height: 1.7;">
-                            <strong style="color: #f8fafc;">Most users</strong> → Use <strong>TikTok WS</strong> with <strong>Auto</strong> (default). It falls back to Polling if needed.<br>
+                            <strong style="color: #f8fafc;">Most users</strong> → Start with <strong>AUTO</strong>. If it cannot connect, automatic recovery can try another capture method. The status shows the method actually in use.<br>
                             <strong style="color: #f8fafc;">Need to reply to chat?</strong> → Use <strong>Standard</strong> mode and sign in first.<br>
-                            <strong style="color: #f8fafc;">Standard not working?</strong> → Try <strong>TikTok WS</strong> with <strong>Local Signer</strong> for replies.<br>
-                            <strong style="color: #f8fafc;">Everything failing?</strong> → Try <strong>Euler Proxy</strong> or <strong>Euler Signing</strong> with an API key.<br>
-                            <strong style="color: #f8fafc;">Need a backup source?</strong> → Use <strong>TikFinity OBS Dock</strong> in <strong>Add other source</strong> if TikTok keeps missing chat.
+                            <strong style="color: #f8fafc;">Standard not working?</strong> → Try <strong>Local Signer (No API key)</strong>. It can read public LIVE chat without signing in. Sign in for replies or if TikTok requires it.<br>
+                            <strong style="color: #f8fafc;">Everything failing?</strong> → Try <strong>Euler Proxy</strong> or <strong>Euler Signing</strong>. These need an Euler API key. Repeated connection attempts through Euler can use your quota. Stop the source when you're not using it.<br>
+                            <strong style="color: #f8fafc;">Need a backup source?</strong> → Choose <strong>TikFinity Desktop (Local API, Beta)</strong> if you already use TikFinity on this computer. Its Activity Feed remains available through <strong>Add other source</strong>.
                         </div>
                     </div>
 
@@ -6263,7 +6401,7 @@
                                 <span style="font-size: 11px; background: rgba(34,197,94,0.2); color: #86efac; padding: 2px 8px; border-radius: 4px;">Recommended</span>
                             </div>
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.5; margin-top: 6px;">
-                                Real-time connection with smooth message flow. With <strong>Auto</strong>, it falls back to Polling if WebSocket fails. Reply support depends on the signing provider (see below).
+                                Real-time connection with smooth message flow. With <strong>Auto</strong>, it falls back to Compatibility if WebSocket fails. Reply support depends on the signing provider (see below).
                             </div>
                         </div>
 
@@ -6275,10 +6413,18 @@
                         </div>
 
                         <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 12px 14px;">
-                            <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #f8fafc;">🕰️ Polling</h4>
+                            <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #f8fafc;">🕰️ Compatibility (WebSocket)</h4>
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
-                                Fetches chat via HTTP in batches. No signing needed. Use as a fallback when other modes fail. Cannot send replies. Messages may have slight delay.
+                                Uses the compatibility connector settings over a signed WebSocket. Cannot send replies.
                             </div>
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 12px; background: rgba(168,85,247,0.10); border-radius: 8px; padding: 12px 14px;">
+                        <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #f8fafc;">TikFinity Desktop (Local API, Beta)</h4>
+                        <div style="color: #94a3b8; font-size: 12px; line-height: 1.6;">
+                            Keep TikFinity Desktop open and connected to LIVE on this computer. SSN receives the stream selected in TikFinity, regardless of the username shown in SSN. This option is read-only and supports one Desktop capture at a time. Avoid capturing the same stream through another source too.<br>
+                            A connected Desktop app does not guarantee LIVE events are arriving. Check its dashboard if SSN is waiting for events. Signing into TikFinity and signing into TikTok are separate steps.
                         </div>
                     </div>
 
@@ -6303,7 +6449,7 @@
                                 <span style="font-size: 11px; background: rgba(34,197,94,0.2); color: #86efac; padding: 2px 8px; border-radius: 4px;">Default</span>
                             </div>
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
-                                Tries Euler signing, falls back to Polling automatically if it fails. No API key needed. No replies. Best starting point.
+                                Starts with automatic signing and can try other capture methods when a connection fails. Check the source status for the method currently in use. No personal API key is required to start; service limits may apply.
                             </div>
                         </div>
 
@@ -6313,7 +6459,7 @@
                                 <span style="font-size: 10px; background: rgba(251,191,36,0.2); color: #fcd34d; padding: 2px 6px; border-radius: 4px;">Experimental</span>
                             </div>
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
-                                Signs requests using a local TikTok browser window. No third-party service. <strong style="color: #d1d5db;">Can send replies.</strong> Keep the signer window open for replies and reconnections.
+                                <strong style="color: #d1d5db;">No API key needed.</strong> Signs requests on this computer using SSN's TikTok browser window. Can read public LIVE chat without signing in. Sign in for replies or if TikTok requires it. A TikFinity login is separate from your SSN login.
                             </div>
                         </div>
 
@@ -6323,7 +6469,7 @@
                                 <span style="font-size: 10px; background: rgba(251,191,36,0.2); color: #fcd34d; padding: 2px 6px; border-radius: 4px;">Experimental</span>
                             </div>
                             <div style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
-                                Connects through Euler's hosted proxy server. Requires API key from <a href="#" onclick="window.open('https://www.eulerstream.com/dashboard', '_blank'); return false;" style="color: #63a4d8;">eulerstream.com</a>. Free tier available. No replies.
+                                Connects through Euler's hosted proxy server. Requires an API key with access to this service from <a href="#" onclick="window.open('https://www.eulerstream.com/dashboard', '_blank'); return false;" style="color: #63a4d8;">eulerstream.com</a>. Your plan and quota determine availability. No replies.
                             </div>
                         </div>
 
@@ -6343,7 +6489,7 @@
                         <div style="font-weight: 600; color: #fcd34d; margin-bottom: 8px; font-size: 14px;">Troubleshooting</div>
                         <div style="color: #d1d5db; font-size: 12px; line-height: 1.8;">
                             <strong>Standard mode not working?</strong> → Click <strong>👁️ Show capture page</strong> to check for CAPTCHA or sign-in. If nothing appears, try <strong>🔄 Reload</strong>.<br>
-                            <strong>WebSocket keeps failing?</strong> → Try a different signing provider, or switch to Polling.<br>
+                            <strong>WebSocket keeps failing?</strong> → Try a different signing provider, or switch to Compatibility.<br>
                             <strong>Getting blocked/throttled?</strong> → Close other TikTok tabs/apps. Wait a few minutes and retry.<br>
                             <strong>Still missing chat?</strong> → Try a <strong>TikFinity OBS Dock</strong> URL in <strong>Add other source</strong> and keep TikFinity open.<br>
                             <strong>Need replies but nothing works?</strong> → Standard (with sign-in) or Local Signer are your options.
@@ -6577,19 +6723,22 @@
                     modeSelector.className = 'mode-selector';
                     modeSelector.innerHTML = `
                 <div class="mode-selector-label">TikTok Connection:</div>
-                <select onchange="setTikTokConnectionPreset(this.closest('.entry'), this.value); updateSigningProviderHelpText(this);" class="tiktok-connection-select" style="width: 100%; margin-top: 4px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.35); background: rgba(15,23,42,0.55); color: #e2e8f0;">
+                <select aria-label="TikTok connection mode" onchange="setTikTokConnectionPreset(this.closest('.entry'), this.value); updateSigningProviderHelpText(this);" class="tiktok-connection-select" style="width: 100%; margin-top: 4px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.35); background: rgba(15,23,42,0.55); color: #e2e8f0;">
                     <option value="auto">AUTO (Recommended)</option>
-                    <option value="local">Local Signer (Replies)</option>
-                    <option value="polling">Polling (Compatibility)</option>
+                    <option value="local">Local Signer (No API key)</option>
+                    <option value="polling">Compatibility (WebSocket)</option>
                     <option value="standard">Standard (Capture Window)</option>
                     <option value="euler-ws">Euler Proxy (API Key)</option>
                     <option value="custom">Euler Signing (Advanced)</option>
+                    <option value="tikfinity">TikFinity Desktop (Local API, Beta)</option>
+                    <option value="tikfinity-guide">TikFinity (Setup guide)</option>
                 </select>
                 <div class="provider-help-text" style="font-size: 11px; color: #94a3b8; line-height: 1.35; margin-top: 8px; min-height: 2.8em;"></div>
                 <div class="mode-info">
                     <span class="info-icon" role="button" tabindex="0" aria-label="TikTok connection modes help" style="cursor: pointer;" title="Open TikTok connection mode help" onclick="showTikTokConnectionModesHelpModal(event)" onkeydown="if (event.key === 'Enter' || event.key === ' ') showTikTokConnectionModesHelpModal(event)">ℹ️</span>
                 </div>
                 <div class="tiktok-fallback-help" style="flex: 0 0 100%; font-size: 12px; line-height: 1.5; color: #cbd5e1;">
+                    <button type="button" class="button tiktok-troubleshooting-copy" style="font-size: 12px; padding: 6px 10px; margin: 4px 0 8px;" onclick="copyTikTokTroubleshooting(this.closest('.entry').dataset.sourceId)">Copy troubleshooting details</button><br>
                     TikTok still not connecting?
                     <a href="https://socialstream.ninja/docs/tikfinity-setup.html" onclick="event.stopPropagation(); window.open(this.href, '_blank'); return false;" style="color: #c4b5fd; text-decoration: underline;">Set up TikFinity fallback &rarr;</a>
                 </div>`;
@@ -6791,7 +6940,7 @@
                                 ? (cliForcesTikTokClassic
                                     ? 'TikTok API connectors are disabled by launch flag.'
                                     : 'Disable the global TikTok Classic preference to use TikTok API connectors.')
-                                : 'Use HTTP polling without signing.';
+                                : 'Signed WebSocket compatibility mode.';
                             if (icon) icon.textContent = '🕰️';
                         } else {
                             item.title = '';
@@ -7095,6 +7244,10 @@
             }
             const sourceId = parentElement.dataset.sourceId;
             const source = sourceId ? stateManager.getSource(sourceId) : null;
+            if (source?.target === 'tikfinity' && !hasConnectionHandles(source)) {
+                try { normalizeTikfinityDockUrl(source.url); }
+                catch (_) { showTikfinityDockSetup(sourceId); return; }
+            }
             const isTikTokWebsocketAttempt = !!(source && source.target === 'tiktok' && (source.connectionMode === 'tiktok-websocket' || source.connectionMode === 'tiktok-legacy') && !source.tiktokWssId);
 
             if (isTikTokWebsocketAttempt) {
@@ -7118,7 +7271,12 @@
             }
 
             if (isTikTokWebsocketAttempt && !windowId) {
-                updateConnectionStatus(parentElement, 'clear');
+                const failedSource = stateManager.getSource(sourceId);
+                if (failedSource?.status === 'error' && failedSource.error) {
+                    updateConnectionStatus(parentElement, 'error', failedSource.error);
+                } else {
+                    updateConnectionStatus(parentElement, 'clear');
+                }
                 restoreActivateButton(parentElement);
                 return;
             }
@@ -7127,7 +7285,9 @@
             try {
                 const sid = parentElement.dataset.sourceId;
                 const src = sid ? stateManager.getSource(sid) : null;
-                if (src && (src.connectionMode === 'classic')) {
+                if (src && src.target === 'tikfinity') {
+                    updateConnectionStatus(parentElement, 'info', 'Keep TikFinity open and connected to LIVE. Use Set OBS Dock URL if this source does not show the Activity Feed.');
+                } else if (src && (src.connectionMode === 'classic') && (src.target !== 'ebay' || windowId)) {
                     updateConnectionStatus(parentElement, 'info', 'Reminder: After the window opens, sign in (if required) and confirm the chat is visible.');
                 }
             } catch (_) { }
@@ -7646,7 +7806,7 @@
                 if (activeMode === 'tiktok-websocket') {
                     activateButton.textContent = 'Connect TikTok WebSocket';
                 } else if (activeMode === 'tiktok-legacy') {
-                    activateButton.textContent = 'Connect TikTok Polling';
+                    activateButton.textContent = 'Connect TikTok Compatibility';
                 } else {
                     activateButton.textContent = translate('btn.activate');
                 }
@@ -7702,7 +7862,13 @@
         }
 
         function cancelPendingTikTokActivation(sourceId) {
-            pendingTikTokActivations.delete(sourceId);
+            if (pendingTikTokActivations.delete(sourceId) && ipcRenderer) {
+                try {
+                    // The backend registers the source before connect() resolves;
+                    // its window ID may not have reached the renderer yet.
+                    ipcRenderer.sendSync('disconnectTikTokConnection', { sourceId });
+                } catch (error) { console.warn('Error canceling TikTok connection:', error); }
+            }
         }
 
 
@@ -7957,6 +8123,7 @@
                 beamstream: controlPlatform(['url']),
                 vpzone: controlPlatform(['url'], ['classic', 'websocket'], 'websocket'),
                 velora: controlPlatform(['url'], ['classic', 'websocket'], 'websocket'),
+                whatnot: controlPlatform(['videoId', 'url'], ['classic', 'websocket'], 'websocket', 'sources/whatnot.js'),
                 peertube: controlPlatform(['url']),
                 zoom: controlPlatform(['url']),
                 arenasocial: controlPlatform(['url']),
@@ -7986,6 +8153,10 @@
             }
 
             function buildSourceUrl(target, username, suppliedUrl, videoId) {
+                if (target === 'whatnot') {
+                    const showId = normalizeWhatnotShowId(suppliedUrl || videoId || username);
+                    return showId ? `https://www.whatnot.com/live/${showId}` : '';
+                }
                 const rawUrl = String(suppliedUrl || '').trim();
                 if (rawUrl) {
                     try {
@@ -8806,8 +8977,9 @@
 
                 lastError = result.error;
                 if (result.error && result.error.message === 'Activation canceled') {
-                    break;
+                    return false;
                 }
+                if (result.error?.code === 'SSAPP_TIKTOK_STOPPED') break;
                 const fallbackInfo = result.fallbackInfo;
 
                 if (fallbackDisabled) {
@@ -8831,7 +9003,7 @@
                 if (resolvedEntry) {
                     updateConnectionStatus(resolvedEntry, 'error', lastError.message || 'TikTok activation failed');
                 }
-                if (!fallbackDisabled || attempted.size > 1) {
+                if ((!fallbackDisabled || attempted.size > 1) && !['SSAPP_TIKTOK_EULER_PAUSED', 'SSAPP_TIKTOK_STOPPED'].includes(lastError.code)) {
                     const message = lastError.message || 'All TikTok modes failed to connect.';
                     Toast.error('TikTok Error', message);
                 }
@@ -8891,6 +9063,7 @@
                 case 'local':
                 case 'euler-ws':
                 case 'custom':
+                case 'tikfinity':
                     pushMode(initialMode || 'tiktok-websocket');
                     pushMode(preferredMode || 'tiktok-websocket');
                     pushMode('tiktok-websocket');
@@ -8921,7 +9094,7 @@
                 case 'tiktok-websocket':
                     return 'TikTok WebSocket';
                 case 'tiktok-legacy':
-                    return 'TikTok Polling';
+                    return 'TikTok Compatibility (WebSocket)';
                 case 'classic':
                     return 'TikTok Standard';
                 default:
@@ -9117,7 +9290,7 @@
             return !shouldPreserveTikTokClassicHandles(source, statusPayload, hasRetryScheduled);
         }
 
-        function autoFallbackToNextTikTokMode(sourceId, failureStatus, errorMessage = null) {
+        function autoFallbackToNextTikTokMode(sourceId, failureStatus, errorMessage = null, skipEulerFallback = false) {
             if (!sourceId) return;
             const source = stateManager.getSource(sourceId);
             if (!source || source.target !== 'tiktok') return;
@@ -9159,6 +9332,10 @@
 
             const attempted = (fallbackState.attempted instanceof Set) ? fallbackState.attempted : new Set();
             fallbackState.attempted = attempted;
+            if (skipEulerFallback) {
+                attempted.add('tiktok-websocket');
+                attempted.add('tiktok-legacy');
+            }
             const sequence = Array.isArray(fallbackState.sequence) && fallbackState.sequence.length
                 ? fallbackState.sequence
                 : buildTikTokFallbackSequence(preferredMode, preferredMode, source);
@@ -9253,6 +9430,10 @@
 
             const resolvedTarget = target || source.target;
             const normalizedMode = resolvedTarget === 'tiktok' ? normalizeTikTokMode(mode) : mode;
+            if (resolvedTarget === 'tiktok' && normalizedMode === 'classic') {
+                // A late API connector result must not replace the Standard fallback window.
+                cancelPendingTikTokActivation(sourceId);
+            }
             let pendingTikTokToken = null;
             // TikTok has its own token lifecycle; other asynchronous starters also
             // need to distinguish a stopped attempt from a subsequent activation.
@@ -9272,6 +9453,8 @@
                 if (resolvedTarget === 'tiktok' && (normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')) {
                     pendingTikTokToken = beginPendingTikTokActivation(sourceId);
                     windowId = await createTikTokWSSFromSource(source, normalizedMode === 'tiktok-legacy' ? 'legacy' : 'websocket');
+                } else if (resolvedTarget === 'shareplay' && source.shareplayNative) {
+                    windowId = await window.createSharePlaySource(source);
                 } else if (resolvedTarget === 'discord' && source.discordNative) {
                     if (typeof window.createDiscordNativeSource !== 'function') {
                         throw new Error('The native Discord connector is unavailable. Restart SSApp and try again.');
@@ -9284,6 +9467,16 @@
                         windowId = await createWindowWSSFromSource(source, tabid);
                     }
                 } else {
+                    if (resolvedTarget === 'ebay') {
+                        const ebayUrl = source.url;
+                        await validateEbayLiveEvent(parseEbayLiveInput(ebayUrl));
+                        // A stopped, edited or deleted source must not open a
+                        // window when its pending event check returns.
+                        if (stateManager.getSource(sourceId) !== source || pendingSourceActivations.get(sourceId) !== activationToken) {
+                            return { success: false, error: new Error('Activation canceled') };
+                        }
+                        if (source.url !== ebayUrl) throw new Error('The eBay event changed. Activate the source again.');
+                    }
                     windowId = await createClassicWindowFromSource(source, tabid);
                 }
 
@@ -9341,6 +9534,9 @@
                     const alreadyConnectedDiscord = resolvedTarget === 'discord'
                         && source.discordNative
                         && sourceAfterCreate?.status === 'active';
+                    const alreadyConnectedSharePlay = resolvedTarget === 'shareplay'
+                        && source.shareplayNative
+                        && sourceAfterCreate?.status === 'active';
                     let statusValue;
                     if (nonTikTokWssReportedError) {
                         statusValue = 'error';
@@ -9349,6 +9545,8 @@
                     } else if (alreadyConnectedTikTok) {
                         statusValue = 'active';
                     } else if (alreadyConnectedDiscord) {
+                        statusValue = 'active';
+                    } else if (alreadyConnectedSharePlay) {
                         statusValue = 'active';
                     } else if (normalizedMode === 'websocket' || normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy') {
                         statusValue = 'activating';
@@ -10167,6 +10365,7 @@
                     sourceId: source.id,
                     signing,
                     signingProvider, // Pass the provider preference to the backend
+                    autoMode: resolveTikTokConnectionPreset(source) === 'auto' && !source.disableTikTokAutoFallback,
                     autoActivate: !!source.autoActivate
                 });
 
@@ -10176,10 +10375,17 @@
                 return wssID;
             } catch (error) {
                 const fallbackInfo = resolveTikTokFallbackInfo(error);
+                const pausedMessage = String(error.message || '').match(/SSAPP_TIKTOK_(EULER_PAUSED|STOPPED):\s*([\s\S]*)/);
+                if (pausedMessage) {
+                    error.message = pausedMessage[2];
+                    error.code = `SSAPP_TIKTOK_${pausedMessage[1]}`;
+                    throw error;
+                }
+                if (stateManager.getSource(source.id)?.status === 'inactive') throw error;
                 const isLegacyAttempt = strategy === 'legacy';
                 if (!fallbackInfo || fallbackInfo.mode !== 'classic') {
                     console.error('Error in TikTok connector from source:', error);
-                    const label = isLegacyAttempt ? 'Polling' : 'WebSocket';
+                    const label = isLegacyAttempt ? 'Compatibility (WebSocket)' : 'WebSocket';
                     Toast.warning('TikTok Connector Error', `(${label}) Connection Failed: ${error.message || 'Please try again.'}`);
                 }
                 throw error;
@@ -10353,7 +10559,7 @@
                                     <span style="color: #fbbf24; font-size: 16px;">&bull;</span>
                                     <span style="color: #f8fafc; font-weight: 500;">Session Saved</span>
                                 </div>
-                                <span style="color: #fbbf24; font-size: 11px;">Missing tt_target_idc cookie. Reload page?</span>
+                                <span style="color: #fbbf24; font-size: 11px;">Missing tt-target-idc cookie. Open TikTok Sign-in, then Collect Session again.</span>
                             </div>
                         `;
                     } else {
@@ -10426,7 +10632,8 @@
             const source = stateManager.getSource(sourceId);
             if (!source) return;
 
-            const isAuthenticated = source.tiktokSessionId ? true : false;
+            const hasSavedSession = !!(typeof source.tiktokSessionId === 'string' && source.tiktokSessionId.trim());
+            const hasSavedIdc = !!(typeof source.tiktokTtTargetIdc === 'string' && source.tiktokTtTargetIdc.trim());
             const signingHelpUrl = typeof window.SSAPP_SIGNING_HELP_URL === 'string' ? window.SSAPP_SIGNING_HELP_URL : '';
             const existingSigningApiKey = typeof source.tiktokSigningApiKey === 'string' ? source.tiktokSigningApiKey : '';
             const existingSigningServiceUrl = typeof source.tiktokSigningServiceUrl === 'string' ? source.tiktokSigningServiceUrl : '';
@@ -10465,8 +10672,12 @@
                     <p style="margin: 0 0 12px 0; font-size: 13px; color: #e2e8f0;">
                         ${credentialsDescription}
                     </p>
+                    <p style="margin: 0 0 12px 0; font-size: 13px; color: #cbd5f5;">
+                        An Euler API key gives access to Euler's service; it does not sign you into TikTok.
+                        Euler Proxy does not use your saved TikTok login. For a restricted LIVE, check that an eligible account can open it in Standard mode's capture page.
+                    </p>
                     <div style="background: rgba(245, 158, 11, 0.12); border-left: 3px solid #f59e0b; padding: 10px 12px; border-radius: 6px; margin: 10px 0 12px 0; font-size: 12px; color: #ffedd5;">
-                        <strong>Experimental:</strong> API key / signing URL support is new and not fully validated. If it fails, switch back to <strong>Auto</strong> or <strong>Polling</strong>.
+                        <strong>Experimental:</strong> API key / signing URL support is new and not fully validated. If it fails, switch back to <strong>Auto</strong> or <strong>Compatibility</strong>.
                     </div>
                     <label for="${apiKeyInputId}" style="display: block; font-size: 13px; color: #cbd5f5; margin-bottom: 4px;">API key</label>
                     <input id="${apiKeyInputId}" type="password" autocomplete="off" spellcheck="false" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #f8fafc;" value="${ssappEscapeHtml(existingSigningApiKey)}" placeholder="Euler API key">
@@ -10490,7 +10701,7 @@
                 <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
                     <h4 style="margin: 0 0 10px 0; font-size: 15px;">Local Signer</h4>
                     <div style="background: rgba(59, 130, 246, 0.12); border-left: 3px solid #3b82f6; padding: 10px 12px; border-radius: 6px; margin: 0 0 12px 0; font-size: 12px; color: #dbeafe; line-height: 1.45;">
-                        Uses a lightweight TikTok signing window instead of Euler. Anonymous mode can connect, but signed-in Host mode is recommended for full chat capture.
+                        No API key needed. Signs requests on this computer using SSN's TikTok browser window. Can read public LIVE chat without signing in. Sign in for replies or if TikTok requires it.
                     </div>
                     <div id="tiktok-signin-status-${sourceId}" style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px;">
                         <span style="color: #94a3b8;">Checking status...</span>
@@ -10499,7 +10710,7 @@
                         Current role: <strong>${getAccountRoleLabel(normalizeAccountRole(source.accountRole))}</strong>.
                         ${normalizeAccountRole(source.accountRole) === 'host'
                             ? 'Host role uses TikTok anchor identity when Local Signer connects.'
-                            : 'For full capture from your own stream, use Set role to Host below.'}
+                            : 'If you are signed in as the streamer, use Set role to Host below.'}
                         ${normalizeAccountRole(source.accountRole) === 'host' ? '' : `
                             <div style="margin-top: 8px;">
                                 <button onclick="setTikTokSourceHostRole('${sourceId}')" class="button" style="background: #475569; font-size: 12px; padding: 6px 10px;">
@@ -10534,7 +10745,7 @@
                         <strong>Replies:</strong> Keep the signing window open if you want the app to send TikTok chat replies.
                     </div>
                     <ol style="margin: 8px 0 0 18px; padding: 0; font-size: 12px; color: #94a3b8; line-height: 1.5;">
-                        <li>Open TikTok Sign-in and sign in if full capture is needed.</li>
+                        <li>Open TikTok Sign-in and log into TikTok.</li>
                         <li>Collect Session to save the current TikTok cookies.</li>
                         <li>Activate or restart the source so the websocket uses the saved session.</li>
                     </ol>
@@ -10546,13 +10757,13 @@
                 <div style="margin-bottom: 18px;">
                     <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #e2e8f0;">Manual Session Cookie</h4>
                     <p style="margin: 0 0 10px 0; font-size: 13px; color: #94a3b8;">
-                        If the local signer fails, you can manually extract the <code>sessionid</code> cookie.
+                        If the local signer fails, you can manually copy the <code>sessionid</code> and <code>tt-target-idc</code> cookies. Both are needed for an authenticated connection.
                     </p>
                     <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                         <button onclick="tiktokManualSignIn('${sourceId}')" class="button" style="background: #475569; font-size: 13px;">
                             📝 Enter Session ID
                         </button>
-                        ${isAuthenticated ? `
+                        ${hasSavedSession ? `
                         <button onclick="clearTikTokAuth('${sourceId}')" class="button" style="background: #ef4444; font-size: 13px;">
                             🗑️ Clear Authentication
                         </button>` : ''}
@@ -10582,15 +10793,21 @@
             let headerTitle = 'Manage TikTok Signing';
 
             if (providerValue === 'auto') {
-                headerTitle = 'TikTok Signing: Auto';
-                const sessionBanner = isAuthenticated
-                    ? `<div style="background: rgba(34, 197, 94, 0.12); border-left: 3px solid #22c55e; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px;">
-                        <h4 style="margin: 0 0 4px 0; color: #4ade80; font-size: 14px;">✓ Signed in to TikTok</h4>
-                        <p style="margin: 0 0 10px 0; font-size: 13px; color: #dcfce7;">
-                            Your session is active. Authenticated connections receive more chat messages.
+                const isPolling = getEffectiveConnectionMode(source) === 'tiktok-legacy';
+                headerTitle = isPolling ? 'TikTok Signing: Compatibility' : 'TikTok Signing: Auto';
+                const sessionBanner = hasSavedSession
+                    ? `<div style="background: ${hasSavedIdc ? 'rgba(34, 197, 94, 0.12)' : 'rgba(245, 158, 11, 0.12)'}; border-left: 3px solid ${hasSavedIdc ? '#22c55e' : '#f59e0b'}; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px;">
+                        <h4 style="margin: 0 0 4px 0; color: ${hasSavedIdc ? '#4ade80' : '#fbbf24'}; font-size: 14px;">${hasSavedIdc ? 'TikTok session saved' : 'TikTok sign-in incomplete'}</h4>
+                        <p style="margin: 0 0 10px 0; font-size: 13px; color: #e2e8f0;">
+                            ${hasSavedIdc
+                                ? 'Your saved cookies will be used when connecting. If they expire, sign in again.'
+                                : 'The tt-target-idc cookie is missing, so this source connects anonymously. Sign in again or enter both cookies manually.'}
                         </p>
                         <button onclick="tiktokSignIn('${sourceId}', { forceRefresh: true })" class="button" style="background: #2563eb; font-size: 13px;">
                             Re-authenticate
+                        </button>
+                        <button onclick="tiktokManualSignIn('${sourceId}')" class="button" style="background: #475569; font-size: 13px;">
+                            Enter cookies manually
                         </button>
                     </div>`
                     : `<div style="background: rgba(59, 130, 246, 0.12); border-left: 3px solid #3b82f6; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px;">
@@ -10610,9 +10827,11 @@
                 mainContent = `
                     ${sessionBanner}
                     <div style="background: rgba(15, 23, 42, 0.55); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px;">
-                        <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #94a3b8;">Auto Mode</h4>
+                        <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #94a3b8;">${isPolling ? 'Compatibility (WebSocket)' : 'Auto Mode'}</h4>
                         <p style="margin: 0; font-size: 13px; color: #94a3b8;">
-                            Tries Euler signing, falls back to Polling if it fails. Adding an API key can help avoid rate limits.
+                            ${isPolling
+                                ? 'Uses a signed WebSocket to receive chat messages. Sign in to improve message coverage.'
+                                : 'Tries Euler signing, falls back to Compatibility if it fails. Adding an API key can help avoid rate limits.'}
                         </p>
                     </div>
                     ${apiInputsBlock}
@@ -10741,6 +10960,88 @@
     `;
         }
 
+        function recordTikTokTroubleshooting(source, data) {
+            if (source?.target !== 'tiktok' || !tikTokTroubleshootingTools) return null;
+            const trackedStatuses = ['connecting', 'connected', 'disconnected', 'reconnecting', 'error', 'failed', 'fatal_error', 'euler_rate_limit', 'stopped_by_user'];
+            let record = tikTokTroubleshooting.get(source.id);
+            if (!trackedStatuses.includes(data.status)) return record || null;
+            if (!record) {
+                record = { lastFailure: '', method: '', hasSession: null, recent: [] };
+                tikTokTroubleshooting.set(source.id, record);
+                if (tikTokTroubleshooting.size > 100) tikTokTroubleshooting.delete(tikTokTroubleshooting.keys().next().value);
+            }
+            const clean = value => tikTokTroubleshootingTools.sanitizeTikTokDiagnosticText(value, source);
+            const message = clean(data.error || data.reason || data.disconnectReason || data.message || '');
+            const method = clean(data.connectionMethod || data.effectiveMode || '');
+            if (method) record.method = method;
+            if (typeof data.hasSession === 'boolean') record.hasSession = data.hasSession;
+            if (data.status === 'connected') {
+                record.lastFailure = '';
+            } else if (['error', 'failed', 'fatal_error', 'euler_rate_limit', 'disconnected'].includes(data.status)
+                || (data.status === 'reconnecting' && !record.lastFailure)) {
+                if (!tikTokTroubleshootingTools.isGenericTikTokFailure(message)) record.lastFailure = message;
+            }
+            const event = { at: new Date().toISOString(), status: data.status, message, method: record.method };
+            if (Number.isInteger(data.disconnectCode)) event.disconnectCode = data.disconnectCode;
+            if (Number.isFinite(data.attempt)) event.attempt = data.attempt;
+            if (Number.isFinite(data.nextAttemptIn)) event.nextAttemptInMs = data.nextAttemptIn;
+            record.recent.push(event);
+            if (record.recent.length > 20) record.recent.shift();
+            return record;
+        }
+
+        function buildTikTokTroubleshootingDetails(sourceId) {
+            const source = stateManager?.getSource(sourceId);
+            if (source?.target !== 'tiktok' || !tikTokTroubleshootingTools) return null;
+            const record = tikTokTroubleshooting.get(sourceId);
+            const clean = value => tikTokTroubleshootingTools.sanitizeTikTokDiagnosticText(value, source);
+            const selector = document.querySelector(`[data-source-id="${sourceId}"] .tiktok-connection-select`);
+            let version = '';
+            try { version = ipcRenderer?.sendSync('getVersion') || ''; } catch (_) { }
+            return {
+                app: 'SSApp',
+                generatedAt: new Date().toISOString(),
+                version: clean(version),
+                platform: typeof process === 'undefined' ? 'unknown' : process.platform,
+                selectedMode: clean(selector?.selectedOptions[0]?.textContent || resolveTikTokConnectionPreset(source, source.connectionMode)),
+                actualMethod: clean(record?.method || source.tiktokConnectionMethod || 'Not established'),
+                status: clean(source.status || 'inactive'),
+                hasSavedTikTokSession: !!source.tiktokSessionId,
+                activeConnectionHasSession: source.status === 'active' ? (record?.hasSession ?? null) : null,
+                hasEulerApiKey: !!source.tiktokSigningApiKey,
+                hasCustomSigningUrl: !!source.tiktokSigningServiceUrl,
+                lastError: clean(record?.lastFailure || source.error || ''),
+                recentEvents: (record?.recent || []).map(event => ({ ...event, message: clean(event.message), method: clean(event.method) })),
+                note: 'Recent connection events from this app session. Saved TikTok credentials do not establish login in Euler Proxy or the Standard capture page.'
+            };
+        }
+
+        async function copyTikTokTroubleshooting(sourceId) {
+            const details = buildTikTokTroubleshootingDetails(sourceId);
+            if (!details) return;
+            const text = JSON.stringify(details, null, 2);
+            let copied = false;
+            try {
+                await navigator.clipboard.writeText(text);
+                copied = true;
+            } catch (_) { }
+            if (!copied) {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.cssText = 'position:fixed;opacity:0';
+                document.body.appendChild(textarea);
+                try {
+                    textarea.focus();
+                    textarea.select();
+                    copied = document.execCommand('copy');
+                } catch (_) {
+                    copied = false;
+                } finally { textarea.remove(); }
+            }
+            if (copied) Toast.success('TikTok', 'Troubleshooting details copied. Keys and login cookies are excluded.');
+            else Toast.error('TikTok', 'Could not copy troubleshooting details. Please try again.');
+        }
+
         async function copyTikTokSigningPayload(sourceId) {
             if (!stateManager) return;
             const source = stateManager.getSource(sourceId);
@@ -10810,7 +11111,9 @@
                 const warnings = Array.isArray(response.warnings)
                     ? response.warnings.filter(item => typeof item === 'string' && item.trim())
                     : [];
-                if (warnings.length) {
+                // Signed out: one clear sign-in toast below instead of technical signature warnings
+                // (they stay saved and visible in the signing results).
+                if (warnings.length && response.parameters.sessionid) {
                     warnings.forEach(warning => {
                         Toast.warning("TikTok Signing", warning);
                     });
@@ -10851,8 +11154,12 @@
                         Toast.warning("TikTok Signing", validationResult.error || 'TikTok fetch validation failed.');
                     }
                 }
-                if (!restarted) {
-                    Toast.success("TikTok Signing", "Session collected.");
+                if (!response.parameters.sessionid) {
+                    Toast.warning("Not signed in. Click Open TikTok Sign-in, log into TikTok in that window, then click Collect Session again. Local Signer can read public LIVE chat without signing in.", "TikTok Sign-in Needed");
+                } else if (!response.parameters.tt_target_idc) {
+                    Toast.warning("Session cookie collected, but tt-target-idc is missing. Sign in again or enter both cookies manually.", "TikTok Sign-in Incomplete");
+                } else if (!restarted) {
+                    Toast.success("TikTok session collected. Activate the source to use it.", "TikTok Signing");
                 }
             } catch (error) {
                 console.error('Failed to collect TikTok signing parameters:', error);
@@ -10875,7 +11182,7 @@
                     return;
                 }
                 tiktokSigningWindowControl(sourceId, 'state', { silent: true });
-                Toast.info('TikTok Signing', 'TikTok sign-in window opened. Sign in if needed, then click Collect Session.');
+                Toast.info('TikTok window opened. If you are not logged in, use the Log in button on the TikTok page, then click Collect Session.', 'TikTok Signing');
             } catch (error) {
                 console.error('Failed to show TikTok signing window:', error);
                 Toast.error('TikTok Signing', error.message || 'Unable to show the TikTok window.');
@@ -11035,8 +11342,10 @@
                             }
                         }
                         const restarted = await restartTikTokSourceAfterAuthIfActive(sourceId, 'TikTok sign-in');
-                        if (!restarted) {
-                            Toast.success("TikTok Sign-in", "Successfully signed in to TikTok!");
+                        if (!rawIdc) {
+                            Toast.warning("Missing tt-target-idc cookie. This source connects anonymously until you sign in again or enter both cookies manually.", "TikTok Sign-in Incomplete");
+                        } else if (!restarted) {
+                            Toast.success("TikTok session saved. Activate the source to use it.", "TikTok Sign-in");
                         }
                     }
                 } else {
@@ -11085,7 +11394,9 @@
                             }
                         }
                         const restarted = await restartTikTokSourceAfterAuthIfActive(sourceId, 'TikTok credentials');
-                        if (!restarted) {
+                        if (!rawIdc) {
+                            Toast.warning("Missing tt-target-idc cookie. This source connects anonymously until you enter both cookies.", "TikTok Sign-in Incomplete");
+                        } else if (!restarted) {
                             Toast.success("TikTok Sign-in", "Successfully added TikTok credentials!");
                         }
                     }
@@ -11209,7 +11520,7 @@
                 case 'classic':
                     return 'Connected (Standard)';
                 case 'tiktok-legacy':
-                    return 'Connected via polling';
+                    return 'Connected via Compatibility (WebSocket)';
                 case 'tiktok-websocket':
                     return 'WebSocket connected (TikTok)';
                 default:
@@ -11221,6 +11532,9 @@
             if (!method) return null;
             const normalized = String(method).trim();
             if (!normalized) return null;
+            if (normalized === 'TikFinity Desktop') {
+                return sourceCtx?.tiktokConnectionLabel || 'Connected to TikFinity Desktop; waiting for LIVE events';
+            }
 
             const lower = normalized.toLowerCase();
             const effectiveMode = normalizeTikTokMode(
@@ -11411,6 +11725,13 @@
                     lockProvider(true);
                     statusElement.classList.add('retry');
                     statusElement.innerHTML = `<i class="las la-sync fa-spin"></i> ${statusText(message || 'Retrying connection...')}`;
+                    if (element._eulerLimit?.keySource === 'shared') {
+                        statusElement.appendChild(document.createTextNode(' '));
+                        appendStatusAction('Get your own Euler key', () => window.open('https://www.eulerstream.com/dashboard', '_blank'));
+                    } else if (element._eulerLimit?.keySource === 'user') {
+                        statusElement.appendChild(document.createTextNode(' '));
+                        appendStatusAction('Euler usage', () => window.open('https://www.eulerstream.com/dashboard', '_blank'));
+                    }
                     break;
                 case 'stopped':
                     lockProvider(false);
@@ -11580,6 +11901,19 @@
             }
 
             let signinUrl = config?.[effectivePlatform]?.signin?.url;
+            if (!signinUrl && config?.[effectivePlatform]?.signin?.useSourceUrl === true && urlForSignin) {
+                try {
+                    const sourceUrl = new URL(urlForSignin);
+                    if (!['http:', 'https:'].includes(sourceUrl.protocol) || sourceUrl.username || sourceUrl.password) {
+                        throw new Error('Use a server URL without embedded login credentials.');
+                    }
+                    signinUrl = sourceUrl.href;
+                } catch (error) { Toast.error('Sign-in Error', error.message); return false; }
+            }
+            if (!signinUrl && effectivePlatform === 'ebay') {
+                try { signinUrl = getEbayLiveOrigin(urlForSignin); }
+                catch (error) { Toast.error('eBay Sign-in', error.message); return false; }
+            }
             if (!signinUrl && urlForSignin) {
                 try {
                     signinUrl = "https://" + getPrimaryDomain(urlForSignin);
@@ -11767,11 +12101,16 @@
                                 const s = stateManager.getSource(sid);
                                 return s && s.status === 'active' && (s.vid || s.wssId || s.tiktokWssId);
                             });
-                            const shouldAttemptImmediate = (!group.streams || group.streams.length === 0) && !hasActive;
+                            // Owner discovery already runs through the owner-aware auto-checker.
+                            const shouldAttemptImmediate = !isYouTubeOwnerGroup(group)
+                                && (!group.streams || group.streams.length === 0) && !hasActive;
                             if (shouldAttemptImmediate) {
+                                const discoveryIdentity = getYouTubeGroupDiscoveryIdentity(group);
                                 setTimeout(async () => {
                                     // Re-check state at call time to avoid races
                                     const freshGroup = stateManager.getGroup(group.id);
+                                    if (freshGroup !== group || !freshGroup.autoActivate
+                                        || getYouTubeGroupDiscoveryIdentity(freshGroup) !== discoveryIdentity) return;
                                     const freshHasActive = (freshGroup?.streams || []).some(sid => {
                                         const s = stateManager.getSource(sid);
                                         return s && s.status === 'active' && (s.vid || s.wssId || s.tiktokWssId);
@@ -11786,7 +12125,8 @@
                                         group.target === "youtubeshorts",
                                         false,
                                         true,
-                                        group.isChannel
+                                        group.isChannel,
+                                        { groupId: group.id, requireAutoActivate: true }
                                     );
                                 }, 2500 + Math.random() * 1000);
                             }
@@ -11829,7 +12169,7 @@
                             setTimeout(async () => {
                                 const activateButton = sourceElement.querySelector('[data-activatehtml]');
                                 const currentSrcState = stateManager.getSource(source.id);
-                                if (activateButton && currentSrcState && !currentSrcState.vid && !currentSrcState.wssId && !currentSrcState.tiktokWssId) {
+                                if (activateButton && currentSrcState?.autoActivate && !currentSrcState.vid && !currentSrcState.wssId && !currentSrcState.tiktokWssId) {
                                     await createWindow(activateButton);
                                 }
                             }, 2000 + Math.random() * 1000);
@@ -12125,7 +12465,7 @@
                 legacyOption.style.opacity = forcedValue ? '0.6' : '';
                 legacyOption.title = forcedValue
                     ? lockMessage
-                    : 'Use HTTP polling without signing.';
+                    : 'Signed WebSocket compatibility mode.';
             }
             if (wsMenuItem) {
                 setSettingsMenuItemDisabled(wsMenuItem, forcedValue);
@@ -12141,7 +12481,7 @@
                 setSettingsMenuItemDisabled(legacyMenuItem, forcedValue);
                 legacyMenuItem.style.opacity = forcedValue ? '0.6' : '';
                 if (!legacyMenuItem.dataset.originalTitle) {
-                    legacyMenuItem.dataset.originalTitle = legacyMenuItem.title || 'Use HTTP polling without signing.';
+                    legacyMenuItem.dataset.originalTitle = legacyMenuItem.title || 'Signed WebSocket compatibility mode.';
                 }
                 legacyMenuItem.title = forcedValue
                     ? lockMessage
@@ -12339,6 +12679,7 @@
 
             // Clean up stale window IDs on startup
             const sources = stateManager.getSources();
+            const runningSourceTabs = ipcRenderer ? ipcRenderer.sendSync('getTabs', {}) : [];
             for (const source of sources) {
                 // Set default connection mode for TikTok sources if not set
                 if (source.target === 'tiktok' && !source.connectionMode) {
@@ -12350,16 +12691,21 @@
                 }
 
                 // Check regular windows
+                let windowExists = false;
                 if (source.vid && ipcRenderer) {
-                    const windowExists = await ipcRenderer.invoke('checkWindowExists', { vid: source.vid });
+                    const tab = runningSourceTabs.find(tab => Number(tab.id) === Number(source.vid));
+                    windowExists = !!tab && (!tab.sourceId || tab.sourceId === source.id)
+                        && await ipcRenderer.invoke('checkWindowExists', { vid: source.vid });
                     if (!windowExists) {
                         stateManager.updateSource(source.id, { vid: null, status: 'inactive', activeConnectionMode: null });
                     }
                 }
 
-                // Clean up websocket IDs on startup - websocket connections don't persist across app restarts
+                // A main-page reload does not stop browser or native WebSocket sources.
+                // Keep verified live handles so Stop/Delete and YouTube cleanup can close
+                // them. Only a full app restart (or a missing window) makes them stale.
                 const staleTikTokWssId = getTikTokWssId(source);
-                if (source.wssId || staleTikTokWssId) {
+                if (!windowExists && (source.wssId || staleTikTokWssId)) {
                     const staleIdLabel = staleTikTokWssId || source.wssId;
                     console.log(`Clearing stale wssId ${staleIdLabel} for ${source.id} on startup`);
                     stateManager.updateSource(source.id, { vid: null, wssId: null, tiktokWssId: null, status: 'inactive', activeConnectionMode: null });
@@ -12571,9 +12917,11 @@
                     const isManual = !source.isAutoDiscovered;
                     const target = source.target;
                     const connMode = source.connectionMode;
-                    const allowTip = isManual && !source.discordNative && element && !element.dataset.tipShown && ((target !== 'tiktok') || (connMode === 'classic'));
+                    const allowTip = isManual && !source.discordNative && !source.shareplayNative && element && !element.dataset.tipShown && ((target !== 'tiktok') || (connMode === 'classic'));
                     if (allowTip) {
-                        updateConnectionStatus(element, 'info', 'Tip: Sign in on the site if needed, then press ▶️ Activate and make sure the chat is visible.');
+                        updateConnectionStatus(element, 'info', target === 'tikfinity'
+                            ? 'Use the Activity Feed URL from TikFinity → Overlays → OBS Docks, then activate. Keep TikFinity open and connected to LIVE.'
+                            : 'Tip: Sign in on the site if needed, then press ▶️ Activate and make sure the chat is visible.');
                         element.dataset.tipShown = '1';
                     }
                 } catch (_) { }
@@ -13136,8 +13484,9 @@
                             localWebSocketPort = normalizeLocalWebSocketPort(args[1].port);
                         }
                         if (cachedSsappEnvironment) cachedSsappEnvironment.localWebSocketEnabled = true;
+                        if (cachedSsappEnvironment) cachedSsappEnvironment.localWebSocketPort = localWebSocketPort;
                         localServer = "&localserver";
-                        await setupIframeSource();
+                        if (!updateFrameLocalServerConnection(document.getElementById('frame2'))) await setupIframeSource();
                     } else if (args[0] == "serverStopped") {
                         console.log("serverStopped");
                         if (args[1] && args[1].port !== undefined) {
@@ -13145,12 +13494,15 @@
                         }
                         if (cachedSsappEnvironment) cachedSsappEnvironment.localWebSocketEnabled = false;
                         localServer = "";
-                        await setupIframeSource();
+                        if (!updateFrameLocalServerConnection(document.getElementById('frame2'))) await setupIframeSource();
                     } else if (args[0] == "serverPortChanged") {
                         if (args[1] && args[1].port !== undefined) {
                             localWebSocketPort = normalizeLocalWebSocketPort(args[1].port);
                         }
+                        if (cachedSsappEnvironment) cachedSsappEnvironment.localWebSocketPort = localWebSocketPort;
                     }
+                    if (['serverStarted', 'serverStopped', 'serverPortChanged'].includes(args[0])
+                        && updateFrameLocalServerConnection(document.getElementById('frame1'))) return;
                     let expectedFrame1Src = "";
                     try {
                         const resolved = await resolveSocialStreamPage('popup.html', {
@@ -13695,7 +14047,7 @@
                                 : `${baseMsg} - watching for the stream to go live.${attemptInfo}`;
                             updateConnectionStatus(entryElement, 'info', msg, { persistent: true });
                         } else {
-                            const msg = `${fallbackMessage || 'Connection error'} - retrying in ${formatRetryDelay(remainingMs)}...${attemptInfo}`;
+                            const msg = `${entryElement._tiktokRetryBaseMessage || fallbackMessage || 'Connection error'} - retrying in ${formatRetryDelay(remainingMs)}...${attemptInfo}`;
                             updateConnectionStatus(entryElement, 'retry', msg);
                         }
                         setConnectingStopUI();
@@ -13712,8 +14064,33 @@
                         return;
                     }
 
+                    const troubleshooting = recordTikTokTroubleshooting(currentState, data);
+                    // Keep the original payload for offline, fallback and window-lifecycle decisions.
+                    const diagnosticText = value => tikTokTroubleshootingTools
+                        ? tikTokTroubleshootingTools.sanitizeTikTokDiagnosticText(value, currentState) : value;
+                    const displayError = diagnosticText(tikTokTroubleshootingTools?.isGenericTikTokFailure(data.error)
+                        ? (troubleshooting?.lastFailure || data.disconnectReason || data.error) : data.error);
+                    let retryReason = diagnosticText(data.reason);
+                    if (data.status === 'reconnecting' && troubleshooting?.lastFailure) {
+                        retryReason = tikTokTroubleshootingTools.isGenericTikTokFailure(retryReason)
+                            ? troubleshooting.lastFailure
+                            : (retryReason.includes(troubleshooting.lastFailure) ? retryReason : `${retryReason} Last error: ${troubleshooting.lastFailure}`);
+                    }
+
                     switch (data.status) {
+                        case 'capture_health': {
+                            const badge = entryElement && entryElement.querySelector('.ws-status');
+                            if (!badge || currentState.status !== 'active') break;
+                            const ago = timestamp => Number.isFinite(timestamp) && timestamp > 0
+                                ? `${Math.max(0, Math.floor((Date.now() - timestamp) / 1000))}s ago` : 'not yet';
+                            badge.title = `${data.localBridge ? 'TikFinity' : 'TikTok'} traffic: ${ago(data.lastActivityAt)}. `
+                                + `Last forwarded event: ${ago(data.lastForwardedAt)}. `
+                                + `${Number(data.forwardedEvents) || 0} events forwarded. `
+                                + (data.localBridge ? 'TikFinity manages the LIVE connection; check its dashboard if events stop.' : 'A quiet chat can still have a healthy connection.');
+                            break;
+                        }
                         case 'connecting':
+                            if (entryElement) entryElement._eulerLimit = null;
                             {
                                 const classicTabId = normalizeNumericId(data.tabID);
                                 const updatePayload = {
@@ -13733,7 +14110,9 @@
                             }
                             if (entryElement) {
                                 clearTikTokRetryState();
-                                updateConnectionStatus(entryElement, 'connecting', data.message || null);
+                                const lastFailure = troubleshooting?.lastFailure;
+                                updateConnectionStatus(entryElement, 'connecting', lastFailure
+                                    ? `${diagnosticText(data.message) || 'Connecting...'} Last error: ${lastFailure}` : (diagnosticText(data.message) || null));
                                 setConnectingStopUI();
                             }
                             break;
@@ -13748,7 +14127,8 @@
                                     status: 'active',
                                     error: null,
                                     tiktokFallbackMode: null,
-                                    tiktokConnectionMethod: connectionMethod
+                                    tiktokConnectionMethod: connectionMethod,
+                                    tiktokConnectionLabel: data.connectionLabel || null
                                 };
                                 if (typeof classicTabId === 'number' && !data.wssID) {
                                     updatePayload.vid = classicTabId;
@@ -13787,7 +14167,7 @@
                                 const classicTabId = normalizeNumericId(data.tabID);
                                 const updatePayload = {
                                     status: hasOfflineRetryScheduled ? 'activating' : 'error',
-                                    error: hasOfflineRetryScheduled ? null : (data.error || 'Connection lost.'),
+                                    error: hasOfflineRetryScheduled ? null : (displayError || 'Connection lost.'),
                                     tiktokFallbackMode: null,
                                     tiktokConnectionMethod: null
                                 };
@@ -13805,8 +14185,8 @@
                                 }
                                 stateManager.updateSource(sourceId, updatePayload);
                             }
-                            if (entryElement && !renderScheduledTikTokRetryStatus(data.error || 'Connection lost')) {
-                                updateConnectionStatus(entryElement, 'error', data.error || 'Connection lost. Will attempt to reconnect if configured.');
+                            if (entryElement && !renderScheduledTikTokRetryStatus(displayError || 'Connection lost')) {
+                                updateConnectionStatus(entryElement, 'error', displayError || 'Connection lost. Will attempt to reconnect if configured.');
                                 restoreActivateUI();
                             }
                             break;
@@ -13818,7 +14198,7 @@
                                 const classicTabId = normalizeNumericId(data.tabID);
                                 const updatePayload = {
                                     status: hasOfflineRetryScheduled ? 'activating' : 'error',
-                                    error: hasOfflineRetryScheduled ? null : (data.error || 'Connection error'),
+                                    error: hasOfflineRetryScheduled ? null : (displayError || 'Connection error'),
                                     tiktokFallbackMode: null,
                                     tiktokConnectionMethod: null
                                 };
@@ -13836,15 +14216,26 @@
                                 }
                                 stateManager.updateSource(sourceId, updatePayload);
                             }
-                            if (entryElement && !renderScheduledTikTokRetryStatus(data.error || 'Connection error')) {
-                                updateConnectionStatus(entryElement, 'error', data.error || 'Connection error');
+                            if (entryElement && !renderScheduledTikTokRetryStatus(displayError || 'Connection error')) {
+                                updateConnectionStatus(entryElement, 'error', displayError || 'Connection error');
                                 restoreActivateUI();
                             }
                             break;
+                        case 'euler_rate_limit':
+                            if (entryElement) entryElement._eulerLimit = data.eulerLimit;
+                            if (data.eulerLimit?.keySource === 'user') Toast.warning('Euler limit reached', data.error);
+                            if (entryElement) updateConnectionStatus(entryElement, 'info', data.error);
+                            break;
                         case 'failed':
                             {
+                                if (data.skipEulerFallback) clearTikTokRetryState();
+                                if (data.skipEulerFallback && entryElement?._tiktokFallback) {
+                                    // Compatibility uses Euler too; advance to Standard
+                                    // after the backend has tried the available local signer.
+                                    entryElement._tiktokFallback.attempted.add('tiktok-legacy');
+                                }
                                 const isSigningIssue = data.sessionRejected === true;
-                                const offlineFailure = isTikTokOfflineFailureStatus(data);
+                                const offlineFailure = !data.skipEulerFallback && isTikTokOfflineFailureStatus(data);
                                 const offlineRetryExhausted = offlineFailure && isTikTokOfflineRetryExhaustedStatus(data);
                                 const hasRetryScheduled = !!(entryElement && entryElement._tiktokRetryEndAt);
                                 const hasOfflineRetryScheduled = !!(entryElement && entryElement._tiktokRetryOffline);
@@ -13884,7 +14275,7 @@
                                     } else {
                                         updatePayload.vid = null;
                                     }
-                                    if (shouldReleaseTikTokClassicHandles(currentState, data, shouldPreserveRetryState)) {
+                                    if (data.skipEulerFallback || shouldReleaseTikTokClassicHandles(currentState, data, shouldPreserveRetryState)) {
                                         updatePayload.wssId = null;
                                         updatePayload.tiktokWssId = null;
                                         updatePayload.vid = null;
@@ -13926,7 +14317,7 @@
                                     }
                                     const activationAttemptInProgress = !!entryElement?._tiktokFallback?.inProgress;
                                     if (!activationAttemptInProgress) {
-                                        autoFallbackToNextTikTokMode(sourceId, 'failed', errorMessage || null);
+                                        autoFallbackToNextTikTokMode(sourceId, 'failed', errorMessage || null, !!data.skipEulerFallback);
                                     }
                                 }
                             }
@@ -14022,16 +14413,17 @@
                                     clearTikTokRetryState();
                                     const endAt = Date.now() + (hasNextAttempt ? nextAttemptMs : 0);
                                     const attemptInfo = (data.attempt ? ` (attempt ${data.attempt}${data.maxAttempts ? '/' + data.maxAttempts : ''})` : '');
+                                    const methodPrefix = troubleshooting?.method ? `${troubleshooting.method}: ` : '';
                                     const baseMsg = offlineRetry
-                                        ? (data.reason || (data.connectionMethod ? `User is offline (${data.connectionMethod})` : 'User is offline'))
-                                        : data.reason
-                                            ? `Connection error: ${data.reason}`
-                                            : 'Connection failed';
+                                        ? (diagnosticText(data.reason) || (data.connectionMethod ? `User is offline (${diagnosticText(data.connectionMethod)})` : 'User is offline'))
+                                        : retryReason
+                                            ? `${methodPrefix}${retryReason}`
+                                            : `${methodPrefix}Connection failed`;
                                     entryElement._tiktokRetryEndAt = hasNextAttempt ? endAt : null;
                                     entryElement._tiktokRetryAttempt = data.attempt || null;
                                     entryElement._tiktokRetryMax = data.maxAttempts || null;
                                     entryElement._tiktokRetryOffline = offlineRetry ? true : null;
-                                    entryElement._tiktokRetryBaseMessage = offlineRetry ? baseMsg : null;
+                                    entryElement._tiktokRetryBaseMessage = baseMsg;
                                     const scheduleNextUpdate = (remainingMs) => {
                                         if (!hasNextAttempt || remainingMs <= 0) return;
                                         const delayMs = getTikTokRetryTimerDelay(remainingMs, offlineRetry);
@@ -15198,7 +15590,7 @@
                 'source.add': 'Add source',
                 'source.mode.standard': '📄 Standard',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Auto-activate',
                 'source.youtube.username': 'YouTube',
                 'source.youtube.videoid': 'YouTube Video',
@@ -15285,7 +15677,7 @@
                 'source.add': 'Adicionar nova fonte:',
                 'source.mode.standard': '📄 Padrão',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Ativar automaticamente',
                 'source.youtube.username': 'Nome de usuário do YouTube',
                 'source.youtube.videoid': 'ID do vídeo do YouTube',
@@ -15370,7 +15762,7 @@
                 'source.add': 'Añadir nueva fuente:',
                 'source.mode.standard': '📄 Estándar',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Activar automáticamente',
                 'source.youtube.username': 'Nombre de usuario de YouTube',
                 'source.youtube.videoid': 'ID de video de YouTube',
@@ -15448,7 +15840,7 @@
                 'source.add': 'Přidat nový zdroj:',
                 'source.mode.standard': '📄 Standardní',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Automaticky aktivovat',
                 'source.youtube.username': 'Uživatelské jméno YouTube',
                 'source.youtube.videoid': 'ID videa YouTube',
@@ -15527,7 +15919,7 @@
                 'source.add': 'Ajouter une nouvelle source:',
                 'source.mode.standard': '📄 Standard',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Activation automatique',
                 'source.youtube.username': 'Nom d\'utilisateur YouTube',
                 'source.youtube.videoid': 'ID de vidéo YouTube',
@@ -15605,7 +15997,7 @@
                 'source.add': 'Neue Quelle hinzufügen:',
                 'source.mode.standard': '📄 Standard',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Automatisch aktivieren',
                 'source.youtube.username': 'YouTube-Benutzername',
                 'source.youtube.videoid': 'YouTube-Video-ID',
@@ -15683,7 +16075,7 @@
                 'source.add': 'Aggiungi nuova fonte:',
                 'source.mode.standard': '📄 Standard',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Attivazione automatica',
                 'source.youtube.username': 'Nome utente YouTube',
                 'source.youtube.videoid': 'ID video YouTube',
@@ -15761,7 +16153,7 @@
                 'source.add': '新しいソースを追加:',
                 'source.mode.standard': '📄 スタンダード',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': '自動有効化',
                 'source.youtube.username': 'YouTubeユーザー名',
                 'source.youtube.videoid': 'YouTube動画ID',
@@ -15995,7 +16387,7 @@
                 'source.add': '새 소스 추가:',
                 'source.mode.standard': '📄 표준',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': '자동 활성화',
                 'source.youtube.username': 'YouTube 사용자명',
                 'source.youtube.videoid': 'YouTube 동영상 ID',
@@ -16073,7 +16465,7 @@
                 'source.add': 'Добавить новый источник:',
                 'source.mode.standard': '📄 Стандартный',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Автоактивация',
                 'source.youtube.username': 'Имя пользователя YouTube',
                 'source.youtube.videoid': 'ID видео YouTube',
@@ -16151,7 +16543,7 @@
                 'source.add': 'Yeni kaynak ekle:',
                 'source.mode.standard': '📄 Standart',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Otomatik etkinleştir',
                 'source.youtube.username': 'YouTube Kullanıcı Adı',
                 'source.youtube.videoid': 'YouTube Video ID',
@@ -16237,7 +16629,7 @@
                 'source.add': 'Додати нове джерело:',
                 'source.mode.standard': '📄 Стандартний',
                 'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Polling',
+                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
                 'source.autoactivate': 'Автоактивація',
                 'source.youtube.username': 'Ім’я користувача YouTube',
                 'source.youtube.videoid': 'ID відео YouTube',
@@ -17706,6 +18098,10 @@
             document.querySelectorAll('[data-signin]').forEach(btn => {
                 const entry = btn.closest('.entry');
                 const sourceId = entry ? entry.dataset.sourceId : null;
+                if (entry?.dataset.target === 'tikfinity') {
+                    btn.textContent = 'Set OBS Dock URL';
+                    return;
+                }
                 const isTikTokEntry = entry && entry.dataset.target === 'tiktok';
 
                 if (!isTikTokEntry) {

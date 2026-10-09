@@ -5,7 +5,11 @@ const path = require('path');
 const os = require('os');
 const { EventEmitter } = require('events');
 const WebSocket = require('ws');
+const { TikFinityConnection } = require('./tikfinity-connection');
+const EulerStreamApiClient = require('tiktok-live-api-sdk').default;
 const {
+    SignConfig,
+    SignatureRateLimitError,
     ControlAction,
     GiftMessageIgnoreConfig,
     WebcastEvent,
@@ -14,6 +18,11 @@ const {
     createBaseWebcastPushFrame: publicCreateBaseWebcastPushFrame,
     deserializeMessage: publicDeserializeMessage
 } = require('tiktok-live-connector');
+
+// The connector mutates SignConfig when a source supplies a key. Keep the
+// startup defaults separate so another source cannot inherit that key.
+const defaultEulerApiKey = SignConfig.apiKey;
+const defaultEulerHeaders = { ...SignConfig.baseOptions?.headers };
 
 const {
     cleanVisibleString,
@@ -25,6 +34,7 @@ const {
 } = require('../tiktok-badges');
 const giftMapping = require('./gift-mapping.json');
 const reporter = require('../error-reporter');
+const { describeTikTokDisconnect } = require('../resources/tiktok-troubleshooting');
 
 let connectorDeserializeMessage = publicDeserializeMessage || null;
 let connectorCreateBaseWebcastPushFrame = publicCreateBaseWebcastPushFrame || null;
@@ -138,6 +148,8 @@ class EulerWebsocketServerConnection extends EventEmitter {
         this.isConnected = false;
         this.enableExtendedGiftInfo = false;
         this.ws = null;
+        this.handshakeTimeoutMs = options.handshakeTimeoutMs || CONFIG.CONNECTION.SIGN_REQUEST_TIMEOUT_MS;
+        this.rejectPendingConnect = null;
     }
 
     async connect() {
@@ -165,8 +177,10 @@ class EulerWebsocketServerConnection extends EventEmitter {
 
         return new Promise((resolve, reject) => {
             try {
-                const socket = new WebSocket(url);
+                const socket = new WebSocket(url, { handshakeTimeout: this.handshakeTimeoutMs });
                 this.ws = socket;
+                this.rejectPendingConnect = reject;
+                let quotaRejected = false;
 
                 const finalize = (fn) => {
                     try {
@@ -175,6 +189,7 @@ class EulerWebsocketServerConnection extends EventEmitter {
                 };
 
                 socket.on('open', () => {
+                    this.rejectPendingConnect = null;
                     this.isConnected = true;
                     this.emit('websocketConnected');
                     resolve(true);
@@ -183,6 +198,11 @@ class EulerWebsocketServerConnection extends EventEmitter {
                 socket.on('message', (data) => this.handleMessage(data));
 
                 socket.on('close', (code, reason) => {
+                    if (quotaRejected) return;
+                    if (this.rejectPendingConnect) {
+                        this.rejectPendingConnect(new Error(`Euler WebSocket closed before connecting (${code})`));
+                        this.rejectPendingConnect = null;
+                    }
                     this.isConnected = false;
                     const reasonStr = reason ? reason.toString() : '';
                     // Log close code for debugging - see https://www.eulerstream.com/docs/sign-server/websockets
@@ -211,16 +231,27 @@ class EulerWebsocketServerConnection extends EventEmitter {
                 });
 
                 socket.on('error', (error) => {
-                    this.emit('error', error);
+                    if (quotaRejected) return;
                     if (!this.isConnected) {
+                        this.rejectPendingConnect = null;
                         reject(error);
                     }
+                    this.emit('error', error);
                 });
 
                 socket.on('unexpected-response', (_req, res) => {
                     const status = res && res.statusCode ? res.statusCode : null;
                     const statusText = res && res.statusMessage ? res.statusMessage : '';
                     const err = new Error(`Euler WebSocket server rejected connection${status ? ` (${status}${statusText ? ` ${statusText}` : ''})` : ''}`);
+                    err.status = status;
+                    err.headers = res?.headers;
+                    err.eulerRateLimit = status === 429;
+                    // Closing a rejected handshake also emits error/close. The
+                    // quota rejection already owns recovery and its reset delay.
+                    if (err.eulerRateLimit) {
+                        quotaRejected = true;
+                        this.rejectPendingConnect = null;
+                    }
                     this.emit('error', err);
                     if (!this.isConnected) {
                         reject(err);
@@ -234,9 +265,17 @@ class EulerWebsocketServerConnection extends EventEmitter {
     }
 
     async disconnect() {
+        if (this.rejectPendingConnect) {
+            const error = new Error('TikTok connection stopped');
+            error.code = 'SSAPP_TIKTOK_STOPPED';
+            this.rejectPendingConnect(error);
+            this.rejectPendingConnect = null;
+        }
         if (this.ws) {
             try {
                 this.ws.removeAllListeners();
+                // ws emits an error when an unfinished handshake is closed.
+                this.ws.on('error', () => { });
             } catch (_) { }
             try {
                 this.ws.close();
@@ -513,6 +552,7 @@ function getTikTokConnectAttemptGateKey(manager = null) {
     if (!manager || typeof manager !== 'object') {
         return 'unknown';
     }
+    if (manager.signingProvider === 'tikfinity') return 'tikfinity';
     if (manager.pollingFallbackActivated || manager.preferredStrategy === 'legacy' || manager.connectionStrategy === 'legacy') {
         return 'legacy';
     }
@@ -1109,6 +1149,19 @@ function installTikTokSignServerFallback(connector) {
     if (!connector || typeof connector !== 'object') {
         return;
     }
+    // Connector 2.4/2.5 draws a fixed-width heading around server errors.
+    // Short messages make String.repeat receive a negative count, replacing
+    // the real 429/402 with RangeError and losing its retry/configuration data.
+    const signErrorClass = connector.SignAPIError || connector.errors?.SignAPIError;
+    if (signErrorClass && typeof signErrorClass.formatSignServerMessage === 'function'
+        && !signErrorClass.__ssappShortMessagePatched) {
+        const format = signErrorClass.formatSignServerMessage;
+        signErrorClass.formatSignServerMessage = function (message) {
+            const text = typeof message === 'string' ? message.trim() : String(message || '');
+            return text.length < 19 ? text : format.call(this, text);
+        };
+        signErrorClass.__ssappShortMessagePatched = true;
+    }
 
     const { TikTokSignClient, errors } = connector;
     if (!TikTokSignClient || typeof TikTokSignClient !== 'function') {
@@ -1409,6 +1462,7 @@ function createTikTokEnvironment(options = {}) {
         ConnectionManager,
         cleanupConnection,
         registerActiveTikTokSourceConnection,
+        getActiveTikTokWssIdForSource,
         retireTikTokConnectionsForSource,
         sendToBackground,
         sendBatchToBackground,
@@ -1606,7 +1660,13 @@ function buildGiftDedupeKey(data) {
         data?.msg_id,
         data?.idStr
     ]);
-    if (msgId) return `gift|${msgId}`;
+    // A streak can reuse its message ID as the count increases and again
+    // when it ends. Only identical updates are duplicates.
+    const repeatCount = resolveGiftMetricCount(data, 'repeat') || 0;
+    const comboCount = resolveGiftMetricCount(data, 'combo') || 0;
+    const groupCount = resolveGiftMetricCount(data, 'group') || 0;
+    const repeatEnd = resolveGiftRepeatEnd(data) ? 1 : 0;
+    if (msgId) return `gift|${msgId}|${repeatCount}|${comboCount}|${groupCount}|${repeatEnd}`;
 
     const identity = extractTikTokIdentity(data);
     const userId = firstNonEmptyVisibleString([
@@ -1620,14 +1680,11 @@ function buildGiftDedupeKey(data) {
         data?.createTime
     ]) || '';
     const giftId = resolveGiftId(data) || '';
-    const repeatCount = resolveGiftMetricCount(data, 'repeat') || 0;
-    const comboCount = resolveGiftMetricCount(data, 'combo') || 0;
-    const groupCount = resolveGiftMetricCount(data, 'group') || 0;
 
     // Require userId AND at least one distinguishing detail to avoid
     // collapsing different gifts from the same user.
     if (!userId || (!createTime && !giftId)) return null;
-    return `gift|${userId}|${createTime}|${giftId}|${repeatCount}|${comboCount}|${groupCount}`;
+    return `gift|${userId}|${createTime}|${giftId}|${repeatCount}|${comboCount}|${groupCount}|${repeatEnd}`;
 }
 
 
@@ -2161,12 +2218,13 @@ function renderTikTokEmoteToken(emote = {}, textOnly = false) {
 	const emoteUrl = normalizeTikTokImageUrl(emote?.emoteUrl);
 	if (emoteUrl) {
 		const emoteId = cleanVisibleString(emote?.emoteId) || '';
-		let tag = `<img class="sticker" src="${emoteUrl}"`;
+		// These values are literal metadata, even when the message body is HTML.
+		let tag = `<img class="sticker" src="${escapeTikTokHtmlAttribute(emoteUrl)}"`;
 		if (emoteLabel) {
-			tag += ` alt="${emoteLabel}"`;
+			tag += ` alt="${escapeTikTokHtmlAttribute(emoteLabel)}"`;
 		}
 		if (emoteId) {
-			tag += ` data-emote-id="${emoteId}"`;
+			tag += ` data-emote-id="${escapeTikTokHtmlAttribute(emoteId)}"`;
 		}
 		tag += '>';
 		return tag;
@@ -2862,6 +2920,8 @@ function cleanupConnection(wssID) {
                 activeTikTokConnectionBySourceId.delete(sourceId);
             }
             manager.isStopped = true;
+            manager.eulerRequestAbortController?.abort();
+            manager.eulerLiveCheckAbortController?.abort();
             manager.activeConnectPromise = null;
             // If it's a ConnectionManager instance
             if (manager.connection) {
@@ -4039,7 +4099,7 @@ class GiftProcessor {
                 clearTimeout(existingStreak.timer);
                 this.streaks.delete(streakKey);
                 const totalCount = existingStreak.count + Math.max(0, increment);
-                this.rememberFlushedStreak(flushMemoryKey, totalCount);
+                this.rememberFlushedStreak(flushMemoryKey, Math.max(previousTotal, aggregatedCount));
                 this.queue.push({
                     data: data || existingStreak.lastData,
                     count: Math.max(1, totalCount)
@@ -4070,7 +4130,11 @@ class GiftProcessor {
         // The safety timeout is based on inactivity, so a long, active combo is
         // not announced in 30-second chunks before TikTok sends repeatEnd.
         if (existingStreak || streakable) {
-            const next = existingStreak || { count: 0, lastData: null, lastTotal: 0, timer: null };
+            // A delayed intermediate update can resume a group after its safety
+            // flush. Its count is cumulative, so only queue the unannounced part.
+            const alreadyFlushed = existingStreak ? 0 : this.getFlushedStreakTotal(flushMemoryKey);
+            if (!existingStreak && aggregatedCount <= alreadyFlushed) return;
+            const next = existingStreak || { count: 0, lastData: null, lastTotal: alreadyFlushed, timer: null };
             const prevTotal = Number(next.lastTotal) || 0;
             const increment = aggregatedCount > prevTotal ? aggregatedCount - prevTotal : 0;
             const safeIncrement = Math.max(0, increment);
@@ -4106,7 +4170,7 @@ class GiftProcessor {
         clearTimeout(streak.timer);
         this.streaks.delete(streakKey);
         const safeCount = Math.max(1, streak.count || 1);
-        this.rememberFlushedStreak(this.resolveFlushMemoryKey(streakKey, streak.lastData), safeCount);
+        this.rememberFlushedStreak(this.resolveFlushMemoryKey(streakKey, streak.lastData), streak.lastTotal);
         this.queue.push({
             data: streak.lastData,
             count: safeCount
@@ -4166,7 +4230,16 @@ class GiftProcessor {
 
         const giftId = resolveGiftId(data);
 
-        const mappedGiftName = giftId && giftMapping && giftMapping[giftId] ? giftMapping[giftId].name : null;
+        const suppliedGiftName = pickFirstNonEmptyString([
+            data.giftName, giftData.giftName, giftData.name, giftDetails.giftName,
+            giftDetails.describe, extendedGiftInfo.name, extendedGiftInfo.describe
+        ]);
+        const giftIcon = resolveTikTokGiftInlineImage(data, giftData, giftDetails, extendedGiftInfo) || '';
+        const iconKey = giftIcon.split(/[?#]/)[0].split('/').pop().split(/[.~]/)[0];
+        const giftNameKey = String(suppliedGiftName || '').normalize('NFKC')
+            .replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, ' ').trim().toLowerCase();
+        const mappedGift = giftMapping[giftId] || giftMapping[iconKey] || giftMapping['name:' + giftNameKey];
+        const mappedGiftName = mappedGift ? mappedGift.name : null;
         const giftName = pickFirstNonEmptyString([
             data.giftName,
             giftData.giftName,
@@ -4182,21 +4255,27 @@ class GiftProcessor {
 
         const perGiftDiamonds = pickFirstPositiveNumber([
             data.diamondCount,
+            data.diamond_count,
             giftData.diamondCount,
             giftData.diamond_count,
             giftData.diamondValue,
             giftData.diamond_value,
             giftData.value,
-            giftData.coins,
             giftDetails.diamondCount,
             giftDetails.diamond_count,
             extendedGiftInfo.diamondCount,
-            extendedGiftInfo.diamond_count,
-            extendedGiftInfo.coins,
-            giftId && giftMapping && giftMapping[giftId] ? giftMapping[giftId].coins : 0
+            extendedGiftInfo.diamond_count
         ]);
         const totalDiamonds = perGiftDiamonds * count;
-        const donationDisplay = totalDiamonds > 0 ? `${totalDiamonds} 💎` : null;
+        const perGiftCoins = pickFirstPositiveNumber([
+            data.coinCount, data.coin_count, data.coins,
+            giftData.coins, giftData.coinCount, giftData.coin_count,
+            giftDetails.coins, extendedGiftInfo.coins, mappedGift && mappedGift.coins
+        ]);
+        const totalCoins = perGiftCoins * count;
+        const donationDisplay = totalDiamonds > 0 ? `${totalDiamonds} 💎` :
+            totalCoins > 0 ? `${totalCoins} coins` : `${count} ${count === 1 ? 'gift' : 'gifts'}`;
+        const donationUSD = totalDiamonds > 0 ? totalDiamonds * 0.005 : (totalCoins || count) * 0.01;
         const interactiveGiftIgnoreConfig = resolveInteractiveGiftIgnoreConfig(data);
         const hiddenFromTray = isGiftHiddenFromTray(data, interactiveGiftIgnoreConfig);
         const outgoingEventType = hiddenFromTray ? 'reaction' : 'gift';
@@ -4238,7 +4317,7 @@ class GiftProcessor {
         };
 
         // Preserve upstream ids/timestamps for downstream dedupe and debugging
-        const upstreamMsgId = data?.common?.msgId || data?.msgId || data?.msg_id;
+        const upstreamMsgId = data?.common?.msgId || data?.common?.msg_id || data?.msgId || data?.msg_id;
         if (upstreamMsgId) msg.msgId = String(upstreamMsgId);
         const upstreamCreateTime = data?.common?.createTime || data?.createTime;
         if (upstreamCreateTime) msg.createTime = String(upstreamCreateTime);
@@ -4249,9 +4328,11 @@ class GiftProcessor {
         if (contentImage) {
             msg.contentimg = contentImage;
         }
-        if (donationDisplay && !hiddenFromTray) {
+        const giftSettings = getCachedSettings();
+        const treatGiftAsDonation = giftSettings.tiktokdonations || !giftSettings.notiktokdonations;
+        if (donationDisplay && !hiddenFromTray && treatGiftAsDonation) {
             msg.hasDonation = donationDisplay;
-            msg.donoValue = totalDiamonds * 0.005;
+            msg.donoValue = donationUSD;
         }
         const fanTicketCount = pickFirstPositiveNumber([
             data.fanTicketCount,
@@ -4265,12 +4346,19 @@ class GiftProcessor {
 
         const meta = sanitizeEventMeta({
             giftId,
+            giftName,
+            tiktokGiftMessageId: upstreamMsgId ? String(upstreamMsgId) : undefined,
+            tiktokGiftSenderId: pickFirstNonEmptyString([data.userId, data.user_id, data?.user?.id, data?.user?.id_str, data?.user?.userId]) || undefined,
+            groupId: resolveGiftGroupId(data) || undefined,
+            tiktokGiftCount: count,
+            repeatEnd: true, // GiftProcessor has already settled this streak.
             count,
             repeatCount: repeatCount > 1 ? repeatCount : undefined,
             comboCount: comboCount > 1 ? comboCount : undefined,
             groupCount: groupCount > 1 ? groupCount : undefined,
             diamondsPerGift: perGiftDiamonds || undefined,
             diamondsTotal: totalDiamonds || undefined,
+            coinsPerGift: perGiftCoins || undefined,
             fanTickets: fanTicketCount > 0 ? fanTicketCount : undefined,
             interactiveGift: interactiveGiftIgnoreConfig !== null ? {
                 ignoreConfig: interactiveGiftIgnoreConfig,
@@ -4372,6 +4460,12 @@ class ConnectionManager {
         this.warnedMissingTtTargetIdc = false;
         this.signingConfig = normalizeSigningConfig(signing);
         this.signingProvider = options.signingProvider || 'auto';
+        this.autoMode = options.autoMode ?? (this.signingProvider === 'auto' && !forceLegacyConnector);
+        this.eulerQuotaExhausted = null;
+        this.eulerRetriesStopped = false;
+        this.eulerBackupCheckInProgress = false;
+        this.eulerBackupReconnectUsed = false;
+        this.eulerLiveCheckAbortController = null;
         this.userProvidedSigningApiKey = this.signingConfig?.apiKey || null;
         this.sharedEulerApiKeyPool = this.buildSharedEulerApiKeyPool();
         this.sharedEulerApiKeyAttempts = new Set();
@@ -4514,6 +4608,7 @@ class ConnectionManager {
     }
 
     recordTikTokDiagnosticCounter(counterName, amount = 1) {
+        if (counterName === 'forwardedEvents') this.lastForwardedEventAt = Date.now();
         if (!this.diagnosticStats || typeof this.diagnosticStats !== 'object') {
             this.diagnosticStats = {
                 rawFrames: 0,
@@ -4548,6 +4643,15 @@ class ConnectionManager {
     }
 
     getConnectionModeDetails() {
+        if (this.signingProvider === 'tikfinity') {
+            return {
+                effectiveMode: 'TikFinity Desktop',
+                method: 'TikFinity Desktop',
+                label: this.connection?.hasLiveEvents
+                    ? 'Receiving LIVE events from TikFinity Desktop'
+                    : 'Connected to TikFinity Desktop; waiting for LIVE events'
+            };
+        }
         const usingPolling = this.pollingFallbackActivated
             || this.preferredStrategy === 'legacy'
             || this.connectionStrategy === 'legacy'
@@ -4563,10 +4667,12 @@ class ConnectionManager {
             const legacySuffix = this.pollingFallbackActivated
                 ? ' (legacy fallback)'
                 : ((usingLegacyTikTokConnector || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy') ? ' (legacy connector)' : '');
+            const method = this.pollingFallbackActivated || usingLegacyTikTokConnector
+                ? 'Polling' : 'Compatibility (WebSocket)';
             return {
                 effectiveMode: 'Polling/Legacy',
-                method: `Polling${legacySuffix}`,
-                label: `Connected via polling${legacySuffix}`
+                method: `${method}${legacySuffix}`,
+                label: `Connected via ${method === 'Polling' ? 'polling' : method}${legacySuffix}`
             };
         }
 
@@ -4720,6 +4826,51 @@ class ConnectionManager {
 
     resolveLocalSignerWebcastIdentity() {
         return normalizeSourceAccountRole(this.accountRole) === 'host' ? 'anchor' : 'audience';
+    }
+
+    applyLocalSignerConnectorAdapter(connection) {
+        // Connector 2.4 replaced the per-connection signedWebSocketProvider option
+        // with global routes. Keep our browser-backed bootstrap on this instance.
+        if (!connection || typeof connection._wsClientProvider !== 'function') return;
+        const manager = this;
+        const createWebSocket = connection._wsClientProvider;
+        connection._wsClientProvider = function (params) {
+            return createWebSocket({
+                ...params,
+                wsHeaders: {
+                    ...params.wsHeaders,
+                    ...manager.buildLocalSignerHeaders(manager.lastSignerPayload)
+                }
+            });
+        };
+        connection._connect = async function (roomId) {
+            const result = await manager.fetchSignedWebSocketViaLocalSigner({
+                roomId: roomId || this.roomId || null,
+                uniqueId: this.uniqueId
+            });
+            if (manager.isStopped) {
+                const error = new Error('TikTok connection stopped.');
+                error.code = 'SSAPP_TIKTOK_STOPPED';
+                throw error;
+            }
+            const resolvedRoomId = this.roomId;
+            if (!resolvedRoomId || !result.cursor) {
+                throw new Error('TikTok Local Signer did not return a room ID and chat cursor.');
+            }
+            this.clientParams.cursor = result.cursor;
+            this.clientParams.internal_ext = result.internalExt;
+            if (this.options.processInitialData) await this.processProtoMessageFetchResult(result);
+            const wsParams = {
+                compress: 'gzip',
+                room_id: resolvedRoomId,
+                internal_ext: result.internalExt,
+                cursor: result.cursor
+            };
+            for (const [key, value] of Object.entries(result.routeParams || {})) {
+                if (value) wsParams[key] = value;
+            }
+            return this.setupWebsocket(result.pushServer, wsParams, resolvedRoomId);
+        };
     }
 
     applyLocalSignerWebcastIdentityOverride(connection, identity = this.resolveLocalSignerWebcastIdentity()) {
@@ -5021,7 +5172,8 @@ class ConnectionManager {
                 }
 
                 const ensureValidProtoMessageFetchResult = (proto, source = 'unknown') => {
-                    const wsUrl = proto && typeof proto.wsUrl === 'string' ? proto.wsUrl.trim() : '';
+                    const wsUrl = proto && typeof (proto.pushServer || proto.wsUrl) === 'string'
+                        ? (proto.pushServer || proto.wsUrl).trim() : '';
                     if (!wsUrl) {
                         const err = new Error('TikTok did not return a WebSocket URL (wsUrl) during bootstrap.');
                         err.name = 'TikTokWsUrlError';
@@ -5355,12 +5507,12 @@ class ConnectionManager {
 	                }
 	            }
 	        }
+        }
 
 	        const roomId = payload?.room_id || payload?.roomId || payload?.roomIdStr || payload?.room_id_str || null;
 	        if (roomId) {
 	            this.applyRoomIdToConnection(roomId, 'signer_payload');
 	        }
-	    }
     }
 
     parseSignedFetchParams(pathWithQuery, fallbackRoomId) {
@@ -5564,6 +5716,12 @@ class ConnectionManager {
     }
 
     initializeConnectionInstance({ forceLegacy = false, context = 'primary' } = {}) {
+        if (this.signingProvider === 'tikfinity') {
+            this.connectionStrategy = 'websocket';
+            this.connection = new TikFinityConnection();
+            this.setupEventHandlers();
+            return;
+        }
         if (!forceLegacy && this.signingProvider === EULER_WS_PROVIDER) {
             const rawKey = typeof this.signingConfig?.apiKey === 'string' && this.signingConfig.apiKey.trim()
                 ? this.signingConfig.apiKey.trim()
@@ -5575,7 +5733,7 @@ class ConnectionManager {
             const apiKey = looksLikeJwt ? null : rawKey;
             const jwtKey = looksLikeJwt ? rawKey : rawJwtKey;
             if (!apiKey && !jwtKey) {
-                const missingKeyError = new Error('Euler Proxy requires an Euler API key or JWT. Add one in TikTok Signing settings or switch to Auto/Polling.');
+                const missingKeyError = new Error('Euler Proxy requires an Euler API key or JWT. Add one in TikTok Signing settings or switch to Auto/Compatibility.');
                 missingKeyError.code = 'SSAPP_TIKTOK_EULER_WS_MISSING_KEY';
                 this.logDebug('lifecycle.initialize.euler_ws_missing_key', {
                     provider: this.signingProvider,
@@ -5587,6 +5745,7 @@ class ConnectionManager {
             this.connection = new EulerWebsocketServerConnection(this.username, {
                 apiKey,
                 jwtKey,
+                handshakeTimeoutMs: this.signRequestTimeoutMs,
                 features: { rawMessages: true, bundleEvents: true }
             });
             this.applyResumeCursorToConnection();
@@ -5612,6 +5771,18 @@ class ConnectionManager {
             throw new Error('TikTok connector missing. Please reinstall tiktok-live-connector.');
         }
         const connectionOptions = this.buildConnectionOptions(useLegacyConnector);
+        this.eulerRequestAbortController = new AbortController();
+        connectionOptions.eulerApiInstance = new EulerStreamApiClient({
+            basePath: SignConfig.basePath,
+            apiKey: connectionOptions.signApiKey || defaultEulerApiKey,
+            baseOptions: {
+                ...SignConfig.baseOptions,
+                headers: { ...defaultEulerHeaders },
+                timeout: this.signRequestTimeoutMs,
+                timeoutErrorMessage: `Sign server request timed out after ${this.signRequestTimeoutMs}ms`,
+                signal: this.eulerRequestAbortController.signal
+            }
+        });
         if (this.sessionId) {
             connectionOptions.sessionId = this.sessionId;
             if (this.ttTargetIdc) {
@@ -5636,6 +5807,7 @@ class ConnectionManager {
         this.applyResumeCursorToConnection();
         this.applySignRequestTimeout(this.signRequestTimeoutMs);
         if (!useLegacyConnector && this.shouldUseLocalSigner()) {
+            this.applyLocalSignerConnectorAdapter(this.connection);
             this.applyLocalSignerWebcastIdentityOverride(this.connection);
         }
         this.logDebug('lifecycle.initialize.signTimeoutConfigured', {
@@ -5819,6 +5991,7 @@ class ConnectionManager {
     }
 
     async teardownConnection({ silent = false } = {}) {
+        this.eulerRequestAbortController?.abort();
         this.directChatRoute = null;
         this.directChatRouteClient = null;
         this.pendingRoomIdPromise = null;
@@ -5922,6 +6095,7 @@ class ConnectionManager {
     }
 
     async tryFallbackToPolling(primaryError, stage = 'connect') {
+        if (this.signingProvider === 'tikfinity') return false;
         if (this.signingProvider === 'local' && !this.autoLocalSignerFallbackActive) {
             this.logDebug('lifecycle.fallback.polling.skipped', {
                 reason: 'explicit_local_signer',
@@ -6120,6 +6294,10 @@ class ConnectionManager {
         if (!this.autoLocalSignerFallbackActive) {
             return false;
         }
+        if (this.eulerRetriesStopped) {
+            this.finishEulerRetries('The non-Euler connection method also failed.');
+            return false;
+        }
 
         const failureMessage = typeof primaryError?.message === 'string' && primaryError.message.trim()
             ? primaryError.message.trim()
@@ -6316,6 +6494,19 @@ class ConnectionManager {
         }
 
         try {
+            if (this.connection instanceof EulerWebsocketServerConnection) {
+                this.connection.handshakeTimeoutMs = timeoutMs;
+                return;
+            }
+            const apiConfig = this.connection.apiClient?.configuration;
+            if (apiConfig) {
+                apiConfig.baseOptions = {
+                    ...apiConfig.baseOptions,
+                    timeout: timeoutMs,
+                    timeoutErrorMessage: `Sign server request timed out after ${timeoutMs}ms`
+                };
+                return;
+            }
             const webcastApi = this.connection?.webClient?.webSigner?.webcast;
             if (!webcastApi) {
                 return;
@@ -6460,7 +6651,7 @@ class ConnectionManager {
             || this.connectionStrategy === 'legacy'
             || usingLegacyTikTokConnector;
         if (usingPolling) {
-            return 'TikTok Polling requires an Euler plan that supports signing. Add a compatible Euler API key, or use Auto, Local Signer, or Standard mode.';
+            return 'TikTok Compatibility requires an Euler plan that supports signing. Add a compatible Euler API key, or use Auto, Local Signer, or Standard mode.';
         }
         return 'The Euler signing endpoint requires a compatible plan. Add a compatible Euler API key, or use Local Signer or Standard mode.';
     }
@@ -6759,7 +6950,13 @@ class ConnectionManager {
     }
 
     getAdaptiveMessageTimeout() {
-        const now = Date.now();
+        // Judge silence against the traffic level when the connection was last
+        // alive. Moving this window forward during an outage makes every busy
+        // stream become "idle" before its shorter recovery timeout can fire.
+        const currentTime = Date.now();
+        const now = Number.isFinite(this.lastMessageTime) && this.lastMessageTime > 0
+            ? Math.min(currentTime, this.lastMessageTime)
+            : currentTime;
         this.pruneActivity(now);
 
         const {
@@ -6836,6 +7033,7 @@ class ConnectionManager {
             }
         }
 
+        this.terminalError = errorMessage;
         emitStatus({
             wssID: this.wssID,
             status: 'fatal_error',
@@ -6847,6 +7045,13 @@ class ConnectionManager {
     }
 
     setupEventHandlers() {
+        if (this.signingProvider === 'tikfinity') {
+            this.connection.on('captureStatus', message => {
+                if (!this.isActiveSourceConnection()) return;
+                emitStatus({ wssID: this.wssID, status: 'connected',
+                    connectionMethod: 'TikFinity Desktop', connectionLabel: message });
+            });
+        }
         const suppressedDecodedLogTypes = new Set([
             'WebcastLinkLayerMessage',
             'WebcastLinkMessage',
@@ -6914,7 +7119,9 @@ class ConnectionManager {
             this.logDebug('control.websocketConnected');
             this.handleConnect();
         });
-        this.connection.on('disconnect', (disconnectInfo) => {
+        // The TikTok connector uses "disconnected"; our Euler proxy adapter uses "disconnect".
+        const disconnectEvent = this.connection instanceof EulerWebsocketServerConnection ? 'disconnect' : 'disconnected';
+        this.connection.on(disconnectEvent, (disconnectInfo) => {
             // For EulerWS, disconnectInfo contains { code, reason, codeLabel }
             const code = disconnectInfo?.code;
             const codeLabel = disconnectInfo?.codeLabel || '';
@@ -7603,7 +7810,24 @@ class ConnectionManager {
             const timeSinceLastMessage = now - this.lastMessageTime;
             const connectionDuration = now - this.connectionStartTime;
 
+            if (this.connection?.isConnected) {
+                if (this.signingProvider === 'tikfinity') this.connection.updateCaptureStatus(now);
+                emitStatus({
+                    wssID: this.wssID,
+                    status: 'capture_health',
+                    lastActivityAt: this.lastMessageTime,
+                    lastForwardedAt: this.lastForwardedEventAt || null,
+                    forwardedEvents: this.getTikTokDiagnosticStats().forwardedEvents,
+                    localBridge: this.signingProvider === 'tikfinity'
+                });
+            }
+
             // Proactively reconnect after 1.5 hours to avoid 2-hour timeout
+            if (this.signingProvider === 'tikfinity') {
+                // Desktop owns the upstream connection. Silence is not proof
+                // of failure and reconnecting its local API cannot repair it.
+                return;
+            }
             if (connectionDuration > 90 * 60 * 1000) { // 90 minutes
                 console.info('Proactively refreshing connection after 90 minutes');
                 this.connectionStartTime = Date.now();
@@ -7739,6 +7963,9 @@ class ConnectionManager {
     async connect(options = {}) {
         const { bypassActivePromise = false } = options || {};
         if (this.isStopped) return false;
+        if (this.eulerRetriesStopped && !this.shouldUseLocalSigner()) {
+            return this.finishEulerRetries('Euler retries are paused to protect your quota.');
+        }
         if (!this.isActiveSourceConnection()) {
             this.logDebug('lifecycle.connect.skipped', {
                 reason: 'inactive_source_connection',
@@ -7770,7 +7997,7 @@ class ConnectionManager {
         }
 
         // 3-Strike Rule: If we've failed Websocket connections too many times, force legacy mode
-        if (this.websocketFailureCount >= this.WEBSOCKET_FAILURE_THRESHOLD && !this.pollingFallbackActivated) {
+        if (this.signingProvider !== 'tikfinity' && this.websocketFailureCount >= this.WEBSOCKET_FAILURE_THRESHOLD && !this.pollingFallbackActivated) {
             console.warn(`[TikTok] Websocket failure threshold reached (${this.websocketFailureCount}), forcing Polling Fallback.`);
             this.pollingFallbackActivated = true;
             this.preferredStrategy = 'legacy';
@@ -7806,6 +8033,10 @@ class ConnectionManager {
             try {
                 this.logDebug('lifecycle.connect.start');
                 const usingLocalSigner = this.shouldUseLocalSigner();
+
+                if (this.autoMode && this.eulerQuotaExhausted && !usingLocalSigner) {
+                    return this.finishEulerQuotaFallback(this.eulerQuotaExhausted);
+                }
 
                 // Mark connection attempt in progress to prevent cleanup during slow operations
                 // (e.g., local signer window navigation and fetch)
@@ -7927,9 +8158,13 @@ class ConnectionManager {
                 }
                 if (this.isAutoLocalSignerFallbackFailure(primaryError)) {
                     const restored = await this.restoreAutoFlowAfterLocalSignerFailure(primaryError, 'connect');
+                    if (this.isStopped) return false;
                     if (restored) {
                         return this.restartConnectionAttempt(primaryError, 'local_signer_failed_restore');
                     }
+                }
+                if (this.usesEulerForConnection() && errorName !== 'AlreadyConnectingError') {
+                    return this.handleEulerConnectionFailure(primaryError, this.isOfflineError(primaryError, errorMessage));
                 }
                 if (primaryError?.ssappFallback) {
                     const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, 'connect_ssapp_local_fallback');
@@ -7955,6 +8190,11 @@ class ConnectionManager {
                 }
 
                 const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, errorMessage);
+                const eulerLimit = this.getEulerRateLimitInfo(primaryError);
+                if (eulerLimit && eulerLimit.keySource !== 'anonymous') {
+                    const handled = await this.handleEulerKeyRateLimit(primaryError, eulerLimit);
+                    if (handled !== null) return handled;
+                }
                 const isRateLimited = this.isRateLimitError(primaryError, errorMessage);
                 const isSignServerIssue = !isRateLimited && this.isSignServerError(primaryError, errorMessage);
                 const offlineMessage = errorMessage || userFacingMessage || (primaryError && primaryError.reason) || '';
@@ -8134,7 +8374,7 @@ class ConnectionManager {
 
 	                        this.offlineRetry = false;
 	                        this.offlineRetryCount = 0;
-	                        this.offlineReason = 'Rate limited by TikTok';
+	                        this.offlineReason = eulerLimit ? userFacingMessage : 'Rate limited by TikTok';
 	                        this.attemptReconnect(retryDelayMs, { fixed: true, offline: false, immediate: true, reason: this.offlineReason });
 	                    } else if (isOffline) {
 	                        if (!this.offlineRetry) {
@@ -8358,9 +8598,9 @@ class ConnectionManager {
 
     getEulerApiKeyPromptMessage() {
         if (this.signingProvider === EULER_WS_PROVIDER) {
-            return `Euler Proxy retries were exhausted. Options: add a free Euler API key (${EULER_DASHBOARD_URL}), switch to Polling, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
+            return `Euler Proxy retries were exhausted. Options: add a free Euler API key (${EULER_DASHBOARD_URL}), switch to Compatibility, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
         }
-        return `AUTO retries were exhausted. Options: switch to Local Signer, add a free Euler API key (${EULER_DASHBOARD_URL}), use Euler Proxy, switch to Polling, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
+        return `AUTO retries were exhausted. Options: switch to Local Signer, add a free Euler API key (${EULER_DASHBOARD_URL}), use Euler Proxy, switch to Compatibility, or use Standard mode. Limits: ${EULER_RATE_LIMITS_URL}.`;
     }
 
     shouldPromptForEulerApiKey(primaryError, rawMessage = '') {
@@ -8615,7 +8855,145 @@ class ConnectionManager {
         return nestedMessages[0];
     }
 
+    usesEulerForConnection() {
+        if (this.shouldUseLocalSigner() || this.signingProvider === 'tikfinity'
+            || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy') return false;
+        if (this.signingProvider === 'auto' || this.signingProvider === EULER_WS_PROVIDER) return true;
+        if (this.signingProvider !== 'custom') return false;
+        if (!this.signingConfig?.serviceUrl) return true;
+        try {
+            const host = new URL(this.signingConfig.serviceUrl).hostname;
+            return host === 'eulerstream.com' || host.endsWith('.eulerstream.com');
+        } catch (_) { return false; }
+    }
+
+    finishEulerRetries(detail) {
+        this.isStopped = true;
+        this.eulerRetriesStopped = true;
+        this.eulerStopReason = `${detail} Euler retries paused to protect your quota. Activate the source to try again.`;
+        emitStatus({
+            wssID: this.wssID,
+            status: 'failed',
+            error: this.eulerStopReason,
+            skipEulerFallback: true
+        });
+        cleanupConnection(this.wssID);
+        return false;
+    }
+
+    async handleEulerConnectionFailure(primaryError, allowLiveReconnect = false) {
+        if (this.isStopped || this.eulerBackupCheckInProgress) return false;
+        const lookupError = `${primaryError?.message || ''} ${primaryError?.reason || ''} ${this.deriveNestedUserFriendlyErrorMessage(primaryError) || ''}`;
+        if (/user_not_found|user doesn't exist|tiktok user not found/i.test(lookupError)) {
+            this.handleFatalError(primaryError);
+            return false;
+        }
+        this.eulerBackupCheckInProgress = true;
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+        const limit = this.getEulerRateLimitInfo(primaryError);
+        if (limit) emitStatus({ wssID: this.wssID, status: 'euler_rate_limit', error: this.getEulerRateLimitMessage(limit), eulerLimit: limit });
+        emitStatus({ wssID: this.wssID, status: 'connecting', message: 'Checking TikTok directly without using Euler quota.' });
+        connectionStates.set(this.wssID, { isConnected: false, lastAttempt: Date.now(), isReconnecting: false, attemptInProgress: true });
+        const controller = new AbortController();
+        this.eulerLiveCheckAbortController = controller;
+        const timeout = setTimeout(() => controller.abort(), 20000);
+        let live = null;
+        try {
+            await this.teardownConnection({ silent: true });
+            if (!this.isStopped && typeof this.localSigner?.checkLiveStatus === 'function') {
+                live = await this.localSigner.checkLiveStatus(this.username, controller.signal);
+            }
+        } catch (_) { /* An unsuccessful check is unknown, never offline. */ }
+        finally {
+            clearTimeout(timeout);
+            this.eulerLiveCheckAbortController = null;
+            this.eulerBackupCheckInProgress = false;
+        }
+        if (this.isStopped || !this.isActiveSourceConnection()) return false;
+        this.logDebug('lifecycle.euler.backup_check', { live, allowLiveReconnect, reconnectUsed: this.eulerBackupReconnectUsed });
+        // An offline response or a dropped healthy connection gets one chat
+        // reconnect only after TikTok independently confirms the stream is live.
+        if (live === true && allowLiveReconnect && !limit && !this.eulerBackupReconnectUsed) {
+            this.eulerBackupReconnectUsed = true;
+            return this.restartConnectionAttempt(primaryError, 'euler_live_confirmed');
+        }
+        this.eulerRetriesStopped = true;
+        const lookupDetail = live === false ? 'TikTok reports that this stream is offline.'
+            : (live === true ? 'TikTok is live, but the Euler connection failed.' : 'The backup TikTok live check failed.');
+        const status = Number(primaryError?.status || primaryError?.response?.status);
+        const rejectedKey = status === 401 || status === 403 || /invalid.*(?:api key|jwt)|unauthorized/i.test(primaryError?.message || '');
+        const planRestricted = status === 402 || /requires (?:a |an )?\w+ plan|payment required/i.test(primaryError?.message || '');
+        const detail = limit ? this.getEulerRateLimitMessage(limit)
+            : (rejectedKey ? 'Euler rejected the credentials. Check your Euler API key or JWT.'
+                : (planRestricted ? 'This Euler key does not include access to the requested endpoint. Choose another TikTok connection mode.' : lookupDetail));
+        if (this.autoMode && await this.tryFallbackToLocalSigner(new Error(detail), 'euler_backup')) {
+            return this.restartConnectionAttempt(primaryError, 'euler_backup_local');
+        }
+        return this.finishEulerRetries(detail);
+    }
+
+    getEulerRateLimitInfo(primaryError) {
+        if (this.isLocalSignerRateLimit(primaryError)) return null;
+        const isEuler = primaryError instanceof SignatureRateLimitError
+            || primaryError?.name === 'SignatureRateLimitError'
+            || primaryError?.eulerRateLimit === true;
+        if (!isEuler) return null;
+        const detail = `${primaryError?.limit_label || ''} ${primaryError?.message || ''}`.toLowerCase();
+        const policy = readHeaderCaseInsensitive(primaryError?.headers, 'ratelimit-policy') || '';
+        const daily = /rate_limit_\w+_day\b|\bdaily\b|\bper day\b/.test(detail) || /\bw=86400\b/.test(policy);
+        const hourly = /rate_limit_\w+_hour\b|\bhourly\b/.test(detail);
+        const minute = /rate_limit_\w+_minute\b|\bper minute\b/.test(detail);
+        const key = this.signingConfig?.apiKey || this.signingConfig?.jwtKey || defaultEulerApiKey;
+        const shared = key && (key === SHARED_EULER_SIGNING_FALLBACK_KEY || key === SHARED_EULER_PROXY_FALLBACK_KEY);
+        return {
+            keySource: shared ? 'shared' : (key ? 'user' : 'anonymous'),
+            period: daily ? 'daily' : (hourly ? 'hourly' : (minute ? 'per-minute' : null))
+        };
+    }
+
+    getEulerRateLimitMessage(limit) {
+        const owner = limit.keySource === 'shared' ? 'The shared Euler key'
+            : (limit.keySource === 'user' ? 'Your Euler key' : 'Euler anonymous access');
+        return `${owner} has reached ${limit.period ? `its ${limit.period}` : 'a rate'} limit.`;
+    }
+
+    finishEulerQuotaFallback(limit) {
+        this.isStopped = true;
+        emitStatus({
+            wssID: this.wssID,
+            status: 'failed',
+            error: this.getEulerRateLimitMessage(limit),
+            eulerLimit: limit,
+            skipEulerFallback: true
+        });
+        cleanupConnection(this.wssID);
+        return false;
+    }
+
+    async handleEulerKeyRateLimit(primaryError, limit) {
+        const message = this.getEulerRateLimitMessage(limit);
+        emitStatus({ wssID: this.wssID, status: 'euler_rate_limit', error: message, eulerLimit: limit });
+        // Keep the existing personal-key AUTO fallback choices. The user must
+        // still see why their selected Euler credential stopped working.
+        if (this.autoMode && limit.keySource === 'user') return null;
+        if (this.autoMode) {
+            this.eulerQuotaExhausted = limit;
+            if (await this.tryFallbackToLocalSigner(primaryError, 'euler_quota')) {
+                return this.restartConnectionAttempt(primaryError, 'euler_quota_local');
+            }
+            return this.finishEulerQuotaFallback(limit);
+        }
+        const rateLimit = this.registerTikTokRateLimit(primaryError, 'euler_quota');
+        this.offlineRetry = false;
+        this.offlineReason = message;
+        this.attemptReconnect(rateLimit.delayMs, { fixed: true, offline: false, immediate: true, reason: message });
+        return false;
+    }
+
     getUserFriendlyErrorMessage(primaryError, fallbackMessage = '') {
+        const eulerLimit = this.getEulerRateLimitInfo(primaryError);
+        if (eulerLimit) return this.getEulerRateLimitMessage(eulerLimit);
         const candidates = [
             fallbackMessage,
             primaryError?.message,
@@ -8662,7 +9040,7 @@ class ConnectionManager {
         }
 
         if (normalized.includes('403') || normalized.includes('forbidden') || normalized.includes('unauthorized')) {
-            return 'Euler signing was rejected (403). Try Local Signer, Polling, or Standard mode.';
+            return 'Euler signing was rejected (403). Try Local Signer, Compatibility, or Standard mode.';
         }
 
         if (normalized.includes('timeout') || primaryError?.code === 'ECONNABORTED') {
@@ -8766,6 +9144,10 @@ class ConnectionManager {
     handleDisconnect(disconnectInfo = null) {
         const code = disconnectInfo?.code;
         const codeLabel = disconnectInfo?.codeLabel || '';
+        const failureMessage = describeTikTokDisconnect(
+            code, disconnectInfo?.reason || codeLabel,
+            { apiKey: this.signingConfig?.apiKey, jwtKey: this.signingConfig?.jwtKey, sessionId: this.sessionId, ttTargetIdc: this.ttTargetIdc }
+        );
         
         // For EulerWS close codes, provide actionable guidance
         const isEulerWs = this.signingProvider === EULER_WS_PROVIDER;
@@ -8811,6 +9193,25 @@ class ConnectionManager {
         this.resetLikeTotalUpdateState();
 
         if (!this.isStopped) {
+            if (this.usesEulerForConnection()) {
+                const stable = this.lastConnectTimestamp && Date.now() - this.lastConnectTimestamp >= CONFIG.CONNECTION.RAPID_DISCONNECT_THRESHOLD_MS;
+                if (stable) this.eulerBackupReconnectUsed = false;
+                const error = Object.assign(new Error(failureMessage), code === 4429 ? { status: 429, eulerRateLimit: true } : {});
+                this.handleEulerConnectionFailure(error, !!stable || code === 4404 || code === 4005)
+                    .catch(error => this.handleFatalError(error));
+                return;
+            }
+            if (isEulerWs && code === 4429) {
+                const error = Object.assign(new Error(disconnectInfo?.reason || codeLabel), {
+                    status: 429, eulerRateLimit: true
+                });
+                const limit = this.getEulerRateLimitInfo(error);
+                if (limit.keySource === 'shared' || !this.autoMode) {
+                    this.handleEulerKeyRateLimit(error, limit).catch(error => this.handleFatalError(error));
+                    return;
+                }
+                emitStatus({ wssID: this.wssID, status: 'euler_rate_limit', error: this.getEulerRateLimitMessage(limit), eulerLimit: limit });
+            }
             const canTrySharedEulerWsKey = this.shouldTrySharedEulerApiKeyForEulerWsClose(code);
             if (canTrySharedEulerWsKey) {
                 const retryReason = code === 4401 ? 'auth' : 'rate_limit';
@@ -8829,11 +9230,11 @@ class ConnectionManager {
                         if (handled) {
                             return this.restartConnectionAttempt(syntheticError);
                         }
-                        this.continueAfterDisconnect(code, codeLabel, isEulerWs);
+                        this.continueAfterDisconnect(code, codeLabel, isEulerWs, failureMessage);
                         return null;
                     })
                     .catch(() => {
-                        this.continueAfterDisconnect(code, codeLabel, isEulerWs);
+                        this.continueAfterDisconnect(code, codeLabel, isEulerWs, failureMessage);
                     });
                 return;
             }
@@ -8847,20 +9248,20 @@ class ConnectionManager {
                         if (handled) {
                             return this.restartConnectionAttempt();
                         }
-                        this.continueAfterDisconnect(code, codeLabel, isEulerWs);
+                        this.continueAfterDisconnect(code, codeLabel, isEulerWs, failureMessage);
                         return null;
                     })
                     .catch(() => {
-                        this.continueAfterDisconnect(code, codeLabel, isEulerWs);
+                        this.continueAfterDisconnect(code, codeLabel, isEulerWs, failureMessage);
                     });
                 return;
             }
 
-            this.continueAfterDisconnect(code, codeLabel, isEulerWs);
+            this.continueAfterDisconnect(code, codeLabel, isEulerWs, failureMessage);
         }
     }
 
-    continueAfterDisconnect(code, codeLabel, isEulerWs) {
+    continueAfterDisconnect(code, codeLabel, isEulerWs, failureMessage = describeTikTokDisconnect(code, codeLabel)) {
         if (this.isStopped) {
             return;
         }
@@ -8874,7 +9275,9 @@ class ConnectionManager {
             wssID: this.wssID,
             status: 'disconnected',
             disconnectCode: code || null,
-            disconnectReason: codeLabel || null
+            disconnectReason: codeLabel || null,
+            error: failureMessage,
+            connectionMethod: this.getConnectionMethodForDisplay()
         });
 
         if (shouldRetryAsOffline) {
@@ -8889,7 +9292,7 @@ class ConnectionManager {
             emitStatus({
                 wssID: this.wssID,
                 status: 'error',
-                error: `Euler WS: ${codeLabel}${code === 4404 ? ' - streamer is offline' : ''}`
+                error: failureMessage
             });
         } else {
             // Detect rapid connect/disconnect cycles (TikTok accepting then killing connection)
@@ -8918,20 +9321,20 @@ class ConnectionManager {
                                     if (pollingHandled) {
                                         return this.restartConnectionAttempt();
                                     }
-                                    this.attemptReconnect();
+                                    this.attemptReconnect(undefined, { reason: failureMessage });
                                     return null;
                                 });
                         }
-                        this.attemptReconnect();
+                        this.attemptReconnect(undefined, { reason: failureMessage });
                         return null;
                     })
                     .catch(() => {
-                        this.attemptReconnect();
+                        this.attemptReconnect(undefined, { reason: failureMessage });
                     });
                 return;
             }
 
-            this.attemptReconnect();
+            this.attemptReconnect(undefined, { reason: failureMessage });
         }
     }
 
@@ -8962,6 +9365,7 @@ class ConnectionManager {
         }
         if (this.isAutoLocalSignerFallbackFailure(primaryError)) {
             const restored = await this.restoreAutoFlowAfterLocalSignerFailure(primaryError, 'control_error');
+            if (this.isStopped) return false;
             if (restored) {
                 return this.restartConnectionAttempt(primaryError, 'local_signer_failed_restore');
             }
@@ -9014,7 +9418,15 @@ class ConnectionManager {
         }
 
         const combinedMessage = msg || infoText || '';
+        if (this.usesEulerForConnection()) {
+            return this.handleEulerConnectionFailure(primaryError, this.isOfflineError(primaryError, combinedMessage));
+        }
         const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, combinedMessage);
+        const eulerLimit = this.getEulerRateLimitInfo(primaryError);
+        if (eulerLimit && eulerLimit.keySource !== 'anonymous') {
+            const handled = await this.handleEulerKeyRateLimit(primaryError, eulerLimit);
+            if (handled !== null) return handled;
+        }
         const isRateLimited = this.isRateLimitError(primaryError, combinedMessage);
         const isSignServerIssue = !isRateLimited && this.isSignServerError(primaryError, combinedMessage);
         const offlineMessage = combinedMessage || userFacingMessage || (primaryError && primaryError.reason) || '';
@@ -9149,7 +9561,7 @@ class ConnectionManager {
 
 	                this.offlineRetry = false;
 	                this.offlineRetryCount = 0;
-	                this.offlineReason = 'Rate limited by TikTok';
+	                this.offlineReason = eulerLimit ? userFacingMessage : 'Rate limited by TikTok';
 	                this.attemptReconnect(retryDelayMs, { fixed: true, offline: false, immediate: true, reason: this.offlineReason });
 	            } else if (isOffline) {
 	                if (!this.offlineRetry) {
@@ -9202,6 +9614,8 @@ class ConnectionManager {
 
     disconnect() {
         this.isStopped = true;
+        this.eulerRequestAbortController?.abort();
+        this.eulerLiveCheckAbortController?.abort();
         this.clearPendingStreamEndConfirmation('disconnect');
         if (this.connection) {
             this.connection.disconnect();
@@ -9311,7 +9725,10 @@ class ConnectionManager {
 	    }
 
 	    getRetryAfterSeconds(primaryError) {
-	        const direct = parseRetryAfterSeconds(primaryError?.retryAfterSeconds ?? primaryError?.retryAfter ?? null);
+	        const retryAfter = primaryError instanceof SignatureRateLimitError
+                ? primaryError.retryAfter / 1000
+                : primaryError?.retryAfter;
+	        const direct = parseRetryAfterSeconds(primaryError?.retryAfterSeconds ?? retryAfter ?? null);
 	        if (direct !== null) {
 	            return direct;
 	        }
@@ -9364,6 +9781,11 @@ class ConnectionManager {
 	            delayMs = Math.min(delayMs, maxDelayMs);
 	        }
 
+	        const eulerLimit = this.getEulerRateLimitInfo(primaryError);
+	        if (eulerLimit && Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+	            delayMs = Math.max(delayMs, (retryAfterSeconds + 2) * 1000);
+	        }
+
 	        if (primaryError && typeof primaryError === 'object') {
 	            primaryError.__ssappTikTokRateLimitDelayMs = delayMs;
 	        }
@@ -9376,11 +9798,15 @@ class ConnectionManager {
 	            delayMs
 	        });
 
-	        setTikTokConnectAttemptCooldown(
-	            getTikTokConnectAttemptGateKey(this),
-	            now + delayMs,
-	            'rate_limit'
-	        );
+	        // A keyed Euler quota must not hold unrelated credentials behind
+	        // this provider's connect gate. The manager schedules its own retry.
+	        if (!eulerLimit || eulerLimit.keySource === 'anonymous') {
+	            setTikTokConnectAttemptCooldown(
+	                getTikTokConnectAttemptGateKey(this),
+	                now + delayMs,
+	                'rate_limit'
+	            );
+	        }
 
 	        if (this.shouldUseLocalSigner()) {
 	            setLocalSignerCooldown(now + delayMs, 'tiktok_rate_limit');
@@ -9473,6 +9899,14 @@ class ConnectionManager {
                 sourceId: this.sourceId || null
             });
             cleanupConnection(this.wssID);
+            return;
+        }
+
+        if (this.usesEulerForConnection()) {
+            const stable = this.lastConnectTimestamp && Date.now() - this.lastConnectTimestamp >= CONFIG.CONNECTION.RAPID_DISCONNECT_THRESHOLD_MS;
+            if (stable) this.eulerBackupReconnectUsed = false;
+            this.handleEulerConnectionFailure(new Error(reason || this.offlineReason || 'Euler connection interrupted.'), isOfflineFlow || !!stable)
+                .catch(error => this.handleFatalError(error));
             return;
         }
 
@@ -10383,6 +10817,9 @@ class ConnectionManager {
     }
 
     async sendChatMessage(message) {
+        if (this.signingProvider === 'tikfinity') {
+            return { success: false, error: 'TikFinity Desktop capture is read-only. Send replies in TikFinity or TikTok.' };
+        }
         if (shouldLogTikTokDebug()) {
             console.log('[TikTok] sendChatMessage called', {
                 messageLength: typeof message === 'string' ? message.length : null

@@ -205,7 +205,8 @@ async function run() {
 		assert.strictEqual(response.ok, true, response.error || JSON.stringify(response));
 		assert.deepStrictEqual(response.result, {
 			namedEmote: 'erallieLuv',
-			namedEmoteTextOnly: 'erallieLuv',
+			// textonly=true preserves literal markup; only rich messages extract image alt text.
+			namedEmoteTextOnly: '<img alt="erallieLuv" src="emote.png">',
 			diamond: 'donated 1 💎. Thank you',
 			unicode: 'Café ❤ 👩‍👩‍👧‍👦',
 			unknownImage: `hello${String.fromCharCode(0xe002)}`,

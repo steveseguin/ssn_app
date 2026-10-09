@@ -174,10 +174,21 @@ async function runTestMessage(frame, username, message, source = "twitch", optio
 	return frame.locator("#test-results").innerText();
 }
 
-async function getMemoryCount(frame) {
-	return frame.evaluate(
-		() => window.eventFlowSystem.getUserMemorySummary("state_prize_draw", window.flowEditor.currentFlow)?.count
+async function getMemoryNodeId(frame) {
+	const id = await frame.evaluate(() =>
+		window.flowEditor.currentFlow.nodes.find((node) => node.stateType === "USER_MEMORY")?.id
 	);
+	assert.ok(id, "the imported flow should have a User Memory node");
+	return id;
+}
+
+async function getMemoryCount(frame, preview = false) {
+	const nodeId = await getMemoryNodeId(frame);
+	return frame.evaluate(({ nodeId, preview }) => {
+		const flow = window.flowEditor.currentFlow;
+		const target = preview ? { ...flow, id: window.flowEditor.previewFlowId } : flow;
+		return window.eventFlowSystem.getUserMemorySummary(nodeId, target)?.count;
+	}, { nodeId, preview });
 }
 
 async function run() {
@@ -248,32 +259,36 @@ async function run() {
 
 		const unauthorizedDraw = await runTestMessage(frame, "Viewer", "!draw");
 		assert.match(unauthorizedDraw, /did not modify or block/i);
-		assert.equal(await getMemoryCount(frame), 2, "a viewer should not be able to run the draw");
+		assert.equal(await getMemoryCount(frame, true), 2, "a viewer should not be able to run the draw");
+		assert.equal(await getMemoryCount(frame), 0, "preview entrants should not enter the saved draw");
 
 		const draw = await runTestMessage(frame, "Host", "!draw", "twitch", { mod: true });
 		assert.match(draw, /selectedUser:/);
 		assert.match(draw, /selectedUserRemoved:\s*true/);
-		assert.equal(await getMemoryCount(frame), 1, "draw should remove one winner");
+		assert.equal(await getMemoryCount(frame, true), 1, "draw should remove one winner");
 
 		const unauthorizedReset = await runTestMessage(frame, "Viewer", "!resetdraw");
 		assert.match(unauthorizedReset, /did not modify or block/i);
-		assert.equal(await getMemoryCount(frame), 1, "a viewer should not be able to clear the draw");
+		assert.equal(await getMemoryCount(frame, true), 1, "a viewer should not be able to clear the draw");
 
 		const reset = await runTestMessage(frame, "Host", "!resetdraw", "twitch", { mod: true });
 		assert.match(reset, /userMemoryCleared:\s*true/);
-		assert.equal(await getMemoryCount(frame), 0, "Clear All should empty the selected memory");
+		assert.equal(await getMemoryCount(frame, true), 0, "Clear All should empty the selected memory");
 
 		console.log("[E2E] Saving one entrant across a real app restart");
 		await frame.locator("#close-test-btn").click();
-		await frame.locator('.node[data-id="state_prize_draw"]').click();
+		await frame.locator(`.node[data-id="${await getMemoryNodeId(frame)}"]`).click();
 		await frame.locator("#prop-persistence").selectOption("persistent");
 		await frame.locator("#save-flow-btn").click();
 		await frame.waitForFunction(async () => {
 			const flow = await window.eventFlowSystem.getFlowById(window.flowEditor.currentFlow.id);
-			return flow?.nodes?.find((node) => node.id === "state_prize_draw")?.config?.persistence === "persistent";
+			return flow?.nodes?.find((node) => node.stateType === "USER_MEMORY")?.config?.persistence === "persistent";
 		});
 
 		await frame.locator("#open-test-panel").click();
+		// Preview state is deliberately isolated. Exercise the saved active flow
+		// when checking whether its memory survives a real application restart.
+		await frame.locator("#test-all-active-flows").setChecked(true);
 		await runTestMessage(frame, "PersistentAlice", "!enter", "youtube");
 		assert.equal(await getMemoryCount(frame), 1);
 		await frame.waitForTimeout(350);
@@ -291,7 +306,7 @@ async function run() {
 
 		const persistentEligible = await frame.evaluate(async () =>
 			window.eventFlowSystem.isUserRemembered(
-				"state_prize_draw",
+				window.flowEditor.currentFlow.nodes.find((node) => node.stateType === "USER_MEMORY").id,
 				{ type: "youtube", userid: "persistentalice" },
 				window.flowEditor.currentFlow
 			)
@@ -299,7 +314,7 @@ async function run() {
 		assert.equal(persistentEligible, true, "saved entrant should reload after restart");
 
 		console.log("[E2E] Clearing the saved memory from its properties");
-		await frame.locator('.node[data-id="state_prize_draw"]').click();
+		await frame.locator(`.node[data-id="${await getMemoryNodeId(frame)}"]`).click();
 		page.once("dialog", (dialog) => dialog.accept());
 		await frame.locator("#clear-user-memory-now").click();
 		await frame.waitForFunction(() => document.getElementById("user-memory-current-count")?.textContent === "0");
@@ -319,7 +334,7 @@ async function run() {
 		await showEditorPage(page, frame);
 		const clearedUserReturned = await frame.evaluate(async () =>
 			window.eventFlowSystem.isUserRemembered(
-				"state_prize_draw",
+				window.flowEditor.currentFlow.nodes.find((node) => node.stateType === "USER_MEMORY").id,
 				{ type: "youtube", userid: "persistentalice" },
 				window.flowEditor.currentFlow
 			)

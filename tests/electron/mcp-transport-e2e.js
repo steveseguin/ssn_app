@@ -43,6 +43,7 @@ function startAdapter(port) {
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
 			for (const line of output.split('\n').slice(0, -1)) {
+				if (!line.trim()) continue;
 				const result = JSON.parse(line);
 				if (result.id === id) return result;
 			}

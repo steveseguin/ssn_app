@@ -18,6 +18,12 @@ const repoRoot = path.resolve(__dirname, '..', '..');
 const socialStreamRoot = path.resolve(repoRoot, '..', 'social_stream');
 const socialStreamUrl = pathToFileURL(socialStreamRoot + path.sep).href;
 const MESSAGE_COUNT = 620;
+const sourceArgument = process.argv.find(value => value.startsWith('--source-file='));
+const sourceFile = sourceArgument ? path.resolve(sourceArgument.slice('--source-file='.length)) : 'sources/tiktok.js';
+const expectTextLoss = process.argv.includes('--expect-text-loss');
+const updatesArgument = process.argv.find(value => value.startsWith('--text-updates='));
+const textUpdates = updatesArgument ? Number(updatesArgument.slice('--text-updates='.length)) : 1;
+assert.ok(Number.isInteger(textUpdates) && textUpdates > 0 && textUpdates <= 100, 'Invalid --text-updates');
 
 function getFreePort() {
 	return new Promise((resolve, reject) => {
@@ -199,7 +205,7 @@ async function run() {
 			windowId: mainWindow.id,
 			code: `(async () => {
 				const element = await newOtherSource('tiktok', ${JSON.stringify(fixture.url)}, false, {
-					username: 'hidden-capture', sourceFile: 'sources/tiktok.js', connectionMode: 'classic',
+					username: 'hidden-capture', sourceFile: ${JSON.stringify(sourceFile)}, connectionMode: 'classic',
 					autoActivate: false, isVisible: false, isMuted: true
 				});
 				const sourceId = element && element.dataset ? element.dataset.sourceId : null;
@@ -507,7 +513,44 @@ async function run() {
 			productionIssues.push(`reused element: source=${reusedElementProbe.result}, destination=${captures.length - reusedElementBaseline}`);
 		}
 
+		// React can reuse the row's descendants too: textContent replaces a text
+		// node, while nodeValue changes it in place without adding any elements.
+		for (const textUpdate of ['textContent', 'nodeValue']) {
+			for (let update = 0; update < textUpdates; update++) {
+				const textBaseline = captures.length;
+				const changed = await requestJson(controlPort, token, '/view-exec', {
+					key: viewKey,
+					code: `(function () {
+						window.__tiktokReplayProbe.length = 0;
+						var row = document.getElementById('ssn-hidden-capture-33001');
+						var text = row.querySelector('.break-words');
+						var message = 'hidden-capture message updated via ${textUpdate} ${update}';
+						if ('${textUpdate}' === 'nodeValue') text.firstChild.nodeValue = message;
+						else text.textContent = message;
+						return text.textContent === message;
+					})()`,
+				});
+				assert.strictEqual(changed.result, true, 'Capture page must display the new text');
+				await new Promise(resolve => setTimeout(resolve, 1500));
+				const textProbe = await requestJson(controlPort, token, '/view-exec', {
+					key: viewKey, code: 'window.__tiktokReplayProbe.length',
+				});
+				const expected = expectTextLoss ? 0 : 1;
+				if (textProbe.result !== expected || captures.length - textBaseline !== expected) {
+					productionIssues.push(`${textUpdate}: source=${textProbe.result}, destination=${captures.length - textBaseline}`);
+				}
+			}
+			console.log(`[tiktok-dom-replay] ${textUpdate}: page updates=${textUpdates}, expected deliveries=${expectTextLoss ? 0 : textUpdates}, mismatches=${productionIssues.length}`);
+		}
+		const recoveryBaseline = captures.length;
+		await requestJson(controlPort, token, '/view-exec', {
+			key: viewKey,
+			code: `window.__hiddenCaptureFixture.appendRows([{id: 34000, message: 'hidden-capture message new row after text updates'}])`,
+		});
+		await waitFor(() => captures.length === recoveryBaseline + 1, 'new row after text-only updates');
+
 		assert.deepStrictEqual(productionIssues, [], `TikTok production issues: ${productionIssues.join('; ')}`);
+		console.log(`[tiktok-dom-replay] ${expectTextLoss ? 'REPRODUCED text loss' : 'PASS text capture'}; subsequent new row delivered.`);
 		console.log('[tiktok-dom-replay] PASS reconnect batches were bounded without treating recycled data-index values as message IDs.');
 	} catch (error) {
 		throw new Error(`${error.message}\nElectron output:\n${output.slice(-12000)}`);
@@ -517,6 +560,8 @@ async function run() {
 		if (fixture.server.listening) {
 			await new Promise(resolve => fixture.server.close(resolve));
 		}
+		assert.ok(path.resolve(profileDir).startsWith(path.resolve(os.tmpdir()) + path.sep)
+			&& path.basename(profileDir).startsWith('ssapp-tiktok-dom-replay-'));
 		fs.rmSync(profileDir, { recursive: true, force: true });
 	}
 }
