@@ -3496,6 +3496,14 @@ disableChromiumFeatures('TranslateUI,BlinkGenPropertyTrees,ImprovedCookieControl
 // the ways a background capture window stops getting frames (and therefore stops running
 // requestAnimationFrame work such as YouTube live chat appending messages).
 disableChromiumFeatures('EvictionThrottlesDraw');
+// Wayland compositors can stop acknowledging frames for hidden/occluded windows.
+// Disabling timer throttling alone cannot drive native layout or ResizeObserver.
+// Let Chromium schedule frames without waiting for that presentation feedback.
+// This does not move/show windows or change the page's visibility state.
+if (process.platform === 'linux') {
+    app.commandLine.appendSwitch('disable-frame-rate-limit');
+    app.commandLine.appendSwitch('disable-gpu-vsync');
+}
 app.commandLine.appendSwitch('--use-angle', 'default'); // Chrome's graphics backend
 
 // Performance and stability flags

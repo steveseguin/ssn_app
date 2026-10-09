@@ -30,11 +30,10 @@
 // normally. Measured with a real YouTube live chat window receiving zero compositor frames:
 // messages kept arriving in the DOM, driven entirely by the pump.
 //
-// Two other levers were tried and dropped because neither changed frame delivery in the
-// real app: webContents.beginFrameSubscription() (inconsistent - 60 frames/s in one session,
-// nothing in the next) and re-applying webContents.setBackgroundThrottling(false) after the
-// hide (which does lift a bare hidden window from 0 to 60 frames/s in isolation, but made no
-// difference to an actual source window).
+// The timer fallback cannot run native layout observers or callbacks queued before
+// installation. Linux therefore also uses compositor-independent frame scheduling
+// (main.js) and reapplies backgroundThrottling after navigation (attachFramePump).
+// Native integration coverage: tests/electron/linux-native-layout-e2e.js.
 
 const FRAME_PUMP_STALL_MS = 100; // treat frames as stalled after this long with work queued
 const FRAME_PUMP_CHECK_MS = 50; // how often the fallback timer looks for stalled work
@@ -251,7 +250,8 @@ function installFramePumpInFrame(frame) {
 // Wires the pump into a source window for its whole lifetime. Reinstalls after every
 // navigation, since a fresh document gets a fresh requestAnimationFrame.
 function attachFramePump(view, options = {}) {
-	if (isFramePumpDisabled()) return () => { };
+	const pumpDisabled = isFramePumpDisabled();
+	if (pumpDisabled && process.platform !== 'linux') return () => { };
 	const webFrameMain = options.webFrameMain || null;
 	const log = typeof options.log === 'function' ? options.log : () => { };
 	if (!view || typeof view.once !== 'function') return () => { };
@@ -259,7 +259,19 @@ function attachFramePump(view, options = {}) {
 	const webContents = view.webContents;
 	if (!isUsableWebContents(webContents)) return () => { };
 
+	// Linux can replace the native rendering widget during navigation, after the
+	// BrowserWindow's backgroundThrottling preference was applied. Reapply false
+	// to bring that widget into Electron's hidden-but-painting state. This also
+	// drives native ResizeObserver/layout work, which the JavaScript frame pump
+	// cannot do. Never toggle throttling on: that would expose a hidden page state.
+	const resumeLinuxRendering = () => {
+		if (process.platform !== 'linux' || !isUsableWebContents(webContents)) return;
+		try { webContents.setBackgroundThrottling(false); } catch (_) { }
+	};
+
 	const onDomReady = () => {
+		resumeLinuxRendering();
+		if (pumpDisabled) return;
 		installFramePump(webContents, (scope, result) => {
 			if (result !== 'already-installed') {
 				log(`[FramePump] ${result} (${scope})`);
@@ -270,6 +282,8 @@ function attachFramePump(view, options = {}) {
 	const onFrameFinishLoad = (_event, isMainFrame, frameProcessId, frameRoutingId) => {
 		if (isMainFrame || !webFrameMain) return;
 		try {
+			resumeLinuxRendering();
+			if (pumpDisabled) return;
 			installFramePumpInFrame(webFrameMain.fromId(frameProcessId, frameRoutingId));
 		} catch (_) { }
 	};
