@@ -796,6 +796,7 @@
     <script type="text/javascript" src="thumbnail.js"></script>
     <script type="text/javascript" src="youtube.js"></script>
     <script type="text/javascript" src="ebay.js"></script>
+    <script type="text/javascript" src="seller-streams.js"></script>
     <script type="text/javascript" src="source-setup.js"></script>
     <script type="text/javascript" src="discord.js"></script>
     <script type="text/javascript" src="resources/shareplay-ui.js"></script>
@@ -2033,7 +2034,7 @@
 
             // Update data-target attribute
             element.dataset.target = source.target;
-            element.querySelector('[data-ebay-choose-stream]')?.classList.toggle('hidden', source.target !== 'ebay');
+            element.querySelector('[data-ebay-choose-stream]')?.classList.toggle('hidden', source.target !== 'ebay' || !!source.groupId);
 
             element.querySelector("[data-sourceicon]").src = getSourceIconUrl(source.target);
             element.querySelector("[data-sourceicon]").title = source.target || "unknown";
@@ -2345,6 +2346,7 @@
 
         function updateGroupUI(element, group) {
             if (!element || !group) return;
+            setupSellerGroupUI(element, group);
 
             element.querySelector("[data-sourceicon]").src = getSourceIconUrl(group.target);
             element.querySelector("[data-sourceicon]").title = group.target;

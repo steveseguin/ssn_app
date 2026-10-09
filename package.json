@@ -166,6 +166,7 @@
       "websocket-monitor.js",
       "youtube.js",
       "ebay.js",
+      "seller-streams.js",
       "source-setup.js",
       "discord.js",
       "tiktok-auth.js",

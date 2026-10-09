@@ -12321,6 +12321,18 @@ async function createWindow(args, reuse = false, mainApp = false) {
             });
     });
 
+    ipcMain.handle('discover-whatnot-streams', async (event, args) => {
+        if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents
+            || event.senderFrame !== mainWindow.webContents.mainFrame) {
+            throw new Error('Seller discovery requires the app source list.');
+        }
+        try {
+            return await require('./resources/whatnot-discovery').discoverWhatnotStreams(args, session);
+        } catch (error) {
+            return { error: error.message || 'Could not load Whatnot shows. Try Refresh.' };
+        }
+    });
+
     // Add async version
     ipcMain.handle("nodefetch", async function (event, args) {
         log("NODE FETCHING! (async)");

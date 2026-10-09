@@ -362,9 +362,12 @@ class YouTubeStreamSelector {
         }
     }
 
-    async show(streams, username, isShortDefault = false, autoActivate = false) { 
+    async show(streams, username, isShortDefault = false, autoActivate = false, options = {}) {
+        this.options = options;
         this.currentUsernameForGroup = username;
         this.currentIsShortDefault = isShortDefault;
+        this.activateButton.textContent = options.buttonLabel || 'Activate Selected';
+        this.activateButton.disabled = false;
 
         if (autoActivate) {
             return streams
@@ -396,6 +399,10 @@ class YouTubeStreamSelector {
                 reject(error);
             }
         });
+    }
+
+    isStreamAdded(videoId) {
+        return this.options?.isAdded ? this.options.isAdded(videoId) : stateManager.isVideoIdAdded(videoId);
     }
 
     getVideoStatus(status, viewers) { 
@@ -451,7 +458,7 @@ class YouTubeStreamSelector {
             const status = this.getVideoStatus(stream?.status, stream?.viewers);
             return status === 'ended';
         });
-        if (allStreamsEnded) {
+        if (allStreamsEnded && !this.options?.target) {
             const message = getYouTubeDiscoveryMessage(streams);
             const messageElement = document.createElement('div');
             messageElement.className = 'yt-stream-discovery-message';
@@ -459,7 +466,7 @@ class YouTubeStreamSelector {
             this.streamList.appendChild(messageElement);
         }
         for (const stream of streams) {
-            const isExisting = stateManager.isVideoIdAdded(stream.videoId);
+            const isExisting = this.isStreamAdded(stream.videoId);
             if (isExisting) {
                 console.log("Video already added:", stream.videoId, stream.title);
                 const existingSources = stateManager.getSources({ videoId: stream.videoId });
@@ -472,7 +479,7 @@ class YouTubeStreamSelector {
             console.log(`Stream ${stream.videoId} initial isShort: ${initialIsShort} (detected: ${stream.isShort}, default: ${this.currentIsShortDefault})`);
 
 
-            const thumbnailUrl = stream.thumbnails?.medium?.url || stream.thumbnails?.default?.url || 'https://cache.socialstream.ninja/sources/images/youtube.png';
+            const thumbnailUrl = stream.thumbnails?.medium?.url || stream.thumbnails?.default?.url || getSourceIconUrl(this.options?.target || 'youtube');
             const status = this.getVideoStatus(stream.status, stream.viewers);
             stream.statusDisplay = status; // Store for later use if needed
 
@@ -503,7 +510,7 @@ class YouTubeStreamSelector {
                 <div class="yt-stream-info">
                   <div class="yt-stream-title">
                     ${escapeYouTubeHtml(stream.title || 'Live Stream')}
-                    <span class="yt-stream-type">${initialIsShort ? 'Shorts Live' : 'YouTube Live'}</span>
+                    <span class="yt-stream-type">${this.options?.target ? escapeYouTubeHtml(this.options.platformLabel) : (initialIsShort ? 'Shorts Live' : 'YouTube Live')}</span>
                   </div>
                   <div class="yt-stream-channel">${escapeYouTubeHtml(stream.channelTitle || username || stream.channelId || '')}</div>
                   ${viewerHtml}
@@ -511,12 +518,12 @@ class YouTubeStreamSelector {
                   ${status === 'upcoming' ? '<div class="stream-scheduled-time">' + this.formatScheduledTime(stream.scheduledStartTime) + '</div>' : ''}
                   ${isExisting ? '<span class="stream-status already-added">Already Added</span>' : ''}
                 </div>
-                <div class="yt-stream-controls">
+                ${this.options?.target ? '' : `<div class="yt-stream-controls">
                   <label class="shorts-toggle-label" title="Mark as YouTube Shorts?">
                     <input type="checkbox" class="shorts-toggle-checkbox" ${initialIsShort ? 'checked' : ''}>
                     <span>Shorts</span>
                   </label>
-                </div>`;
+                </div>`}`;
 
             if (selectable) {
                 element.addEventListener('click', (e) => {
@@ -524,6 +531,17 @@ class YouTubeStreamSelector {
                         this.toggleStreamSelection(stream.videoId, element);
                     }
                 });
+                if (this.options?.target) {
+                    element.tabIndex = 0;
+                    element.setAttribute('role', 'checkbox');
+                    element.setAttribute('aria-checked', 'false');
+                    element.addEventListener('keydown', e => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            this.toggleStreamSelection(stream.videoId, element);
+                        }
+                    });
+                }
             } else {
                 element.classList.add(isExisting ? 'already-added' : (status === 'ended' ? 'ended-stream' : 'not-live-stream'));
                 if (isExisting) element.title = "This stream is already in your sources list.";
@@ -551,7 +569,7 @@ class YouTubeStreamSelector {
             this.streamList.appendChild(element);
 
             if (selectable && autoSelect) {
-                const selectableStreams = streams.filter(s => !stateManager.isVideoIdAdded(s.videoId) && isSelectableYouTubeStreamStatus(this.getVideoStatus(s.status, s.viewers)));
+                const selectableStreams = streams.filter(s => !this.isStreamAdded(s.videoId) && isSelectableYouTubeStreamStatus(this.getVideoStatus(s.status, s.viewers)));
                 if (selectableStreams.length === 1) {
                     this.toggleStreamSelection(stream.videoId, element);
                 } else if (status === 'live') {
@@ -576,8 +594,19 @@ class YouTubeStreamSelector {
             this.selectedStreams.delete(videoId);
             element.classList.remove('selected');
         } else {
+            if (this.options?.singleSelect) {
+                this.selectedStreams.clear();
+                this.streamList.querySelectorAll('.selected').forEach(item => {
+                    item.classList.remove('selected');
+                    item.setAttribute('aria-checked', 'false');
+                });
+            }
             this.selectedStreams.add(videoId);
             element.classList.add('selected');
+        }
+        if (this.options?.target) {
+            element.setAttribute('aria-checked', String(this.selectedStreams.has(videoId)));
+            this.activateButton.disabled = this.selectedStreams.size === 0;
         }
     }
 
@@ -591,6 +620,7 @@ class YouTubeStreamSelector {
         
         // Store the promise resolver before hiding
         const resolver = this.resolvePromise;
+        if (this.options?.target) this.resolvePromise = null;
         this.hide();
         
         // Now resolve the promise with the result
@@ -602,7 +632,7 @@ class YouTubeStreamSelector {
 
     hide() { 
         if (this.modal) this.modal.style.display = 'none';
-        if (this.resolvePromise && this.selectedStreams.size === 0) { 
+        if (this.resolvePromise && (this.options?.target || this.selectedStreams.size === 0)) {
             this.resolvePromise({ cancelled: true }); 
         }
         this.resolvePromise = null;
