@@ -55,6 +55,8 @@
     "test:streamdeck-bridge": "node tests/electron/streamdeck-bridge-e2e.js",
     "test:streamdeck-plugin:e2e": "npm --prefix ../social_stream/ssn-streamdeck/plugin run build && node tests/electron/streamdeck-plugin-e2e.js",
     "test:tts": "node tests/electron/tts-diagnostics.js",
+    "test:linux-tts-playback:e2e": "node tests/electron/linux-tts-playback-e2e.js",
+    "test:linux-tts-settings:e2e": "node tests/electron/linux-tts-settings-e2e.js",
     "test:system-tts:e2e": "node tests/electron/system-tts-voice-selection-e2e.js",
     "test:cohost-stt": "node tests/electron/cohost-stt-e2e.js",
     "test:cohost-stt:matrix": "node tests/electron/cohost-stt-audio-matrix.js",

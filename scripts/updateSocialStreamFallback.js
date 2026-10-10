@@ -73,6 +73,7 @@ const BASE_PATTERNS = [
 ];
 
 const TTS_PATTERNS = [
+    '/thirdparty/neural-tts/**',
     '/thirdparty/espeak-ng-real.js',
     '/thirdparty/espeakng-simple.js',
     '/thirdparty/espeakng.worker.js',

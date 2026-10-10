@@ -83,6 +83,8 @@ const report = { screens: [], errors: [] };
 		}
 		for (const theme of ['dark', 'light']) {
 			await app.evaluate(({ nativeTheme }, value) => { nativeTheme.themeSource = value; }, theme);
+			await page.emulateMedia({ colorScheme: theme });
+			assert.strictEqual(await page.evaluate(() => matchMedia('(prefers-color-scheme: dark)').matches), theme === 'dark');
 			for (const [width, height, zoom] of [[1920,1080,1], [1366,768,1], [1024,768,1.25], [800,600,1.5]]) {
 				await win.evaluate((w, v) => { w.setSize(v.width, v.height); w.webContents.setZoomFactor(v.zoom); }, { width, height, zoom });
 				const tag = `${theme}-${width}-${height}-${zoom}`;

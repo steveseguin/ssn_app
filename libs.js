@@ -1884,7 +1884,8 @@ const WELCOME_GUIDE_URL = "https://www.youtube.com/watch?v=VpD2pnZVYF0";
 const WELCOME_FRAME_SCROLLBAR_STYLE = `
 html,
 body {
-	background: transparent;
+	background: #111e2b;
+	color-scheme: dark;
 	scrollbar-width: thin;
 	scrollbar-color: #ffffff40 #00000080;
 }
