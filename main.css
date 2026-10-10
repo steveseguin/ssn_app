@@ -56,7 +56,19 @@ html {
 }
 
 :where(button, input, select, textarea) {
-  color-scheme: dark;
+  color-scheme: inherit;
+}
+
+/* Native option lists need opaque colors; translucent select backgrounds
+   can become a pale system menu behind the shell's light text on Windows. */
+select option,
+select optgroup {
+  background-color: var(--bg-deep);
+  color: var(--text-primary);
+}
+
+select option:disabled {
+  color: var(--text-muted);
 }
 
 :where(button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])):focus-visible {
