@@ -3785,6 +3785,7 @@ function executeJavaScriptQuietly(webContents, script, label, userGesture) {
 }
 
 app.on('render-process-gone', (_event, webContents, details) => {
+    if (webContents && webContents.__ssappLocalModelRestarting) return;
     const reason = details && details.reason ? String(details.reason) : 'unknown';
     if (reason !== 'clean-exit') {
         for (const [tabID, view] of Object.entries(browserViews || {})) {
@@ -4441,6 +4442,19 @@ async function getBackgroundReportContext() {
         return { error: 'Background diagnostics unavailable' };
     }
 }
+
+require('./resources/local-model-service')({
+    app, BrowserWindow, ipcMain,
+    getClientFrame: (event) => {
+        const frame = event.senderFrame;
+        if (isTrustedSttSender(event)) return frame;
+        if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents
+            || !frame || !mainWindow.webContents.mainFrame.frames.includes(frame)
+            || !matchesSocialStreamPagePath(frame.url, 'background')
+            || !(frame.url.startsWith('file://') || isSocialStreamRemoteUrl(frame.url))) return null;
+        return frame;
+    }
+});
 
 ipcMain.handle('ninjachatter:audience-room', async (event, request = {}) => {
     const frame = event.senderFrame;
@@ -11982,17 +11996,21 @@ async function createWindow(args, reuse = false, mainApp = false) {
         const method = String(request.method || "GET").toUpperCase();
         const isOAuthTokenPost = method === "POST" && parsedUrl.pathname === "/api/oauth/token";
         const isChatMessagePost = method === "POST" && /^\/api\/v1\/channels\/[^\/]+\/chat$/.test(parsedUrl.pathname);
-        if (method !== "GET" && !isOAuthTokenPost && !isChatMessagePost) {
+        const isChannelPatch = method === "PATCH" && /^\/api\/v1\/channels\/[^\/]+$/.test(parsedUrl.pathname);
+        const isModerationDelete = method === "DELETE" && /^\/api\/v1\/channels\/[^\/]+\/chat\/moderation$/.test(parsedUrl.pathname);
+        const isModerationBanPost = method === "POST" && /^\/api\/v1\/channels\/[^\/]+\/chat\/moderation\/bans$/.test(parsedUrl.pathname);
+        if (method !== "GET" && !isOAuthTokenPost && !isChatMessagePost && !isChannelPatch && !isModerationDelete && !isModerationBanPost) {
             throw new Error("VPZone fetch method not allowed");
         }
 
+        const hasJsonBody = isChatMessagePost || isChannelPatch || isModerationBanPost;
         const headers = {
             Accept: "application/json"
         };
         if (isOAuthTokenPost) {
             headers["Content-Type"] = "application/x-www-form-urlencoded";
-        } else if (isChatMessagePost) {
-            headers["Content-Type"] = "application/json";
+        } else {
+            if (hasJsonBody) headers["Content-Type"] = "application/json";
             if (request.authToken && typeof request.authToken === "string") {
                 headers.Authorization = "Bearer " + request.authToken.replace(/[\r\n]/g, "");
             }
@@ -12002,7 +12020,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             method,
             cache: "no-store",
             headers,
-            body: method === "POST" ? String(request.body || "") : undefined
+            body: isOAuthTokenPost || hasJsonBody ? String(request.body || "") : undefined
         });
         const responseText = await response.text();
         let responseJson = {};
@@ -12403,6 +12421,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
 
     ipcMain.on("streaming-nodepost", async (event, args) => {
+        const isLLMRequest = args.diagnostics?.kind === 'llm';
         const {
             channelId,
             url,
@@ -12459,6 +12478,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     value
                 } = await reader.read();
                 if (done) {
+                    if (isLLMRequest) {
+                        const remaining = textDecoder.decode();
+                        if (remaining) event.reply(channelId, remaining);
+                    }
                     llmRequestDiagnostics.complete(tracked.diagnostic, {
                         status: response.status,
                         headers: response.headers
@@ -12467,7 +12490,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     break;
                 }
 
-                const chunk = textDecoder.decode(value);
+                const chunk = isLLMRequest ? textDecoder.decode(value, { stream: true }) : textDecoder.decode(value);
                 event.reply(channelId, chunk);
                 // {"model":"llama3.2:latest","created_at":"2024-10-11T07:49:42.864094Z","response":"","done":true,"done_reason":"stop","context":[128006,9125,128007,271,38766,1303,33025,2696,25,6790,220,2366,18,271,128009,128006,882,128007,271,882,25,24748,198,78191,25,128009,128006,78191,128007,271,9906,0,2650,649,358,7945,499,3432,30],"total_duration":196930300,"load_duration":19191800,"prompt_eval_count":31,"prompt_eval_duration":21749000,"eval_count":10,"eval_duration":154659000}
             }
@@ -12479,7 +12502,11 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 llmRequestDiagnostics.fail(tracked.diagnostic, error);
                 console.error('Fetch error:', error);
             }
-            event.reply(channelId, null);
+            event.reply(channelId, isLLMRequest && error?.name !== 'AbortError' ? {
+                error: true,
+                code: error?.code || error?.cause?.code || null,
+                message: error?.message || 'Streaming request failed.'
+            } : null);
         } finally {
             ipcMain.removeListener(abortChannel, abortHandler);
             ipcMain.removeListener(closeChannel, abortHandler);

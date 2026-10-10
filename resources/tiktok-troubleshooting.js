@@ -55,4 +55,9 @@ function isGenericTikTokFailure(value) {
     return typeof value !== 'string' || !value.trim() || /^(?:connection (?:lost|failed|error)|TikTok connection lost|unknown)[.!]?$/i.test(value.trim());
 }
 
-module.exports = { sanitizeTikTokDiagnosticText, describeTikTokDisconnect, isGenericTikTokFailure };
+if (typeof module === 'object' && module.exports) {
+    module.exports = { sanitizeTikTokDiagnosticText, describeTikTokDisconnect, isGenericTikTokFailure };
+}
+if (typeof window === 'object') {
+    window.ssappTikTokTroubleshooting = { sanitizeTikTokDiagnosticText, describeTikTokDisconnect, isGenericTikTokFailure };
+}

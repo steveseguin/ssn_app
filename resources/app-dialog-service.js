@@ -21,6 +21,9 @@ const JS_DIALOG_WRAPPER_SCRIPT = `(${function installAutomationDialogHooks() {
 		const original = window[name];
 		if (typeof original !== 'function') continue;
 		window[name] = function (...args) {
+			// SSApp's structured prompts use a child window with defaults and optional
+			// checkboxes. Keep that window available to app-window inspection/control.
+			if (name === 'prompt' && args[0] && typeof args[0] === 'object') return original.apply(this, args);
 			let response = null;
 			try { response = window.ninjafy?.requestAutomationJavaScriptDialog?.({ type: name, message: String(args[0] || '') }); } catch (_) { }
 			if (!response || response.intercepted !== true) return original.apply(this, args);

@@ -800,6 +800,7 @@
     <script type="text/javascript" src="source-setup.js"></script>
     <script type="text/javascript" src="discord.js"></script>
     <script type="text/javascript" src="resources/shareplay-ui.js"></script>
+    <script type="text/javascript" src="resources/tiktok-troubleshooting.js"></script>
     <!-- Temporarily disabled performance monitor to fix loading issue -->
     <!-- <script type="text/javascript" src="performance-monitor.js"></script> -->
     <script>
@@ -848,8 +849,7 @@
         var isBetaMode = false;
         const pendingTikTokStatusQueue = new Map();
         const tikTokTroubleshooting = new Map();
-        const tikTokTroubleshootingTools = typeof require === 'function'
-            ? require('./resources/tiktok-troubleshooting') : null;
+        const tikTokTroubleshootingTools = window.ssappTikTokTroubleshooting || null;
         var session = {};
         var ipcRenderer = null;
         let autoActivateCaptureEnsured = false;

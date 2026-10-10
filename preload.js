@@ -825,6 +825,17 @@ const discordBridge = {
 	},
 };
 
+const ssappLocalModelBridge = {
+	create: () => ipcRenderer.invoke('ssapp:local-model', { op: 'create' }),
+	post: (id, data) => ipcRenderer.invoke('ssapp:local-model', { op: 'post', id, data }),
+	terminate: (id) => ipcRenderer.invoke('ssapp:local-model', { op: 'terminate', id }),
+	onMessage(callback) {
+		const listener = (_event, message) => callback(message);
+		ipcRenderer.on('ssapp:local-model-event', listener);
+		return () => ipcRenderer.removeListener('ssapp:local-model-event', listener);
+	}
+};
+
 function configureContextBridge(){
 	try {
 		console.log('[Preload] Configuring contextBridge with ninjafy (including OAuth methods)');
@@ -1097,6 +1108,9 @@ function configureContextBridge(){
 		contextBridge.exposeInMainWorld('ssappFallback', ssappFallbackBridge);
 		contextBridge.exposeInMainWorld('ssappEnvironment', ssappEnvironmentBridge);
 		contextBridge.exposeInMainWorld('ssappCustomJs', ssappCustomJsBridge);
+		if (/\/(background|cohost)\.html$/.test(window.location.pathname)) {
+			contextBridge.exposeInMainWorld('ssappLocalModel', ssappLocalModelBridge);
+		}
 	} catch(e){
 		// Silently fail if context isolation is disabled - this is expected
 		if (!e.message || !e.message.includes('contextBridge API can only be used when contextIsolation is enabled')) {
@@ -1319,6 +1333,7 @@ try {
 		window.ssappFallback = ssappFallbackBridge;
 		window.ssappEnvironment = ssappEnvironmentBridge;
 		window.ssappCustomJs = ssappCustomJsBridge;
+		if (/\/(background|cohost)\.html$/.test(window.location.pathname)) window.ssappLocalModel = ssappLocalModelBridge;
 	} else {
 		console.error('[Preload] Unexpected error configuring context bridge:', e);
 	}
