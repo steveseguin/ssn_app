@@ -48,7 +48,14 @@ async function run() {
 		await toggle.press('Enter');
 		await page.locator('#language-select').focus();
 		assert.strictEqual(await toggle.getAttribute('aria-expanded'), 'true');
-		await page.mouse.click(850, 700);
+		// Use the real outside target: this also catches delayed startup showing
+		// the Streams welcome iframe over the user's selected Sessions page.
+		const outsideMenu = page.locator('#sessions-page .sessions-container');
+		const outsideBounds = await outsideMenu.boundingBox();
+		assert.ok(outsideBounds, 'Sessions page is visible outside the navigation menu');
+		await outsideMenu.click({
+			position: { x: outsideBounds.width - 20, y: Math.min(600, outsideBounds.height - 20) },
+		});
 		await page.waitForFunction(() => document.querySelector('.menu-toggle').getAttribute('aria-expanded') === 'false', null, { polling: 100 });
 		assert.strictEqual(await toggle.getAttribute('aria-expanded'), 'false');
 		const locales = await page.locator('#language-select option').evaluateAll(options => options.map(option => option.value));

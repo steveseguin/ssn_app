@@ -13248,7 +13248,9 @@
                 });
             });
 
-            const initialPage = stateManager.state.global.currentPage || 'streams';
+            // The user may already have navigated while asynchronous startup ran.
+            // showPage records that choice immediately, before these handlers exist.
+            const initialPage = localStorage.getItem('currentPage') || stateManager.state.global.currentPage || 'streams';
             switchToPage(initialPage).catch(err => console.error('Failed to switch to initial page:', err));
 
             (async function preloadPopupPanel() {
@@ -19369,7 +19371,7 @@
 
             // Small delay to ensure all elements are loaded
             setTimeout(() => {
-                showPage(savedPage);
+                showPage(localStorage.getItem('currentPage') || savedPage);
             }, 100);
         });
 
