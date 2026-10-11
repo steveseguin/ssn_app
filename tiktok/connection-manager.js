@@ -295,9 +295,10 @@ class EulerWebsocketServerConnection extends EventEmitter {
 
         // First, try to parse as JSON (room info is sent as JSON on first message)
         try {
-            const text = buffer.toString('utf8');
-            if (text.startsWith('{') || text.startsWith('[')) {
-                const jsonData = JSON.parse(text);
+            // Check the JSON delimiter before decoding the entire payload as
+            // UTF-8, so ordinary protobuf frames need no text conversion.
+            if (buffer[0] === 0x7b || buffer[0] === 0x5b) {
+                const jsonData = JSON.parse(buffer.toString('utf8'));
                 // Room info message from Euler WS
                 if (jsonData.roomInfo || jsonData.room_id || jsonData.uniqueId) {
                     console.log('[EulerWS] Received room info:', jsonData.uniqueId || jsonData.room_id);
@@ -7109,6 +7110,7 @@ class ConnectionManager {
             // "stale" to the health check and trigger unnecessary reconnects.
             this.recordTikTokDiagnosticCounter('rawFrames');
             this.noteConnectionActivity('websocketData');
+            if (!this.tiktokLogWriter) return;
             let preview = null;
             let length = null;
             try {
@@ -7139,6 +7141,7 @@ class ConnectionManager {
         this.connection.on('decodedData', (messageType, decodedData, rawPayload) => {
             this.recordTikTokDiagnosticCounter('decodedFrames');
             this.noteConnectionActivity(`decodedData:${messageType}`);
+            if (!this.tiktokLogWriter) return;
             const suppressed = suppressedDecodedLogTypes.has(messageType);
             const logEntry = {
                 messageType
@@ -11071,7 +11074,7 @@ function logTikTokForwardedMessage(msg, context = 'single', meta = {}) {
         if (manager && typeof manager.recordTikTokDiagnosticCounter === 'function') {
             manager.recordTikTokDiagnosticCounter('forwardedEvents');
         }
-        if (!manager || typeof manager.logDebug !== 'function') return;
+        if (!manager || !manager.tiktokLogWriter || typeof manager.logDebug !== 'function') return;
         const summary = {
             context,
             event: msg.event || (msg.hasDonation ? 'gift' : 'chat'),

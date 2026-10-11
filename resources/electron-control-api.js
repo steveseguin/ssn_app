@@ -131,6 +131,7 @@ function createControlApiRouter(options = {}) {
 		const event = { id: ++eventId, type, at: new Date().toISOString(), data };
 		events.push(event);
 		if (events.length > MAX_EVENTS) events.shift();
+		if (!eventClients.size) return event;
 		const packet = `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 		for (const client of eventClients) {
 			try { client.write(packet); } catch (_) { eventClients.delete(client); }

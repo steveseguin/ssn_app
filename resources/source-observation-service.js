@@ -514,19 +514,36 @@ class SourceObservationService {
 		const types = Array.isArray(value.types) && value.types.length
 			? new Set(value.types.map(item => String(item).trim()).filter(Boolean))
 			: null;
-		const available = this.events.slice(this.eventStart);
-		const oldestCursor = available.length ? Math.max(0, available[0].id - 1) : this.nextEventId;
-		const matching = available.filter(event =>
-			event.id > afterId && (!sourceId || event.sourceId === sourceId) && (!types || types.has(event.type))
-		);
-		const events = matching.slice(0, limit).map(({ __bytes, ...event }) => event);
+		const oldest = this.events[this.eventStart];
+		const oldestCursor = oldest ? Math.max(0, oldest.id - 1) : this.nextEventId;
+		const events = [];
+		let hasMore = false;
+		let start = this.eventStart;
+		let end = this.events.length;
+		if (oldest && oldest.id <= afterId) {
+			while (start < end) {
+				const middle = Math.floor((start + end) / 2);
+				if (this.events[middle].id <= afterId) start = middle + 1;
+				else end = middle;
+			}
+		}
+		for (let i = start; i < this.events.length; i++) {
+			const event = this.events[i];
+			if (event.id <= afterId || (sourceId && event.sourceId !== sourceId) || (types && !types.has(event.type))) continue;
+			if (events.length === limit) {
+				hasMore = true;
+				break;
+			}
+			const { __bytes, ...entry } = event;
+			events.push(entry);
+		}
 		return {
 			events,
 			cursor: events.length ? events[events.length - 1].id : this.nextEventId,
 			latestCursor: this.nextEventId,
 			oldestCursor,
 			historyLost: afterId > 0 && afterId < oldestCursor,
-			hasMore: matching.length > limit,
+			hasMore,
 			counters: sourceId ? (this.counters.get(sourceId) || emptyCounters()) : undefined,
 		};
 	}

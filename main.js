@@ -4389,9 +4389,21 @@ async function resolveBundledSocialStreamRoot(branch = 'main') {
 
 async function getBackgroundDiagnostics(expectedUrl) {
     if (!mainWindow || mainWindow.isDestroyed()) return null;
-    const frame = mainWindow.webContents.mainFrame.frames.find(child => expectedUrl
-        ? child.url === expectedUrl && matchesSocialStreamPagePath(child.url, 'background')
-        : matchesSocialStreamPagePath(child.url, 'background'));
+    const frame = mainWindow.webContents.mainFrame.frames.find(child => {
+        if (!matchesSocialStreamPagePath(child.url, 'background')) return false;
+        if (!expectedUrl || child.url === expectedUrl) return true;
+        try {
+            const actual = new URL(child.url);
+            const expected = new URL(expectedUrl);
+            // Accept the same HTTP(S) background route after an .html redirect,
+            // keeping the origin, branch, session query and fragment identical.
+            return (actual.protocol === 'https:' || actual.protocol === 'http:')
+                && actual.origin === expected.origin
+                && actual.username === expected.username && actual.password === expected.password
+                && actual.pathname.replace(/\.html$/i, '') === expected.pathname.replace(/\.html$/i, '')
+                && actual.search === expected.search && actual.hash === expected.hash;
+        } catch (_) { return false; }
+    });
     if (!frame) return null;
     const dependencies = await frame.executeJavaScript(`(() => {
         let customScripts = {};
@@ -7351,10 +7363,11 @@ class WebSocketServer {
 
         webSocketClient.on('message', (message) => {
             try {
+                const messageText = message.toString();
                 // Handle room joining via message if not already in a room
                 if (!webSocketClient.room) {
                     try {
-                        var msg = JSON.parse(message);
+                        var msg = JSON.parse(messageText);
                         if ("join" in msg) {
                             webSocketClient.room = msg.join + "";
                             if ("out" in msg) {
@@ -7375,7 +7388,7 @@ class WebSocketServer {
                     }
                 }
 
-                var msg = JSON.parse(message);
+                var msg = JSON.parse(messageText);
 
                 if (msg.callback && ("get" in msg.callback)) {
                     if (this.callback[msg.callback.get]) {
@@ -7408,14 +7421,14 @@ class WebSocketServer {
                         if (client.inn && outChannel) {
                             if (client.inn == outChannel) {
                                 try {
-                                    client.send(message.toString());
+                                    client.send(messageText);
                                 } catch (e) { }
                             }
                         } else if (client.inn || outChannel) {
                             // skip
                         } else {
                             try {
-                                client.send(message.toString());
+                                client.send(messageText);
                             } catch (e) { }
                         }
                     }
@@ -10690,7 +10703,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
 	    ipcMain.on("fromBackground", function (eventRet, value) {
         log("\nfromBackground ??????????????????");
-        log("Received settings from background:", JSON.stringify(value).substring(0, 200));
+        log("Received settings from background:");
 
         // Merge instead of replace to avoid losing keys not sent by the renderer.
         // Protect established settings from being overwritten with empty/partial data.
@@ -11831,7 +11844,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 	                password: normalizePasswordValue(cachedState.password)
 	            };
 
-            log("getSettings request - returning cachedState:", JSON.stringify(settingsResponse).substring(0, 200));
+            log("getSettings request - returning cachedState:");
 
             const settingsView = getActiveBrowserView(tab);
             if (settingsView && settingsView.webContents) {
@@ -14179,7 +14192,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         const userAgent = view.args.config.userAgent;
 
                         const mockData = view.args.config.mockUserAgentData;
-                        view.webContents.executeJavaScript(`
+                        executeJavaScriptQuietly(view.webContents, `
 					  Object.defineProperty(navigator, 'userAgent', {
 						get: () => '${userAgent}',
 						configurable: true
@@ -14252,7 +14265,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 					  
 					  // Return a simple value to avoid serialization issues
 					  true;
-					`);
+					`, 'source.mock_user_agent');
                     }
                 });
 
