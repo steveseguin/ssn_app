@@ -145,6 +145,32 @@ const report = { screens: [], errors: [] };
 		await page.reload();
 		await page.waitForFunction(() => window.stateManager?.initialized);
 		assert.strictEqual(await page.locator('.tiktok-connection-select').inputValue(), 'tikfinity', 'Selected TikTok mode survives reload');
+		await page.selectOption('#language-select', 'en-us');
+		for (const [width, height, zoom] of [[1280,800,1], [900,650,1], [800,600,1.5]]) {
+			await win.evaluate((w, v) => { w.setSize(v.width, v.height); w.webContents.setZoomFactor(v.zoom); }, { width, height, zoom });
+			await page.locator('[data-page="streams"]').evaluate(link => link.click());
+			await page.waitForTimeout(300);
+			if (await page.locator('#popup-handle').getAttribute('aria-expanded') !== 'true') {
+				await page.locator('#popup-handle').click();
+			}
+			await page.waitForTimeout(300);
+			const panel = await page.evaluate(() => {
+				const frame = document.getElementById('frame1');
+				const banner = document.querySelector('.beta-toggle');
+				const a = frame.getBoundingClientRect(), b = banner.getBoundingClientRect();
+				const left = Math.max(a.left, b.left), right = Math.min(a.right, b.right);
+				const top = Math.max(a.top, b.top), bottom = Math.min(a.bottom, b.bottom);
+				const overlaps = left < right && top < bottom;
+				return {
+					fits: a.width > 0 && a.height > 0 && a.left >= -1 && a.top >= -1
+						&& a.right <= innerWidth + 1 && a.bottom <= innerHeight + 1,
+					receivesInput: !overlaps || document.elementFromPoint((left + right) / 2, (top + bottom) / 2) === frame,
+				};
+			});
+			assert.ok(panel.fits, 'Expanded settings fit the viewport');
+			assert.ok(panel.receivesInput, 'Source header must not cover or intercept settings input');
+			await shot(`settings-panel-${width}-${zoom}`);
+		}
 		assert.deepStrictEqual(report.errors, []);
 		console.log(`PASS ${report.screens.length} real-app layout screenshots, dialog bounds, keyboard containment, resolutions, zoom, font size, themes and locales.`);
 	} finally { await app.close(); }

@@ -16896,6 +16896,12 @@ app.on("window-all-closed", () => {
 
 
 app.on("before-quit", (event) => {
+    // Native macOS Quit must flush settings and exit, even with Close to Tray.
+    if (isMac && !app.isQuitting) {
+        event.preventDefault();
+        quitApp();
+        return;
+    }
     if (BrowserWindow.getAllWindows().length > 0) {
         event.preventDefault();
         BrowserWindow.getAllWindows().forEach((window) => {
@@ -18767,9 +18773,14 @@ app.on("ready", () => {
 });
 
 app.on("activate", function () {
-    // social stream activating a window from the index.html page
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
+    if (isMac) {
+        if (headlessControlEnabled || app.isQuitting) return;
+        // A tray-hidden window still exists. Dock activation must restore it.
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            showMainWindowFromTray();
+            return;
+        }
+    }
     if (BrowserWindow.getAllWindows().length === 0) {
         createWindow(Argv, false, true);
     }

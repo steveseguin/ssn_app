@@ -3772,6 +3772,8 @@ input:checked + .slider:before {
 
 @media (max-width: 900px) {
   .overlay-expanded #link-overlay-page { width: calc(100% - 106px) !important; min-width: 0 !important; z-index: 20; }
+  /* Keep the source header below the settings panel that covers it. */
+  .overlay-expanded .beta-toggle { z-index: auto; }
   .overlay-expanded #sources { right: 0 !important; }
   #sources { padding: 12px 36px 12px 12px; }
   .sources-heading { min-width: 0; }
