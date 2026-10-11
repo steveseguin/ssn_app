@@ -2,7 +2,7 @@
 
 const path = require('path');
 const { createHash } = require('crypto');
-const { webContents } = require('electron');
+const { webContents, webFrameMain } = require('electron');
 
 module.exports = function setupLocalModelService({ app, BrowserWindow, ipcMain, getClientFrame }) {
     const services = new Map();
@@ -17,6 +17,52 @@ module.exports = function setupLocalModelService({ app, BrowserWindow, ipcMain, 
         let monitor = null;
         let lastHeartbeat = 0;
         const clients = new Map();
+        const owners = new Map();
+
+        function removeOwner(frame) {
+            const owner = owners.get(frame);
+            if (!owner) return;
+            owners.delete(frame);
+            owner.cleanup();
+            clients.forEach((clientFrame, id) => {
+                if (clientFrame !== frame) return;
+                clients.delete(id);
+                if (host && !host.isDestroyed()) {
+                    host.webContents.send('ssapp:local-model-host-command', { op: 'terminate', id });
+                }
+            });
+            if (!owners.size) stop();
+        }
+
+        function watchOwner(frame) {
+            if (owners.has(frame)) return owners.get(frame);
+            const contents = webContents.fromFrame(frame);
+            if (!contents || contents.isDestroyed() || frame.isDestroyed() || frame.detached) {
+                throw new Error('Local AI client was closed.');
+            }
+            // Frame objects can survive a document reload. Track committed navigation
+            // of this frame or an ancestor, including while the host is still loading.
+            const ancestors = new Set();
+            for (let current = frame; current; current = current.parent) ancestors.add(current.frameTreeNodeId);
+            const onNavigate = (_event, _url, _code, _status, isMainFrame, processId, routingId) => {
+                const target = webFrameMain.fromId(processId, routingId);
+                if (isMainFrame || (target && ancestors.has(target.frameTreeNodeId))) removeOwner(frame);
+            };
+            const onClosed = () => removeOwner(frame);
+            const owner = {
+                pending: 0,
+                cleanup() {
+                    contents.removeListener('did-frame-navigate', onNavigate);
+                    contents.removeListener('destroyed', onClosed);
+                    contents.removeListener('render-process-gone', onClosed);
+                }
+            };
+            contents.on('did-frame-navigate', onNavigate);
+            contents.on('destroyed', onClosed);
+            contents.on('render-process-gone', onClosed);
+            owners.set(frame, owner);
+            return owner;
+        }
 
         function sharesRenderer(window) {
             const pid = window.webContents.getOSProcessId();
@@ -38,6 +84,8 @@ module.exports = function setupLocalModelService({ app, BrowserWindow, ipcMain, 
             resolveReady = rejectReady = ready = null;
             if (error) clients.forEach((frame, id) => reply({ id, error }));
             clients.clear();
+            owners.forEach(owner => owner.cleanup());
+            owners.clear();
             if (services.get(url) === service) services.delete(url);
             if (window && !window.isDestroyed()) {
                 // Only terminate the isolated renderer, never an app/source process.
@@ -78,13 +126,11 @@ module.exports = function setupLocalModelService({ app, BrowserWindow, ipcMain, 
             lastHeartbeat = Date.now();
             let lastCheck = lastHeartbeat;
             monitor = setInterval(() => {
-                clients.forEach((frame, id) => {
-                    if (frame.isDestroyed() || frame.detached) {
-                        clients.delete(id);
-                        window.webContents.send('ssapp:local-model-host-command', { op: 'terminate', id });
-                    }
+                owners.forEach((_owner, frame) => {
+                    if (frame.isDestroyed() || frame.detached) removeOwner(frame);
                 });
-                if (!clients.size && !resolveReady) return stop();
+                if (host !== window) return;
+                if (!owners.size && !resolveReady) return stop();
                 const now = Date.now();
                 // Give the renderer a fresh interval after sleep or a system-wide
                 // stall that also prevented this main-process timer from running.
@@ -121,13 +167,20 @@ module.exports = function setupLocalModelService({ app, BrowserWindow, ipcMain, 
 
         async function handle(frame, command) {
             if (command.op === 'create') {
-                await start();
-                if (!host || frame.isDestroyed() || frame.detached) throw new Error('Local AI was stopped.');
-                if (Array.from(services.values()).reduce((total, entry) => total + entry.size(), 0) >= 4) throw new Error('Too many local AI clients.');
-                const id = ++nextId;
-                clients.set(id, frame);
-                host.webContents.send('ssapp:local-model-host-command', { op: 'create', id });
-                return id;
+                const owner = watchOwner(frame);
+                owner.pending++;
+                try {
+                    await start();
+                    if (!host || owners.get(frame) !== owner || frame.isDestroyed() || frame.detached) throw new Error('Local AI was stopped.');
+                    if (Array.from(services.values()).reduce((total, entry) => total + entry.size(), 0) >= 4) throw new Error('Too many local AI clients.');
+                    const id = ++nextId;
+                    clients.set(id, frame);
+                    host.webContents.send('ssapp:local-model-host-command', { op: 'create', id });
+                    return id;
+                } finally {
+                    owner.pending--;
+                    if (owners.get(frame) === owner && !owner.pending && !Array.from(clients.values()).includes(frame)) removeOwner(frame);
+                }
             }
             if (!host || clients.get(command.id) !== frame) {
                 if (command.op === 'terminate') return;
@@ -140,8 +193,9 @@ module.exports = function setupLocalModelService({ app, BrowserWindow, ipcMain, 
                 host.webContents.send('ssapp:local-model-host-command', command);
             } else if (command.op === 'terminate') {
                 clients.delete(command.id);
-                if (!clients.size) stop();
-                else host.webContents.send('ssapp:local-model-host-command', command);
+                host.webContents.send('ssapp:local-model-host-command', command);
+                const owner = owners.get(frame);
+                if (owner && !owner.pending && !Array.from(clients.values()).includes(frame)) removeOwner(frame);
             } else {
                 throw new Error('Unsupported local AI operation.');
             }

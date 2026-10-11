@@ -14570,7 +14570,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 scriptInjected = true;
                 const normalizeSelectedSourcePath = (value) => {
                     if (!value || typeof value !== "string") return "";
-                    return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
+                    // Remove relative prefixes without turning absolute filesystem paths into relative ones.
+                    return value.trim().replace(/\\/g, "/").replace(/^\.\//, "");
                 };
                 const isAbsoluteScriptUrl = (value) => /^https?:\/\//i.test(String(value || ""));
                 let explicitSourceFiles = Array.isArray(args.sourceFiles)

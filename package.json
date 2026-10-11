@@ -24,6 +24,7 @@
     "test:navigation-accessibility:e2e": "node tests/electron/navigation-accessibility-e2e.js",
     "test:linux-practical:e2e": "node tests/electron/linux-practical-e2e.js",
     "test:review-lifecycle:e2e": "node tests/electron/review-lifecycle-e2e.js",
+    "test:local-model-lifecycle:e2e": "node tests/electron/local-model-lifecycle-e2e.js",
     "test:review-recovery:e2e": "node tests/electron/review-recovery-e2e.js",
     "test:prompt-keyboard:e2e": "node tests/electron/prompt-keyboard-e2e.js",
     "test:bulk-state:e2e": "node tests/electron/bulk-state-e2e.js",
