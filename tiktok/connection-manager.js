@@ -143,6 +143,8 @@ class EulerWebsocketServerConnection extends EventEmitter {
         this.uniqueId = normalizeEulerUniqueId(typeof uniqueId === 'string' ? uniqueId : '');
         this.apiKey = typeof options.apiKey === 'string' && options.apiKey.trim() ? options.apiKey.trim() : null;
         this.jwtKey = typeof options.jwtKey === 'string' && options.jwtKey.trim() ? options.jwtKey.trim() : null;
+        this.sessionId = options.sessionId || null;
+        this.ttTargetIdc = options.ttTargetIdc || null;
         this.features = options.features || {};
         this.roomId = options.roomId || null;
         this.isConnected = false;
@@ -157,6 +159,7 @@ class EulerWebsocketServerConnection extends EventEmitter {
             uniqueId: this.uniqueId,
             ...(this.apiKey ? { apiKey: this.apiKey } : {}),
             ...(this.jwtKey ? { jwtKey: this.jwtKey } : {}),
+            ...(this.sessionId && this.ttTargetIdc ? { sessionId: this.sessionId, ttTargetIdc: this.ttTargetIdc } : {}),
             features: {
                 rawMessages: true,
                 bundleEvents: true,
@@ -165,14 +168,11 @@ class EulerWebsocketServerConnection extends EventEmitter {
         };
         const url = createEulerWebSocketUrl(urlOptions);
         
-        // Debug: Log connection details (mask API key for security)
-        const maskedKey = this.apiKey ? `${this.apiKey.slice(0, 10)}...${this.apiKey.slice(-4)}` : null;
         console.log('[EulerWS] Connecting:', {
             uniqueId: this.uniqueId,
             hasApiKey: !!this.apiKey,
-            apiKeyPreview: maskedKey,
             hasJwtKey: !!this.jwtKey,
-            urlPreview: url.replace(/apiKey=[^&]+/, 'apiKey=***').replace(/jwtKey=[^&]+/, 'jwtKey=***')
+            hasSession: !!(this.sessionId && this.ttTargetIdc)
         });
 
         return new Promise((resolve, reject) => {
@@ -180,7 +180,7 @@ class EulerWebsocketServerConnection extends EventEmitter {
                 const socket = new WebSocket(url, { handshakeTimeout: this.handshakeTimeoutMs });
                 this.ws = socket;
                 this.rejectPendingConnect = reject;
-                let quotaRejected = false;
+                let handshakeRejected = false;
 
                 const finalize = (fn) => {
                     try {
@@ -198,12 +198,15 @@ class EulerWebsocketServerConnection extends EventEmitter {
                 socket.on('message', (data) => this.handleMessage(data));
 
                 socket.on('close', (code, reason) => {
-                    if (quotaRejected) return;
+                    if (handshakeRejected) return;
+                    const wasConnected = this.isConnected;
                     if (this.rejectPendingConnect) {
                         this.rejectPendingConnect(new Error(`Euler WebSocket closed before connecting (${code})`));
                         this.rejectPendingConnect = null;
                     }
                     this.isConnected = false;
+                    // Failed handshakes are handled by the pending connect promise.
+                    if (!wasConnected) return;
                     const reasonStr = reason ? reason.toString() : '';
                     // Log close code for debugging - see https://www.eulerstream.com/docs/sign-server/websockets
                     const codeLabels = {
@@ -231,7 +234,7 @@ class EulerWebsocketServerConnection extends EventEmitter {
                 });
 
                 socket.on('error', (error) => {
-                    if (quotaRejected) return;
+                    if (handshakeRejected) return;
                     if (!this.isConnected) {
                         this.rejectPendingConnect = null;
                         reject(error);
@@ -246,12 +249,10 @@ class EulerWebsocketServerConnection extends EventEmitter {
                     err.status = status;
                     err.headers = res?.headers;
                     err.eulerRateLimit = status === 429;
-                    // Closing a rejected handshake also emits error/close. The
-                    // quota rejection already owns recovery and its reset delay.
-                    if (err.eulerRateLimit) {
-                        quotaRejected = true;
-                        this.rejectPendingConnect = null;
-                    }
+                    // Closing a rejected handshake also emits error/close. Let
+                    // the HTTP rejection own recovery so code 1006 cannot hide it.
+                    handshakeRejected = true;
+                    this.rejectPendingConnect = null;
                     this.emit('error', err);
                     if (!this.isConnected) {
                         reject(err);
@@ -5745,6 +5746,8 @@ class ConnectionManager {
             this.connection = new EulerWebsocketServerConnection(this.username, {
                 apiKey,
                 jwtKey,
+                sessionId: this.sessionId,
+                ttTargetIdc: this.ttTargetIdc,
                 handshakeTimeoutMs: this.signRequestTimeoutMs,
                 features: { rawMessages: true, bundleEvents: true }
             });
@@ -5804,6 +5807,22 @@ class ConnectionManager {
         } else {
             this.connection = new ConnectorClass(this.username, connectionOptions);
         }
+        if (!useLegacyConnector && typeof this.connection._wsClientProvider === 'function') {
+            const connection = this.connection;
+            const createWebSocket = connection._wsClientProvider;
+            connection._wsClientProvider = function (...args) {
+                connection.ssappWebSocketHttpStatus = null;
+                const socket = createWebSocket.apply(this, args);
+                // The connector's handshake error omits the HTTP status.
+                socket.prependListener('unexpected-response', (_request, response) => {
+                    connection.ssappWebSocketHttpStatus = response?.statusCode || null;
+                });
+                return socket;
+            };
+        }
+        if (!useLegacyConnector && this.usesEulerForConnection() && connectionOptions.enableExtendedGiftInfo) {
+            this.applyOptionalEulerGiftCatalog(this.connection);
+        }
         this.applyResumeCursorToConnection();
         this.applySignRequestTimeout(this.signRequestTimeoutMs);
         if (!useLegacyConnector && this.shouldUseLocalSigner()) {
@@ -5823,6 +5842,29 @@ class ConnectionManager {
             forceLegacy: useLegacyConnector
         });
         this.setupEventHandlers();
+    }
+
+    applyOptionalEulerGiftCatalog(connection) {
+        if (typeof connection.fetchAvailableGifts !== 'function') return;
+        const fetchAvailableGifts = connection.fetchAvailableGifts;
+        const manager = this;
+        const signal = this.eulerRequestAbortController?.signal;
+        connection.fetchAvailableGifts = async function (...args) {
+            try {
+                return await fetchAvailableGifts.apply(this, args);
+            } catch (error) {
+                // Stop and quota limits still cancel the connection attempt. Gift
+                // metadata is optional; some Euler plans cannot sign its lookup.
+                if (signal?.aborted || manager.isStopped || error?.name === 'AbortError'
+                    || error?.code === 'ERR_CANCELED' || Number(error?.status || error?.response?.status) === 429
+                    || manager.getEulerRateLimitInfo(error)) {
+                    throw error;
+                }
+                console.warn('[TikTok] Gift catalog unavailable; continuing with gift details from incoming events.');
+                manager.logDebug('gift.catalog.unavailable', { fallback: 'incoming_events' });
+                return [];
+            }
+        };
     }
 
     ensureConnectionInstance(context = 'connect') {
@@ -8883,6 +8925,8 @@ class ConnectionManager {
 
     async handleEulerConnectionFailure(primaryError, allowLiveReconnect = false) {
         if (this.isStopped || this.eulerBackupCheckInProgress) return false;
+        const websocketStatus = Number(this.connection?.ssappWebSocketHttpStatus)
+            || (this.signingProvider === EULER_WS_PROVIDER ? Number(primaryError?.status) : 0);
         const lookupError = `${primaryError?.message || ''} ${primaryError?.reason || ''} ${this.deriveNestedUserFriendlyErrorMessage(primaryError) || ''}`;
         if (/user_not_found|user doesn't exist|tiktok user not found/i.test(lookupError)) {
             this.handleFatalError(primaryError);
@@ -8921,15 +8965,34 @@ class ConnectionManager {
         this.eulerRetriesStopped = true;
         const lookupDetail = live === false ? 'TikTok reports that this stream is offline.'
             : (live === true ? 'TikTok is live, but the Euler connection failed.' : 'The backup TikTok live check failed.');
-        const status = Number(primaryError?.status || primaryError?.response?.status);
-        const rejectedKey = status === 401 || status === 403 || primaryError?.code === 4401 || primaryError?.code === 4403
+        const signStatus = /unexpected sign server status\s+(\d{3})\b/i.exec(primaryError?.message || '');
+        const status = Number(primaryError?.status || primaryError?.response?.status || websocketStatus || signStatus?.[1]);
+        const rejectedKey = ((!websocketStatus || this.signingProvider === EULER_WS_PROVIDER) && (status === 401 || status === 403))
+            || primaryError?.code === 4401 || primaryError?.code === 4403
             || /invalid.*(?:api key|jwt)|unauthorized/i.test(primaryError?.message || '');
         const planRestricted = status === 402 || /requires (?:a |an )?\w+ plan|payment required/i.test(primaryError?.message || '');
-        const detail = limit ? this.getEulerRateLimitMessage(limit)
+        let detail = limit ? this.getEulerRateLimitMessage(limit)
             : (rejectedKey ? (primaryError?.code === 4403
                 ? 'Euler denied access to this creator. Check the permissions on your Euler key or JWT.'
                 : 'Euler rejected the credentials. Check your Euler API key or JWT.')
                 : (planRestricted ? 'This Euler key does not include access to the requested endpoint. Choose another TikTok connection mode.' : lookupDetail));
+        if (!limit && !rejectedKey && !planRestricted) {
+            if (websocketStatus === 200) {
+                detail = 'The chat server returned HTTP 200 instead of opening a WebSocket. Try Standard mode and confirm that the signed-in TikTok account can view this LIVE.';
+            } else if (websocketStatus === 401 || websocketStatus === 403) {
+                detail = `TikTok rejected the chat connection (HTTP ${websocketStatus}). Check access with an eligible TikTok account in Standard mode.`;
+            } else if (websocketStatus) {
+                detail = `The chat server rejected the WebSocket connection (HTTP ${websocketStatus}). Try again later or use Standard mode.`;
+            } else if (primaryError?.code === 4556 || primaryError?.code === 4557) {
+                detail = `${describeTikTokDisconnect(primaryError.code)} For restricted streams, check access with an eligible TikTok account in Standard mode.`;
+            } else if (primaryError?.code === 4400) {
+                detail = describeTikTokDisconnect(primaryError.code);
+            } else if (status >= 500) {
+                detail = `Euler signing failed (HTTP ${status}). Try again later or use Standard mode.`;
+            } else if (/timed out|timeout/i.test(primaryError?.message || '')) {
+                detail = 'The Euler connection timed out. Try again later or use Standard mode.';
+            }
+        }
         if (this.autoMode && await this.tryFallbackToLocalSigner(new Error(detail), 'euler_backup')) {
             return this.restartConnectionAttempt(primaryError, 'euler_backup_local');
         }
@@ -8995,6 +9058,10 @@ class ConnectionManager {
     }
 
     getUserFriendlyErrorMessage(primaryError, fallbackMessage = '') {
+        if (Number(this.connection?.ssappWebSocketHttpStatus) === 200
+            || /unexpected server response:\s*200\b/i.test(primaryError?.message || fallbackMessage)) {
+            return 'The chat server returned HTTP 200 instead of opening a WebSocket. Try Standard mode and confirm that the signed-in TikTok account can view this LIVE.';
+        }
         const eulerLimit = this.getEulerRateLimitInfo(primaryError);
         if (eulerLimit) return this.getEulerRateLimitMessage(eulerLimit);
         const candidates = [
