@@ -8960,6 +8960,21 @@ class ConnectionManager {
         // reconnect only after TikTok independently confirms the stream is live.
         if (live === true && allowLiveReconnect && !limit && !this.eulerBackupReconnectUsed) {
             this.eulerBackupReconnectUsed = true;
+            const apiKey = this.signingConfig?.apiKey;
+            if (primaryError?.code === 4404 && this.signingProvider === EULER_WS_PROVIDER
+                && !this.autoMode && !this.autoEulerProxyFallbackActive
+                && apiKey && apiKey.split('.').length !== 3 && !this.signingConfig?.jwtKey) {
+                // A proxy-side room lookup can say offline for a LIVE that the
+                // direct connector can read. Spend the one retry on signing
+                // with the same key, rather than repeating that proxy lookup.
+                this.signingProvider = 'custom';
+                this.signingConfig = { apiKey, serviceUrl: null };
+                emitStatus({
+                    wssID: this.wssID,
+                    status: 'connecting',
+                    message: 'Euler Proxy reports this LIVE as offline, but TikTok confirms it is live. Trying Euler Signing once with the same API key.'
+                });
+            }
             return this.restartConnectionAttempt(primaryError, 'euler_live_confirmed');
         }
         this.eulerRetriesStopped = true;
@@ -8977,7 +8992,9 @@ class ConnectionManager {
                 : 'Euler rejected the credentials. Check your Euler API key or JWT.')
                 : (planRestricted ? 'This Euler key does not include access to the requested endpoint. Choose another TikTok connection mode.' : lookupDetail));
         if (!limit && !rejectedKey && !planRestricted) {
-            if (websocketStatus === 200) {
+            if (primaryError?.code === 4404 && this.signingProvider === EULER_WS_PROVIDER && live === true) {
+                detail = 'Euler Proxy reports this LIVE as offline, but TikTok confirms it is live. Try Euler Signing or Standard mode with an eligible TikTok account.';
+            } else if (websocketStatus === 200) {
                 detail = 'The chat server returned HTTP 200 instead of opening a WebSocket. Try Standard mode and confirm that the signed-in TikTok account can view this LIVE.';
             } else if (websocketStatus === 401 || websocketStatus === 403) {
                 detail = `TikTok rejected the chat connection (HTTP ${websocketStatus}). Check access with an eligible TikTok account in Standard mode.`;
