@@ -322,6 +322,21 @@ async function assertBoundedEventsAndVirtualSourceBehavior() {
 		assert.strictEqual(recent.counters.emittedCaptures, 1005);
 		assert.strictEqual(recent.counters.buffered, 1000);
 		assert.strictEqual(recent.counters.historyEvicted, 5);
+		assert.strictEqual(service.events.filter(Boolean).length, 1000, 'Evicted event payloads remain retained.');
+
+		const largeEvents = new SourceObservationService();
+		try {
+			for (let index = 0; index < 430; index++) {
+				const payload = { sequence: index };
+				for (let field = 0; field < 7; field++) payload[`field${field}`] = `${index}:${field}:`.padEnd(3900, 'x');
+				largeEvents.recordStatus(payload, { sourceId });
+			}
+			const retainedBytes = largeEvents.events.reduce((total, event) => total + (event?.__bytes || 0), 0);
+			assert.ok(largeEvents.counters.get(sourceId).historyEvicted > 0, 'Fixture must exceed the event byte budget.');
+			assert.strictEqual(retainedBytes, largeEvents.eventBytes, 'Evicted payloads exceed the live event byte budget.');
+		} finally {
+			largeEvents.close();
+		}
 
 		const source = { id: sourceId, target: 'tiktok', tabId: 900001, connectionMode: 'tiktok-websocket' };
 		const diagnostics = await service.execute('getSourceDiagnostics', { sourceId }, source);

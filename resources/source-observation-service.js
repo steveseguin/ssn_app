@@ -455,6 +455,8 @@ class SourceObservationService {
 		this.eventBytes += bytes;
 		while (this.events.length - this.eventStart > MAX_EVENT_COUNT || this.eventBytes > MAX_EVENT_BYTES) {
 			const evicted = this.events[this.eventStart];
+			// Release the payload now; array compaction can wait for a later batch.
+			this.events[this.eventStart] = null;
 			this.eventBytes -= evicted.__bytes || 0;
 			const evictedCounter = this.counters.get(evicted.sourceId || '__unknown__');
 			if (evictedCounter) {
