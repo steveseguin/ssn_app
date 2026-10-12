@@ -9025,6 +9025,26 @@ function notifySourceWindowVisibilityChange(view, visible) {
     } catch (_) { }
 }
 
+function installMacSourceWindowVisibilityGuard(view) {
+    if (process.platform !== 'darwin' || !view) return;
+    let hideTimer = null;
+    const enforceVisibility = () => {
+        clearTimeout(hideTimer);
+        // A native restore can finish after Hide has already returned. Wait for
+        // the event and recheck the latest requested state, so an explicit Show
+        // still wins over an earlier pending hide.
+        hideTimer = setTimeout(() => {
+            hideTimer = null;
+            if (app.isQuitting || isBrowserViewDestroyed(view) || view.__ss_visible !== false ||
+                view.__ssappInternalCapture === true) return;
+            try { view.hide(); } catch (_) { }
+        }, 0);
+    };
+    view.on('show', enforceVisibility);
+    view.on('restore', enforceVisibility);
+    view.once('closed', () => clearTimeout(hideTimer));
+}
+
 function installWindowsSourceWindowMinimizeGuard(view) {
     if (process.platform !== 'win32' || !view || view.__ss_windowsMinimizeGuardInstalled) return;
     view.__ss_windowsMinimizeGuardInstalled = true;
@@ -13770,6 +13790,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             //log(args);
             view.args = args;
             view.__ss_visible = !!visibibility;
+            installMacSourceWindowVisibilityGuard(view);
             attachSourceBasicAuth(view, args, { parent: mainWindow, headless: headlessControlEnabled });
             const releaseActivatedWindowSessionHooks = registerActivatedWindowSessionHooks(view, args);
             view.once('closed', () => {

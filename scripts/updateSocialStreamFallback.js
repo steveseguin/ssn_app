@@ -69,15 +69,17 @@ const BASE_PATTERNS = [
     '/thirdparty/three.global.min.js',
     '/thirdparty/bootstrap.min.css',
     '/thirdparty/bokeh-canvas.js',
+    // Keep the lightweight offline voice engine available in ordinary builds.
+    // Only the larger neural voice/model bundles require SSN_INCLUDE_TTS.
+    '/thirdparty/espeak-ng-real.js',
+    '/thirdparty/espeakng-simple.js',
+    '/thirdparty/espeakng.worker.js',
+    '/thirdparty/espeakng.worker.data',
     '/thirdparty/transformersjs/**'
 ];
 
 const TTS_PATTERNS = [
     '/thirdparty/neural-tts/**',
-    '/thirdparty/espeak-ng-real.js',
-    '/thirdparty/espeakng-simple.js',
-    '/thirdparty/espeakng.worker.js',
-    '/thirdparty/espeakng.worker.data',
     '/thirdparty/group*',
     '/thirdparty/kitten-tts/**',
     '/thirdparty/kitten_tts_nano_v0_1.onnx',

@@ -38,7 +38,7 @@ async function run() {
 			await page.waitForFunction(() => window.stateManager?.initialized && configReady, null, { polling: 100 });
 			const main = await app.browserWindow(page);
 			// Use the actual auxiliary-window IPC, then verify activation leaves it alone.
-			await page.evaluate(() => ipcRenderer.sendSync('createWindow', {
+			const otherVid = await page.evaluate(() => ipcRenderer.sendSync('createWindow', {
 				url: 'data:text/html,<title>Mac restoration fixture</title><p>Auxiliary window</p>', visible: false,
 			}));
 			const windows = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
@@ -48,6 +48,46 @@ async function run() {
 			const mainId = await main.evaluate(w => w.id);
 			const other = initial.find(w => w.id !== mainId);
 			assert.equal(other.visible, false);
+			if (!headless) {
+				for (let cycle = 0; cycle < 3; cycle++) {
+					await page.evaluate(vid => ipcRenderer.invoke('showWindow', { vid, state: false }), otherVid);
+					await page.waitForTimeout(400);
+					assert.equal((await windows()).find(w => w.id === other.id).visible, true);
+					await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id).minimize(), other.id);
+					await page.waitForTimeout(900);
+					assert.equal(await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id).isMinimized(), other.id), true);
+					// Native restore completes asynchronously on Mac. Hide must remain
+					// effective even when that restore finishes after the IPC response.
+					await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id).restore(), other.id);
+					await page.evaluate(vid => ipcRenderer.invoke('showWindow', { vid, state: true }), otherVid);
+					await page.waitForTimeout(1000);
+					assert.equal((await windows()).find(w => w.id === other.id).visible, false, 'Restoring must not undo a later Hide');
+					// A subsequent explicit reveal must still win over queued hiding.
+					await page.evaluate(async vid => {
+						await ipcRenderer.invoke('showWindow', { vid, state: true });
+						await ipcRenderer.invoke('showWindow', { vid, state: false });
+					}, otherVid);
+					await page.waitForTimeout(500);
+					assert.equal((await windows()).find(w => w.id === other.id).visible, true, 'Latest Show must restore the source');
+					await page.evaluate(vid => ipcRenderer.invoke('showWindow', { vid, state: true }), otherVid);
+				}
+				console.log('PASS source restore/Hide races and subsequent explicit Show.');
+				const warmup = await app.evaluate(async ({ BrowserWindow }, id) => {
+					const window = BrowserWindow.fromId(id);
+					try {
+						window.__ssappInternalCapture = true;
+						window.setOpacity(0);
+						window.showInactive();
+						await new Promise(resolve => setTimeout(resolve, 150));
+						return { visible: window.isVisible(), empty: (await window.webContents.capturePage()).isEmpty() };
+					} finally {
+						window.hide();
+						window.setOpacity(1);
+						delete window.__ssappInternalCapture;
+					}
+				}, other.id);
+				assert.deepEqual(warmup, { visible: true, empty: false }, 'Hidden screenshot warm-up must remain available');
+			}
 			for (let cycle = 0; cycle < 3; cycle++) {
 				for (const action of (headless ? ['activate'] : ['Minimize to Tray', 'minimize', 'Close to Tray'])) {
 					if (action === 'minimize') await main.evaluate(w => w.minimize());
