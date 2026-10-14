@@ -9322,6 +9322,28 @@ ipcMain.handle('getSessions', () => {
     };
 });
 
+// Only the main source-list page can flush its own session's pending storage.
+const sourceStorageFlushes = new WeakSet();
+ipcMain.on('user-session:flush-source-storage', event => {
+    try {
+        if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents
+            || event.senderFrame !== mainWindow.webContents.mainFrame
+            || fileURLToPath(event.senderFrame.url) !== path.join(__dirname, 'index.html')) return;
+        const targetSession = event.sender.session;
+        if (sourceStorageFlushes.has(targetSession)) return;
+        sourceStorageFlushes.add(targetSession);
+        // Coalesce bursts without postponing a save indefinitely. Capture the
+        // requesting session so a profile switch cannot flush the wrong one.
+        setTimeout(() => {
+            sourceStorageFlushes.delete(targetSession);
+            try { targetSession.flushStorageData(); }
+            catch (error) { console.warn('[User Sessions] Source storage flush failed:', error?.message || error); }
+        }, 100);
+    } catch (error) {
+        console.warn('[User Sessions] Source storage flush skipped:', error?.message || error);
+    }
+});
+
 // The main page calls this before its source-list code can replace the old
 // localStorage settings mirror. Source windows and subframes cannot request it.
 ipcMain.on('user-session:recover-legacy-settings', (event, localStorageData) => {

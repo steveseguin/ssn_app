@@ -1006,11 +1006,13 @@
             return (input.endsWith('/') || input.endsWith('\\')) ? input : `${input}/`;
         }
 
-        function updateFrameLocalServerConnection(frame) {
+        async function updateFrameLocalServerConnection(frame) {
             if (!frame || !frame.getAttribute('src')) return false;
             try {
                 const url = new URL(frame.src);
-                if (!/\/(background|popup)\.html$/.test(url.pathname)) return false;
+                if (!/\/(background|popup)(?:\.html)?$/.test(url.pathname)) return false;
+                const request = (frame.ssappRelayRequest || 0) + 1;
+                frame.ssappRelayRequest = request;
                 // A relay toggle must not reselect a website mirror/database.
                 // Keep every other parameter and the already selected origin.
                 if (localServer) {
@@ -1020,6 +1022,22 @@
                 } else {
                     url.searchParams.delete('localserver');
                     url.searchParams.delete('localserverport');
+                }
+                if (frame.id === 'frame2') {
+                    const updated = await new Promise(resolve => {
+                        const channel = new MessageChannel();
+                        const finish = result => {
+                            clearTimeout(timeout);
+                            channel.port1.close();
+                            resolve(result);
+                        };
+                        const timeout = setTimeout(() => finish(false), 1500);
+                        channel.port1.onmessage = event => finish(event.data?.ok === true);
+                        frame.contentWindow.postMessage({ type: 'ssapp:local-relay',
+                            enabled: !!localServer, port: localWebSocketPort }, '*', [channel.port2]);
+                    });
+                    // Older Social Stream pages still use the existing reload path.
+                    if (updated || frame.ssappRelayRequest !== request) return true;
                 }
                 if (frame.src !== url.href) {
                     if (frame.id === 'frame1') postLanguageToPopupFrameAfterLoad(frame);
@@ -13464,7 +13482,7 @@
                         if (cachedSsappEnvironment) cachedSsappEnvironment.localWebSocketEnabled = true;
                         if (cachedSsappEnvironment) cachedSsappEnvironment.localWebSocketPort = localWebSocketPort;
                         localServer = "&localserver";
-                        if (!updateFrameLocalServerConnection(document.getElementById('frame2'))) await setupIframeSource();
+                        if (!await updateFrameLocalServerConnection(document.getElementById('frame2'))) await setupIframeSource();
                     } else if (args[0] == "serverStopped") {
                         console.log("serverStopped");
                         if (args[1] && args[1].port !== undefined) {
@@ -13472,15 +13490,16 @@
                         }
                         if (cachedSsappEnvironment) cachedSsappEnvironment.localWebSocketEnabled = false;
                         localServer = "";
-                        if (!updateFrameLocalServerConnection(document.getElementById('frame2'))) await setupIframeSource();
+                        if (!await updateFrameLocalServerConnection(document.getElementById('frame2'))) await setupIframeSource();
                     } else if (args[0] == "serverPortChanged") {
                         if (args[1] && args[1].port !== undefined) {
                             localWebSocketPort = normalizeLocalWebSocketPort(args[1].port);
                         }
                         if (cachedSsappEnvironment) cachedSsappEnvironment.localWebSocketPort = localWebSocketPort;
+                        if (!await updateFrameLocalServerConnection(document.getElementById('frame2'))) await setupIframeSource();
                     }
                     if (['serverStarted', 'serverStopped', 'serverPortChanged'].includes(args[0])
-                        && updateFrameLocalServerConnection(document.getElementById('frame1'))) return;
+                        && await updateFrameLocalServerConnection(document.getElementById('frame1'))) return;
                     let expectedFrame1Src = "";
                     try {
                         const resolved = await resolveSocialStreamPage('popup.html', {

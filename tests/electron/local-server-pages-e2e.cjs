@@ -32,10 +32,11 @@ async function run() {
     const wrapper = path.join(output, 'bootstrap.cjs');
     fs.writeFileSync(wrapper, `require(${JSON.stringify(path.join(__dirname, 'outage-bootstrap.js'))});global.__outage.phase='online';`);
     const launch = (initial) => _electron.launch({ executablePath: require('electron'), cwd: root,
-        args: [wrapper, '--multiinstance', '--no-hwa', ...(initial ? [`--ssapp-local-server-port=${port}`] : []),
+        args: [wrapper, '--multiinstance', ...(process.platform === 'darwin' ? [] : ['--no-hwa']), ...(initial ? [`--ssapp-local-server-port=${port}`] : []),
             ...(process.env.SSAPP_LOCAL_MEDIA_WORKFLOWS === '1' ? ['--filesource', pathToFileURL(path.resolve(root, '../social_stream') + path.sep).href] : []),
             '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost'],
-        env: { ...process.env, SSAPP_USER_DATA_DIR: output, SSAPP_PREFER_LOCAL_ASSETS: '0', SSAPP_DIAGNOSTICS_SAFE_GPU: '1' }, timeout: 60000 });
+        // macOS needs its normal GPU path for the real WebGL game workflow.
+        env: { ...process.env, SSAPP_USER_DATA_DIR: output, SSAPP_PREFER_LOCAL_ASSETS: '0', SSAPP_DIAGNOSTICS_SAFE_GPU: process.platform === 'darwin' ? '0' : '1' }, timeout: 60000 });
     let app = await launch(true);
     let publisher;
     try {
@@ -866,23 +867,26 @@ async function run() {
                     && eventFlowSystem.flows.some(flow => flow.id === 'local-relay-flow')
                     && eventFlowSystem.flows.find(flow => flow.id === 'local-active-flow')?.active
                     && eventFlowSystem.flows.find(flow => flow.id === 'local-inactive-flow')?.active === false,
-                new URL(report.background.url).origin, { timeout: 60000 });
+                new URL(report.background.url).origin, { timeout: 60000, polling: 100 });
                 popup = await findFrame('popup');
-                await popup.waitForFunction(() => document.getElementById('games')?.raw?.includes('session='));
+                await popup.waitForFunction(() => document.getElementById('games')?.raw?.includes('session='), null, { polling: 100 });
             }
-            const originalUrl = await main.evaluate(() => document.getElementById('frame2').src);
+            const originalUrl = background.url();
+            const backgroundStartedAt = await background.evaluate(() => performance.timeOrigin);
             await background.evaluate(async () => eventFlowSystem.saveFlow({ id: 'local-relay-flow', name: 'Keep across relay changes', active: false, nodes: [], connections: [] }));
             await app.evaluate(() => { global.__outage.phase = 'partial'; });
             await menuCommand('Stop Local Server');
             await delay(8000);
-            const afterUrl = await main.evaluate(() => document.getElementById('frame2').src);
+            const afterUrl = background.url();
             report.localToggleOutage = { originalUrl, afterUrl };
             assert.equal(new URL(afterUrl).origin, new URL(originalUrl).origin, 'A local server toggle must not select a different Event Flow database');
             background = await findFrame('background');
-            await background.waitForFunction(() => window.ssappBackgroundLoadState?.status === 'failed');
+            await background.waitForFunction(() => window.ssappBackgroundLoadState?.status === 'ready'
+                && !new URLSearchParams(location.search).has('localserver'), null, { polling: 100 });
+            assert.equal(await background.evaluate(() => performance.timeOrigin), backgroundStartedAt,
+                'Relay changes keep the loaded background running even when its script mirror is unavailable');
             await main.locator('[data-page="event-flow-editor"]').click();
             await app.evaluate(() => { global.__outage.phase = 'online'; });
-            await main.locator('#background-load-retry').click();
             await readyAndFlow();
             for (let cycle = 0; cycle < 2; cycle++) {
                 await menuCommand('Enable Local Server');
@@ -947,7 +951,7 @@ async function run() {
             publisher = new WebSocket(`ws://127.0.0.1:${port}`);
             await new Promise((resolve, reject) => { publisher.once('open', resolve); publisher.once('error', reject); });
             publisher.send(JSON.stringify({ join: room, out: 1, in: 2 }));
-            console.log('PASS relay toggles, retry, flow persistence and stopped/running port changes');
+            console.log('PASS relay toggles, mirror outage, flow persistence and stopped/running port changes');
         }
 
         if (process.env.SSAPP_LOCAL_PAGE_SWEEP === '1') {

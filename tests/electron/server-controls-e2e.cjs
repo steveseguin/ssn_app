@@ -26,6 +26,8 @@ async function run() {
     fs.writeFileSync(wrapper, `require(${JSON.stringify(path.join(__dirname, 'outage-bootstrap.js'))});global.__outage.phase='online';`);
     const app = await _electron.launch({ executablePath: require('electron'), cwd: root,
         args: [wrapper, '--multiinstance', '--no-hwa', ...(local ? [`--ssapp-local-server-port=${port}`] : []),
+            ...(process.env.SSAPP_TEST_FILE_SOURCE === '1' ? ['--running-from-source',
+                '--filesource=' + pathToFileURL(path.resolve(root, '../social_stream') + path.sep).href] : []),
             ...(local && process.env.SSAPP_TEST_LIVE_WEBRTC !== '1' ? ['--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost'] : [])],
         env: { ...process.env, SSAPP_USER_DATA_DIR: output, SSAPP_PREFER_LOCAL_ASSETS: '0', SSAPP_DIAGNOSTICS_SAFE_GPU: '1' }, timeout: 60000 });
     try {
@@ -54,6 +56,75 @@ async function run() {
         }
         const source = await createWindow(pathToFileURL(path.join(__dirname, 'fixtures/hidden-capture.html')).href + '?platform=youtube&manual=1', { sourceFiles: ['sources/youtube.js'] });
         await delay(4500);
+        let deliveryDock, deliveryDockEval, deliveryStarted;
+        const deliveryExpected = [];
+        async function verifyDelivery(label) {
+            // Input IDs exist before capture. Distinct identical-text messages
+            // must arrive once each, including after changing the host relay.
+            const prefix = 'relay-ledger-';
+            const input = Array.from({ length: 20 }, (_, n) => prefix + label + '-' + n);
+            deliveryExpected.push(...input.map(id => 'ssn-hidden-capture-' + id));
+            const expected = deliveryExpected.slice();
+            if (!deliveryDock) {
+                deliveryDock = await createWindow('https://socialstream.ninja/dock.html?session=' + room
+                    + '&server2&localserver&localserverport=' + port);
+                // Dock changes browser globals; use CDP instead of Playwright's
+                // injected function serializer (also used by youtube-delivery-e2e).
+                const dockCdp = await deliveryDock.context().newCDPSession(deliveryDock);
+                async function dockEval(expression) {
+                    const result = await dockCdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+                    if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
+                    return result.result.value;
+                }
+                for (let attempt = 0; attempt < 150; attempt++) {
+                    if (await dockEval("typeof socketserverExtension !== 'undefined' && socketserverExtension?.readyState === 1")) break;
+                    await delay(100);
+                }
+                assert(await dockEval("typeof socketserverExtension !== 'undefined' && socketserverExtension?.readyState === 1"), 'Dock must be connected');
+                await background.evaluate(prefix => {
+                    window.relayCaptured = [];
+                    const original = handleRuntimeMessage;
+                    window.restoreRelayLedger = () => { handleRuntimeMessage = original; };
+                    handleRuntimeMessage = function (request, ...args) {
+                        const id = request.message?.meta?.messageId;
+                        if (id?.includes(prefix)) relayCaptured.push(id);
+                        return original(request, ...args);
+                    };
+                }, prefix);
+                await dockEval(`(${function (prefix) {
+                    window.relayDelivered = [];
+                    const seen = new WeakSet();
+                    new MutationObserver(() => document.querySelectorAll('.highlight-chat').forEach(row => {
+                        const id = row.rawContents?.meta?.messageId;
+                        if (id?.includes(prefix) && !seen.has(row)) { seen.add(row); relayDelivered.push(id); }
+                    })).observe(document.body, { childList: true, subtree: true });
+                }})(${JSON.stringify(prefix)})`);
+                deliveryDockEval = dockEval;
+                deliveryStarted = Date.now();
+            }
+            const started = deliveryStarted;
+            await source.evaluate(input => {
+                window.__hiddenCaptureFixture.appendRows(input);
+                input.forEach(id => {
+                    const row = document.getElementById('ssn-hidden-capture-' + id);
+                    row.querySelector('#author-name').textContent = 'Ledger Viewer';
+                    row.querySelector('#message').textContent = 'Identical delivery check';
+                });
+            }, input);
+            await delay(5000); // drain the deterministic burst before comparing
+            const stages = { capture: await background.evaluate(() => relayCaptured), dock: await deliveryDockEval('relayDelivered') };
+            const result = { label, started, ended: Date.now(), expected, stages: {} };
+            for (const [name, received] of Object.entries(stages)) {
+                result.stages[name] = { received, missing: expected.filter(id => !received.includes(id)),
+                    duplicates: received.filter((id, index) => received.indexOf(id) !== index),
+                    unexpected: received.filter(id => !expected.includes(id)) };
+            }
+            (report.delivery || (report.delivery = [])).push(result);
+            for (const stage of Object.values(result.stages)) {
+                assert.equal(stage.received.length, expected.length, JSON.stringify(result));
+                assert.deepEqual([stage.missing, stage.duplicates, stage.unexpected], [[], [], []], JSON.stringify(result));
+            }
+        }
         const capture = async (command, name = 'Controls QA') => source.evaluate(({ command, name }) => {
             window.__hiddenCaptureFixture.appendRows([Date.now()]);
             const row = document.querySelector('.ssn-chat-row:last-child');
@@ -322,6 +393,7 @@ async function run() {
         report.cases.push({ name: 'host relay reconnect: votes retained, no replayed action', passed: true });
 
         if (local && process.env.SSAPP_TEST_RELAY_RESTART === '1') {
+            await verifyDelivery('before-restart');
             await popup.evaluate(() => document.querySelector('[data-action="closepoll"]').click());
             await poll.getByText('Server controls question (Closed)', { exact: true }).waitFor();
             report.beforeRelayRestart = {
@@ -355,11 +427,74 @@ async function run() {
                 host: await background.evaluate(() => ({ timeOrigin: performance.timeOrigin, state: pollControlState, pollSettings: pollControlSettings(settings) })),
                 display: await poll.evaluate(() => ({ timeOrigin: performance.timeOrigin, settings, results, totalVotes }))
             };
+            assert.equal(report.afterRelayRestart.host.timeOrigin, report.beforeRelayRestart.host.timeOrigin,
+                'Changing the relay must not reload the background page');
+            assert.deepEqual(report.afterRelayRestart.host.state, report.beforeRelayRestart.host.state);
             assert.deepEqual(await poll.locator('.option-tally').allTextContents(), pollTallies);
             await poll.getByText('Server controls question (Closed)', { exact: true }).waitFor();
             assert.equal(await credits.evaluate(() => window.__creditsContentWrites), 0, 'Relay restart must not restart or replace the Credits roll');
             await capture('Transport-QA relay-restarted');
             await actions.getByText('Transport-QA relay-restarted', { exact: true }).waitFor();
+            assert.equal(await actions.getByText('Transport-QA relay-restarted', { exact: true }).count(), 1);
+            await verifyDelivery('after-restart');
+            if (process.env.SSAPP_TEST_RELAY_PORTS === '1') {
+                async function menuCommand(prefix) {
+                    await app.evaluate(({ Menu }, prefix) => {
+                        function find(menu) {
+                            for (const item of menu.items) {
+                                if (item.label.startsWith(prefix)) return item;
+                                if (item.submenu) { const found = find(item.submenu); if (found) return found; }
+                            }
+                        }
+                        const item = find(Menu.getApplicationMenu());
+                        if (!item) throw new Error('Missing menu command: ' + prefix);
+                        void item.click(item);
+                    }, prefix);
+                }
+                async function changePort(value) {
+                    const pending = app.waitForEvent('window');
+                    await menuCommand('Set Local Server Port');
+                    const prompt = await pending;
+                    await prompt.locator('input').fill(String(value));
+                    await prompt.locator('#ok').click();
+                }
+                const startedAt = report.beforeRelayRestart.host.timeOrigin;
+                for (const occupied of [false, true]) {
+                    const blocker = net.createServer(socket => socket.destroy());
+                    await new Promise(resolve => blocker.listen(0, '127.0.0.1', resolve));
+                    const nextPort = blocker.address().port;
+                    if (!occupied) await new Promise(resolve => blocker.close(resolve));
+                    try {
+                        await changePort(nextPort);
+                        if (occupied) {
+                            await wait(background, () => !new URLSearchParams(location.search).has('localserver'));
+                            await delay(2000);
+                            await new Promise(resolve => blocker.close(resolve));
+                            await menuCommand('Enable Local Server');
+                        }
+                        await wait(background, nextPort => socketserver?.readyState === 1 && socketserverDock?.readyState === 1
+                            && new URLSearchParams(location.search).get('localserverport') === String(nextPort), nextPort);
+                        popup = await frame('popup');
+                        await wait(popup, nextPort => document.getElementById('giveaway').raw?.includes('localserverport=' + nextPort), nextPort);
+                        assert.equal(await background.evaluate(() => performance.timeOrigin), startedAt);
+                        assert.deepEqual(await background.evaluate(() => pollControlState), report.beforeRelayRestart.host.state);
+                        await changePort(port);
+                        await wait(background, port => socketserver?.readyState === 1 && socketserverDock?.readyState === 1
+                            && new URLSearchParams(location.search).get('localserverport') === String(port), port);
+                        await delay(5500);
+                        assert.deepEqual(await poll.locator('.option-tally').allTextContents(), pollTallies);
+                        await poll.getByText('Server controls question (Closed)', { exact: true }).waitFor();
+                        assert.equal(await credits.evaluate(() => window.__creditsContentWrites), 0);
+                    } finally {
+                        if (blocker.listening) await new Promise(resolve => blocker.close(resolve));
+                    }
+                }
+                popup = await frame('popup');
+                await verifyDelivery('after-port-recovery');
+                report.cases.push({ name: 'running port change and occupied-port recovery preserve host state, votes and Credits', passed: true });
+            }
+            await background.evaluate(() => restoreRelayLedger());
+            await deliveryDock.close();
             await popup.evaluate(() => document.querySelector('[data-action="resetpoll"]').click());
             await wait(poll, () => !document.getElementById('poll-title').textContent.includes('(Closed)'));
             report.cases.push({ name: 'real local relay stop/start: closed poll and votes retained, Credits not replayed, controls recover', passed: true });

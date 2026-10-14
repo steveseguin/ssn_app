@@ -875,6 +875,11 @@ class StateManager {
             
             // Also save in old format for compatibility
             this.saveOldFormat();
+            // Chromium can otherwise leave these writes buffered until normal quit.
+            // Flush the main page's session after saving both representations.
+            if (typeof ipcRenderer !== 'undefined' && ipcRenderer) {
+                ipcRenderer.send('user-session:flush-source-storage');
+            }
             
         } catch (e) {
             console.error('Error persisting state:', e);
