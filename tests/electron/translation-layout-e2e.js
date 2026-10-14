@@ -15,7 +15,7 @@ const electronPath = require('electron');
 const appRoot = path.resolve(__dirname, '..', '..');
 const socialStreamRoot = path.resolve(appRoot, '..', 'social_stream');
 const screenshotDirectory = process.env.SSAPP_TRANSLATION_SCREENSHOT_DIR || path.join(appRoot, 'artifacts', 'translation-layout');
-const locales = ['ar', 'cs', 'de', 'en-uk', 'en-us', 'es', 'fr', 'pt-br', 'test', 'th', 'tr', 'uk', 'zh-CN', 'zh-TW'];
+const locales = ['ar', 'cs', 'de', 'en-uk', 'en-us', 'es', 'fr', 'ko', 'pt-br', 'test', 'th', 'tr', 'uk', 'zh-CN', 'zh-TW'];
 const layoutKeys = [
 	'auto-queue-superchats',
 	'leaderboard-showcase-settings',
@@ -367,7 +367,7 @@ async function run() {
 				control.labelRectWidth > control.buttonWidth + 1 || control.labelRectHeight > control.buttonHeight + 1), [],
 				`${locale} file action buttons truncated: ${JSON.stringify(fileStatus.controls)}`);
 
-			if (['ar', 'de', 'pt-br', 'zh-CN'].includes(locale)) {
+			if (['ar', 'de', 'ko', 'pt-br', 'zh-CN'].includes(locale)) {
 				await delay(250);
 				await captureScreenshot(`popup-${locale}`);
 			}

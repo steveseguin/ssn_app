@@ -4638,6 +4638,7 @@ function normalizeUiLanguagePreference(lang) {
     if (lower.startsWith('de')) return 'de';
     if (lower.startsWith('cs')) return 'cs';
     if (lower.startsWith('th')) return 'th';
+    if (lower === 'ko' || lower.startsWith('ko-')) return 'ko';
     if (lower.startsWith('tr')) return 'tr';
     if (lower.startsWith('uk')) return 'uk';
     return 'en-us';

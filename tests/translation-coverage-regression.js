@@ -38,10 +38,10 @@ const patches = readObject("const translationPatches = {");
 const coverage = readObject("const translationCoveragePatches = {");
 const languageMap = readObject("const appTranslationLanguageMap = {");
 const optionValues = Array.from(
-	html.matchAll(/<option value="(en-us|en-uk|pt-br|ar|es|fr|de|cs|th|zh-CN|zh-TW|tr|uk|test)"/g),
+	html.matchAll(/<option value="(en-us|en-uk|pt-br|ar|es|fr|de|cs|th|ko|zh-CN|zh-TW|tr|uk|test)"/g),
 	(match) => match[1]
 );
-const expectedOptions = ["en-us", "en-uk", "pt-br", "ar", "es", "fr", "de", "cs", "th", "zh-CN", "zh-TW", "tr", "uk", "test"];
+const expectedOptions = ["en-us", "en-uk", "pt-br", "ar", "es", "fr", "de", "cs", "th", "ko", "zh-CN", "zh-TW", "tr", "uk", "test"];
 assert.deepStrictEqual(optionValues, expectedOptions, "Language selector options changed unexpectedly");
 
 const english = { ...translations.en, ...patches.en, ...coverage.en };
@@ -53,6 +53,13 @@ for (const option of optionValues) {
 		assert.ok(Object.prototype.hasOwnProperty.call(locale, key), `${option} is missing Electron translation: ${key}`);
 		assert.ok(typeof locale[key] === "string" && locale[key].length > 0, `${option} has an empty Electron translation: ${key}`);
 		assert.ok(!/__SSN(?:HOLD|ITEM)_/.test(locale[key]), `${option} contains a generator marker: ${key}`);
+		if (option === "ko") {
+			assert.deepStrictEqual(
+				(locale[key].match(/\{\w+\}/g) || []).sort(),
+				(english[key].match(/\{\w+\}/g) || []).sort(),
+				`Korean translation changed a placeholder: ${key}`
+			);
+		}
 		assert.strictEqual(
 			(locale[key].match(/\n/g) || []).length,
 			(english[key].match(/\n/g) || []).length,

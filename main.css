@@ -3813,3 +3813,13 @@ input:checked + .slider:before {
 .tiktok-signing-dialog button[style*="flex: 1"] { flex: 1 1 130px !important; }
 
 .addnew p { font-size: 14px; line-height: 1.3; overflow-wrap: anywhere; }
+
+/* Keep Korean words together while allowing long URLs and names to fit. */
+html:lang(ko) body {
+  font-family: 'Segoe UI', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+html:lang(ko) .tiktok-signing-dialog button {
+  word-break: keep-all;
+}

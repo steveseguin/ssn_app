@@ -130,6 +130,7 @@
                 <option value="de">🇩🇪 Deutsch</option>
                 <option value="cs">🇨🇿 Čeština</option>
                 <option value="th">🇹🇭 ไทย</option>
+                <option value="ko">🇰🇷 한국어</option>
                 <option value="zh-CN">🇨🇳 简体中文</option>
                 <option value="zh-TW">🇹🇼 繁體中文</option>
                 <option value="tr">🇹🇷 Türkçe</option>
@@ -347,14 +348,14 @@
                 class="hidden icon-button">⏹️</button>
         </div>
 
-        <button title="Additional settings for this source" class="settings-btn button">⚙️</button>
+        <button title="Additional settings for this source" data-i18n-title="settings.title" data-i18n-aria-label="settings.title" class="settings-btn button">⚙️</button>
         <div class="settings-menu">
             <div class="settings-menu-section">
-                <div class="settings-menu-header">Additional Controls</div>
+                <div class="settings-menu-header" data-i18n="settings.header">Additional Controls</div>
                 <div class="settings-menu-item hidden" onclick="chooseEbaySourceStream(this)" data-ebay-choose-stream>
                     Choose another eBay Live stream
                 </div>
-                <div class="settings-menu-item" onclick="clearThis(this)" data-clearcache>
+                <div class="settings-menu-item" onclick="clearThis(this)" data-clearcache data-i18n="settings.clear">
                     🧹 Clear cache & storage
                 </div>
                 <div class="settings-menu-item" onclick="toggleReplyOnly(this)" data-reply-only>
@@ -374,10 +375,10 @@
                     🔄 Switch to <span class="toggle-type-text">YouTube</span>
                 </div>
                 <div class="settings-menu-item" onclick="openUserAgentSettings(this)">
-                    🌐 User Agent Settings
+                    🌐 <span data-i18n="useragent.title">User Agent Settings</span>
                 </div>
                 <div class="settings-menu-item" onclick="openSessionSettings(this)">
-                    🔐 Browser Session Settings
+                    🔐 <span data-i18n="session.title">Browser Session Settings</span>
                 </div>
                 <div class="settings-menu-item hidden" onclick="signinViaChrome(this)" data-signin-chrome>
                     🌐 Sign in via Chrome (experimental)
@@ -397,10 +398,10 @@
                 <div class="settings-menu-note">Uses this same source; it does not add another source.</div>
             </div>
             <div class="settings-menu-section">
-                <div class="settings-menu-header">Source Management</div>
-                <div class="settings-menu-item" data-move="up" onclick="moveSourceUp(this)">⬆️ Move up</div>
-                <div class="settings-menu-item" data-move="down" onclick="moveSourceDown(this)">⬇️ Move down</div>
-                <div class="settings-menu-item danger" onclick="deleteThis(this)">
+                <div class="settings-menu-header" data-i18n="settings.management">Source Management</div>
+                <div class="settings-menu-item" data-move="up" onclick="moveSourceUp(this)" data-i18n="settings.moveUp">⬆️ Move up</div>
+                <div class="settings-menu-item" data-move="down" onclick="moveSourceDown(this)" data-i18n="settings.moveDown">⬇️ Move down</div>
+                <div class="settings-menu-item danger" onclick="deleteThis(this)" data-i18n="settings.remove">
                     🗑️ Remove source
                 </div>
             </div>
@@ -463,7 +464,7 @@
         <div class="modal-content tips-modal-content">
             <h2 id="tipsModalTitle">Tips</h2>
             <div id="tipsModalContent"></div>
-            <button class="btn-primary" onclick="closeTipsModal()">Close</button>
+            <button class="btn-primary" onclick="closeTipsModal()" data-i18n="setup.close">Close</button>
         </div>
     </div>
 
@@ -743,21 +744,21 @@
             <h2 data-i18n="useragent.title">User Agent Settings</h2>
             <div class="modal-body">
                 <div>
-                    <label for="userAgentSelect" class="field-label">Select User Agent</label>
+                    <label for="userAgentSelect" class="field-label" data-i18n="useragent.select">Select User Agent</label>
                     <select id="userAgentSelect" class="modal-content select" style="width:100%;padding:8px 12px;margin-bottom:10px;border-radius:4px;border:1px solid var(--border-default);background:rgba(0,0,0,0.3);color:var(--text-primary);">
-                        <option value="AUTO">AUTO (Use config file)</option>
+                        <option value="AUTO" data-i18n="useragent.auto">AUTO (Use config file)</option>
                     </select>
                 </div>
                 <label for="customUserAgentInput" class="field-label" data-i18n="useragent.label">User Agent</label>
                 <div class="field-row">
-                    <input type="text" id="customUserAgentInput" placeholder="Enter custom user agent..." class="modal-input">
-                    <button onclick="addCustomUserAgent()">Add</button>
+                    <input type="text" id="customUserAgentInput" data-i18n="useragent.placeholder" placeholder="Enter custom user agent..." class="modal-input">
+                    <button onclick="addCustomUserAgent()" data-i18n="setup.addItem">Add</button>
                 </div>
                 <div id="customUserAgentsList" class="scrollable-list"></div>
             </div>
             <div class="modal-footer">
-                <button onclick="closeUserAgentModal()" class="btn-secondary">Cancel</button>
-                <button onclick="saveUserAgentSelection()">Save</button>
+                <button onclick="closeUserAgentModal()" class="btn-secondary" data-i18n="setup.cancel">Cancel</button>
+                <button onclick="saveUserAgentSelection()" data-i18n="setup.save">Save</button>
             </div>
         </div>
     </div>
@@ -767,8 +768,8 @@
             <h2 data-i18n="session.title">Browser Session Settings</h2>
             <div class="modal-body">
                 <div>
-                    <label class="field-label">Select Browser Session</label>
-                    <span class="field-hint">Sessions let you stay logged into different accounts on the same platform</span>
+                    <label class="field-label" data-i18n="session.select">Select Browser Session</label>
+                    <span class="field-hint" data-i18n="session.hint">Sessions let you stay logged into different accounts on the same platform</span>
                 </div>
                 <div id="sessionsList" class="scrollable-list scrollable-list-lg">
                     <!-- Sessions will be populated here -->
@@ -776,14 +777,14 @@
                 <div>
                     <label for="customSessionName" class="field-label" data-i18n="session.create">Create New Session</label>
                     <div class="field-row">
-                        <input type="text" id="customSessionName" placeholder="e.g. work-account" class="modal-input">
-                        <button onclick="addCustomSession()">Create</button>
+                        <input type="text" id="customSessionName" data-i18n="session.placeholder" placeholder="e.g. work-account" class="modal-input">
+                        <button onclick="addCustomSession()" data-i18n="setup.create">Create</button>
                     </div>
                 </div>
             </div>
             <div class="modal-footer">
-                <button onclick="closeSessionModal()" class="btn-secondary">Cancel</button>
-                <button onclick="saveSessionSelection()">Save</button>
+                <button onclick="closeSessionModal()" class="btn-secondary" data-i18n="setup.cancel">Cancel</button>
+                <button onclick="saveSessionSelection()" data-i18n="setup.save">Save</button>
             </div>
         </div>
     </div>
@@ -2079,7 +2080,7 @@
                 const sessionBadge = element.querySelector('[data-session-badge]');
                 if (sessionBadge) {
                     const label = getSessionDisplayNameForSource(source);
-                    sessionBadge.textContent = `Session: ${label}`;
+                    sessionBadge.textContent = `${translate('signin.session')}: ${label}`;
                     sessionBadge.title = `Current browser session: ${label}.\nChange via ⚙️ → Browser Session Settings.`;
                 }
                 const accountRoleBadge = element.querySelector('[data-accountrole-badge]');
@@ -2288,7 +2289,7 @@
                 const isTikTokApiMode = source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy');
                 if (isTikTokApiMode && activateButton) {
                     activateButton.classList.remove('hidden');
-                    activateButton.textContent = '⏹️ Disconnect';
+                    activateButton.textContent = translate('btn.disconnect');
                     activateButton.onclick = function () { stopThis(this); };
                     delete activateButton.dataset.connecting;
                 } else {
@@ -2313,7 +2314,7 @@
                 }
                 if (hasClosableHandle && activateButton) {
                     if (isTikTokApiMode) {
-                        activateButton.textContent = '⏹️ Disconnect';
+                        activateButton.textContent = translate('btn.disconnect');
                     } else if (effectiveMode === 'websocket') {
                         activateButton.textContent = translate('btn.closewebsocket');
                     } else {
@@ -2326,9 +2327,9 @@
                     if (activateButton) {
                         const mode = effectiveMode || source.connectionMode || 'classic';
                         if (mode === 'tiktok-websocket' && source.target === 'tiktok') {
-                            activateButton.textContent = 'Connect TikTok WebSocket';
+                            activateButton.textContent = translate('tiktok.connect.websocket');
                         } else if (mode === 'tiktok-legacy' && source.target === 'tiktok') {
-                            activateButton.textContent = 'Connect TikTok Compatibility';
+                            activateButton.textContent = translate('tiktok.connect.legacy');
                         } else if (mode === 'websocket') {
                             activateButton.textContent = translate('btn.connectwebsocket');
                         } else {
@@ -5819,6 +5820,23 @@
             }
         }
 
+        function getInactiveSourceActivationLabel(source, mode) {
+            if (source?.target === 'tiktok') {
+                if (mode === 'tiktok-legacy') return translate('tiktok.connect.legacy');
+                if (mode === 'tiktok-websocket') {
+                    const keys = {
+                        auto: 'tiktok.connect.auto',
+                        local: 'tiktok.connect.local',
+                        'euler-ws': 'tiktok.connect.proxy',
+                        custom: 'tiktok.connect.custom',
+                        tikfinity: 'tiktok.connect.desktop'
+                    };
+                    return translate(keys[source.tiktokSigningProvider] || keys.auto);
+                }
+            }
+            return translate(mode === 'websocket' ? 'btn.connectwebsocket' : 'btn.activate');
+        }
+
         function updateSourceUIAfterModeChange(sourceElement, mode, isActive = false) {
             if (!sourceElement) return;
             const sourceId = sourceElement.dataset.sourceId;
@@ -5856,30 +5874,15 @@
                 }
 
                 if (target === 'tiktok') {
-                    const provider = srcForMode?.tiktokSigningProvider || 'auto';
                     const hasActiveHandle = !!(srcForMode && (srcForMode.vid || getSourceWssHandle(srcForMode)));
                     if (srcForMode && srcForMode.status === 'activating') {
                         setActivateButtonConnecting(sourceElement);
                     } else if (hasActiveHandle) {
                         activateButton.innerText = (displayMode === 'tiktok-legacy' || displayMode === 'tiktok-websocket')
-                            ? '⏹️ Disconnect'
+                            ? translate('btn.disconnect')
                             : translate('btn.stop');
-                    } else if (displayMode === 'tiktok-legacy') {
-                        activateButton.innerText = 'Connect TikTok Compatibility';
-                    } else if (displayMode === 'tiktok-websocket') {
-                        if (provider === 'tikfinity') {
-                            activateButton.innerText = 'Connect TikFinity Desktop';
-                        } else if (provider === 'local') {
-                            activateButton.innerText = 'Connect TikTok Local Signer';
-                        } else if (provider === 'euler-ws') {
-                            activateButton.innerText = 'Connect TikTok Euler Proxy';
-                        } else if (provider === 'custom') {
-                            activateButton.innerText = 'Connect TikTok Euler Signing';
-                        } else {
-                            activateButton.innerText = 'Connect TikTok Auto';
-                        }
                     } else {
-                        activateButton.innerText = translate('btn.activate');
+                        activateButton.innerText = getInactiveSourceActivationLabel(srcForMode, displayMode);
                     }
                 } else if (displayMode === 'websocket') {
                     const s = srcForMode;
@@ -6000,7 +6003,7 @@
                     signinButton.classList.remove("hidden");
                     signinButton.style.display = '';
                     signinButton.removeAttribute('data-tiktok-signin');
-                    signinButton.innerHTML = '🔑 Sign-in';
+                    signinButton.innerHTML = translate('btn.signin');
                     signinButton.onclick = function () { signin(this); };
                     signinButton.classList.remove('authenticated');
                     signinButton.title = '';
@@ -6776,12 +6779,12 @@
                         <div class="mode-option" role="button" tabindex="0" aria-pressed="false"
                              data-mode="classic" 
                              onclick="handleSourceModeOptionClick(this, 'classic')">
-                            📄 Standard
+                            ${translate("source.mode.standard")}
                         </div>
                         <div class="mode-option" role="button" tabindex="0" aria-pressed="false"
                              data-mode="websocket" 
                              onclick="handleSourceModeOptionClick(this, 'websocket')">
-                            🌐 WebSocket
+                            ${translate("source.mode.websocket")}
                         </div>
                     </div>
                     <div class="mode-info">
@@ -7210,28 +7213,28 @@
         function getSessionDisplayNameForSource(source) {
             try {
                 const defaults = {
-                    'youtube': 'YouTube Default',
-                    'youtubeshorts': 'YouTube Default',
-                    'twitch': 'Twitch Default',
-                    'kick': 'Kick Default',
-                    'velora': 'Velora Default',
-                    'tiktok': 'TikTok Default',
-                    'facebook': 'Facebook Default',
-                    'instagramlive': 'Instagram Default',
-                    'instagram': 'Instagram Default',
-                    'x': 'X.com Default',
-                    'rumble': 'Rumble Default'
+                    'youtube': `YouTube ${translate('session.default')}`,
+                    'youtubeshorts': `YouTube ${translate('session.default')}`,
+                    'twitch': `Twitch ${translate('session.default')}`,
+                    'kick': `Kick ${translate('session.default')}`,
+                    'velora': `Velora ${translate('session.default')}`,
+                    'tiktok': `TikTok ${translate('session.default')}`,
+                    'facebook': `Facebook ${translate('session.default')}`,
+                    'instagramlive': `Instagram ${translate('session.default')}`,
+                    'instagram': `Instagram ${translate('session.default')}`,
+                    'x': `X.com ${translate('session.default')}`,
+                    'rumble': `Rumble ${translate('session.default')}`
                 };
                 let sess = source.customSession || 'AUTO';
                 if (sess === 'AUTO') {
-                    return defaults[source.target] || 'Default';
+                    return defaults[source.target] || translate('session.default');
                 }
                 if (sess === 'default' || sess === `default-${source.target}`) {
-                    return defaults[source.target] || 'Default';
+                    return defaults[source.target] || translate('session.default');
                 }
                 return sess;
             } catch (_) {
-                return 'Default';
+                return translate('session.default');
             }
         }
 
@@ -7804,14 +7807,14 @@
             if (target === 'tiktok') {
                 const isTikTokApiMode = activeMode === 'tiktok-websocket' || activeMode === 'tiktok-legacy';
                 if (isTikTokApiMode && source && source.status === 'active') {
-                    activateButton.textContent = '⏹️ Disconnect';
+                    activateButton.textContent = translate('btn.disconnect');
                     activateButton.onclick = function () { stopThis(this); };
                     return;
                 }
                 if (activeMode === 'tiktok-websocket') {
-                    activateButton.textContent = 'Connect TikTok WebSocket';
+                    activateButton.textContent = translate('tiktok.connect.websocket');
                 } else if (activeMode === 'tiktok-legacy') {
-                    activateButton.textContent = 'Connect TikTok Compatibility';
+                    activateButton.textContent = translate('tiktok.connect.legacy');
                 } else {
                     activateButton.textContent = translate('btn.activate');
                 }
@@ -11677,7 +11680,7 @@
                                 && (mode === 'tiktok-websocket' || mode === 'tiktok-legacy');
                             if (isTikTokApiMode) {
                                 activateButton.classList.remove('hidden');
-                                activateButton.textContent = '\u23f9\ufe0f Disconnect';
+                                activateButton.textContent = translate('btn.disconnect');
                                 activateButton.onclick = function () { stopThis(this); };
                             }
                         }
@@ -15529,7 +15532,77 @@
 
         // Translation system
         const translations = {
+            'ar': {
+                "btn.disconnect": "⏹️ قطع الاتصال",
+                "tiktok.connect.auto": "اتصال TikTok تلقائي",
+                "tiktok.connect.legacy": "اتصال TikTok المتوافق",
+                "tiktok.connect.local": "اتصال TikTok بالتوقيع المحلي",
+                "tiktok.connect.proxy": "اتصال TikTok عبر وكيل Euler",
+                "tiktok.connect.custom": "اتصال TikTok بتوقيع Euler",
+                "tiktok.connect.desktop": "اتصال TikFinity Desktop",
+                "tiktok.connect.websocket": "اتصال TikTok WebSocket",
+                "setup.addItem": "إضافة",
+                "setup.create": "إنشاء",
+                "useragent.select": "اختيار وكيل المستخدم",
+                "useragent.auto": "تلقائي (استخدام ملف الإعدادات)",
+                "useragent.placeholder": "أدخل وكيل مستخدم مخصصًا...",
+                "useragent.empty": "لم تتم إضافة وكلاء مستخدم مخصصين بعد.",
+                "session.select": "اختيار جلسة المتصفح",
+                "session.hint": "تتيح الجلسات البقاء مسجلًا بحسابات مختلفة على المنصة نفسها",
+                "session.placeholder": "مثل: work-account",
+                "session.custom": "مخصص",
+                "settings.management": "إدارة المصادر",
+                "settings.moveUp": "⬆️ نقل لأعلى",
+                "settings.moveDown": "⬇️ نقل لأسفل",
+                "session.default": "افتراضي",
+            },
+            'th': {
+                "btn.disconnect": "⏹️ ตัดการเชื่อมต่อ",
+                "tiktok.connect.auto": "เชื่อมต่อ TikTok อัตโนมัติ",
+                "tiktok.connect.legacy": "เชื่อมต่อ TikTok โหมดเข้ากันได้",
+                "tiktok.connect.local": "เชื่อมต่อ TikTok ด้วยตัวลงนามในเครื่อง",
+                "tiktok.connect.proxy": "เชื่อมต่อ TikTok Euler Proxy",
+                "tiktok.connect.custom": "เชื่อมต่อ TikTok ด้วย Euler Signing",
+                "tiktok.connect.desktop": "เชื่อมต่อ TikFinity Desktop",
+                "tiktok.connect.websocket": "เชื่อมต่อ TikTok WebSocket",
+                "setup.addItem": "เพิ่ม",
+                "setup.create": "สร้าง",
+                "useragent.select": "เลือก User Agent",
+                "useragent.auto": "อัตโนมัติ (ใช้ไฟล์การตั้งค่า)",
+                "useragent.placeholder": "ป้อน User Agent ที่กำหนดเอง...",
+                "useragent.empty": "ยังไม่มี User Agent ที่กำหนดเอง",
+                "session.select": "เลือกเซสชันเบราว์เซอร์",
+                "session.hint": "เซสชันช่วยให้เข้าสู่ระบบหลายบัญชีบนแพลตฟอร์มเดียวกันได้",
+                "session.placeholder": "เช่น work-account",
+                "session.custom": "กำหนดเอง",
+                "settings.management": "จัดการแหล่งที่มา",
+                "settings.moveUp": "⬆️ ย้ายขึ้น",
+                "settings.moveDown": "⬇️ ย้ายลง",
+                "session.default": "ค่าเริ่มต้น",
+            },
             'en': {
+                "btn.disconnect": "⏹️ Disconnect",
+                "tiktok.connect.auto": "Connect TikTok Auto",
+                "tiktok.connect.legacy": "Connect TikTok Compatibility",
+                "tiktok.connect.local": "Connect TikTok Local Signer",
+                "tiktok.connect.proxy": "Connect TikTok Euler Proxy",
+                "tiktok.connect.custom": "Connect TikTok Euler Signing",
+                "tiktok.connect.desktop": "Connect TikFinity Desktop",
+                "tiktok.connect.websocket": "Connect TikTok WebSocket",
+                "setup.addItem": "Add",
+                "setup.create": "Create",
+                "useragent.select": "Select User Agent",
+                "useragent.auto": "AUTO (Use config file)",
+                "useragent.placeholder": "Enter custom user agent...",
+                "useragent.empty": "No custom user agents added yet.",
+                "session.select": "Select Browser Session",
+                "session.hint": "Sessions let you stay logged into different accounts on the same platform",
+                "session.placeholder": "e.g. work-account",
+                "session.custom": "Custom",
+                "settings.management": "Source Management",
+                "settings.moveUp": "⬆️ Move up",
+                "settings.moveDown": "⬇️ Move down",
+                "session.default": "Default",
                 'useragent.current': 'Current source setting',
                 'session.platformDefault': 'Platform default',
                 'useragent.remove': 'Remove',
@@ -15625,6 +15698,28 @@
             },
 
             'pt-BR': {
+                "btn.disconnect": "⏹️ Desconectar",
+                "tiktok.connect.auto": "Conectar TikTok Auto",
+                "tiktok.connect.legacy": "Conectar TikTok Compatibilidade",
+                "tiktok.connect.local": "Conectar assinador local TikTok",
+                "tiktok.connect.proxy": "Conectar TikTok Euler Proxy",
+                "tiktok.connect.custom": "Conectar assinatura Euler TikTok",
+                "tiktok.connect.desktop": "Conectar TikFinity Desktop",
+                "tiktok.connect.websocket": "Conectar TikTok WebSocket",
+                "setup.addItem": "Adicionar",
+                "setup.create": "Criar",
+                "useragent.select": "Selecionar agente do usuário",
+                "useragent.auto": "AUTO (usar configuração)",
+                "useragent.placeholder": "Digite um agente do usuário personalizado...",
+                "useragent.empty": "Nenhum agente do usuário personalizado adicionado.",
+                "session.select": "Selecionar sessão do navegador",
+                "session.hint": "As sessões permitem manter contas diferentes conectadas na mesma plataforma",
+                "session.placeholder": "ex.: conta-trabalho",
+                "session.custom": "Personalizada",
+                "settings.management": "Gerenciar fontes",
+                "settings.moveUp": "⬆️ Mover para cima",
+                "settings.moveDown": "⬇️ Mover para baixo",
+                "session.default": "Padrão",
                 // Navigation
                 'nav.streams': '🎭 Fontes e Configurações',
                 'nav.linkoverlay': '🔗 Links e Configurações',
@@ -15710,6 +15805,28 @@
             },
 
             'es': {
+                "btn.disconnect": "⏹️ Desconectar",
+                "tiktok.connect.auto": "Conectar TikTok Auto",
+                "tiktok.connect.legacy": "Conectar TikTok Compatibilidad",
+                "tiktok.connect.local": "Conectar firmador local TikTok",
+                "tiktok.connect.proxy": "Conectar TikTok Euler Proxy",
+                "tiktok.connect.custom": "Conectar firma Euler TikTok",
+                "tiktok.connect.desktop": "Conectar TikFinity Desktop",
+                "tiktok.connect.websocket": "Conectar TikTok WebSocket",
+                "setup.addItem": "Añadir",
+                "setup.create": "Crear",
+                "useragent.select": "Seleccionar agente de usuario",
+                "useragent.auto": "AUTO (usar configuración)",
+                "useragent.placeholder": "Introduce un agente de usuario personalizado...",
+                "useragent.empty": "No hay agentes de usuario personalizados.",
+                "session.select": "Seleccionar sesión del navegador",
+                "session.hint": "Las sesiones permiten mantener distintas cuentas conectadas en la misma plataforma",
+                "session.placeholder": "p. ej., cuenta-trabajo",
+                "session.custom": "Personalizada",
+                "settings.management": "Gestión de fuentes",
+                "settings.moveUp": "⬆️ Subir",
+                "settings.moveDown": "⬇️ Bajar",
+                "session.default": "Predeterminado",
                 // Navigation
                 'nav.streams': '🎭 Fuentes y Configuración',
                 'nav.linkoverlay': '🔗 Enlaces y Configuración',
@@ -15795,6 +15912,28 @@
             },
 
             'cs': {
+                "btn.disconnect": "⏹️ Odpojit",
+                "tiktok.connect.auto": "Připojit TikTok Auto",
+                "tiktok.connect.legacy": "Připojit TikTok Kompatibilita",
+                "tiktok.connect.local": "Připojit místní podepisování TikTok",
+                "tiktok.connect.proxy": "Připojit TikTok Euler Proxy",
+                "tiktok.connect.custom": "Připojit podepisování Euler TikTok",
+                "tiktok.connect.desktop": "Připojit TikFinity Desktop",
+                "tiktok.connect.websocket": "Připojit TikTok WebSocket",
+                "setup.addItem": "Přidat",
+                "setup.create": "Vytvořit",
+                "useragent.select": "Vybrat User Agent",
+                "useragent.auto": "AUTO (použít konfiguraci)",
+                "useragent.placeholder": "Zadejte vlastní User Agent...",
+                "useragent.empty": "Zatím nejsou přidány vlastní User Agenty.",
+                "session.select": "Vybrat relaci prohlížeče",
+                "session.hint": "Relace umožňují zůstat přihlášeni k různým účtům na stejné platformě",
+                "session.placeholder": "např. work-account",
+                "session.custom": "Vlastní",
+                "settings.management": "Správa zdrojů",
+                "settings.moveUp": "⬆️ Posunout nahoru",
+                "settings.moveDown": "⬇️ Posunout dolů",
+                "session.default": "Výchozí",
                 // Navigation
                 'nav.streams': '🎭 Zdroje a nastavení',
                 'nav.linkoverlay': '🔗 Odkazy a nastavení',
@@ -15873,6 +16012,28 @@
             },
 
             'fr': {
+                "btn.disconnect": "⏹️ Déconnecter",
+                "tiktok.connect.auto": "Connecter TikTok Auto",
+                "tiktok.connect.legacy": "Connecter TikTok Compatibilité",
+                "tiktok.connect.local": "Connecter le signataire local TikTok",
+                "tiktok.connect.proxy": "Connecter TikTok Euler Proxy",
+                "tiktok.connect.custom": "Connecter la signature Euler TikTok",
+                "tiktok.connect.desktop": "Connecter TikFinity Desktop",
+                "tiktok.connect.websocket": "Connecter TikTok WebSocket",
+                "setup.addItem": "Ajouter",
+                "setup.create": "Créer",
+                "useragent.select": "Choisir un agent utilisateur",
+                "useragent.auto": "AUTO (utiliser la configuration)",
+                "useragent.placeholder": "Saisissez un agent utilisateur personnalisé...",
+                "useragent.empty": "Aucun agent utilisateur personnalisé ajouté.",
+                "session.select": "Choisir une session du navigateur",
+                "session.hint": "Les sessions permettent de garder plusieurs comptes connectés sur la même plateforme",
+                "session.placeholder": "ex. : compte-travail",
+                "session.custom": "Personnalisée",
+                "settings.management": "Gestion des sources",
+                "settings.moveUp": "⬆️ Monter",
+                "settings.moveDown": "⬇️ Descendre",
+                "session.default": "Par défaut",
                 // Navigation
                 'nav.streams': '🎭 Sources et Paramètres',
                 'nav.linkoverlay': '🔗 Liens et Paramètres',
@@ -15952,6 +16113,28 @@
             },
 
             'de': {
+                "btn.disconnect": "⏹️ Trennen",
+                "tiktok.connect.auto": "TikTok Auto verbinden",
+                "tiktok.connect.legacy": "TikTok Kompatibilität verbinden",
+                "tiktok.connect.local": "Lokalen TikTok-Signierer verbinden",
+                "tiktok.connect.proxy": "TikTok Euler Proxy verbinden",
+                "tiktok.connect.custom": "TikTok Euler-Signierung verbinden",
+                "tiktok.connect.desktop": "TikFinity Desktop verbinden",
+                "tiktok.connect.websocket": "TikTok WebSocket verbinden",
+                "setup.addItem": "Hinzufügen",
+                "setup.create": "Erstellen",
+                "useragent.select": "User-Agent auswählen",
+                "useragent.auto": "AUTO (Konfiguration verwenden)",
+                "useragent.placeholder": "Eigenen User-Agent eingeben...",
+                "useragent.empty": "Noch keine eigenen User-Agents hinzugefügt.",
+                "session.select": "Browsersitzung auswählen",
+                "session.hint": "Mit Sitzungen können Sie auf derselben Plattform bei verschiedenen Konten angemeldet bleiben",
+                "session.placeholder": "z. B. work-account",
+                "session.custom": "Benutzerdefiniert",
+                "settings.management": "Quellenverwaltung",
+                "settings.moveUp": "⬆️ Nach oben",
+                "settings.moveDown": "⬇️ Nach unten",
+                "session.default": "Standard",
                 // Navigation
                 'nav.streams': '🎭 Quellen und Einstellungen',
                 'nav.linkoverlay': '🔗 Links und Einstellungen',
@@ -16186,6 +16369,28 @@
             },
 
             'zh-CN': {
+                "btn.disconnect": "⏹️ 断开连接",
+                "tiktok.connect.auto": "连接 TikTok 自动模式",
+                "tiktok.connect.legacy": "连接 TikTok 兼容模式",
+                "tiktok.connect.local": "连接 TikTok 本地签名",
+                "tiktok.connect.proxy": "连接 TikTok Euler 代理",
+                "tiktok.connect.custom": "连接 TikTok Euler 签名",
+                "tiktok.connect.desktop": "连接 TikFinity Desktop",
+                "tiktok.connect.websocket": "连接 TikTok WebSocket",
+                "setup.addItem": "添加",
+                "setup.create": "创建",
+                "useragent.select": "选择用户代理",
+                "useragent.auto": "自动（使用配置文件）",
+                "useragent.placeholder": "输入自定义用户代理...",
+                "useragent.empty": "尚未添加自定义用户代理。",
+                "session.select": "选择浏览器会话",
+                "session.hint": "通过会话可在同一平台保持多个账号登录",
+                "session.placeholder": "例如：work-account",
+                "session.custom": "自定义",
+                "settings.management": "来源管理",
+                "settings.moveUp": "⬆️ 上移",
+                "settings.moveDown": "⬇️ 下移",
+                "session.default": "默认",
                 // Navigation
                 'nav.streams': '🎭 来源和设置',
                 'nav.linkoverlay': '🔗 链接和设置',
@@ -16264,6 +16469,28 @@
             },
 
             'zh-TW': {
+                "btn.disconnect": "⏹️ 中斷連線",
+                "tiktok.connect.auto": "連線 TikTok 自動模式",
+                "tiktok.connect.legacy": "連線 TikTok 相容模式",
+                "tiktok.connect.local": "連線 TikTok 本機簽章",
+                "tiktok.connect.proxy": "連線 TikTok Euler 代理",
+                "tiktok.connect.custom": "連線 TikTok Euler 簽章",
+                "tiktok.connect.desktop": "連線 TikFinity Desktop",
+                "tiktok.connect.websocket": "連線 TikTok WebSocket",
+                "setup.addItem": "新增",
+                "setup.create": "建立",
+                "useragent.select": "選擇使用者代理",
+                "useragent.auto": "自動（使用設定檔）",
+                "useragent.placeholder": "輸入自訂使用者代理...",
+                "useragent.empty": "尚未新增自訂使用者代理。",
+                "session.select": "選擇瀏覽器工作階段",
+                "session.hint": "透過工作階段可在同一平台保持多個帳號登入",
+                "session.placeholder": "例如：work-account",
+                "session.custom": "自訂",
+                "settings.management": "來源管理",
+                "settings.moveUp": "⬆️ 上移",
+                "settings.moveDown": "⬇️ 下移",
+                "session.default": "預設",
                 // Navigation
                 'nav.streams': '🎭 來源與設定',
                 'nav.linkoverlay': '🔗 連結與設定',
@@ -16342,81 +16569,251 @@
             },
 
             'ko': {
-                // Navigation
-                'nav.streams': '🎭 소스 및 설정',
-                'nav.linkoverlay': '🔗 링크 및 설정',
-                'nav.dashboard': '📰 상태 및 로그',
-                'nav.eventfloweditor': '🪤 이벤트 플로우 편집기',
-                'nav.vdoninja': '🎦 원격 카메라 피드',
-                'nav.sessions': '🧑‍🤝‍🧑 세션',
-
-                // Buttons
-                'btn.activate': '▶️ 소스 활성화',
-                'btn.signin': '🔑 로그인',
-                'btn.help': '❓ 도움말',
-                'btn.stop': '⏹️ 중지',
-                'btn.reload': '🔄 새로고침',
-                'btn.visible': '👁️ 보이기',
-                'btn.hidden': '🙈 숨기기',
-                'btn.muted': '🔇 음소거',
-                'btn.unmuted': '🔊 소리',
-
-                // Settings menu
-                'settings.title': '이 소스의 추가 설정',
-                'settings.header': '추가 컨트롤',
-                'settings.clear': '🧹 캐시 및 저장소 지우기',
-                'settings.remove': '🗑️ 소스 제거',
-
-                // Sessions
-                'sessions.title': '사용자 세션',
-                'sessions.info': '별도의 설정과 소스로 여러 사용자 프로필을 관리합니다.',
-                'sessions.current': '현재 세션',
-                'sessions.available': '사용 가능한 세션',
-                'sessions.create': '➕ 새 세션 만들기',
-                'sessions.export': '💾 현재 세션 내보내기',
-                'sessions.import': '📂 세션 가져오기',
-                'sessions.switch': '전환',
-                'sessions.active': '활성',
-
-                // Global
-
-                // Sources
-                'source.add': '새 소스 추가:',
-                'source.mode.standard': '📄 표준',
-                'source.mode.websocket': '🌐 WebSocket',
-                'source.mode.legacy': '🕰️ Compatibility (WebSocket)',
-                'source.autoactivate': '자동 활성화',
-                'source.youtube.username': 'YouTube 사용자명',
-                'source.youtube.videoid': 'YouTube 동영상 ID',
-                'source.twitch': 'Twitch 사용자명',
-                'source.kick': 'Kick 사용자명',
-                'source.instagram': 'Instagram 사용자명',
-                'source.facebook': 'Facebook 사용자명',
-                'source.tiktok': 'TikTok 사용자명',
-                'source.other': '기타 채팅 사이트',
-
-                // App info
-                'app.title': 'Social Stream Ninja 독립형',
-                'app.newversion': '새 버전 사용 가능',
-                'app.download': '여기서 새 버전 다운로드',
-
-                // Groups
-                'group.togglevisibility': '모든 스트림 표시 전환',
-                'group.togglemute': '모든 스트림 음소거 전환',
-                'group.stopall': '모든 스트림 중지',
-                'group.reloadall': '모든 스트림 새로고침',
-                'group.remove': '🗑️ 그룹 및 소스 제거',
-                'youtube.discovery.noEligibleStreams': '공개된 YouTube 라이브 또는 예정된 스트림을 찾지 못했습니다. 자동 찾기는 라이브/예정 상태이고 공개된 스트림만 감지합니다. 스트림이 일부 공개라면 YouTube 동영상 URL / ID로 추가하세요. 방금 라이브를 시작했다면 1분 정도 기다린 뒤 다시 시도하세요.',
-                'youtube.discovery.onlyEndedStreams': '종료된 YouTube 스트림만 찾았습니다. 자동 찾기는 라이브/예정 상태이고 공개된 스트림만 감지합니다. 스트림이 일부 공개라면 YouTube 동영상 URL / ID로 추가하세요. 방금 라이브를 시작했다면 1분 정도 기다린 뒤 다시 시도하세요.',
-                'youtube.discovery.noNewStreams': '새 공개 YouTube 라이브 또는 예정된 스트림을 찾지 못했습니다.',
-                'youtube.discovery.networkRetry': '일시적인 YouTube 네트워크 문제입니다.',
-                'youtube.discovery.nextCheck': '다음 자동 확인까지 {time}.',
-                'youtube.discovery.checkingNow': '공개 YouTube 라이브 스트림 확인 중...',
-                'youtube.discovery.minutesSeconds': '{minutes}분 {seconds}초',
-                'youtube.discovery.seconds': '{seconds}초',
-                'rumble.discovery.noLiveStream': 'Rumble 라이브 스트림을 찾지 못했습니다.',
-                'rumble.discovery.checkingNow': 'Rumble 라이브 스트림 확인 중...',
-                'rumble.discovery.checkError': 'Rumble 확인에 실패했습니다. 자동으로 다시 시도합니다.',
+                "btn.disconnect": "⏹️ 연결 해제",
+                "tiktok.connect.auto": "TikTok 자동 연결",
+                "tiktok.connect.legacy": "TikTok 호환 연결",
+                "tiktok.connect.local": "TikTok 로컬 서명 연결",
+                "tiktok.connect.proxy": "TikTok Euler 프록시 연결",
+                "tiktok.connect.custom": "TikTok Euler 서명 연결",
+                "tiktok.connect.desktop": "TikFinity Desktop 연결",
+                "tiktok.connect.websocket": "TikTok WebSocket 연결",
+                "setup.addItem": "추가",
+                "setup.create": "만들기",
+                "useragent.select": "사용자 에이전트 선택",
+                "useragent.auto": "자동(설정 파일 사용)",
+                "useragent.placeholder": "사용자 에이전트 직접 입력...",
+                "useragent.empty": "추가된 사용자 에이전트가 없습니다.",
+                "session.select": "브라우저 세션 선택",
+                "session.hint": "세션을 사용하면 같은 플랫폼에서 여러 계정의 로그인을 유지할 수 있습니다.",
+                "session.placeholder": "예: work-account",
+                "session.custom": "사용자 지정",
+                "settings.management": "소스 관리",
+                "settings.moveUp": "⬆️ 위로 이동",
+                "settings.moveDown": "⬇️ 아래로 이동",
+                "session.default": "기본값",
+                "useragent.label": "사용자 에이전트",
+                "session.create": "새 세션 만들기",
+                "useragent.title": "사용자 에이전트 설정",
+                "session.title": "브라우저 세션 설정",
+                "nav.menu": "탐색 메뉴",
+                "nav.language": "언어",
+                "toast.missingusername": "사용자 이름 필요",
+                "toast.invalidusername": "잘못된 사용자 이름",
+                "toast.invalidtiktokusername": "잘못된 TikTok 사용자 이름",
+                "tiktok.session.saved": "✓ TikTok 세션 저장됨",
+                "tiktok.signin": "🔐 TikTok 로그인",
+                "tiktok.session.title.saved": "이 소스의 TikTok 세션 쿠키가 저장되었습니다.",
+                "tiktok.signin.title": "로그인하면 TikTok 라이브 방송에서 더 많은 채팅 메시지를 받을 수 있습니다.",
+                "tiktok.signing.window.title": "TikTok 서명 창 열기(로컬 서명)",
+                "tiktok.capture.hide": "TikTok 캡처 페이지 숨기기",
+                "tiktok.capture.revealAction": "TikTok 캡처 페이지를 열어 로그인하거나 인증을 완료한 뒤 채팅이 보이도록 하세요.",
+                "tiktok.standard.verification": "TikTok 인증이 필요합니다. 캡처 페이지를 열어 인증하거나 로그인한 뒤 라이브 채팅이 보이는지 확인하세요.",
+                "tiktok.standard.redirected": "TikTok 표준 캡처 페이지가 다른 주소로 이동했습니다. 페이지를 열어 사용자 이름이나 라이브 URL을 확인하고, 요청 시 로그인하거나 인증하세요.",
+                "tiktok.standard.action": "TikTok 표준 모드에서 확인이 필요합니다. 캡처 페이지를 열어 필요하면 로그인한 뒤 라이브 채팅이 보이는지 확인하세요.",
+                "tiktok.standard.needsattention": "TikTok 표준 모드 확인 필요",
+                "error.username.spaces": "사용자 이름에는 공백을 넣을 수 없습니다. 플랫폼에 표시된 사용자 이름을 그대로 입력하세요.",
+                "error.username.empty": "계속하려면 사용자 이름을 입력하세요.",
+                "error.tiktok.invalid": "TikTok @사용자이름, 사용자 이름 또는 라이브/프로필 URL(예: https://www.tiktok.com/@username/live)을 입력하세요.",
+                "error.tiktok.invalidsource": "올바른 TikTok @사용자이름, 사용자 이름 또는 라이브/프로필 URL을 입력하세요.",
+                "connection.error": "연결 오류",
+                "connection.failed": "연결 실패",
+                "useragent.current": "현재 소스 설정",
+                "session.platformDefault": "플랫폼 기본값",
+                "useragent.remove": "삭제",
+                "useragent.removeNamed": "{name} 삭제",
+                "group.audio.incomplete": "오디오 변경 미완료",
+                "group.audio.failed": "캡처 페이지 {count}개의 오디오를 변경하지 못했습니다. 설정은 저장되었습니다. 해당 소스를 중지한 뒤 다시 활성화하세요.",
+                "nav.streams": "🎭 소스 및 설정",
+                "nav.linkoverlay": "🔗 링크 및 설정",
+                "nav.dashboard": "📰 상태 및 로그",
+                "nav.eventfloweditor": "🪤 이벤트 흐름 편집기",
+                "nav.vdoninja": "🎦 원격 카메라",
+                "nav.streamdeck": "🎛️ Stream Deck 설정",
+                "nav.sessions": "🧑‍🤝‍🧑 세션",
+                "btn.activate": "▶️ 소스 활성화",
+                "btn.signin": "🔑 로그인",
+                "btn.help": "❓ 도움말",
+                "btn.stop": "⏹️ 중지",
+                "btn.reload": "🔄 새로고침",
+                "btn.visible": "👁️ 표시",
+                "btn.hidden": "🙈 숨김",
+                "btn.muted": "🔇 음소거",
+                "btn.unmuted": "🔊 음량",
+                "btn.connectwebsocket": "WebSocket 연결",
+                "btn.closewebsocket": "⏹️ WebSocket 종료",
+                "btn.stopconnecting": "⏹️ 연결 취소",
+                "btn.revealcapture": "👁️ 캡처 페이지 표시",
+                "btn.hidecapture": "👁️ 캡처 페이지 숨기기",
+                "btn.signingwindow": "🪟 서명 창",
+                "settings.title": "이 소스의 추가 설정",
+                "settings.header": "추가 제어",
+                "settings.clear": "🧹 캐시 및 저장 데이터 삭제",
+                "settings.remove": "🗑️ 소스 삭제",
+                "sessions.title": "사용자 세션",
+                "sessions.info": "설정과 소스가 분리된 여러 사용자 프로필을 관리합니다.",
+                "sessions.current": "현재 세션",
+                "sessions.available": "사용 가능한 세션",
+                "sessions.create": "➕ 새 세션 만들기",
+                "sessions.export": "💾 현재 세션 내보내기",
+                "sessions.import": "📂 세션 가져오기",
+                "sessions.switch": "전환",
+                "sessions.active": "사용 중",
+                "badge.replyonly": "📨 답장 전용",
+                "header.connectionmodes": "연결 모드",
+                "source.add": "소스 추가",
+                "source.mode.standard": "📄 표준",
+                "source.mode.websocket": "🌐 WebSocket",
+                "source.mode.legacy": "🕰️ 호환(WebSocket)",
+                "source.autoactivate": "자동 활성화",
+                "source.youtube.username": "YouTube",
+                "source.youtube.videoid": "YouTube 동영상",
+                "source.twitch": "Twitch",
+                "source.kick": "Kick",
+                "source.velora": "Velora",
+                "source.vpzone": "VPZONE",
+                "source.instagram": "Instagram Live",
+                "source.facebook": "Facebook",
+                "source.tiktok": "TikTok",
+                "source.other": "기타 소스 추가",
+                "app.title": "Social Stream Ninja Standalone",
+                "app.newversion": "새 버전 출시",
+                "app.download": "새 버전 다운로드",
+                "group.togglevisibility": "모든 스트림 표시/숨기기",
+                "group.togglemute": "모든 스트림 음소거 전환",
+                "group.stopall": "모든 스트림 중지",
+                "group.reloadall": "모든 스트림 새로고침",
+                "group.remove": "🗑️ 그룹 및 소스 삭제",
+                "youtube.discovery.noEligibleStreams": "진행 중이거나 예정된 공개 YouTube 방송이 없습니다. 자동 검색은 공개 방송만 찾습니다. 일부 공개 방송은 YouTube 동영상 URL/ID로 추가하세요. 방금 방송을 시작했다면 잠시 후 다시 시도하세요.",
+                "youtube.discovery.onlyEndedStreams": "종료된 YouTube 방송만 찾았습니다. 자동 검색은 진행 중이거나 예정된 공개 방송만 찾습니다. 일부 공개 방송은 YouTube 동영상 URL/ID로 추가하세요. 방금 방송을 시작했다면 잠시 후 다시 시도하세요.",
+                "youtube.discovery.noNewStreams": "진행 중이거나 예정된 새 공개 YouTube 방송이 없습니다.",
+                "youtube.discovery.networkRetry": "일시적인 YouTube 네트워크 문제입니다.",
+                "youtube.discovery.nextCheck": "{time} 후 자동으로 다시 확인합니다.",
+                "youtube.discovery.checkingNow": "YouTube 공개 라이브 방송 확인 중...",
+                "youtube.discovery.minutesSeconds": "{minutes}분 {seconds}초",
+                "youtube.discovery.seconds": "{seconds}초",
+                "rumble.discovery.noLiveStream": "진행 중인 Rumble 방송이 없습니다.",
+                "rumble.discovery.checkingNow": "Rumble 라이브 방송 확인 중...",
+                "rumble.discovery.checkError": "Rumble 확인에 실패했습니다. 자동으로 다시 시도합니다.",
+                "sources.added": "추가된 소스",
+                "beta.desktop": "데스크톱 앱 엔진",
+                "beta.stable": "내장 코어 · 안정판",
+                "beta.beta": "내장 코어 · 베타",
+                "beta.active": "베타 모드 사용 중",
+                "beta.enable": "베타 모드 사용",
+                "iframe.background.title": "백그라운드 서비스 로더",
+                "iframe.streamdeck.title": "Stream Deck 설정",
+                "sessions.defaultName": "기본 세션(원본)",
+                "sessions.defaultDescription": "기존 설정 및 소스",
+                "sessions.created": "생성일: {date}",
+                "sessions.unknown": "알 수 없음",
+                "sessions.originalData": "원본 데이터",
+                "sessions.note.label": "참고:",
+                "sessions.note.text": "\"기본 세션(원본)\"에는 기존 소스와 설정이 모두 포함되어 있습니다.",
+                "sessions.switching.label": "세션 전환:",
+                "sessions.switching.text": "세션을 변경하면 앱이 다시 시작됩니다.",
+                "sessions.important.label": "중요:",
+                "sessions.important.text": "각 세션의 설정, 소스 및 저장 데이터는 완전히 분리됩니다.",
+                "sessions.prompt.name": "새 세션의 이름을 입력하세요:",
+                "sessions.prompt.description": "설명을 입력하세요(선택 사항):",
+                "sessions.description.default": "소스와 설정이 없는 새 세션",
+                "sessions.created.confirm": "세션을 만들었습니다! 지금 전환하시겠습니까?\n\n참고: 앱이 다시 시작됩니다.",
+                "sessions.create.failed": "세션 생성 실패",
+                "sessions.switch.confirm": "세션을 전환하면 앱이 다시 시작됩니다. 계속하시겠습니까?",
+                "sessions.switch.failed": "세션 전환 실패",
+                "sessions.delete.confirm": "이 세션을 삭제하시겠습니까? 삭제 후에는 되돌릴 수 없습니다.",
+                "sessions.delete.failed": "세션 삭제 실패",
+                "sessions.rename.prompt": "새 이름을 입력하세요:",
+                "sessions.rename.failed": "세션 이름 변경 실패",
+                "setup.add": "{platform} 추가",
+                "setup.saveSeller": "판매자를 저장해 방송을 선택하거나 방송 링크를 붙여 넣으세요.",
+                "setup.ebayInput": "판매자 또는 이벤트 링크",
+                "setup.whatnotInput": "사용자 이름, 프로필 또는 방송 링크",
+                "setup.ebayHint": "스토어나 /usr/ 링크 대신 eBay Live 판매자 링크를 사용하세요. 이벤트 ID도 사용할 수 있습니다.",
+                "setup.addSource": "소스 추가",
+                "setup.cancel": "취소",
+                "setup.refresh": "새로고침",
+                "setup.loading": "방송 검색 중…",
+                "setup.empty": "방송이 없습니다. 나중에 다시 확인하세요.",
+                "setup.addSelected": "선택 항목 추가",
+                "setup.useSelected": "선택 항목 사용",
+                "setup.chooseAgain": "다른 eBay Live 방송 선택",
+                "youtube.addTitle": "YouTube 소스 추가",
+                "youtube.publicTitle": "공개 채널 추적",
+                "youtube.noSignin": "로그인 불필요",
+                "youtube.publicDescription": "@핸들 또는 채널 URL을 입력하세요. 진행 중이거나 예정된 공개 방송을 찾습니다. 일부 공개 동영상은 제외됩니다.",
+                "youtube.ownerTitle": "내 YouTube 계정 사용",
+                "youtube.recommended": "권장",
+                "youtube.ownerDescription": "읽기 전용으로 로그인합니다. 일부 공개 동영상을 포함해 내 라이브 방송과 예약된 방송을 찾습니다.",
+                "youtube.videoTitle": "동영상 링크 또는 ID 입력",
+                "youtube.direct": "직접 입력",
+                "youtube.videoDescription": "공개 또는 일부 공개 동영상을 지원합니다. 방송이 이미 진행 중이어야 합니다.",
+                "tiktok.connection": "TikTok 연결",
+                "tiktok.auto": "자동(권장)",
+                "tiktok.local": "로컬 서명",
+                "tiktok.polling": "호환(WebSocket)",
+                "tiktok.standard": "표준(캡처 창)",
+                "tiktok.proxy": "Euler 프록시(API 키)",
+                "tiktok.custom": "Euler 서명(고급)",
+                "tiktok.desktop": "TikFinity Desktop(베타)",
+                "tiktok.guide": "TikFinity 설정 가이드",
+                "tiktok.copy": "문제 해결 정보 복사",
+                "tiktok.fallback": "TikFinity 대체 연결 설정 →",
+                "tiktok.help.auto": "Euler로 시작하며, 실패하면 다른 캡처 방식을 시도합니다.",
+                "tiktok.help.local": "공개 라이브 채팅에는 API 키가 필요 없습니다. 답장을 보내거나 제한된 방송에 접속하려면 로그인하세요.",
+                "tiktok.help.polling": "서명이 필요합니다. 답장은 지원하지 않습니다.",
+                "tiktok.help.standard": "브라우저 창에서 채팅을 읽습니다. 직접 로그인하거나 문제를 해결할 때 사용하세요.",
+                "tiktok.help.euler-ws": "Euler API 키가 필요합니다. 저장된 TikTok 로그인 대신 Euler 중계 서버를 사용합니다. 답장은 지원하지 않습니다.",
+                "tiktok.help.custom": "고급: 자체 Euler API 키 또는 서명 URL을 사용합니다.",
+                "tiktok.help.tikfinity": "TikFinity Desktop을 열어 라이브 방송에 연결하세요. 여기에 입력한 사용자 이름과 관계없이 TikFinity에서 선택한 방송을 읽습니다. 중복 캡처에 주의하세요.",
+                "setup.close": "닫기",
+                "setup.save": "저장",
+                "setup.clear": "지우기",
+                "setup.advanced": "고급 및 대체 연결 옵션",
+                "setup.optional": "선택 사항",
+                "setup.experimental": "실험 기능",
+                "setup.apiKey": "API 키",
+                "setup.signingUrl": "서명 URL",
+                "setup.manualSession": "세션 쿠키 직접 입력",
+                "setup.enterSession": "세션 쿠키 입력",
+                "setup.clearAuth": "인증 정보 삭제",
+                "setup.debug": "디버그 도구",
+                "setup.copyPayload": "페이로드 복사",
+                "setup.collectSession": "세션 가져오기",
+                "setup.showWindow": "창 표시",
+                "setup.closeWindow": "창 닫기",
+                "setup.mute": "음소거",
+                "setup.checking": "상태 확인 중…",
+                "streams.live": "방송 중",
+                "streams.upcoming": "예정",
+                "streams.ended": "종료",
+                "streams.added": "추가됨",
+                "streams.activate": "선택 항목 활성화",
+                "streams.select": "방송 선택",
+                "setup.hideWindow": "창 숨기기",
+                "setup.unmute": "음소거 해제",
+                "tiktok.signingGuide": "서명 가이드",
+                "tiktok.apiNotice": "Euler 키는 TikTok 로그인이 아닙니다. 두 세션 쿠키가 모두 있으면 Euler 프록시가 저장된 TikTok 세션을 Euler로 보냅니다. 제한된 방송은 먼저 표준 모드에서 권한이 있는 계정으로 접속할 수 있는지 확인하세요.",
+                "tiktok.experimental": "실험 기능입니다. 키나 서명 URL이 작동하지 않으면 자동 또는 호환 모드로 돌아가세요.",
+                "tiktok.roleHint": "방송자 계정으로 로그인했다면 역할을 호스트로 선택하세요.",
+                "tiktok.setHost": "역할을 호스트로 설정",
+                "tiktok.repliesHint": "채팅 답장을 보내려면 서명 창을 열어 두세요.",
+                "tiktok.sessionSteps": "TikTok 로그인 창에서 로그인한 뒤 세션을 가져오세요. 저장된 쿠키를 사용하려면 소스를 활성화하거나 다시 시작하세요.",
+                "tiktok.cookiesHint": "로컬 서명에 실패하면 sessionid와 tt-target-idc 쿠키를 모두 직접 입력하세요.",
+                "tiktok.debugPing": "세션을 가져온 뒤 TikTok fetch 엔드포인트 확인",
+                "tiktok.sessionMissing": "tt-target-idc 쿠키가 없습니다. 이 소스는 익명으로 연결됩니다. 다시 로그인하거나 두 쿠키를 모두 입력하세요.",
+                "tiktok.sessionRefresh": "연결 시 저장된 쿠키를 사용합니다. 만료되면 다시 로그인하세요.",
+                "signin.choose": "로그인 방식 선택",
+                "signin.chrome": "Chrome 사용",
+                "signin.chromeHelp": "실험 기능입니다. Google에서 SSApp 창의 로그인을 거부하면 시도하세요.",
+                "signin.ssapp": "SSApp 창 사용",
+                "signin.ssappHelp": "이 소스의 기본 로그인 방식입니다.",
+                "signin.closeHelp": "로그인 후 SSApp 로그인 창을 닫으세요. Chrome을 사용한 경우 가져오기가 끝날 때까지 기다리면 임시 창이 자동으로 닫힙니다.",
+                "setup.storedLocal": "이 기기에 저장됩니다.",
+                "signin.session": "브라우저 세션",
+                "streams.viewers": "시청자 {count}명",
+                "streams.chatReady": "채팅 준비됨",
+                "streams.chatWaiting": "채팅 준비 중",
+                "source.manualTip": "필요하면 사이트에 로그인한 뒤 소스를 활성화하고 채팅이 보이는지 확인하세요."
             },
 
             'ru': {
@@ -16498,6 +16895,28 @@
             },
 
             'tr': {
+                "btn.disconnect": "⏹️ Bağlantıyı kes",
+                "tiktok.connect.auto": "TikTok Otomatik bağlan",
+                "tiktok.connect.legacy": "TikTok Uyumluluk bağlan",
+                "tiktok.connect.local": "TikTok yerel imzalayıcıya bağlan",
+                "tiktok.connect.proxy": "TikTok Euler Proxy bağlan",
+                "tiktok.connect.custom": "TikTok Euler imzalama bağlan",
+                "tiktok.connect.desktop": "TikFinity Desktop bağlan",
+                "tiktok.connect.websocket": "TikTok WebSocket bağlan",
+                "setup.addItem": "Ekle",
+                "setup.create": "Oluştur",
+                "useragent.select": "Kullanıcı aracısı seç",
+                "useragent.auto": "OTOMATİK (yapılandırmayı kullan)",
+                "useragent.placeholder": "Özel kullanıcı aracısı girin...",
+                "useragent.empty": "Henüz özel kullanıcı aracısı eklenmedi.",
+                "session.select": "Tarayıcı oturumu seç",
+                "session.hint": "Oturumlar aynı platformda farklı hesaplarda açık kalmanızı sağlar",
+                "session.placeholder": "örn. work-account",
+                "session.custom": "Özel",
+                "settings.management": "Kaynak yönetimi",
+                "settings.moveUp": "⬆️ Yukarı taşı",
+                "settings.moveDown": "⬇️ Aşağı taşı",
+                "session.default": "Varsayılan",
                 // Navigation
                 'nav.streams': '🎭 Kaynaklar ve Ayarlar',
                 'nav.linkoverlay': '🔗 Bağlantılar ve Ayarlar',
@@ -16576,6 +16995,28 @@
             },
 
             'uk': {
+                "btn.disconnect": "⏹️ Від’єднати",
+                "tiktok.connect.auto": "Підключити TikTok Авто",
+                "tiktok.connect.legacy": "Підключити TikTok Сумісність",
+                "tiktok.connect.local": "Підключити локальний підписувач TikTok",
+                "tiktok.connect.proxy": "Підключити TikTok Euler Proxy",
+                "tiktok.connect.custom": "Підключити підписування Euler TikTok",
+                "tiktok.connect.desktop": "Підключити TikFinity Desktop",
+                "tiktok.connect.websocket": "Підключити TikTok WebSocket",
+                "setup.addItem": "Додати",
+                "setup.create": "Створити",
+                "useragent.select": "Вибрати агент користувача",
+                "useragent.auto": "АВТО (з файлу налаштувань)",
+                "useragent.placeholder": "Введіть власний агент користувача...",
+                "useragent.empty": "Власних агентів користувача ще немає.",
+                "session.select": "Вибрати сеанс браузера",
+                "session.hint": "Сеанси дають змогу залишатися в різних облікових записах на одній платформі",
+                "session.placeholder": "напр., work-account",
+                "session.custom": "Власний",
+                "settings.management": "Керування джерелами",
+                "settings.moveUp": "⬆️ Перемістити вгору",
+                "settings.moveDown": "⬇️ Перемістити вниз",
+                "session.default": "Типовий",
                 // Navigation
                 'nav.streams': '🎭 Джерела та налаштування',
                 'nav.linkoverlay': '🔗 Посилання та налаштування',
@@ -18923,6 +19364,7 @@
             'tr',
             'cs',
             'th',
+            'ko',
             'zh-CN',
             'zh-TW',
             'test'
@@ -18952,6 +19394,7 @@
             if (lower.startsWith('de')) return 'de';
             if (lower.startsWith('cs')) return 'cs';
             if (lower.startsWith('th')) return 'th';
+            if (lower === 'ko' || lower.startsWith('ko-')) return 'ko';
             if (lower.startsWith('tr')) return 'tr';
             if (lower.startsWith('uk')) return 'uk';
             return sharedLanguageCodes.has(trimmed) ? trimmed : 'en-us';
@@ -19177,8 +19620,25 @@
             // Update button texts in sources
             document.querySelectorAll('[data-activatehtml]').forEach(btn => {
                 if (!btn.classList.contains('hidden')) {
-                    btn.textContent = translate('btn.activate');
+                    const entry = btn.closest('.entry');
+                    const source = entry?.dataset.sourceId && window.stateManager
+                        ? stateManager.getSource(entry.dataset.sourceId) : null;
+                    const mode = source ? getEffectiveConnectionMode(source) : 'classic';
+                    if (btn.dataset.connecting === 'true') {
+                        btn.textContent = translate('btn.stopconnecting');
+                    } else if (source && hasConnectionHandles(source)) {
+                        btn.textContent = translate(source.target === 'tiktok' && (mode === 'tiktok-websocket' || mode === 'tiktok-legacy')
+                            ? 'btn.disconnect' : mode === 'websocket' ? 'btn.closewebsocket' : 'btn.stop');
+                    } else {
+                        btn.textContent = getInactiveSourceActivationLabel(source, mode);
+                    }
                 }
+            });
+
+            document.querySelectorAll('[data-session-badge]').forEach(badge => {
+                const sourceId = badge.closest('.entry')?.dataset.sourceId;
+                const source = sourceId && window.stateManager ? stateManager.getSource(sourceId) : null;
+                if (source) badge.textContent = `${translate('signin.session')}: ${getSessionDisplayNameForSource(source)}`;
             });
 
             document.querySelectorAll('[data-signin]').forEach(btn => {
@@ -19772,7 +20232,7 @@
             const select = document.getElementById('userAgentSelect');
 
             // Clear existing options
-            select.innerHTML = '<option value="AUTO">AUTO (Use config file)</option>';
+            select.innerHTML = `<option value="AUTO" data-i18n="useragent.auto">${translate('useragent.auto')}</option>`;
 
             // Add default user agents
             defaultUserAgents.forEach(ua => {
@@ -19792,7 +20252,7 @@
             savedUserAgents.forEach((ua, index) => {
                 const option = document.createElement('option');
                 option.value = ua.value;
-                option.textContent = `Custom: ${ua.name}`;
+                option.textContent = `${translate('session.custom')}: ${ua.name}`;
                 option.dataset.customIndex = index;
                 select.appendChild(option);
             });
@@ -19870,7 +20330,7 @@
             const select = document.getElementById('userAgentSelect');
             const option = document.createElement('option');
             option.value = userAgent;
-            option.textContent = `Custom: ${finalName}`;
+            option.textContent = `${translate('session.custom')}: ${finalName}`;
             option.dataset.customIndex = savedUserAgents.length - 1;
             select.appendChild(option);
 
@@ -19887,7 +20347,7 @@
             listContainer.innerHTML = '';
 
             if (savedUserAgents.length === 0) {
-                listContainer.innerHTML = '<p style="color: rgba(255,255,255,0.5); font-style: italic;">No custom user agents added yet.</p>';
+                listContainer.innerHTML = `<p style="color: rgba(255,255,255,0.5); font-style: italic;" data-i18n="useragent.empty">${translate('useragent.empty')}</p>`;
                 return;
             }
 
@@ -20112,16 +20572,16 @@
 
             // Platform defaults
             const platformDefaults = {
-                'youtube': 'YouTube Default',
-                'youtubeshorts': 'YouTube Default',
-                'twitch': 'Twitch Default',
-                'kick': 'Kick Default',
-                'velora': 'Velora Default',
-                'tiktok': 'TikTok Default',
-                'facebook': 'Facebook Default',
-                'instagramlive': 'Instagram Default',
-                'x': 'X.com Default',
-                'rumble': 'Rumble Default'
+                'youtube': `YouTube ${translate('session.default')}`,
+                'youtubeshorts': `YouTube ${translate('session.default')}`,
+                'twitch': `Twitch ${translate('session.default')}`,
+                'kick': `Kick ${translate('session.default')}`,
+                'velora': `Velora ${translate('session.default')}`,
+                'tiktok': `TikTok ${translate('session.default')}`,
+                'facebook': `Facebook ${translate('session.default')}`,
+                'instagramlive': `Instagram ${translate('session.default')}`,
+                'x': `X.com ${translate('session.default')}`,
+                'rumble': `Rumble ${translate('session.default')}`
             };
 
             // Every source needs a way back to its default session.
@@ -20166,7 +20626,7 @@
 
                 const customLabel = document.createElement('span');
                 customLabel.style.cssText = 'color: #aaa; font-size: 12px;';
-                customLabel.textContent = 'Custom';
+                customLabel.textContent = translate('session.custom');
                 actions.appendChild(customLabel);
 
                 const removeButton = document.createElement('button');
