@@ -2128,14 +2128,6 @@ to {
   flex-shrink: 0 !important;
 }
 
-@keyframes gentle-pulse {
- 0%, 100% { opacity: 1; transform: scale(1); }
- 50% { opacity: 0.95; transform: scale(1.03); }
-}
-
-[data-activatehtml] {
- animation: gentle-pulse 3s ease-in-out infinite;
-}
 .entry span[data-channelname] {
   font-size: 15px !important;
   font-weight: 600 !important;
