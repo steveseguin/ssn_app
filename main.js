@@ -9684,13 +9684,19 @@ function isTikTokWindowArgs(args = {}) {
     }
 }
 
-function shouldPreserveManualTikTokStandardNavigation(args = {}) {
+function shouldPreserveTikTokStandardNavigation(args = {}, navUrl = '') {
     if (!args || typeof args !== 'object') return false;
-    if (args.manualActivation !== true) return false;
     if (args.wss) return false;
-    const mode = String(args.connectionMode || args.activeConnectionMode || 'classic').trim().toLowerCase();
+    const mode = String(args.activeConnectionMode || args.connectionMode || 'classic').trim().toLowerCase();
     const isStandardMode = !mode || mode === 'classic' || mode === 'standard';
-    return isStandardMode && isTikTokWindowArgs(args);
+    if (!isStandardMode || !isTikTokWindowArgs(args)) return false;
+    // Keep login and verification pages available, but never capture another channel.
+    try {
+        const originalChannel = new URL(args.url).pathname.match(/^\/@([^/]+)/i)?.[1];
+        const nextChannel = new URL(navUrl).pathname.match(/^\/@([^/]+)/i)?.[1];
+        if (originalChannel && nextChannel && originalChannel.toLowerCase() !== nextChannel.toLowerCase()) return false;
+    } catch (_) { }
+    return true;
 }
 
 function sendWindowNavigationWarning(view, args = {}, navUrl = '', reason = 'navigate', mode = 'prefix') {
@@ -10637,15 +10643,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     const enforceCloseOnNavigate = (!args.wss && args.config && args.config.closeOnNavigate === true);
                     if (enforceCloseOnNavigate) {
                         const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact' | 'channel'
-                        const preserveManualTikTokStandard = shouldPreserveManualTikTokStandardNavigation(args);
                         let navigationWarningSent = false;
                         let navigationCloseStarted = false;
                         const isAllowed = createCloseOnNavigateAllowance(args, mode);
 
                         const maybeClose = (navUrl, reason) => {
                             if (!isAllowed(navUrl)) {
-                                if (preserveManualTikTokStandard) {
-                                    try { log(`Keeping manual TikTok Standard window open after navigation (${reason}): ${navUrl}`); } catch (_) { }
+                                if (shouldPreserveTikTokStandardNavigation(args, navUrl)) {
+                                    try { log(`Keeping TikTok Standard window open after navigation (${reason}): ${navUrl}`); } catch (_) { }
                                     if (!navigationWarningSent) {
                                         navigationWarningSent = true;
                                         sendWindowNavigationWarning(view, args, navUrl, reason, mode);
@@ -10663,6 +10668,8 @@ async function createWindow(args, reuse = false, mainApp = false) {
                                 } catch (_) { }
                                 try { if (!isBrowserViewDestroyed(view)) view.destroy(); } catch (_) { }
                                 try { delete browserViews[view.tabID]; releaseWindowId(view.tabID); } catch (_) { }
+                            } else {
+                                navigationWarningSent = false;
                             }
                         };
 
@@ -13870,6 +13877,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             view.tabID = generateUniqueWindowId();;
             browserViews[view.tabID] = view;
+            if (!args.wss && isTikTokWindowArgs(args)) {
+                view.once('closed', () => {
+                    if (!mainWindow || mainWindow.isDestroyed()) return;
+                    mainWindow.webContents.send('tiktok-standard-window-closed', {
+                        tabID: view.tabID,
+                        sourceId: args.sourceId
+                    });
+                });
+            }
             if (platform === 'youtube' || args.platform === 'youtube' || args.platform === 'youtubeshorts') {
                 const youtubeTabId = view.tabID;
                 // Closing the title bar only hides capture; forget the source on destruction.
@@ -13938,7 +13954,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         && (args.config.closeOnNavigate === true || args.config.closeOnNavigateV2 === true));
                     if (enforceCloseOnNavigate) {
                         const mode = (args.config && args.config.closeOnNavigateMode) || 'prefix'; // 'origin' | 'prefix' | 'exact' | 'channel'
-                        const preserveManualTikTokStandard = shouldPreserveManualTikTokStandardNavigation(args);
                         let navigationWarningSent = false;
                         let navigationCloseStarted = false;
                         let pendingViolationTimer = null;
@@ -13990,10 +14005,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         const handleCommittedNavigation = (navUrl, reason) => {
                             if (isAllowed(navUrl)) {
                                 clearPendingViolation();
+                                navigationWarningSent = false;
                                 return;
                             }
-                            if (preserveManualTikTokStandard) {
-                                try { log(`Keeping manual TikTok Standard window open after navigation (${reason}): ${navUrl}`); } catch (_) { }
+                            if (shouldPreserveTikTokStandardNavigation(args, navUrl)) {
+                                clearPendingViolation();
+                                try { log(`Keeping TikTok Standard window open after navigation (${reason}): ${navUrl}`); } catch (_) { }
                                 if (!navigationWarningSent) {
                                     navigationWarningSent = true;
                                     sendWindowNavigationWarning(view, args, navUrl, reason, mode);

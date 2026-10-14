@@ -401,6 +401,7 @@
                 <div class="settings-menu-header" data-i18n="settings.management">Source Management</div>
                 <div class="settings-menu-item" data-move="up" onclick="moveSourceUp(this)" data-i18n="settings.moveUp">⬆️ Move up</div>
                 <div class="settings-menu-item" data-move="down" onclick="moveSourceDown(this)" data-i18n="settings.moveDown">⬇️ Move down</div>
+                <div class="settings-menu-item" data-move="position" onclick="openMoveToPosition(this)" data-i18n="settings.moveToPosition">Move to position…</div>
                 <div class="settings-menu-item danger" onclick="deleteThis(this)" data-i18n="settings.remove">
                     🗑️ Remove source
                 </div>
@@ -449,6 +450,7 @@
                     </div>
                     <div class="settings-menu-item" data-group-move="down" onclick="moveGroupDown(this)">⬇️ Move group
                         down</div>
+                    <div class="settings-menu-item" data-group-move="position" onclick="openMoveToPosition(this)" data-i18n="settings.moveToPosition">Move to position…</div>
                     <div class="settings-menu-item danger" onclick="deleteThis(this)">
                         🗑️ Remove group & its sources
                     </div>
@@ -459,6 +461,25 @@
         </div>
     </div>
 
+
+    <div id="movePositionModal" class="modal hidden">
+        <form class="modal-content modal-sm" novalidate>
+            <h2 data-i18n="settings.moveToPosition">Move to position…</h2>
+            <p id="movePositionHint" class="field-hint"></p>
+            <label for="movePositionInput" class="field-label" data-i18n="reorder.position">Position</label>
+            <input id="movePositionInput" class="modal-input" type="number" min="1" step="1" required
+                aria-describedby="movePositionHint movePositionError">
+            <div class="field-row">
+                <button type="button" data-position-shortcut="top" class="btn-secondary" data-i18n="reorder.top">Top</button>
+                <button type="button" data-position-shortcut="bottom" class="btn-secondary" data-i18n="reorder.bottom">Bottom</button>
+            </div>
+            <p id="movePositionError" class="settings-menu-note error hidden" role="alert"></p>
+            <div class="modal-footer">
+                <button type="button" data-position-cancel class="btn-secondary" data-i18n="setup.cancel">Cancel</button>
+                <button type="submit" data-i18n="reorder.move">Move</button>
+            </div>
+        </form>
+    </div>
 
     <div id="tipsModal" class="modal hidden">
         <div class="modal-content tips-modal-content">
@@ -2143,8 +2164,8 @@
                 const isTikTokApiMode = source.target === 'tiktok' && (effectiveMode === 'tiktok-websocket' || effectiveMode === 'tiktok-legacy');
                 const showDuringConnect = (effectiveMode === 'websocket' && !!source.vid);
                 const showWhenActive = (source.status === 'active' && !!source.vid) || hasYouTubeStandardWindow;
-                const showManualTikTokStandardWindow = hasManualTikTokStandardCaptureWindow(source);
-                const hide = (!isTikTokLocalSigner && isTikTokApiMode) || (!isTikTokApiMode && !showDuringConnect && !showWhenActive && !showManualTikTokStandardWindow);
+                const showTikTokStandardWindow = hasTikTokStandardActionWindow(source);
+                const hide = (!isTikTokLocalSigner && isTikTokApiMode) || (!isTikTokApiMode && !showDuringConnect && !showWhenActive && !showTikTokStandardWindow);
                 visibilityControl.classList.toggle('hidden', hide);
                 if (isTikTokLocalSigner && isTikTokApiMode) {
                     visibilityControl.textContent = translate('btn.revealcapture');
@@ -6107,6 +6128,9 @@
                 return;
             }
 
+            if (source.target === 'tiktok' && (pendingTikTokActivations.has(sourceId) || sourceElement._tiktokFallback?.pendingAutoRetry)) {
+                await stopThis(sourceElement.querySelector('[data-activatehtml]'));
+            }
             stateManager.updateSource(sourceId, { connectionMode: mode, activeConnectionMode: null });
 
             if (source.target === 'tiktok') {
@@ -6248,6 +6272,10 @@
                 return;
             }
 
+            if (pendingTikTokActivations.has(sourceId) || sourceElement._tiktokFallback?.pendingAutoRetry) {
+                // With no connection handles, Stop cancels synchronously before the preset changes.
+                stopThis(sourceElement.querySelector('[data-activatehtml]'));
+            }
             const updates = {
                 connectionMode: nextMode,
                 activeConnectionMode: null,
@@ -7084,6 +7112,13 @@
                 : '🚫 TikTok auto-fallback disabled';
             if (entry._tiktokFallback) {
                 entry._tiktokFallback.fallbackDisabled = nextDisabled;
+                if (nextDisabled && entry._tiktokFallback.pendingAutoRetry) {
+                    clearTimeout(entry._tiktokFallback.autoRetryTimer);
+                    entry._tiktokFallback.autoRetryTimer = null;
+                    entry._tiktokFallback.pendingAutoRetry = false;
+                    updateConnectionStatus(entry, 'error', source.error || 'Automatic fallback disabled. Connect to try again.');
+                    restoreActivateButton(entry);
+                }
                 if (enabled) {
                     entry._tiktokFallback.notifiedExhausted = false;
                 }
@@ -7490,6 +7525,107 @@
 
 
         // ----- Reordering Helpers -----
+        function openMoveToPosition(menuItem) {
+            const entry = menuItem.closest('.entry');
+            if (!entry) return;
+            const sourceId = entry.dataset.sourceId;
+            const source = sourceId ? stateManager.getSource(sourceId) : null;
+            const groupId = source?.groupId || null;
+            const key = sourceId ? `s:${sourceId}` : `g:${entry.dataset.groupId}`;
+            const itemId = groupId ? sourceId : key;
+            const modal = document.getElementById('movePositionModal');
+            const form = modal.querySelector('form');
+            const input = document.getElementById('movePositionInput');
+            const hint = document.getElementById('movePositionHint');
+            const error = document.getElementById('movePositionError');
+            const shortcuts = Array.from(modal.querySelectorAll('[data-position-shortcut]'));
+            const cancel = modal.querySelector('[data-position-cancel]');
+
+            // Read the current list again when saving: discovery may add or remove rows while the dialog is open.
+            const getOrder = () => {
+                if (sourceId) {
+                    const currentSource = stateManager.getSource(sourceId);
+                    if (!currentSource || (currentSource.groupId || null) !== groupId) return [];
+                } else if (!stateManager.getGroup(entry.dataset.groupId)) {
+                    return [];
+                }
+                return groupId ? (stateManager.getGroup(groupId)?.streams || []).slice() : buildTopLevelKeysFromDom();
+            };
+            const updateRange = order => {
+                input.max = order.length;
+                hint.textContent = translateTemplate(groupId ? 'reorder.groupHint' : 'reorder.listHint', {
+                    position: order.indexOf(itemId) + 1,
+                    count: order.length
+                });
+            };
+            const showError = message => {
+                error.textContent = message;
+                error.classList.remove('hidden');
+                input.setAttribute('aria-invalid', 'true');
+                input.focus();
+            };
+            const clearError = () => {
+                error.textContent = '';
+                error.classList.add('hidden');
+                input.removeAttribute('aria-invalid');
+            };
+            const close = () => {
+                modal.classList.add('hidden');
+                form.onsubmit = null;
+                input.oninput = null;
+                cancel.onclick = null;
+                shortcuts.forEach(button => { button.onclick = null; });
+                deactivateModal(modal);
+            };
+            const order = getOrder();
+            if (!order.includes(itemId)) return;
+            updateRange(order);
+            input.value = order.indexOf(itemId) + 1;
+            clearError();
+            input.oninput = clearError;
+            cancel.onclick = close;
+            shortcuts.forEach(button => {
+                button.onclick = () => {
+                    const currentOrder = getOrder();
+                    if (!currentOrder.includes(itemId)) return showError(translate('reorder.unavailable'));
+                    updateRange(currentOrder);
+                    input.value = button.dataset.positionShortcut === 'top' ? 1 : currentOrder.length;
+                    clearError();
+                    input.focus();
+                };
+            });
+            form.onsubmit = event => {
+                event.preventDefault();
+                const currentOrder = getOrder();
+                const currentIndex = currentOrder.indexOf(itemId);
+                if (currentIndex === -1) return showError(translate('reorder.unavailable'));
+                updateRange(currentOrder);
+                const position = Number(input.value);
+                if (!Number.isInteger(position) || position < 1 || position > currentOrder.length) {
+                    return showError(translateTemplate('reorder.invalid', { count: currentOrder.length }));
+                }
+                if (currentIndex !== position - 1) {
+                    currentOrder.splice(currentIndex, 1);
+                    currentOrder.splice(position - 1, 0, itemId);
+                    if (groupId) {
+                        stateManager.updateGroup(groupId, { streams: currentOrder });
+                        reorderGroupDom(groupId);
+                    } else {
+                        setRootOrder(currentOrder);
+                        reorderTopLevelDomAccordingToRootOrder();
+                    }
+                }
+                close();
+            };
+            const settingsMenu = menuItem.closest('.settings-menu');
+            const settingsButton = settingsMenu._ssappSettingsTrigger;
+            setSettingsMenuOpen(settingsButton, settingsMenu, false);
+            modal.classList.remove('hidden');
+            activateModal(modal, close, settingsButton);
+            input.focus();
+            input.select();
+        }
+
         function getRootOrder() {
             try {
                 const ro = stateManager?.state?.global?.rootOrder;
@@ -7705,6 +7841,26 @@
             const tikTokWssId = getTikTokWssId(source);
             const canceledNavigationRecovery = cancelSourceNavigationRecovery(sourceId);
             const canceledPendingActivation = pendingSourceActivations.delete(sourceId);
+
+            if (source.target === 'tiktok') {
+                // Invalidate queued fallback callbacks before disconnecting anything.
+                clearTimeout(entry._tiktokFallback?.autoRetryTimer);
+                entry._tiktokFallback = null;
+                cancelPendingTikTokActivation(sourceId);
+                if (entry._tiktokRetryTimer) clearTimeout(entry._tiktokRetryTimer);
+                entry._tiktokRetryTimer = null;
+                entry._tiktokRetryEndAt = null;
+                entry._tiktokRetryAttempt = null;
+                entry._tiktokRetryMax = null;
+                entry._tiktokRetryOffline = null;
+                entry._tiktokRetryBaseMessage = null;
+                if (!hasConnectionHandles(source)) {
+                    stateManager.updateSource(sourceId, { status: 'inactive', activeConnectionMode: null, error: null });
+                    updateConnectionStatus(entry, 'clear');
+                    restoreActivateButton(entry);
+                    return;
+                }
+            }
 
             if ((canceledNavigationRecovery || canceledPendingActivation) && !hasConnectionHandles(source)) {
                 stateManager.updateSource(sourceId, {
@@ -8936,11 +9092,15 @@
             let lastError = null;
 
             for (const candidate of sequence) {
+                if (stateManager.getSource(sourceId) !== source || resolvedEntry?._tiktokFallback !== fallbackState) {
+                    return false;
+                }
                 const normalizedCandidate = normalizeTikTokMode(candidate);
                 if (attempted.has(normalizedCandidate)) {
                     continue;
                 }
-                if (fallbackDisabled && normalizedCandidate !== preferredNormalized) {
+                if ((fallbackDisabled || source.disableTikTokAutoFallback || fallbackState.fallbackDisabled)
+                    && normalizedCandidate !== preferredNormalized) {
                     continue;
                 }
 
@@ -8960,6 +9120,10 @@
                     target
                 });
 
+                if (stateManager.getSource(sourceId) !== source || resolvedEntry?._tiktokFallback !== fallbackState) {
+                    return false;
+                }
+
                 if (fallbackState) {
                     fallbackState.lastError = result.error || null;
                     fallbackState.inProgress = false;
@@ -8975,10 +9139,12 @@
                         fallbackState.exhausted = false;
                         fallbackState.lastSuccessAt = Date.now();
                     }
-                    if (normalizedCandidate !== preferredNormalized) {
-                        notifyTikTokFallbackSuccess(resolvedEntry, preferredMode, normalizedCandidate);
-                    } else if (resolvedEntry) {
-                        updateConnectionStatus(resolvedEntry, 'connected');
+                    if (source.status === 'active') {
+                        if (normalizedCandidate !== preferredNormalized) {
+                            notifyTikTokFallbackSuccess(resolvedEntry, preferredMode, normalizedCandidate);
+                        } else if (resolvedEntry) {
+                            updateConnectionStatus(resolvedEntry, 'connected');
+                        }
                     }
                     return result.windowId;
                 }
@@ -8988,9 +9154,10 @@
                     return false;
                 }
                 if (result.error?.code === 'SSAPP_TIKTOK_STOPPED') break;
+                if (shouldSuppressTikTokUiAutoFallback('fatal_error', result.error?.message)) break;
                 const fallbackInfo = result.fallbackInfo;
 
-                if (fallbackDisabled) {
+                if (fallbackDisabled || source.disableTikTokAutoFallback || fallbackState.fallbackDisabled) {
                     break;
                 }
 
@@ -9122,9 +9289,9 @@
             }
 
             if (failureStatus === 'fatal_error') {
-                return normalizedMessage.includes('tiktok user not found')
-                    || normalizedMessage.includes("user doesn't exist")
-                    || normalizedMessage.includes('check the username');
+                return isTikTokOfflineFailureStatus({ error: errorMessage })
+                    || normalizedMessage.includes('tiktok user not found')
+                    || normalizedMessage.includes("user doesn't exist");
             }
 
             return false;
@@ -9176,12 +9343,8 @@
                 || normalizedMessage.includes('stream has ended');
         }
 
-        function isManualTikTokStandardSource(source) {
+        function isSelectedTikTokStandardSource(source) {
             if (!source || source.target !== 'tiktok') {
-                return false;
-            }
-            const wasManuallyTriggered = source.id ? wasManualActivation(source.id) : false;
-            if (source.autoActivate === true && !wasManuallyTriggered) {
                 return false;
             }
             const preferredMode = normalizeTikTokMode(source.connectionMode || 'classic');
@@ -9189,14 +9352,25 @@
             return preferredMode === 'classic' && activeMode === 'classic';
         }
 
-        function hasManualTikTokStandardCaptureWindow(source, statusPayload = null) {
-            if (!isManualTikTokStandardSource(source)) {
+        function hasTikTokStandardActionWindow(source, statusPayload = null) {
+            if (!source || source.target !== 'tiktok' || statusPayload?.wssID) {
                 return false;
             }
-            if (statusPayload?.wssID) {
+            const activeMode = normalizeTikTokMode(source.activeConnectionMode || source.connectionMode || 'classic');
+            if (activeMode !== 'classic' || !(source.vid || normalizeNumericId(statusPayload?.tabID))) {
                 return false;
             }
-            return !!(source.vid || normalizeNumericId(statusPayload?.tabID));
+            // Auto-activate controls startup, not the user's chosen connection method.
+            if (isSelectedTikTokStandardSource(source)) {
+                return true;
+            }
+            const message = getTikTokStatusMessageText(statusPayload) || source.error || '';
+            if (resolveTikTokConnectionPreset(source) !== 'auto' || !isTikTokStandardRecoverableMessage(message)) {
+                return false;
+            }
+            const entry = document.querySelector(`[data-source-id="${source.id}"]`);
+            // Auto may already have tried every connector before reaching Standard.
+            return !getNextTikTokFallbackMode(source, entry?._tiktokFallback);
         }
 
         function isTikTokStandardRecoverableMessage(message) {
@@ -9217,7 +9391,7 @@
         }
 
         function shouldPromptTikTokStandardAction(source, statusPayload = null) {
-            if (!hasManualTikTokStandardCaptureWindow(source, statusPayload)) {
+            if (!hasTikTokStandardActionWindow(source, statusPayload)) {
                 return false;
             }
             const statusText = getTikTokStatusMessageText(statusPayload);
@@ -9271,7 +9445,7 @@
                 return false;
             }
 
-            return hasManualTikTokStandardCaptureWindow(source, statusPayload);
+            return hasTikTokStandardActionWindow(source, statusPayload);
         }
 
         function shouldKeepTikTokClassicWindowOpenOnFatal(source, statusPayload = null) {
@@ -9298,10 +9472,30 @@
             return !shouldPreserveTikTokClassicHandles(source, statusPayload, hasRetryScheduled);
         }
 
+        function getNextTikTokFallbackMode(source, fallbackState = null) {
+            if (!source || source.target !== 'tiktok' || preferTikTokClassic || cliForcesTikTokClassic
+                || source.disableTikTokAutoFallback || fallbackState?.fallbackDisabled) {
+                return null;
+            }
+            // A renderer reload loses its attempt ledger. Auto reaching Standard
+            // already exhausted the API methods; don't start that chain over.
+            if (!fallbackState && source.activeConnectionMode === 'classic'
+                && resolveTikTokConnectionPreset(source) === 'auto') return null;
+            const preferredMode = normalizeTikTokMode(source.connectionMode || 'classic');
+            const sequence = fallbackState?.sequence?.length
+                ? fallbackState.sequence
+                : buildTikTokFallbackSequence(preferredMode, preferredMode, source);
+            const attempted = fallbackState?.attempted instanceof Set ? fallbackState.attempted : new Set();
+            const currentMode = normalizeTikTokMode(fallbackState?.lastMode || source.activeConnectionMode
+                || fallbackState?.connectedMode || preferredMode);
+            return sequence.map(normalizeTikTokMode).find(mode => mode !== currentMode && !attempted.has(mode)) || null;
+        }
+
         function autoFallbackToNextTikTokMode(sourceId, failureStatus, errorMessage = null, skipEulerFallback = false) {
             if (!sourceId) return;
             const source = stateManager.getSource(sourceId);
             if (!source || source.target !== 'tiktok') return;
+            if (source.status !== 'error') return;
             if (preferTikTokClassic || cliForcesTikTokClassic) return;
             if (source.disableTikTokAutoFallback) return;
 
@@ -9334,7 +9528,8 @@
                 entry._tiktokFallback = fallbackState;
             }
 
-            if (fallbackState.fallbackDisabled || fallbackState.pendingAutoRetry) {
+            if (fallbackState.fallbackDisabled || fallbackState.pendingAutoRetry || fallbackState.inProgress) {
+                if (fallbackState.pendingAutoRetry && !fallbackState.fallbackDisabled) setActivateButtonConnecting(entry);
                 return;
             }
 
@@ -9360,14 +9555,7 @@
                 attempted.add(lastKnownMode);
             }
 
-            let nextMode = null;
-            for (const candidate of sequence) {
-                const normalizedCandidate = normalizeTikTokMode(candidate);
-                if (!attempted.has(normalizedCandidate)) {
-                    nextMode = normalizedCandidate;
-                    break;
-                }
-            }
+            const nextMode = getNextTikTokFallbackMode(source, fallbackState);
 
             if (!nextMode) {
                 fallbackState.exhausted = true;
@@ -9391,23 +9579,24 @@
                 : `Trying ${toLabel} after ${fromLabel} failed.`;
 
             updateConnectionStatus(entry, 'info', statusMessage);
+            setActivateButtonConnecting(entry);
             Toast.info('TikTok Auto Fallback', `Trying ${toLabel} after ${fromLabel} failed.`);
 
-            setTimeout(async () => {
+            const signingProvider = source.tiktokSigningProvider || 'auto';
+            const retryTimer = setTimeout(async () => {
+                if (fallbackState.autoRetryTimer !== retryTimer || !fallbackState.pendingAutoRetry) return;
                 fallbackState.pendingAutoRetry = false;
-
+                fallbackState.autoRetryTimer = null;
                 const latestSource = stateManager.getSource(sourceId);
-                if (latestSource !== source || latestSource.status === 'active') {
+                if (latestSource !== source || latestSource.status !== 'error'
+                    || normalizeTikTokMode(latestSource.connectionMode || 'classic') !== preferredMode
+                    || (latestSource.tiktokSigningProvider || 'auto') !== signingProvider) {
                     return;
                 }
 
                 const latestEntry = document.querySelector(`[data-source-id="${sourceId}"]`);
-                if (!latestEntry) {
-                    return;
-                }
-                if (!latestEntry._tiktokFallback) {
-                    latestEntry._tiktokFallback = fallbackState;
-                }
+                if (!latestEntry || latestEntry._tiktokFallback !== fallbackState
+                    || getNextTikTokFallbackMode(latestSource, fallbackState) !== nextMode) return;
 
                 await attemptActivationModes({
                     sourceId,
@@ -9417,6 +9606,7 @@
                     reuseFallbackState: true
                 });
             }, fallbackState.retryDelayMs ?? TIKTOK_AUTO_FALLBACK_DELAY_MS);
+            fallbackState.autoRetryTimer = retryTimer;
         }
 
         function notifyTikTokFallbackSuccess(entry, preferredMode, fallbackMode) {
@@ -9425,8 +9615,16 @@
             const message = `Connected using ${fallbackLabel} after ${preferredLabel} failed.`;
             Toast.info('TikTok Fallback', message);
             if (entry) {
+                const source = stateManager.getSource(entry.dataset.sourceId);
+                const fallbackState = entry._tiktokFallback;
                 updateConnectionStatus(entry, 'info', message);
-                setTimeout(() => updateConnectionStatus(entry, 'connected'), 4000);
+                setTimeout(() => {
+                    if (stateManager.getSource(entry.dataset.sourceId) === source && source?.status === 'active'
+                        && entry._tiktokFallback === fallbackState
+                        && normalizeTikTokMode(source.activeConnectionMode) === normalizeTikTokMode(fallbackMode)) {
+                        updateConnectionStatus(entry, 'connected');
+                    }
+                }, 4000);
             }
         }
 
@@ -9442,7 +9640,7 @@
                 // A late API connector result must not replace the Standard fallback window.
                 cancelPendingTikTokActivation(sourceId);
             }
-            let pendingTikTokToken = null;
+            let pendingTikTokToken = resolvedTarget === 'tiktok' ? beginPendingTikTokActivation(sourceId) : null;
             // TikTok has its own token lifecycle; other asynchronous starters also
             // need to distinguish a stopped attempt from a subsequent activation.
             const activationToken = resolvedTarget === 'tiktok' ? null : {};
@@ -9459,7 +9657,6 @@
 
                 let windowId;
                 if (resolvedTarget === 'tiktok' && (normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')) {
-                    pendingTikTokToken = beginPendingTikTokActivation(sourceId);
                     windowId = await createTikTokWSSFromSource(source, normalizedMode === 'tiktok-legacy' ? 'legacy' : 'websocket');
                 } else if (resolvedTarget === 'shareplay' && source.shareplayNative) {
                     windowId = await window.createSharePlaySource(source);
@@ -13558,7 +13755,8 @@
                 }
 
                 function getTikTokStandardNavigationWarningMessage() {
-                    return translate('tiktok.standard.redirected');
+                    // Classify a stable reason; translate the recovery prompt when it is displayed.
+                    return 'TikTok redirected the Standard capture page.';
                 }
 
                 const SOURCE_NAVIGATION_RETRY_DELAYS_MS = [2000, 5000, 15000];
@@ -13817,37 +14015,33 @@
                 ipcRenderer.on('window-navigation-warning', (event, payload) => {
                     try {
                         const source = getSourceForWindowPayload(payload || {});
-                        if (!source || source.target !== 'tiktok') {
+                        if (!source || source.target !== 'tiktok' || source.activeConnectionMode !== 'classic'
+                            || normalizeNumericId(source.vid) !== normalizeNumericId(payload?.tabID)) {
                             return;
                         }
-                        const tabID = normalizeNumericId(payload?.tabID) || normalizeNumericId(source.vid);
                         const message = getTikTokStandardNavigationWarningMessage(payload);
-                        const updatePayload = {
-                            status: 'error',
+                        applyTikTokStatusUpdate({
+                            status: 'fatal_error',
                             error: message,
-                            activeConnectionMode: 'classic',
-                            wssId: null,
-                            tiktokWssId: null
-                        };
-                        if (tabID) {
-                            updatePayload.vid = tabID;
-                        }
-                        stateManager.updateSource(source.id, updatePayload);
-
-                        const updatedSource = stateManager.getSource(source.id) || { ...source, ...updatePayload };
-                        const entryElement = document.querySelector(`[data-source-id="${source.id}"]`);
-                        if (entryElement) {
-                            updateSourceUI(entryElement, updatedSource);
-                            const visibilityControl = entryElement.querySelector('[data-togglehtml]');
-                            if (visibilityControl) {
-                                visibilityControl.classList.remove('hidden');
-                            }
-                            updateConnectionStatus(entryElement, 'error', message, { tiktokStandardAction: true });
-                            applyTikTokStandardRevealPrompt(entryElement, updatedSource, true);
-                        }
-                        Toast.warning(translate('tiktok.standard.needsattention'), message);
+                            tabID: payload.tabID
+                        }, source.id);
                     } catch (e) {
                         console.warn('Failed to handle window-navigation-warning event:', e);
+                    }
+                });
+
+                ipcRenderer.on('tiktok-standard-window-closed', async (event, payload) => {
+                    try {
+                        const source = getSourceForWindowPayload(payload || {});
+                        if (!source || source.target !== 'tiktok' || source.activeConnectionMode !== 'classic'
+                            || normalizeNumericId(source.vid) !== normalizeNumericId(payload?.tabID)) return;
+                        // A rapid reconnect can reuse the old window ID before this event arrives.
+                        if (await ipcRenderer.invoke('checkWindowExists', { vid: payload.tabID })) return;
+                        if (stateManager.getSource(source.id) !== source || source.vid !== payload.tabID
+                            || source.activeConnectionMode !== 'classic') return;
+                        applyTikTokStatusUpdate({ status: 'stopped_by_user', tabID: payload.tabID }, source.id);
+                    } catch (e) {
+                        console.warn('Failed to clear closed TikTok capture window:', e);
                     }
                 });
 
@@ -14060,7 +14254,7 @@
                         return 1000;
                     };
 
-                    if (currentState.status === 'inactive' && !currentState.vid && !currentState.wssId && !currentState.tiktokWssId && (data.status === 'error' || data.status === 'failed' || data.status === 'disconnected')) {
+                    if (currentState.status === 'inactive' && !currentState.vid && !currentState.wssId && !currentState.tiktokWssId) {
                         return;
                     }
 
@@ -14311,7 +14505,6 @@
                                 }
                                 if (shouldAdvanceToNextMode && !shouldSuppressTikTokUiAutoFallback('failed', errorMessage || null)) {
                                     if (entryElement && entryElement._tiktokFallback) {
-                                        entryElement._tiktokFallback.pendingAutoRetry = false;
                                         entryElement._tiktokFallback.lastFailureStatus = 'failed';
                                         entryElement._tiktokFallback.lastFailureMessage = errorMessage || null;
                                     }
@@ -14369,7 +14562,6 @@
                                         { tiktokStandardAction: shouldGuideTikTokStandard }
                                     );
                                     if (entryElement._tiktokFallback) {
-                                        entryElement._tiktokFallback.pendingAutoRetry = false;
                                         entryElement._tiktokFallback.lastFailureStatus = 'fatal_error';
                                         entryElement._tiktokFallback.lastFailureMessage = data.error || null;
                                     }
@@ -14509,7 +14701,9 @@
 
                     if (hasWssId) {
                         const currentWssId = getTikTokWssId(source);
-                        if (typeof currentWssId === 'number' && currentWssId !== data.wssID) {
+                        if ((typeof currentWssId === 'number' && currentWssId !== data.wssID)
+                            || source.activeConnectionMode === 'classic'
+                            || (!currentWssId && !pendingTikTokActivations.has(source.id))) {
                             console.warn('Ignoring TikTok status for stale connection', {
                                 sourceId: source.id,
                                 incoming: data.wssID,
@@ -14517,7 +14711,11 @@
                             });
                             return;
                         }
-                    } else if (typeof data.tabID === 'number' && typeof source.vid === 'number' && source.vid !== data.tabID) {
+                    } else if (typeof data.tabID === 'number' && (
+                        (typeof source.vid === 'number' && source.vid !== data.tabID)
+                        || normalizeTikTokMode(source.activeConnectionMode || source.connectionMode) !== 'classic'
+                        || (!source.vid && !pendingTikTokActivations.has(source.id))
+                    )) {
                         console.warn('Ignoring TikTok status for stale classic window', {
                             sourceId: source.id,
                             incoming: data.tabID,
@@ -15602,6 +15800,15 @@
                 "settings.management": "Source Management",
                 "settings.moveUp": "⬆️ Move up",
                 "settings.moveDown": "⬇️ Move down",
+                "settings.moveToPosition": "Move to position…",
+                "reorder.position": "Position",
+                "reorder.top": "Top",
+                "reorder.bottom": "Bottom",
+                "reorder.move": "Move",
+                "reorder.listHint": "Current position: {position} of {count}. Each source or group in the main list counts as one position.",
+                "reorder.groupHint": "Current position: {position} of {count}. Positions are within this group.",
+                "reorder.invalid": "Enter a whole number from 1 to {count}.",
+                "reorder.unavailable": "This item is no longer in this list. Close this dialog and try again.",
                 "session.default": "Default",
                 'useragent.current': 'Current source setting',
                 'session.platformDefault': 'Platform default',

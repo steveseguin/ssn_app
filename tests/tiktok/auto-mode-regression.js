@@ -607,6 +607,17 @@ async function testUiDoesNotAutoFallbackAfterFatalUserNotFound() {
 		src.includes("!shouldSuppressTikTokUiAutoFallback('fatal_error', data.error || null)"),
 		'expected fatal_error auto fallback call to be guarded'
 	);
+	const helpers = ['getTikTokStatusMessageText', 'isTikTokOfflineFailureStatus', 'shouldSuppressTikTokUiAutoFallback']
+		.map(name => {
+			const match = src.match(new RegExp(`function ${name}\\([^]*?\\n        \\}`));
+			assert(match, `expected ${name}`);
+			return match[0];
+		}).join('\n');
+	const suppress = new Function(`${helpers}\nreturn shouldSuppressTikTokUiAutoFallback;`)();
+	assert.strictEqual(suppress('fatal_error', 'TikTok user not found. Check the username and try again.'), true);
+	assert.strictEqual(suppress('fatal_error', 'TikTok LIVE has ended. Wait for the creator to go live again.'), true);
+	assert.strictEqual(suppress('fatal_error', 'TikTok redirected the Standard capture page. Check the username or live URL.'), false);
+	assert.strictEqual(suppress('fatal_error', 'TikTok is showing a verification challenge in standard mode.'), false);
 }
 
 async function testUiDoesNotAutoFallbackAfterOfflineFailure() {
@@ -647,19 +658,26 @@ async function testManualStandardFatalDoesNotAutoCloseClassicWindow() {
 		src.includes("return preferredMode === 'classic'"),
 		'expected helper to key off explicit Standard mode'
 	);
-	assert.ok(
-		src.includes('source.autoActivate === true'),
-		'expected helper to keep auto-activate behavior separate from manual standard mode'
-	);
+	const selectedStandardHelper = src.match(/function isSelectedTikTokStandardSource\(source\) \{[\s\S]*?\n        \}/);
+	assert(selectedStandardHelper, 'expected explicit Standard selection helper');
+	const isSelectedStandard = new Function('normalizeTikTokMode', `return (${selectedStandardHelper[0]});`)(mode => mode);
+	for (const autoActivate of [false, true]) {
+		assert.strictEqual(isSelectedStandard({
+			target: 'tiktok', connectionMode: 'classic', activeConnectionMode: 'classic', autoActivate
+		}), true, 'Standard selection must not depend on Auto-activate');
+	}
+	assert.strictEqual(isSelectedStandard({
+		target: 'tiktok', connectionMode: 'tiktok-websocket', activeConnectionMode: 'classic'
+	}), false, 'Auto reaching Standard is not an explicit Standard selection');
 	assert.ok(
 		src.includes("const classicTabId = normalizeNumericId(data.tabID) || normalizeNumericId(currentState.vid)")
 			&& src.includes("if (!keepClassicWindowOpen && !data.wssID && classicTabId && ipcRenderer)"),
 		'expected fatal_error closeWindow call to be skipped for manual classic mode'
 	);
 	assert.ok(
-		src.includes('function hasManualTikTokStandardCaptureWindow')
-			&& src.includes('const showManualTikTokStandardWindow = hasManualTikTokStandardCaptureWindow(source)')
-			&& src.includes('!showManualTikTokStandardWindow'),
+		src.includes('function hasTikTokStandardActionWindow')
+			&& src.includes('const showTikTokStandardWindow = hasTikTokStandardActionWindow(source)')
+			&& src.includes('!showTikTokStandardWindow'),
 		'expected manual Standard classic windows to keep the Reveal capture button visible'
 	);
 }
@@ -699,12 +717,18 @@ async function testManualStandardNavigationWarnsInsteadOfClosing() {
 		indexSrc.includes('manualActivation: wasManualActivation(source.id)'),
 		'expected renderer to pass manual activation intent into classic window creation'
 	);
-	assert.ok(
-		mainSrc.includes('function shouldPreserveManualTikTokStandardNavigation')
-			&& mainSrc.includes('args.manualActivation !== true')
-			&& mainSrc.includes('isTikTokWindowArgs(args)'),
-		'expected main process to identify manual TikTok Standard navigation separately from auto activation'
-	);
+	const navigationHelper = mainSrc.match(/function shouldPreserveTikTokStandardNavigation\(args = \{\}, navUrl = ''\) \{[\s\S]*?\n\}/);
+	assert(navigationHelper, 'expected TikTok capture navigation guard');
+	const preserveNavigation = new Function('isTikTokWindowArgs', `return (${navigationHelper[0]});`)(args => args.platform === 'tiktok');
+	for (const manualActivation of [false, true]) {
+		for (const connectionMode of ['classic', 'tiktok-websocket']) {
+			const args = { platform: 'tiktok', url: 'https://www.tiktok.com/@fixture/live', activeConnectionMode: 'classic', connectionMode, manualActivation };
+			assert.strictEqual(preserveNavigation(args, 'https://www.tiktok.com/login'), true);
+			assert.strictEqual(preserveNavigation(args, 'https://www.tiktok.com/@other/live'), false);
+			assert.strictEqual(preserveNavigation({ ...args, platform: 'twitch' }, 'https://www.twitch.tv/login'), false);
+			assert.strictEqual(preserveNavigation({ ...args, wss: true }, 'https://www.tiktok.com/login'), false);
+		}
+	}
 	assert.ok(
 		mainSrc.includes('sendWindowNavigationWarning(view, args, navUrl, reason, mode)')
 			&& mainSrc.includes("mainWindow.webContents.send('window-navigation-warning'"),
@@ -713,7 +737,7 @@ async function testManualStandardNavigationWarnsInsteadOfClosing() {
 	assert.ok(
 		indexSrc.includes("ipcRenderer.on('window-navigation-warning'")
 			&& indexSrc.includes('TikTok redirected the Standard capture page')
-			&& indexSrc.includes("updateConnectionStatus(entryElement, 'error', message, { tiktokStandardAction: true })"),
+			&& indexSrc.includes("tabID: payload.tabID\n                        }, source.id)"),
 		'expected renderer to show a Standard-mode action message and highlight Reveal'
 	);
 }
