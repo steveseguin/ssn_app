@@ -9073,6 +9073,44 @@ function installWindowsSourceWindowMinimizeGuard(view) {
     });
 }
 
+// Only hide decorative Twitch popout chrome in parked Windows source windows.
+// Keep animation completion events available to Twitch's UI.
+function updateHiddenTwitchDecorations(view) {
+    if (process.platform !== 'win32' || !view || view.args?.platform !== 'twitch'
+        || view.args.wss || !view.args.sourceId || isBrowserViewDestroyed(view)) return;
+
+    const revision = (view.__ssTwitchDecorationRevision || 0) + 1;
+    view.__ssTwitchDecorationRevision = revision;
+    const previousUpdate = view.__ssTwitchDecorationUpdate || Promise.resolve();
+    view.__ssTwitchDecorationUpdate = previousUpdate.catch(() => {}).then(async () => {
+        if (isBrowserViewDestroyed(view) || revision !== view.__ssTwitchDecorationRevision) return;
+        const wc = view.webContents;
+        if (view.__ssTwitchDecorationCss) {
+            try { await wc.removeInsertedCSS(view.__ssTwitchDecorationCss); } catch (_) { }
+            view.__ssTwitchDecorationCss = null;
+        }
+        if (isBrowserViewDestroyed(view) || revision !== view.__ssTwitchDecorationRevision
+            || view.__ss_visible !== false) return;
+        let url;
+        try { url = new URL(wc.getURL()); } catch (_) { return; }
+        if (url.protocol !== 'https:' || url.hostname !== 'www.twitch.tv'
+            || !/^\/popout\/[^/]+\/chat\/?$/.test(url.pathname)) return;
+
+        const key = await wc.insertCSS(`
+            .highlight__progress-bar,
+            [class*="marqueeAnimation"]:has([data-testid="leaderboard-top-three-entry"]) {
+                visibility: hidden !important;
+            }
+        `);
+        if (isBrowserViewDestroyed(view)) return;
+        if (revision !== view.__ssTwitchDecorationRevision || view.__ss_visible !== false) {
+            try { await wc.removeInsertedCSS(key); } catch (_) { }
+        } else {
+            view.__ssTwitchDecorationCss = key;
+        }
+    }).catch(() => {});
+}
+
 // Stealth-hide: keep capture windows renderable without leaving them accessible on-screen.
 function stealthHideView(view) {
     try {
@@ -9136,6 +9174,7 @@ function stealthHideView(view) {
         // its own. If this is ever revisited, measure it on a real Windows machine first.
         const parked = parkSourceWindowOffscreen(view);
         view.__ss_visible = !parked;
+        updateHiddenTwitchDecorations(view);
         if (!parked) {
             try { view.setSkipTaskbar(false); } catch (_) { }
         }
@@ -9212,6 +9251,7 @@ function stealthShowView(view, options = {}) {
             }
         } catch (_) { }
         view.__ss_visible = true;
+        updateHiddenTwitchDecorations(view);
         return true;
     } catch (_) {
         return false;
@@ -13813,6 +13853,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
             //log(args);
             view.args = args;
             view.__ss_visible = !!visibibility;
+            if (process.platform === 'win32' && args.platform === 'twitch' && !args.wss && args.sourceId) {
+                view.webContents.on('did-finish-load', () => updateHiddenTwitchDecorations(view));
+                view.webContents.on('did-navigate-in-page', (event, url, isMainFrame) => {
+                    if (isMainFrame) updateHiddenTwitchDecorations(view);
+                });
+            }
             installMacSourceWindowVisibilityGuard(view);
             attachSourceBasicAuth(view, args, { parent: mainWindow, headless: headlessControlEnabled });
             const releaseActivatedWindowSessionHooks = registerActivatedWindowSessionHooks(view, args);
