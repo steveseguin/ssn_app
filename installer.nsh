@@ -197,18 +197,6 @@ FunctionEnd
     Pop $0
 !macroend
 
-!macro customFiles_x64
-    !insertmacro AddInstallerHelperFiles
-!macroend
-
-!macro customFiles_ia32
-    !insertmacro AddInstallerHelperFiles
-!macroend
-
-!macro customFiles_arm64
-    !insertmacro AddInstallerHelperFiles
-!macroend
-
 !macro RemoveAiTtsModelFiles
     RMDir /r "$INSTDIR\resources\app.asar.unpacked\Kokoro-82M-ONNX"
     RMDir /r "$INSTDIR\resources\app\Kokoro-82M-ONNX"
@@ -310,6 +298,7 @@ Function un.RunFirewallHelper
 FunctionEnd
 
 !macro customInstall
+    !insertmacro AddInstallerHelperFiles
     IfSilent 0 +6
     ClearErrors
     ReadRegStr $0 HKCU "${SSAPP_REG_KEY}" "PathEntry"
