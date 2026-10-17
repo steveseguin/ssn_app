@@ -21113,7 +21113,8 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
         wssID,
         sessionId,
         ttTargetIdc,
-        { forceLegacyConnector: requestedStrategy === 'legacy', signing, signingProvider, autoActivate, autoMode: args.autoMode }
+        { forceLegacyConnector: requestedStrategy === 'legacy', signing, signingProvider, autoActivate, autoMode: args.autoMode,
+            sharedFallback: args.sharedFallback === true }
     );
     if (args && args.replyOnly === true) {
         manager.replyOnly = true;
@@ -21215,7 +21216,8 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     // This manager has already cleaned up its own connection. Do not return a
     // stale virtual tab handle (or clean up another connection created meanwhile).
     if (manager.eulerRetriesStopped && manager.isStopped) {
-        throw new Error(`SSAPP_TIKTOK_EULER_PAUSED: ${manager.eulerStopReason || 'Euler retries paused to protect your quota.'}`);
+        const code = manager.eulerAllowCompatibility ? 'EULER_COMPATIBILITY' : 'EULER_PAUSED';
+        throw new Error(`SSAPP_TIKTOK_${code}: ${manager.eulerStopReason || 'Euler retries paused to protect your quota.'}`);
     }
     if (manager.isStopped) {
         throw new Error(`SSAPP_TIKTOK_STOPPED: ${manager.terminalError || 'TikTok connection stopped.'}`);

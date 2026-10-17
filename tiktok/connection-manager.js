@@ -4480,6 +4480,24 @@ class ConnectionManager {
         this.autoLocalSignerFallbackPreviousEulerProxyActive = false;
         this.autoLocalSignerFallbackStartedAt = 0;
         this.localSigner = env.localSigner || null;
+        // Shared credentials are only enabled by Auto after Standard has failed.
+        this.autoSharedFallback = this.autoMode && this.signingProvider === 'auto'
+            && !forceLegacyConnector && !this.hasUserProvidedSigningApiKey() && options.sharedFallback === true;
+        if (this.autoSharedFallback) {
+            this.signingConfig = { apiKey: SHARED_EULER_SIGNING_FALLBACK_KEY, serviceUrl: null };
+            this.sharedEulerApiKeyAttempts.add(SHARED_EULER_SIGNING_FALLBACK_KEY);
+            this.autoLocalSignerFallbackAttempted = true;
+        } else if (this.signingProvider === 'auto' && !forceLegacyConnector
+            && !this.hasUserProvidedSigningApiKey() && !this.signingConfig?.serviceUrl
+            && this.localSigner?.sign && getLocalSignerCooldownRemainingMs() <= 0) {
+            this.autoLocalSignerFallbackPreviousProvider = 'auto';
+            this.autoLocalSignerFallbackPreviousSigningConfig = this.signingConfig;
+            this.autoLocalSignerFallbackActive = this.autoMode;
+            this.autoLocalSignerFallbackAttempted = true;
+            this.autoLocalSignerFallbackStartedAt = Date.now();
+            this.signingProvider = 'local';
+            this.signingConfig = null;
+        }
 	        this.signServerFailureCount = 0;
 	        this.tiktokRateLimitCount = 0;
 	        this.tiktokRateLimitLastAt = 0;
@@ -4687,7 +4705,8 @@ class ConnectionManager {
         }
 
         if (isEulerWs) {
-            const method = hasApiKey ? 'Euler WS relay (API key)' : 'Euler WS relay';
+            const method = this.autoSharedFallback ? 'Euler WS relay (shared key)'
+                : (hasApiKey ? 'Euler WS relay (API key)' : 'Euler WS relay');
             return {
                 effectiveMode: 'Euler WS relay',
                 method,
@@ -4706,7 +4725,8 @@ class ConnectionManager {
         }
 
         if (isAuto) {
-            const method = hasApiKey ? 'Euler signing (API key)' : 'Euler signing (auto)';
+            const method = this.autoSharedFallback ? 'Euler signing (shared key)'
+                : (hasApiKey ? 'Euler signing (API key)' : 'Euler signing (keyless)');
             const effectiveMode = hasApiKey ? 'Auto (Euler API Key)' : 'Auto (Euler)';
             return {
                 effectiveMode,
@@ -4762,7 +4782,7 @@ class ConnectionManager {
 	        if (forceLegacy) {
 	            const legacyOptions = {
 	                processInitialData: false,
-	                enableExtendedGiftInfo: true,
+	                enableExtendedGiftInfo: !this.usesEulerForConnection(true) || this.hasUserProvidedSigningApiKey(),
 	                enableWebsocketUpgrade: true,
 	                fetchRoomInfoOnConnect: true,
 	                requestPollingIntervalMs: 1000,
@@ -4783,7 +4803,9 @@ class ConnectionManager {
 	        };
 	        const options = {
 	            processInitialData: false,
-	            enableExtendedGiftInfo: true,
+	            // The bundled Euler keys cannot sign gift-catalog requests. Incoming
+	            // gift events still provide gift details without this optional lookup.
+	            enableExtendedGiftInfo: !this.usesEulerForConnection(true) || this.hasUserProvidedSigningApiKey(),
 	            enableRequestPolling: true,
 	            requestPollingIntervalMs: 1000,
 	            fetchRoomInfoOnConnect: true,
@@ -5821,7 +5843,7 @@ class ConnectionManager {
                 return socket;
             };
         }
-        if (!useLegacyConnector && this.usesEulerForConnection() && connectionOptions.enableExtendedGiftInfo) {
+        if (this.usesEulerForConnection(true) && connectionOptions.enableExtendedGiftInfo) {
             this.applyOptionalEulerGiftCatalog(this.connection);
         }
         this.applyResumeCursorToConnection();
@@ -5854,11 +5876,10 @@ class ConnectionManager {
             try {
                 return await fetchAvailableGifts.apply(this, args);
             } catch (error) {
-                // Stop and quota limits still cancel the connection attempt. Gift
-                // metadata is optional; some Euler plans cannot sign its lookup.
+                // Gift metadata is optional, including when its endpoint rejects
+                // the plan or quota. Only cancellation should abort the connection.
                 if (signal?.aborted || manager.isStopped || error?.name === 'AbortError'
-                    || error?.code === 'ERR_CANCELED' || Number(error?.status || error?.response?.status) === 429
-                    || manager.getEulerRateLimitInfo(error)) {
+                    || error?.code === 'ERR_CANCELED') {
                     throw error;
                 }
                 console.warn('[TikTok] Gift catalog unavailable; continuing with gift details from incoming events.');
@@ -6119,6 +6140,7 @@ class ConnectionManager {
                 });
                 await sleepWithStop(this, delayMs);
             }
+            if (this.isStopped) return false;
             try {
                 this.ensureConnectionInstance(context);
             } catch (error) {
@@ -6138,6 +6160,7 @@ class ConnectionManager {
     }
 
     async tryFallbackToPolling(primaryError, stage = 'connect') {
+        if (!this.autoMode || this.autoSharedFallback || !this.isBrokenSignerBootstrapError(primaryError, primaryError?.message || '')) return false;
         if (this.signingProvider === 'tikfinity') return false;
         if (this.signingProvider === 'local' && !this.autoLocalSignerFallbackActive) {
             this.logDebug('lifecycle.fallback.polling.skipped', {
@@ -6202,9 +6225,11 @@ class ConnectionManager {
     }
 
     getAutoEulerProxyFallbackKey() {
+        if (!this.autoMode) return null;
         if (this.hasUserProvidedSigningApiKey()) {
             return this.userProvidedSigningApiKey.trim();
         }
+        if (!this.autoSharedFallback) return null;
         const proxyKey = typeof SHARED_EULER_PROXY_FALLBACK_KEY === 'string'
             ? SHARED_EULER_PROXY_FALLBACK_KEY.trim()
             : '';
@@ -6222,6 +6247,7 @@ class ConnectionManager {
     }
 
     async tryFallbackToEulerProxy(primaryError, stage = 'connect') {
+        if (!this.autoMode || this.isStopped) return false;
         const isAutoFlow = this.signingProvider === 'auto'
             || this.autoEulerProxyFallbackActive
             || this.autoLocalSignerFallbackActive;
@@ -6298,6 +6324,7 @@ class ConnectionManager {
             this.logDebug('lifecycle.fallback.eulerProxy.teardownError', normalizeForLogging(error));
         }
 
+        if (this.isStopped) return false;
         try {
             this.initializeConnectionInstance({ forceLegacy: false, context: 'euler_proxy_fallback' });
         } catch (error) {
@@ -6334,7 +6361,7 @@ class ConnectionManager {
     }
 
     async restoreAutoFlowAfterLocalSignerFailure(primaryError, stage = 'local_signer_failed') {
-        if (!this.autoLocalSignerFallbackActive) {
+        if (this.isStopped || !this.autoLocalSignerFallbackActive) {
             return false;
         }
         if (this.eulerRetriesStopped) {
@@ -6378,6 +6405,7 @@ class ConnectionManager {
             this.logDebug('lifecycle.fallback.localSigner.restoreTeardownError', normalizeForLogging(error));
         }
 
+        if (this.isStopped) return false;
         try {
             this.initializeConnectionInstance({ forceLegacy: false, context: 'local_signer_failed_restore' });
         } catch (error) {
@@ -6400,6 +6428,7 @@ class ConnectionManager {
     }
 
     async tryFallbackToLocalSigner(primaryError, stage = 'connect') {
+        if (!this.autoMode || this.autoSharedFallback || this.isStopped) return false;
         const isAutoFlow = this.signingProvider === 'auto'
             || this.autoEulerProxyFallbackActive
             || this.autoLocalSignerFallbackActive;
@@ -6467,6 +6496,7 @@ class ConnectionManager {
             this.logDebug('lifecycle.fallback.localSigner.teardownError', normalizeForLogging(error));
         }
 
+        if (this.isStopped) return false;
         try {
             this.initializeConnectionInstance({ forceLegacy: false, context: 'local_signer_fallback' });
         } catch (error) {
@@ -8578,6 +8608,7 @@ class ConnectionManager {
     }
 
     shouldTrySharedEulerApiKeyForRateLimit(primaryError, rawMessage = '') {
+        if (!this.autoSharedFallback) return false;
         if (!(this.signingProvider === 'auto' || this.signingProvider === EULER_WS_PROVIDER)) {
             return false;
         }
@@ -8598,6 +8629,7 @@ class ConnectionManager {
     }
 
     shouldTrySharedEulerApiKeyForEulerWsClose(code) {
+        if (!this.autoSharedFallback) return false;
         if (this.signingProvider !== EULER_WS_PROVIDER) {
             return false;
         }
@@ -8691,6 +8723,7 @@ class ConnectionManager {
     }
 
     async trySharedEulerApiKeyRetry(stage = 'connect', options = {}) {
+        if (!this.autoSharedFallback || this.isStopped) return false;
         const {
             reason = 'rate_limit',
             primaryError = null,
@@ -8900,9 +8933,9 @@ class ConnectionManager {
         return nestedMessages[0];
     }
 
-    usesEulerForConnection() {
+    usesEulerForConnection(includeLegacy = false) {
         if (this.shouldUseLocalSigner() || this.signingProvider === 'tikfinity'
-            || this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy') return false;
+            || (!includeLegacy && (this.preferredStrategy === 'legacy' || this.connectionStrategy === 'legacy'))) return false;
         if (this.signingProvider === 'auto' || this.signingProvider === EULER_WS_PROVIDER) return true;
         if (this.signingProvider !== 'custom') return false;
         if (!this.signingConfig?.serviceUrl) return true;
@@ -8912,15 +8945,16 @@ class ConnectionManager {
         } catch (_) { return false; }
     }
 
-    finishEulerRetries(detail) {
+    finishEulerRetries(detail, allowCompatibility = false) {
         this.isStopped = true;
         this.eulerRetriesStopped = true;
+        this.eulerAllowCompatibility = allowCompatibility;
         this.eulerStopReason = `${detail} Euler retries paused to protect your quota. Activate the source to try again.`;
         emitStatus({
             wssID: this.wssID,
             status: 'failed',
             error: this.eulerStopReason,
-            skipEulerFallback: true
+            skipEulerFallback: !allowCompatibility
         });
         cleanupConnection(this.wssID);
         return false;
@@ -8980,7 +9014,6 @@ class ConnectionManager {
             }
             return this.restartConnectionAttempt(primaryError, 'euler_live_confirmed');
         }
-        this.eulerRetriesStopped = true;
         const lookupDetail = live === false ? 'TikTok reports that this stream is offline.'
             : (live === true ? 'TikTok is live, but the Euler connection failed.' : 'The backup TikTok live check failed.');
         const signStatus = /unexpected sign server status\s+(\d{3})\b/i.exec(primaryError?.message || '');
@@ -9013,10 +9046,17 @@ class ConnectionManager {
                 detail = 'The Euler connection timed out. Try again later or use Standard mode.';
             }
         }
+        if (this.autoSharedFallback && !this.autoEulerProxyFallbackAttempted && !limit && live !== false
+            && await this.tryFallbackToEulerProxy(new Error(detail), 'shared_signing_failed')) {
+            return this.restartConnectionAttempt(primaryError, 'shared_proxy');
+        }
+        this.eulerRetriesStopped = true;
         if (this.autoMode && await this.tryFallbackToLocalSigner(new Error(detail), 'euler_backup')) {
             return this.restartConnectionAttempt(primaryError, 'euler_backup_local');
         }
-        return this.finishEulerRetries(detail);
+        const allowCompatibility = this.autoMode && !this.autoSharedFallback && !limit && !rejectedKey && !planRestricted
+            && this.isBrokenSignerBootstrapError(primaryError, primaryError?.message || '');
+        return this.finishEulerRetries(detail, allowCompatibility);
     }
 
     getEulerRateLimitInfo(primaryError) {

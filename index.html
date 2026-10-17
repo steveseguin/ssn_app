@@ -9150,6 +9150,9 @@
                 }
 
                 lastError = result.error;
+                // The failure status can arrive before or after the IPC result.
+                // Both paths must skip Compatibility after an Euler rejection.
+                if (result.error?.code === 'SSAPP_TIKTOK_EULER_PAUSED') attempted.add('tiktok-legacy');
                 if (result.error && result.error.message === 'Activation canceled') {
                     return false;
                 }
@@ -9226,6 +9229,7 @@
                     pushMode('tiktok-websocket');
                     pushMode('tiktok-legacy');
                     pushMode('classic');
+                    if (!source?.tiktokSigningApiKey && !source?.tiktokSigningServiceUrl) pushMode('tiktok-shared');
                     break;
                 case 'polling':
                     pushMode(initialMode || 'tiktok-legacy');
@@ -9272,6 +9276,8 @@
                     return 'TikTok Compatibility (WebSocket)';
                 case 'classic':
                     return 'TikTok Standard';
+                case 'tiktok-shared':
+                    return 'Euler (shared key)';
                 default:
                     return normalized || 'Unknown';
             }
@@ -9368,9 +9374,9 @@
             if (resolveTikTokConnectionPreset(source) !== 'auto' || !isTikTokStandardRecoverableMessage(message)) {
                 return false;
             }
-            const entry = document.querySelector(`[data-source-id="${source.id}"]`);
-            // Auto may already have tried every connector before reaching Standard.
-            return !getNextTikTokFallbackMode(source, entry?._tiktokFallback);
+            // Give the user time to sign in or complete verification, even when
+            // a shared-key fallback remains available.
+            return true;
         }
 
         function isTikTokStandardRecoverableMessage(message) {
@@ -9479,7 +9485,7 @@
             }
             // A renderer reload loses its attempt ledger. Auto reaching Standard
             // already exhausted the API methods; don't start that chain over.
-            if (!fallbackState && source.activeConnectionMode === 'classic'
+            if (!fallbackState && (source.activeConnectionMode === 'classic' || source.tiktokSharedFallback)
                 && resolveTikTokConnectionPreset(source) === 'auto') return null;
             const preferredMode = normalizeTikTokMode(source.connectionMode || 'classic');
             const sequence = fallbackState?.sequence?.length
@@ -9503,6 +9509,7 @@
             if (!entry) return;
 
             let fallbackState = entry._tiktokFallback;
+            if (!fallbackState && !getNextTikTokFallbackMode(source)) return;
             const preferredMode = normalizeTikTokMode(source.connectionMode || 'classic');
             if (!fallbackState) {
                 const sequence = buildTikTokFallbackSequence(preferredMode, preferredMode, source);
@@ -9635,7 +9642,15 @@
             }
 
             const resolvedTarget = target || source.target;
-            const normalizedMode = resolvedTarget === 'tiktok' ? normalizeTikTokMode(mode) : mode;
+            const sharedFallback = resolvedTarget === 'tiktok' && mode === 'tiktok-shared';
+            const normalizedMode = sharedFallback ? 'tiktok-websocket'
+                : (resolvedTarget === 'tiktok' ? normalizeTikTokMode(mode) : mode);
+            if (sharedFallback && source.vid && source.activeConnectionMode === 'classic') {
+                // Stop Standard capture before starting the last-resort connector.
+                ipcRenderer.sendSync('closeWindow', { vid: source.vid });
+                stateManager.updateSource(sourceId, { vid: null });
+                source = stateManager.getSource(sourceId);
+            }
             if (resolvedTarget === 'tiktok' && normalizedMode === 'classic') {
                 // A late API connector result must not replace the Standard fallback window.
                 cancelPendingTikTokActivation(sourceId);
@@ -9652,12 +9667,13 @@
                     error: null,
                     activeConnectionMode: normalizedMode
                 };
+                if (resolvedTarget === 'tiktok') baseUpdate.tiktokSharedFallback = sharedFallback;
                 stateManager.updateSource(sourceId, baseUpdate);
                 source = stateManager.getSource(sourceId);
 
                 let windowId;
                 if (resolvedTarget === 'tiktok' && (normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')) {
-                    windowId = await createTikTokWSSFromSource(source, normalizedMode === 'tiktok-legacy' ? 'legacy' : 'websocket');
+                    windowId = await createTikTokWSSFromSource(source, normalizedMode === 'tiktok-legacy' ? 'legacy' : 'websocket', sharedFallback);
                 } else if (resolvedTarget === 'shareplay' && source.shareplayNative) {
                     windowId = await window.createSharePlaySource(source);
                 } else if (resolvedTarget === 'discord' && source.discordNative) {
@@ -10517,7 +10533,7 @@
             }
         }
 
-        async function createTikTokWSSFromSource(source, strategy = 'legacy') {
+        async function createTikTokWSSFromSource(source, strategy = 'legacy', sharedFallback = false) {
             if (!ipcRenderer) return false;
             const cleanUsername = source.username?.replace('@', '').trim();
             if (!cleanUsername) {
@@ -10571,6 +10587,7 @@
                     signing,
                     signingProvider, // Pass the provider preference to the backend
                     autoMode: resolveTikTokConnectionPreset(source) === 'auto' && !source.disableTikTokAutoFallback,
+                    sharedFallback,
                     autoActivate: !!source.autoActivate
                 });
 
@@ -10580,7 +10597,7 @@
                 return wssID;
             } catch (error) {
                 const fallbackInfo = resolveTikTokFallbackInfo(error);
-                const pausedMessage = String(error.message || '').match(/SSAPP_TIKTOK_(EULER_PAUSED|STOPPED):\s*([\s\S]*)/);
+                const pausedMessage = String(error.message || '').match(/SSAPP_TIKTOK_(EULER_PAUSED|EULER_COMPATIBILITY|STOPPED):\s*([\s\S]*)/);
                 if (pausedMessage) {
                     error.message = pausedMessage[2];
                     error.code = `SSAPP_TIKTOK_${pausedMessage[1]}`;
@@ -11163,9 +11180,7 @@
             const method = clean(data.connectionMethod || data.effectiveMode || '');
             if (method) record.method = method;
             if (typeof data.hasSession === 'boolean') record.hasSession = data.hasSession;
-            if (data.status === 'connected') {
-                record.lastFailure = '';
-            } else if (['error', 'failed', 'fatal_error', 'euler_rate_limit', 'disconnected'].includes(data.status)
+            if (['error', 'failed', 'fatal_error', 'euler_rate_limit', 'disconnected'].includes(data.status)
                 || (data.status === 'reconnecting' && !record.lastFailure)) {
                 if (!tikTokTroubleshootingTools.isGenericTikTokFailure(message)) record.lastFailure = message;
             }
@@ -11867,6 +11882,14 @@
                         const derivedLabel = formatConnectionLabel(sourceCtx);
                         const label = message || derivedLabel || 'Connected';
                         statusElement.innerHTML = `<i class="las la-check-circle"></i> ${statusText(label)}`;
+                        const previousFailure = sourceCtx?.target === 'tiktok'
+                            ? tikTokTroubleshooting.get(sourceCtx.id)?.lastFailure : null;
+                        if (previousFailure) {
+                            const detail = document.createElement('small');
+                            detail.style.display = 'block';
+                            detail.textContent = `Previous attempt: ${previousFailure}`;
+                            statusElement.appendChild(detail);
+                        }
                     }
                     try {
                         const activateButton = element.querySelector('[data-activatehtml]');
@@ -17952,7 +17975,7 @@
                 "tiktok.guide": "TikFinity setup guide",
                 "tiktok.copy": "Copy troubleshooting details",
                 "tiktok.fallback": "Set up TikFinity fallback →",
-                "tiktok.help.auto": "Starts with Euler; tries other capture methods if it fails.",
+                "tiktok.help.auto": "Uses your Euler key when configured. Otherwise tries Local signer, keyless Euler, Standard, then a shared Euler key.",
                 "tiktok.help.local": "No API key needed for public LIVE chat. Sign in for replies or restricted streams.",
                 "tiktok.help.polling": "Requires signing. Replies are not supported.",
                 "tiktok.help.standard": "Reads chat from a browser window. Use it for manual sign-in and troubleshooting.",
