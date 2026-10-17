@@ -16158,6 +16158,50 @@ async function createWindow(args, reuse = false, mainApp = false) {
     }
 }
 
+const forceOnTopWindows = new WeakMap();
+
+function setForceOnTop(window, enabled) {
+    if (process.platform !== "win32" || !window || window.isDestroyed()) return;
+    const existing = forceOnTopWindows.get(window);
+    if (existing) {
+        if (!enabled) existing.stop();
+        return;
+    }
+    if (!enabled) return;
+
+    // Opt-in, per-window only. Raising a desktop window cannot bypass exclusive fullscreen.
+    const stop = () => {
+        clearInterval(timer);
+        forceOnTopWindows.delete(window);
+        window.removeListener("closed", stop);
+        window.removeListener("always-on-top-changed", onTopChanged);
+        if (!window.isDestroyed() && window.isAlwaysOnTop()) {
+            window.setAlwaysOnTop(true); // Leave ordinary pinning enabled.
+        }
+    };
+    const onTopChanged = (event, isAlwaysOnTop) => {
+        if (!isAlwaysOnTop) stop();
+    };
+    const raise = () => {
+        if (window.isDestroyed()) {
+            stop();
+            return;
+        }
+        if (window.__ss_visible !== false && window.isVisible() && !window.isMinimized()) {
+            window.moveTop(); // Does not activate the window or take keyboard focus.
+        }
+    };
+
+    window.args = window.args || {};
+    window.args.pin = true;
+    window.setAlwaysOnTop(true, "screen-saver");
+    const timer = setInterval(raise, 1000);
+    forceOnTopWindows.set(window, { stop });
+    window.once("closed", stop);
+    window.on("always-on-top-changed", onTopChanged);
+    raise();
+}
+
 contextMenu({
     prepend: (defaultActions, params, browserWindow) => {
         // The context-menu package's Copy Link action uses the pre-Electron 44 clipboard API.
@@ -16921,6 +16965,13 @@ contextMenu({
                 browserWindow.setVisibleOnAllWorkspaces(true);
             }
         },
+    },
+    {
+        label: "Force on top",
+        type: "checkbox",
+        visible: process.platform === "win32",
+        checked: forceOnTopWindows.has(browserWindow),
+        click: () => setForceOnTop(browserWindow, !forceOnTopWindows.has(browserWindow)),
     },
     {
         label: "🚫🖱 ️Make UnClickable until in-focus (CTRL+SHIFT+ALT+X)",
