@@ -832,6 +832,7 @@ class SourceObservationService {
 
 module.exports = {
 	SourceObservationService,
+	captureWindowPage,
 	redactUrl,
 	sanitizeValue,
 };

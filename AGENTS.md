@@ -74,6 +74,8 @@ No formal test framework (Jest/Mocha). Manual integration tests only.
 
 ### LLM Control Maintenance
 
+- Browser/AI automation additions must preserve the existing appearance, behavior, and everyday workflows for ordinary users. Keep new configuration in unobtrusive advanced options; do not introduce prominent AI UI or change existing defaults.
+- Keep proof-of-concept harnesses and diagnostics opt-in. Model calls, screen streaming, continuous inspection, and agent loops must only run when explicitly enabled or requested, without adding ongoing work during ordinary use.
 - Whenever the SSApp control API, MCP adapter, command endpoints, capabilities, schemas, or version compatibility changes, update the checked-in skill under `C:\Users\steve\Code\social_stream\docs\skills\control-social-stream` in the same work.
 - Record each such change in the skill's version log, including the minimum SSApp version required for newly added or changed capabilities.
 - Keep the running SSApp version exposed through the control API and MCP responses so agents can select only skill capabilities supported by that app version.

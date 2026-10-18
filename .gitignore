@@ -42,6 +42,20 @@ pkg/
 /tmp-login-test/
 /artifacts/translation-layout/
 
+# Private review packages and local agent output
+.agents/
+.codex/
+.codex-tmp*/
+.codex-tmp-*.diff
+.playwright-mcp/
+artifacts/
+[Mm]eta-[Aa]pp-[Rr]eview*
+[Mm]eta-[Rr]eview*
+[Ff]acebook-[Aa]pp-[Rr]eview*
+prior-submission-*
+webstore/
+monetization-server/
+
 # Editor swap files
 *.swp
 *.swo
@@ -51,6 +65,12 @@ pkg/
 build-config.env
 .env
 .secret
+.env.*
+.secret.*
+.dev.vars
+.dev.vars.*
+!.env.example
+!.dev.vars.example
 electron-builder.env
 social_stream_fallback/
 resources/social_stream_fallback/

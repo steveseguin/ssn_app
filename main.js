@@ -207,6 +207,7 @@ const { setupElectronLocalMedia } = require('./resources/electron-local-media-se
 const { createControlApiRouter } = require('./resources/electron-control-api');
 const { SourceObservationService } = require('./resources/source-observation-service');
 const { AppWindowControlService } = require('./resources/app-window-control-service');
+const { BrowserControlService } = require('./resources/browser-control-service');
 const { AppDialogService } = require('./resources/app-dialog-service');
 const { buildMcpLaunchConfig } = require('./resources/mcp-launch-config');
 const { KickWsClient } = require('./resources/kick-ws-client');
@@ -2245,6 +2246,28 @@ const appDialogService = controlApiEnabled ? new AppDialogService({
     }
 }) : null;
 
+const browserControlService = controlApiEnabled ? new BrowserControlService({
+    Menu,
+    getTargets: () => electron.webContents.getAllWebContents()
+        .filter(wc => !wc.isDestroyed() && ['window', 'browserView', 'webview', 'remote'].includes(wc.getType()))
+        .map(wc => {
+            const window = BrowserWindow.fromWebContents(wc) || null;
+            const source = Object.values(browserViews).find(view => view && view.webContents === wc);
+            return {
+                webContents: wc,
+                window,
+                view: window && window.webContents === wc ? window : { webContents: wc },
+                kind: window && window === mainWindow ? 'main' : source ? 'source' : wc.getType(),
+                sourceId: source?.sourceId || source?.args?.sourceId || null,
+                tabId: source?.tabID ?? null
+            };
+        }),
+    getMainWindow: () => mainWindow,
+    getMenu: () => Menu.getApplicationMenu(),
+    isHeadless: () => headlessControlEnabled,
+    armDialogs: () => { if (appDialogService) appDialogService.arm(); }
+}) : null;
+
 if (appDialogService) {
     appDialogService.install(dialog);
     app.on('browser-window-created', (_event, window) => {
@@ -2520,6 +2543,9 @@ function setupRemoteControlServer() {
         if (appDialogService && appDialogService.handles(action)) {
             return appDialogService.execute(action, value);
         }
+        if (browserControlService && browserControlService.handles(action)) {
+            return browserControlService.execute(action, value);
+        }
         if (appWindowControlService && appWindowControlService.handles(action)) {
             if (appDialogService && action === 'interactAppWindow') appDialogService.arm();
             return appWindowControlService.execute(action, value);
@@ -2569,6 +2595,7 @@ function setupRemoteControlServer() {
     };
     controlApiRouter = createControlApiRouter({
         getSsappVersion: () => app.getVersion(),
+        handleBrowserStream: (req, res, url) => browserControlService ? browserControlService.stream(req, res, url) : false,
         executeCommand: executeControlCommand,
         getStatus: async () => {
             const sources = await executeControlCommand({ action: 'getSources' });
@@ -15853,6 +15880,10 @@ async function createWindow(args, reuse = false, mainApp = false) {
         if (existing) clearTimeout(existing);
         debuggerDetachTimers.set(webContents, setTimeout(() => {
             debuggerDetachTimers.delete(webContents);
+            if (webContents.__ssappBrowserControlActive) {
+                scheduleDebuggerDetach(webContents, delayMs);
+                return;
+            }
             try {
                 if (webContents.debugger && webContents.debugger.isAttached()) {
                     webContents.debugger.detach();
@@ -17093,6 +17124,9 @@ app.on("before-quit", (event) => {
     }
     if (appWindowControlService) {
         appWindowControlService.close();
+    }
+    if (browserControlService) {
+        browserControlService.close();
     }
     if (appDialogService) {
         appDialogService.close();

@@ -1,14 +1,19 @@
 'use strict';
 
 const crypto = require('crypto');
+const { BROWSER_COMMANDS } = require('./browser-control-service');
 
-const CONTROL_API_VERSION = '1.3.1';
+const CONTROL_API_VERSION = '1.4.1';
 const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_OPERATIONS = 200;
 const MAX_EVENTS = 500;
 
 const COMMAND_DEFINITIONS = Object.freeze({
+	...Object.fromEntries(Object.entries(BROWSER_COMMANDS).map(([action, command]) => [action, {
+		...definition(command.description, command.readOnly ? 'read-only' : 'mutating', {}, !command.readOnly, '0.4.37'),
+		inputSchema: command.schema,
+	}])),
 	getCapabilities: definition('Discover commands, schemas, settings, and version compatibility.', 'read-only', {}),
 	getSources: definition('List normalized sources.', 'read-only', { filters: 'object?' }),
 	getSource: definition('Get one source by stable ID.', 'read-only', { sourceId: 'string' }),
@@ -100,6 +105,7 @@ function statusForError(error) {
 }
 
 function createControlApiRouter(options = {}) {
+	const instanceId = crypto.randomUUID();
 	const getSsappVersion = options.getSsappVersion || (() => '0.0.0');
 	const executeCommand = options.executeCommand;
 	const getStatus = options.getStatus;
@@ -114,6 +120,7 @@ function createControlApiRouter(options = {}) {
 	function sendJson(res, statusCode, payload, requestId) {
 		const response = {
 			...payload,
+			instanceId,
 			apiVersion: CONTROL_API_VERSION,
 			ssappVersion: getSsappVersion(),
 			requestId,
@@ -123,6 +130,7 @@ function createControlApiRouter(options = {}) {
 			'Cache-Control': 'no-store',
 			'X-Content-Type-Options': 'nosniff',
 			'X-SSApp-Request-Id': requestId,
+			'X-SSApp-Instance-Id': instanceId,
 		});
 		res.end(JSON.stringify(response));
 	}
@@ -231,6 +239,18 @@ function createControlApiRouter(options = {}) {
 		const pathname = parsedUrl.pathname;
 		if (!pathname.startsWith('/api/v1/')) return false;
 		const requestId = crypto.randomUUID();
+		// Remote bridges can bind their local adapter to this app instance. Existing
+		// local clients omit the header and keep their ordinary behavior.
+		const expectedInstance = req.headers['x-ssapp-instance-id'];
+		if (expectedInstance && expectedInstance !== instanceId) {
+			sendJson(res, 409, { ok: false, error: { code: 'SSAPP_INSTANCE_CHANGED', message: 'SSApp restarted. Discover the new instance before issuing more commands.' } }, requestId);
+			return true;
+		}
+		if (pathname === '/api/v1/instance' && req.method === 'GET') {
+			sendJson(res, 200, { ok: true }, requestId);
+			return true;
+		}
+		if (options.handleBrowserStream && await options.handleBrowserStream(req, res, parsedUrl)) return true;
 		if (pathname === '/api/v1/events' && req.method === 'GET') {
 			openEventStream(req, res);
 			return true;
