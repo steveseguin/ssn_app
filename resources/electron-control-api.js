@@ -11,7 +11,7 @@ const MAX_EVENTS = 500;
 
 const COMMAND_DEFINITIONS = Object.freeze({
 	...Object.fromEntries(Object.entries(BROWSER_COMMANDS).map(([action, command]) => [action, {
-		...definition(command.description, command.readOnly ? 'read-only' : 'mutating', {}, !command.readOnly, '0.4.37'),
+		...definition(command.description, command.readOnly ? 'read-only' : 'mutating', {}, !command.readOnly, '0.4.38'),
 		inputSchema: command.schema,
 	}])),
 	getCapabilities: definition('Discover commands, schemas, settings, and version compatibility.', 'read-only', {}),
