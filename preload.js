@@ -1039,6 +1039,9 @@ function configureContextBridge(){
 				return await ipcRenderer.invoke('facebook-oauth', payload);
 			  },
 
+			  startInstagramOAuth: async () => ipcRenderer.invoke('instagram-oauth'),
+			  cancelInstagramOAuth: async () => ipcRenderer.invoke('instagram-oauth-cancel'),
+
 			  exchangeFacebookOAuthCode: async (payload) => {
 				return await ipcRenderer.invoke('facebook-oauth-exchange', payload);
 			  },
@@ -1236,6 +1239,9 @@ try {
 			startFacebookOAuth: async (payload) => {
 				return await ipcRenderer.invoke('facebook-oauth', payload);
 			},
+
+			startInstagramOAuth: async () => ipcRenderer.invoke('instagram-oauth'),
+			cancelInstagramOAuth: async () => ipcRenderer.invoke('instagram-oauth-cancel'),
 
 			exchangeFacebookOAuthCode: async (payload) => {
 				return await ipcRenderer.invoke('facebook-oauth-exchange', payload);

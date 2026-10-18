@@ -47,6 +47,23 @@ Callback flow:
 - `POST /auth/facebook/data-deletion`
 - `GET /auth/facebook/data-deletion/status`
 
+## Instagram Endpoints
+
+- `GET /auth/instagram/start`
+- `GET /auth/instagram/callback`
+
+Instagram uses Facebook Login and the existing Meta app credentials. Start sign-in with `return_to` pointing to `/sources/websocket/instagram.html` or `/beta/sources/websocket/instagram.html` on an origin listed in `ALLOWED_RETURN_ORIGINS`. This flow requests `pages_show_list`, `pages_read_engagement`, `instagram_basic`, `instagram_manage_comments`, and `business_management`. The business permission supports discovery of Pages owned by business portfolios. It uses a separate session cookie and does not change the Facebook sign-in scopes.
+
+The callback returns a base64url-encoded JSON object in the `instagram_auth_result` URL fragment, containing `type: "ssn-instagram-auth-success"`, `login: "facebook"`, `accessToken`, `apiVersion`, and the Facebook `user` identity. The user token supports account discovery and manual Instagram account lookup. Keep it in memory and remove the callback fragment after consuming it. Errors use `instagram_auth_error` with `type: "ssn-instagram-auth-error"` and `message`.
+
+Register this additional redirect URI in the same Meta app before using Instagram sign-in:
+
+```text
+https://sso.socialstream.ninja/auth/instagram/callback
+```
+
+## Provider Redirect URIs
+
 Register this redirect URI in the Twitch developer console:
 
 ```text
@@ -72,6 +89,7 @@ https://sso.socialstream.ninja/auth/velora
 https://sso.socialstream.ninja/auth/twitch
 https://sso.socialstream.ninja/youtube
 https://sso.socialstream.ninja/auth/facebook
+https://sso.socialstream.ninja/auth/instagram
 ```
 
 ## Local Setup

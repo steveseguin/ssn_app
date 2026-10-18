@@ -23,6 +23,7 @@ const {
 } = require('./tiktok/connection-manager');
 const {
     LOCAL_STORAGE_SETTING_KEYS,
+    buildSettingsBackupPayload,
     readSettingsBackupFile,
     writeSettingsBackupFile
 } = require('./settings-backup');
@@ -196,6 +197,7 @@ const {
 const { setupYouTubeOAuthHandler, clearYouTubeOwnerAuthStore } = require('./resources/electron-youtube-handler');
 const { setupTwitchOAuthHandler } = require('./resources/electron-twitch-handler');
 const { setupFacebookOAuthHandler } = require('./resources/electron-facebook-handler');
+const { setupInstagramOAuthHandler } = require('./resources/electron-instagram-handler');
 const { setupVeloraOAuthHandler } = require('./resources/electron-velora-handler');
 const { setupKickOAuthHandler } = require('./resources/electron-kick-handler');
 const { setupExternalBrowserSigninHandler } = require('./resources/electron-rumble-handler');
@@ -1032,8 +1034,9 @@ async function flushPendingStorageSaveForSettingsBackup() {
     }
 }
 
-async function collectMainWindowSettingsLocalStorage() {
+async function collectMainWindowSettingsLocalStorage(strict = false) {
     if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents) {
+        if (strict) throw new Error('Main window is unavailable.');
         return {};
     }
 
@@ -1044,7 +1047,7 @@ async function collectMainWindowSettingsLocalStorage() {
         `  try {\n` +
         `    const value = localStorage.getItem(key);\n` +
         `    if (value !== null) out[key] = value;\n` +
-        `  } catch (e) {}\n` +
+        `  } catch (e) {${strict ? 'throw e;' : ''}}\n` +
         `});\n` +
         `return out;\n` +
         `})();`;
@@ -1053,6 +1056,7 @@ async function collectMainWindowSettingsLocalStorage() {
         const result = await mainWindow.webContents.executeJavaScript(script, true);
         return result && typeof result === 'object' ? result : {};
     } catch (error) {
+        if (strict) throw error;
         console.warn('[SettingsBackup] Failed to read app localStorage settings:', error?.message || error);
         return {};
     }
@@ -2030,6 +2034,7 @@ configureSpotifyOAuthHandlers();
 setupYouTubeOAuthHandler();
 setupTwitchOAuthHandler();
 setupFacebookOAuthHandler();
+setupInstagramOAuthHandler();
 setupVeloraOAuthHandler();
 setupKickOAuthHandler();
 setupExternalBrowserSigninHandler({
@@ -2193,6 +2198,7 @@ const legacyRemoteControlToken = (() => {
 const remoteControlFileSelections = [];
 let llmControlCommandHandler = null;
 let controlApiRouter = null;
+let settingsExportService = null; // Created only by an explicit automation export request.
 
 function findSourceObservationView(sourceId, tabId) {
     if (Number.isFinite(Number(tabId))) {
@@ -2540,6 +2546,19 @@ function setupRemoteControlServer() {
     const executeControlCommand = async (command) => {
         const action = command && typeof command.action === 'string' ? command.action : '';
         const value = command && command.value && typeof command.value === 'object' ? command.value : {};
+        if (['exportSettingsBackup', 'readSettingsExport', 'releaseSettingsExport'].includes(action)) {
+            if (!settingsExportService) {
+                if (action !== 'exportSettingsBackup') return { ok: false, error: { code: 'EXPORT_NOT_FOUND', message: 'No automation export is available.' } };
+                const { SettingsExportService } = require('./resources/settings-export-service');
+                settingsExportService = new SettingsExportService(async () => {
+                    await flushPendingStorageSaveForSettingsBackup();
+                    await recoverCachedStateIfNeeded('settings-export');
+                    const localStorageData = await collectMainWindowSettingsLocalStorage(true);
+                    return { payload: buildSettingsBackupPayload(cachedState, localStorageData), fileName: getDefaultSettingsBackupFileName() };
+                });
+            }
+            return settingsExportService.execute(action, value);
+        }
         if (appDialogService && appDialogService.handles(action)) {
             return appDialogService.execute(action, value);
         }
@@ -17119,6 +17138,7 @@ app.on("before-quit", (event) => {
     if (controlApiRouter) {
         controlApiRouter.close();
     }
+    if (settingsExportService) settingsExportService.close();
     if (sourceObservationService) {
         sourceObservationService.close();
     }

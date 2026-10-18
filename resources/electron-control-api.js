@@ -2,16 +2,17 @@
 
 const crypto = require('crypto');
 const { BROWSER_COMMANDS } = require('./browser-control-service');
+const { EXPORT_COMMANDS } = require('./settings-export-service');
 
-const CONTROL_API_VERSION = '1.4.1';
+const CONTROL_API_VERSION = '1.5.0';
 const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_OPERATIONS = 200;
 const MAX_EVENTS = 500;
 
 const COMMAND_DEFINITIONS = Object.freeze({
-	...Object.fromEntries(Object.entries(BROWSER_COMMANDS).map(([action, command]) => [action, {
-		...definition(command.description, command.readOnly ? 'read-only' : 'mutating', {}, !command.readOnly, '0.4.38'),
+	...Object.fromEntries(Object.entries({ ...BROWSER_COMMANDS, ...EXPORT_COMMANDS }).map(([action, command]) => [action, {
+		...definition(command.description, command.readOnly ? 'read-only' : 'mutating', {}, !command.readOnly, EXPORT_COMMANDS[action] ? '0.4.39' : '0.4.38'),
 		inputSchema: command.schema,
 	}])),
 	getCapabilities: definition('Discover commands, schemas, settings, and version compatibility.', 'read-only', {}),

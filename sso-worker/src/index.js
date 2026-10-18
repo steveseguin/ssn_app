@@ -44,6 +44,13 @@ const DEFAULT_FACEBOOK_SCOPES = [
   "pages_read_engagement",
   "pages_read_user_content",
 ].join(" ");
+const INSTAGRAM_FACEBOOK_SCOPES = [
+  "pages_show_list",
+  "pages_read_engagement",
+  "instagram_basic",
+  "instagram_manage_comments",
+  "business_management",
+].join(" ");
 const VELORA_AUTH_RESULT_KEY = "velora_auth_result";
 const VELORA_AUTH_ERROR_KEY = "velora_auth_error";
 const VELORA_AUTH_MESSAGE_SUCCESS = "ssn-velora-auth-success";
@@ -67,6 +74,11 @@ const FACEBOOK_AUTH_ERROR_KEY = "facebook_auth_error";
 const FACEBOOK_AUTH_MESSAGE_SUCCESS = "ssn-facebook-auth-success";
 const FACEBOOK_AUTH_MESSAGE_ERROR = "ssn-facebook-auth-error";
 const FACEBOOK_OAUTH_COOKIE = "__ssn_facebook_oauth";
+const INSTAGRAM_AUTH_RESULT_KEY = "instagram_auth_result";
+const INSTAGRAM_AUTH_ERROR_KEY = "instagram_auth_error";
+const INSTAGRAM_AUTH_MESSAGE_SUCCESS = "ssn-instagram-auth-success";
+const INSTAGRAM_AUTH_MESSAGE_ERROR = "ssn-instagram-auth-error";
+const INSTAGRAM_OAUTH_COOKIE = "__ssn_instagram_oauth";
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -98,7 +110,7 @@ async function handleRequest(request, env) {
     return jsonResponse(request, env, {
       ok: true,
       service: "socialstream-sso",
-      providers: ["velora", "twitch", "youtube", "facebook"],
+      providers: ["velora", "twitch", "youtube", "facebook", "instagram"],
     });
   }
 
@@ -176,6 +188,14 @@ async function handleRequest(request, env) {
 
   if (request.method === "GET" && path === "/auth/facebook/data-deletion/status") {
     return handleFacebookDataDeletionStatus(request);
+  }
+
+  if (request.method === "GET" && isRoute(path, "instagram", "start")) {
+    return startInstagramAuth(request, env);
+  }
+
+  if (request.method === "GET" && isRoute(path, "instagram", "callback")) {
+    return handleInstagramCallback(request, env);
   }
 
   return jsonResponse(request, env, { error: "Not found" }, 404);
@@ -833,6 +853,98 @@ async function postYouTubeTokenRequest(env, body) {
   return data;
 }
 
+// Instagram uses Facebook Login with its own scopes, return paths and session cookie.
+async function startInstagramAuth(request, env) {
+  const url = new URL(request.url);
+  const returnTo = validateReturnTo(url.searchParams.get("return_to"), env, "instagram");
+  const base = env.SSO_ORIGIN || url.origin;
+  const redirectUri = new URL("/auth/instagram/callback", base).toString();
+  const nonce = randomBase64Url(16);
+  const cookieValue = await encryptState(
+    {
+      provider: "instagram",
+      returnTo: returnTo.toString(),
+      redirectUri,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      nonce,
+    },
+    env
+  );
+
+  const authUrl = new URL(getFacebookAuthUrl(env));
+  authUrl.searchParams.set("client_id", getFacebookClientId(env));
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("scope", INSTAGRAM_FACEBOOK_SCOPES);
+  authUrl.searchParams.set("state", nonce);
+  authUrl.searchParams.set("auth_type", "rerequest");
+
+  return redirectResponse(authUrl, {
+    "Set-Cookie": buildOAuthCookie(cookieValue, "instagram"),
+  });
+}
+
+async function handleInstagramCallback(request, env) {
+  const url = new URL(request.url);
+  const stateParam = url.searchParams.get("state");
+  if (!stateParam) {
+    throw new HttpError(400, "Missing OAuth state.");
+  }
+
+  const cookieValue = getCookie(request, INSTAGRAM_OAUTH_COOKIE);
+  if (!cookieValue) {
+    throw new HttpError(400, "Missing OAuth session cookie.");
+  }
+
+  const state = await tryDecryptState(cookieValue, env);
+  if (!state || state.provider !== "instagram") {
+    throw new HttpError(400, "Invalid OAuth state.");
+  }
+  if (state.nonce !== stateParam) {
+    throw new HttpError(400, "OAuth state mismatch.");
+  }
+  if (!Number.isFinite(state.expiresAt) || Date.now() > state.expiresAt) {
+    throw new HttpError(400, "Expired OAuth state.");
+  }
+
+  const returnTo = validateReturnTo(state.returnTo, env, "instagram");
+  const errorResponse = (message) => redirectWithPayload(returnTo, INSTAGRAM_AUTH_ERROR_KEY, {
+    type: INSTAGRAM_AUTH_MESSAGE_ERROR,
+    message,
+  }, clearOAuthCookieHeaders("instagram"));
+
+  if (url.searchParams.get("error")) {
+    return errorResponse(url.searchParams.get("error_description") || url.searchParams.get("error"));
+  }
+  const code = url.searchParams.get("code");
+  if (!code) {
+    return errorResponse("Facebook did not return an authorization code.");
+  }
+
+  try {
+    const shortLivedToken = await exchangeFacebookCode(env, code, state.redirectUri);
+    const accessToken = await exchangeFacebookLongLivedToken(env, shortLivedToken);
+    const userUrl = new URL(`${getFacebookGraphBase(env)}/me`);
+    userUrl.searchParams.set("fields", "id,name");
+    userUrl.searchParams.set("access_token", accessToken);
+    const user = await fetchFacebookJson(userUrl, "Instagram sign-in user lookup failed");
+
+    return redirectWithPayload(returnTo, INSTAGRAM_AUTH_RESULT_KEY, {
+      type: INSTAGRAM_AUTH_MESSAGE_SUCCESS,
+      login: "facebook",
+      accessToken,
+      apiVersion: getFacebookApiVersion(env),
+      user: {
+        id: stringValue(user.id),
+        name: stringValue(user.name),
+      },
+    }, clearOAuthCookieHeaders("instagram"));
+  } catch (error) {
+    return errorResponse(`Instagram sign-in failed: ${error.message || "Unknown error"}`);
+  }
+}
+
 async function startFacebookAuth(request, env) {
   const url = new URL(request.url);
   const returnTo = validateReturnTo(url.searchParams.get("return_to"), env, "facebook");
@@ -1159,6 +1271,14 @@ function validateReturnTo(value, env, provider = "velora") {
 }
 
 function getAllowedReturnPaths(provider) {
+  if (provider === "instagram") {
+    return [
+      "/sources/websocket/instagram.html",
+      "/sources/websocket/instagram",
+      "/beta/sources/websocket/instagram.html",
+      "/beta/sources/websocket/instagram",
+    ];
+  }
   if (provider === "twitch") {
     return [
       "/sources/websocket/twitch.html",
@@ -1374,6 +1494,9 @@ function clearOAuthCookieHeaders(provider = "velora") {
 }
 
 function getOAuthCookieName(provider) {
+  if (provider === "instagram") {
+    return INSTAGRAM_OAUTH_COOKIE;
+  }
   if (provider === "twitch") {
     return TWITCH_OAUTH_COOKIE;
   }
@@ -1387,6 +1510,9 @@ function getOAuthCookieName(provider) {
 }
 
 function getOAuthCallbackPath(provider) {
+  if (provider === "instagram") {
+    return "/auth/instagram/callback";
+  }
   if (provider === "twitch") {
     return "/auth/twitch/callback";
   }
