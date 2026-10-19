@@ -23,6 +23,16 @@
 		throw error;
 	}
 
+	function escapeHtml(value) {
+		return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+			'&': '&amp;',
+			'<': '&lt;',
+			'>': '&gt;',
+			'"': '&quot;',
+			"'": '&#39;',
+		}[char]));
+	}
+
 	function setStatus(message = '', type = '') {
 		const status = element('discordSetupStatus');
 		if (!status) return;
@@ -286,7 +296,7 @@
 				activeConnectionMode: null,
 			});
 			closeModal();
-			Toast.success('Discord source updated', `${sourceData.username} is ready.`);
+			Toast.success('Discord source updated', `${escapeHtml(sourceData.username)} is ready.`);
 			if (wasActive) {
 				const entry = document.querySelector(`[data-source-id="${existing.id}"]`);
 				const button = entry?.querySelector('[data-activatehtml]');
@@ -312,7 +322,7 @@
 		});
 		closeModal();
 		if (typeof manageWelcomePage === 'function') manageWelcomePage();
-		Toast.success('Discord source added', `${sourceData.username} is ready. Activate it to connect.`);
+		Toast.success('Discord source added', `${escapeHtml(sourceData.username)} is ready. Activate it to connect.`);
 		return sourceId;
 	}
 
