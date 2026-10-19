@@ -1003,7 +1003,7 @@ class YouTubeStatusManager {
                     for (const stream of liveStreams) {
                         // Ensure stream.status is valid before checking
                         if (stream.status === 'live' && !stateManager.isVideoIdAdded(stream.videoId)) {
-                            Toast.info("YouTube Sync", `Auto-adding new live stream "${stream.title}" for ${username}`);
+                            Toast.info("YouTube Sync", `Auto-adding new live stream "${escapeYouTubeHtml(stream.title)}" for ${username}`);
                             const isStreamShort = typeof stream.isShort === 'boolean' ? stream.isShort : isDefaultShorts;
                             const newEntryElement = await createYouTubeEntry(stream, username, isStreamShort); 
                             if (newEntryElement) {
