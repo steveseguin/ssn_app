@@ -44,7 +44,7 @@ async function run() {
 			? await main.evaluate(() => window.ssappFallback.readFile('sources/youtube.js', { branch: 'main' }))
 			: fs.readFileSync(path.join(source, 'sources/youtube.js'), 'utf8');
 		assert.ok(sourceScript, 'capture script available through the runtime');
-		await app.evaluate(async ({ session }, script) => {
+		await app.evaluate(async ({ app, session }, script) => {
 			global.__mirrorTest = { script, phase: '', requests: [] };
 			await session.defaultSession.protocol.handle('https', request => {
 				const url = new URL(request.url);
@@ -61,6 +61,12 @@ async function run() {
 				}
 				return new Response('', { status: 503 });
 			});
+			// Initialize the fixture's response and network machinery before measuring
+			// production mirror timeouts; cold Rosetta setup can exceed that budget.
+			const requireFromApp = process.getBuiltinModule('module').createRequire(app.getAppPath() + '/package.json');
+			global.__mirrorTest.phase = 'cache';
+			const probe = await requireFromApp('electron-fetch').default('https://cache.socialstream.ninja/main/sources/youtube.js');
+			if (!probe.ok || await probe.text() !== script) throw new Error('Mirror fixture transport did not initialize');
 		}, sourceScript);
 		for (const phase of ['cache', 'bad-cache', 'raw', 'disk', 'timeout', 'corrupt-disk']) {
 			if (phase === 'corrupt-disk') {
@@ -76,8 +82,9 @@ async function run() {
 			}), { url: fixture, phase });
 			const page = await pending;
 			await page.waitForLoadState('load');
-			// Includes the full remote timeout budget plus source observer initialization.
-			await delay(8500);
+			// Do not submit fixture input while source initialization still treats it
+			// as history. This also allows the deliberately stalled mirror to expire.
+			await page.waitForFunction(() => !!document.getElementById('items')?.skip, null, { timeout: 45000 });
 			for (let repeat = 0; repeat < 2; repeat++) {
 				await page.evaluate(({ phase, id }) => {
 					window.__hiddenCaptureFixture.appendRows([id]);
@@ -87,6 +94,8 @@ async function run() {
 				}, { phase, id: Date.now() });
 				await delay(1200);
 			}
+			await background.waitForFunction(phase => window.__mirrorCaptures.filter(d => d.chatmessage.startsWith(phase + ' ')).length >= 2,
+				phase, { timeout: 30000 });
 			const captures = await background.evaluate(phase => window.__mirrorCaptures.filter(d => d.chatmessage.startsWith(phase + ' ')), phase);
 			const requests = await app.evaluate(() => global.__mirrorTest.requests);
 			const expected = ['cache.socialstream.ninja', ...(phase === 'cache' ? [] : ['socialstream.ninja']), ...(['raw', 'disk', 'timeout', 'corrupt-disk'].includes(phase) ? ['raw.githubusercontent.com'] : [])];
