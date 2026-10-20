@@ -274,6 +274,9 @@ async function run() {
 					const collapsible = target?.closest('.collapsible');
 					const input = collapsible?.querySelector(':scope > input.collapsible-input');
 					if (!target || !input) return false;
+					// Settings now live in collapsible feature tabs. Open the target's
+					// category before measuring its translated layout.
+					doc.defaultView.revealPopupFeature(target);
 					input.checked = true;
 					input.dispatchEvent(new Event('change', { bubbles: true }));
 					target.scrollIntoView({ block: 'center', inline: 'nearest' });
