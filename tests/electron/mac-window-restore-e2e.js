@@ -14,7 +14,8 @@ async function run() {
 		return;
 	}
 	const root = path.resolve(__dirname, '../..');
-	const executable = require('electron');
+	const packaged = process.env.SSAPP_TEST_APP;
+	const executable = packaged || require('electron');
 	const existing = execFileSync('ps', ['-axo', 'pid=,comm='], { encoding: 'utf8' })
 		.split('\n').filter(line => line.trim().endsWith(executable));
 	assert.equal(existing.length, 0, 'Run alone so native Apple events target this test app');
@@ -25,9 +26,10 @@ async function run() {
 	console.log('Evidence: ' + output);
 	for (const headless of [false, true]) {
 		const launchOptions = { executablePath: executable, cwd: root,
-			args: ['.', '--running-from-source', '--multiinstance', '--filesource=' + base,
+			args: [...(packaged ? [] : ['.', '--running-from-source', '--filesource=' + base]), '--multiinstance',
 				...(headless ? ['--ssapp-headless-control'] : [])],
-			env: { ...process.env, SSAPP_USER_DATA_DIR: path.join(output, headless ? 'headless' : 'desktop') }, timeout: 60000 };
+			env: { ...process.env, SSAPP_USER_DATA_DIR: path.join(output, headless ? 'headless' : 'desktop'),
+				...(packaged ? { SSAPP_PREFER_LOCAL_ASSETS: '1' } : {}) }, timeout: 60000 };
 		const app = await _electron.launch(launchOptions);
 		const child = app.process();
 		const log = fs.createWriteStream(path.join(output, headless ? 'headless.log' : 'desktop.log'));
