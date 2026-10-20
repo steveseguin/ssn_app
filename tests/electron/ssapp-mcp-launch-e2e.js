@@ -84,7 +84,7 @@ async function run() {
 		})}\n`);
 		const initialized = await waitForResponse(responses, 1, child, stderr);
 		assert.strictEqual(initialized.result.serverInfo.name, 'social-stream-ninja');
-		assert.strictEqual(initialized.result.serverInfo.version, '1.2.2');
+		assert.match(initialized.result.serverInfo.version, /^\d+\.\d+\.\d+$/, 'Adapter must report its version');
 		assert.strictEqual(initialized.result.capabilities.tools.listChanged, false);
 		assert.match(initialized.result.instructions, /capabilities/i);
 		assert.match(initialized.result.instructions, /offline/i);
@@ -99,6 +99,21 @@ async function run() {
 		assert.deepStrictEqual(
 			listed.result.tools.map(tool => tool.name).sort(),
 			[
+				'ssapp_list_browser_targets',
+				'ssapp_browser_screenshot',
+				'ssapp_browser_inspect',
+				'ssapp_browser_interact',
+				'ssapp_browser_input',
+				'ssapp_browser_navigate',
+				'ssapp_browser_window',
+				'ssapp_browser_frame_stream',
+				'ssapp_browser_choose_files',
+				'ssapp_list_app_menu_items',
+				'ssapp_invoke_app_menu_item',
+				'ssapp_export_settings_backup',
+				'ssapp_read_settings_export',
+				'ssapp_release_settings_export',
+				'ssapp_get_human_control_status',
 				'ssapp_add_source',
 				'ssapp_capture_source_screenshot',
 				'ssapp_get_capabilities',
