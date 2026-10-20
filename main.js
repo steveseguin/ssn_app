@@ -2271,6 +2271,8 @@ const browserControlService = controlApiEnabled ? new BrowserControlService({
     getMainWindow: () => mainWindow,
     getMenu: () => Menu.getApplicationMenu(),
     isHeadless: () => headlessControlEnabled,
+    // The private human viewer keeps a hidden target rendering while it is parked off-screen.
+    parkOffscreen: window => parkSourceWindowOffscreen(window),
     armDialogs: () => { if (appDialogService) appDialogService.arm(); }
 }) : null;
 
@@ -2543,7 +2545,7 @@ function setupRemoteControlServer() {
         return;
     }
 
-    const executeControlCommand = async (command) => {
+    const executeControlCommand = async (command, humanGuard) => {
         const action = command && typeof command.action === 'string' ? command.action : '';
         const value = command && command.value && typeof command.value === 'object' ? command.value : {};
         if (['exportSettingsBackup', 'readSettingsExport', 'releaseSettingsExport'].includes(action)) {
@@ -2563,7 +2565,7 @@ function setupRemoteControlServer() {
             return appDialogService.execute(action, value);
         }
         if (browserControlService && browserControlService.handles(action)) {
-            return browserControlService.execute(action, value);
+            return browserControlService.execute(action, value, humanGuard);
         }
         if (appWindowControlService && appWindowControlService.handles(action)) {
             if (appDialogService && action === 'interactAppWindow') appDialogService.arm();
@@ -2615,6 +2617,8 @@ function setupRemoteControlServer() {
     controlApiRouter = createControlApiRouter({
         getSsappVersion: () => app.getVersion(),
         handleBrowserStream: (req, res, url) => browserControlService ? browserControlService.stream(req, res, url) : false,
+        stopBrowserStreams: () => { if (browserControlService) browserControlService.stopStreams(); },
+        prepareHumanTarget: targetId => { if (browserControlService) browserControlService.prepareHumanTarget(targetId); },
         executeCommand: executeControlCommand,
         getStatus: async () => {
             const sources = await executeControlCommand({ action: 'getSources' });

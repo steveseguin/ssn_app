@@ -3,16 +3,17 @@
 const crypto = require('crypto');
 const { BROWSER_COMMANDS } = require('./browser-control-service');
 const { EXPORT_COMMANDS } = require('./settings-export-service');
+const { HumanControlService, HUMAN_COMMANDS, HUMAN_CONTROL_CAPABILITY } = require('./human-control-service');
 
-const CONTROL_API_VERSION = '1.5.0';
+const CONTROL_API_VERSION = '1.6.0';
 const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_OPERATIONS = 200;
 const MAX_EVENTS = 500;
 
 const COMMAND_DEFINITIONS = Object.freeze({
-	...Object.fromEntries(Object.entries({ ...BROWSER_COMMANDS, ...EXPORT_COMMANDS }).map(([action, command]) => [action, {
-		...definition(command.description, command.readOnly ? 'read-only' : 'mutating', {}, !command.readOnly, EXPORT_COMMANDS[action] ? '0.4.39' : '0.4.38'),
+	...Object.fromEntries(Object.entries({ ...BROWSER_COMMANDS, ...EXPORT_COMMANDS, ...HUMAN_COMMANDS }).map(([action, command]) => [action, {
+		...definition(command.description, command.readOnly ? 'read-only' : 'mutating', {}, !command.readOnly, HUMAN_COMMANDS[action] ? '0.4.40' : EXPORT_COMMANDS[action] ? '0.4.39' : '0.4.38'),
 		inputSchema: command.schema,
 	}])),
 	getCapabilities: definition('Discover commands, schemas, settings, and version compatibility.', 'read-only', {}),
@@ -68,7 +69,7 @@ function definition(description, risk, properties, confirmationRequired = false,
 
 function readBodyLimited(req, maxBytes = MAX_BODY_BYTES) {
 	return new Promise((resolve, reject) => {
-		let body = '';
+		const chunks = [];
 		let bytes = 0;
 		let tooLarge = false;
 		req.on('data', chunk => {
@@ -78,7 +79,7 @@ function readBodyLimited(req, maxBytes = MAX_BODY_BYTES) {
 				tooLarge = true;
 				return;
 			}
-			body += chunk;
+			chunks.push(chunk);
 		});
 		req.on('end', () => {
 			if (tooLarge) {
@@ -87,7 +88,8 @@ function readBodyLimited(req, maxBytes = MAX_BODY_BYTES) {
 				reject(error);
 				return;
 			}
-			resolve(body);
+			// A UTF-8 character can straddle HTTP chunks, including private input.
+			resolve(Buffer.concat(chunks).toString('utf8'));
 		});
 		req.on('error', reject);
 	});
@@ -117,6 +119,31 @@ function createControlApiRouter(options = {}) {
 	const eventClients = new Set();
 	const events = [];
 	let eventId = 0;
+	let automationGeneration = 0;
+	const automationPending = new Set();
+	const pausedResult = () => ({ ok: false, error: { code: 'HUMAN_CONTROL_ACTIVE', message: 'Automation is paused for private human input. Wait for the person to return control.' } });
+	const human = new HumanControlService({
+		instanceId, executeCommand,
+		available: () => !!options.handleBrowserStream,
+		automationPending: () => automationPending.size,
+		stream: options.handleBrowserStream,
+		prepareTarget: targetId => { if (options.prepareHumanTarget) options.prepareHumanTarget(targetId); },
+		stopStreams: () => { if (options.stopBrowserStreams) options.stopBrowserStreams(); },
+		pause: () => {
+			automationGeneration++;
+			for (const client of eventClients) client.end();
+			eventClients.clear();
+			if (options.stopBrowserStreams) options.stopBrowserStreams();
+		},
+		resume: () => { automationGeneration++; },
+	});
+
+	async function runAutomation(task) {
+		if (human.paused) return pausedResult();
+		const pending = Promise.resolve().then(task);
+		automationPending.add(pending);
+		try { return await pending; } finally { automationPending.delete(pending); }
+	}
 
 	function sendJson(res, statusCode, payload, requestId) {
 		const response = {
@@ -137,6 +164,9 @@ function createControlApiRouter(options = {}) {
 	}
 
 	function publish(type, data = {}) {
+		// Dialogs can contain private sign-in text. Do not retain or broadcast them
+		// through the automation event channel during a human session.
+		if (human.paused) return null;
 		const event = { id: ++eventId, type, at: new Date().toISOString(), data };
 		events.push(event);
 		if (events.length > MAX_EVENTS) events.shift();
@@ -194,6 +224,8 @@ function createControlApiRouter(options = {}) {
 	}
 
 	async function invoke(command) {
+		if (command.action === 'getHumanControlStatus') return { ok: true, payload: human.status() };
+		if (human.paused) return pausedResult();
 		const definition = COMMAND_DEFINITIONS[command.action];
 		if (!definition) return { ok: false, error: { code: 'UNSUPPORTED_ACTION', message: 'Unsupported control action.' } };
 		if (definition.confirmationRequired && (!command.value || command.value.confirm !== true)) {
@@ -207,7 +239,10 @@ function createControlApiRouter(options = {}) {
 		}
 		if (command.action === 'reloadApp' || command.action === 'shutdownApp') {
 			const result = { ok: true, payload: { accepted: true, action: command.action } };
-			setTimeout(() => command.action === 'reloadApp' ? reloadApp() : shutdownApp(), 100);
+			void runAutomation(async () => {
+				await new Promise(resolve => setTimeout(resolve, 100));
+				if (!human.paused) command.action === 'reloadApp' ? reloadApp() : shutdownApp();
+			});
 			return result;
 		}
 
@@ -221,7 +256,7 @@ function createControlApiRouter(options = {}) {
 			storeOperation(operation);
 			publish('operation.started', operation);
 		}
-		const result = await withTimeout(executeCommand(command));
+		const result = await withTimeout(runAutomation(() => executeCommand(command)));
 		if (operation) {
 			operation.status = result && result.ok ? 'completed' : 'failed';
 			operation.finishedAt = new Date().toISOString();
@@ -240,6 +275,11 @@ function createControlApiRouter(options = {}) {
 		const pathname = parsedUrl.pathname;
 		if (!pathname.startsWith('/api/v1/')) return false;
 		const requestId = crypto.randomUUID();
+		const generation = automationGeneration;
+		const reply = (status, payload) => {
+			if (generation !== automationGeneration || human.paused) sendJson(res, 409, pausedResult(), requestId);
+			else sendJson(res, status, payload, requestId);
+		};
 		// Remote bridges can bind their local adapter to this app instance. Existing
 		// local clients omit the header and keep their ordinary behavior.
 		const expectedInstance = req.headers['x-ssapp-instance-id'];
@@ -248,21 +288,32 @@ function createControlApiRouter(options = {}) {
 			return true;
 		}
 		if (pathname === '/api/v1/instance' && req.method === 'GET') {
-			sendJson(res, 200, { ok: true }, requestId);
+			sendJson(res, 200, { ok: true, humanControl: human.status() }, requestId);
+			return true;
+		}
+		if (await human.handle(req, res, parsedUrl, (status, payload) => sendJson(res, status, payload, requestId), readBodyLimited)) return true;
+		// The status command remains available to MCP while all page observations,
+		// mutations, event streams, and cached operation results are paused.
+		if (human.paused && !(pathname === '/api/v1/command' && req.method === 'POST')) {
+			sendJson(res, 409, pausedResult(), requestId);
 			return true;
 		}
 		if (options.handleBrowserStream && await options.handleBrowserStream(req, res, parsedUrl)) return true;
+		if (generation !== automationGeneration || human.paused) {
+			// POST commands below still allow the non-sensitive human status query.
+			if (!(pathname === '/api/v1/command' && req.method === 'POST')) { reply(409, pausedResult()); return true; }
+		}
 		if (pathname === '/api/v1/events' && req.method === 'GET') {
 			openEventStream(req, res);
 			return true;
 		}
 		if (pathname === '/api/v1/capabilities' && req.method === 'GET') {
-			const renderer = await withTimeout(executeCommand({ action: 'getCapabilities' }));
+			const renderer = await withTimeout(runAutomation(() => executeCommand({ action: 'getCapabilities' })));
 			if (!renderer || !renderer.ok) {
-				sendJson(res, 503, renderer || { ok: false, error: { code: 'SSAPP_UNAVAILABLE', message: 'SSApp controller is unavailable.' } }, requestId);
+				reply(503, renderer || { ok: false, error: { code: 'SSAPP_UNAVAILABLE', message: 'SSApp controller is unavailable.' } });
 				return true;
 			}
-			sendJson(res, 200, {
+			reply(200, {
 				ok: true,
 				payload: {
 					...renderer.payload,
@@ -270,19 +321,20 @@ function createControlApiRouter(options = {}) {
 					ssappVersion: getSsappVersion(),
 					commands: COMMAND_DEFINITIONS,
 					events: { available: true, endpoint: '/api/v1/events' },
+					humanControl: HUMAN_CONTROL_CAPABILITY,
 				},
-			}, requestId);
+			});
 			return true;
 		}
 		if (pathname === '/api/v1/status' && req.method === 'GET') {
-			const status = await getStatus();
-			sendJson(res, status && status.ok ? 200 : 503, status, requestId);
+			const status = await runAutomation(getStatus);
+			reply(status && status.ok ? 200 : 503, status);
 			return true;
 		}
 		if (pathname.startsWith('/api/v1/operations/') && req.method === 'GET') {
 			const operationId = decodeURIComponent(pathname.slice('/api/v1/operations/'.length));
 			const result = await invoke({ action: 'getOperation', value: { operationId } });
-			sendJson(res, result.ok ? 200 : 404, result, requestId);
+			reply(result.ok ? 200 : 404, result);
 			return true;
 		}
 		if (pathname === '/api/v1/command' && req.method === 'POST') {
@@ -294,8 +346,13 @@ function createControlApiRouter(options = {}) {
 				sendJson(res, statusForError(normalized.error), normalized, requestId);
 				return true;
 			}
+			if (command?.action === 'getHumanControlStatus') {
+				sendJson(res, 200, { ok: true, payload: human.status() }, requestId);
+				return true;
+			}
+			if (generation !== automationGeneration || human.paused) { reply(409, pausedResult()); return true; }
 			const result = await invoke(command || {});
-			sendJson(res, result && result.ok ? 200 : statusForError(result && result.error), result, requestId);
+			reply(result && result.ok ? 200 : statusForError(result && result.error), result);
 			return true;
 		}
 		sendJson(res, 405, { ok: false, error: { code: 'METHOD_NOT_ALLOWED', message: 'Unsupported API path or method.' } }, requestId);
@@ -303,6 +360,7 @@ function createControlApiRouter(options = {}) {
 	}
 
 	function close() {
+		human.close();
 		for (const client of eventClients) {
 			try { client.end(); } catch (_) { }
 		}

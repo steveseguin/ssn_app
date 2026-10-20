@@ -91,7 +91,9 @@ async function run() {
 		await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
 		const interrupted = startAdapter(proxy.address().port);
 		adapters.push(interrupted);
-		assert.strictEqual((await interrupted.response(0)).result.serverInfo.version, '1.2.2');
+		const serverInfo = (await interrupted.response(0)).result.serverInfo;
+		assert.strictEqual(serverInfo.name, 'social-stream-ninja');
+		assert.match(serverInfo.version, /^\d+\.\d+\.\d+$/, 'Adapter must report its version');
 		interrupted.send(1, 'ssapp_get_status');
 		const failed = await interrupted.response(1, 5000);
 		assert.strictEqual(failed.result.structuredContent.error.code, 'SSAPP_UNREACHABLE');

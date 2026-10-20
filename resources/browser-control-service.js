@@ -227,13 +227,13 @@ class BrowserControlService {
 		const screenshotId = crypto.randomUUID();
 		const payload = result.payload;
 		delete payload.sourceId;
-		Object.assign(payload, { targetId: value.targetId, screenshotId, viewport, coordinateSpace: 'image-pixels', inputScale: { x: viewport.width / payload.width, y: viewport.height / payload.height } });
+		Object.assign(payload, { targetId: value.targetId, screenshotId, viewport, coordinateSpace: 'image-pixels', inputScale: { x: viewport.width / payload.width, y: viewport.height / payload.height }, page: { redactedUrl: redactUrl(wc.getURL()), title: wc.getTitle().slice(0, 500) } });
 		this.screenshots.set(screenshotId, { targetId: value.targetId, generation, viewport, width: payload.width, height: payload.height, expires: Date.now() + 120000 });
 		while (this.screenshots.size > 64) this.screenshots.delete(this.screenshots.keys().next().value);
 		return result;
 	}
 
-	async input(target, value) {
+	async input(target, value, guard) {
 		const wc = target.webContents;
 		const deadline = Date.now() + 20000;
 		// A hidden page restored from history may have no new compositor frame yet.
@@ -282,6 +282,7 @@ class BrowserControlService {
 			}
 		}
 		if (duration > 10000) fail('INVALID_ARGUMENT', 'A batch may contain at most 10 seconds of delays.');
+		if (guard) guard();
 		wc.focus();
 		const owned = !wc.debugger.isAttached();
 		if (owned) wc.debugger.attach('1.3');
@@ -289,8 +290,14 @@ class BrowserControlService {
 		this.menuInputTargets.add(target);
 		let buttons = 0, lastPosition = { x: 0, y: 0 }, touches = false, completed = 0;
 		const held = new Map();
-		let inputMethod = null;
-		const send = async (method, params) => {
+		let inputMethod = null, releasing = false;
+		const send = async (method, params, cleanup = false) => {
+			// A revocation must still let already-held inputs up, including a
+			// release in the middle of a click/chord before the outer finally.
+			const release = (method === 'Input.dispatchKeyEvent' && params.type === 'keyUp') ||
+				(method === 'Input.dispatchMouseEvent' && params.type === 'mouseReleased') ||
+				(method === 'Input.dispatchTouchEvent' && ['touchEnd', 'touchCancel'].includes(params.type));
+			if (guard && !releasing && !cleanup && !release) guard();
 			inputMethod = method;
 			let timer;
 			try {
@@ -314,6 +321,7 @@ class BrowserControlService {
 		};
 		try {
 			for (const action of value.actions) {
+				if (guard) guard();
 				if (Date.now() >= deadline) fail('BROWSER_INPUT_TIMEOUT', 'Input batch exceeded 20 seconds. Inspect the page before continuing.');
 				if (generation !== state.generation || wc.isDestroyed()) fail('BROWSER_TARGET_CHANGED', 'Navigation interrupted the input batch. Inspect the page before continuing.');
 				const button = action.button || 'left';
@@ -366,8 +374,8 @@ class BrowserControlService {
 						buttons &= ~BUTTONS[button]; await mouse('mouseReleased', end, button, action.modifiers, 1);
 					} finally {
 						wc.debugger.removeListener('message', onDrag);
-						if (dragData && !dropped) { try { await send('Input.cancelDragging', {}); } catch (_) {} }
-						try { await send('Input.setInterceptDrags', { enabled: false }); } catch (_) {}
+						if (dragData && !dropped) { try { await send('Input.cancelDragging', {}, true); } catch (_) {} }
+						try { await send('Input.setInterceptDrags', { enabled: false }, true); } catch (_) {}
 					}
 				} else if (action.action.startsWith('touch')) {
 					touches = !['touchEnd', 'touchCancel'].includes(action.action);
@@ -380,6 +388,7 @@ class BrowserControlService {
 		} catch (error) {
 			return { ok: false, error: { code: error.code || 'BROWSER_INPUT_FAILED', message: error.message, completedActions: completed, inputMethod, actionMayHaveExecuted: true } };
 		} finally {
+			releasing = true;
 			for (const event of [...held.values()].reverse()) { held.delete(event.key); try { await keyboard('keyUp', event); } catch (_) {} }
 			for (const [button, mask] of Object.entries(BUTTONS)) if (buttons & mask) {
 				buttons &= ~mask;
@@ -400,8 +409,9 @@ class BrowserControlService {
 		}));
 	}
 
-	async execute(action, value = {}) {
+	async execute(action, value = {}, guard) {
 		try {
+			if (guard) guard();
 			validate(value, BROWSER_COMMANDS[action].schema);
 			if (action === 'listBrowserTargets') return { ok: true, payload: { targets: this.targets().map(target => this.summary(target)) } };
 			if (action === 'listAppMenuItems') {
@@ -431,15 +441,16 @@ class BrowserControlService {
 			state.pending++;
 			const queuedAt = Date.now();
 			const task = state.queue.catch(() => {}).then(() => {
+				if (guard) guard();
 				if (Date.now() - queuedAt > 5000) fail('BROWSER_TARGET_BUSY', 'Target queue expired; this operation was not started.');
-				return this.executeTarget(action, value, this.resolve(value.targetId));
+				return this.executeTarget(action, value, this.resolve(value.targetId), guard);
 			});
 			state.queue = task;
 			try { return await task; } finally { state.pending--; }
 		} catch (error) { return { ok: false, error: { code: error.code || 'BROWSER_CONTROL_FAILED', message: error.message } }; }
 	}
 
-	async executeTarget(action, value, target) {
+	async executeTarget(action, value, target, guard) {
 		const wc = target.webContents;
 		if (action === 'captureBrowserScreenshot') return this.screenshot(target, value);
 		if (action === 'inspectBrowserTarget' || action === 'interactBrowserTarget') {
@@ -448,7 +459,7 @@ class BrowserControlService {
 			if (result.payload) { delete result.payload.sourceId; result.payload.targetId = value.targetId; }
 			return result;
 		}
-		if (action === 'browserInput') { this.options.armDialogs(); return this.input(target, value); }
+		if (action === 'browserInput') { this.options.armDialogs(); return this.input(target, value, guard); }
 		if (action === 'chooseBrowserFiles') return this.chooseFiles(target, value);
 		if (action === 'getBrowserFrameStream') return { ok: true, payload: { targetId: value.targetId, endpoint: `/api/v1/browser/frames/${encodeURIComponent(value.targetId)}?fps=${value.fps || 2}&maxWidth=${value.maxWidth || 1280}`, contentType: 'multipart/x-mixed-replace; boundary=ssapp-frame' } };
 		if (action === 'navigateBrowserTarget') {
@@ -546,11 +557,64 @@ class BrowserControlService {
 		return true;
 	}
 
+	prepareHumanTarget(targetId) {
+		const window = this.resolve(targetId).window;
+		if (!window || window.isDestroyed()) return;
+		if (!this.humanViewports) this.humanViewports = new Map();
+		const record = this.humanViewports.get(window) || {};
+		// A never-shown hidden window renders no frames on Windows, so private clicks would hang.
+		// While a person views it, keep it mapped off-screen and transparent; stopStreams restores it.
+		if (!window.isVisible() && !record.warm) {
+			record.warm = { bounds: window.getBounds(), opacity: window.getOpacity(), internalCapture: window.__ssappInternalCapture };
+			window.__ssappInternalCapture = true;
+			window.setOpacity(0);
+			if (this.options.parkOffscreen) this.options.parkOffscreen(window);
+			window.showInactive();
+			record.warm.prepared = window.getBounds();
+			this.humanViewports.set(window, record);
+		}
+		if (window.isVisible() && window.__ss_visible !== false && !record.warm) return;
+		const size = window.getContentSize();
+		if (size[0] >= 640 && size[1] >= 360) return;
+		// Some hidden source windows intentionally have very small viewports.
+		// Expand only the explicitly viewed human target and restore it afterward.
+		if (!record.original) record.original = size;
+		this.humanViewports.set(window, record);
+		window.setContentSize(1024, 768);
+		record.prepared = window.getContentSize();
+	}
+
+	stopStreams() {
+		for (const res of this.streams) res.destroy();
+		this.streams.clear();
+		this.screenshots.clear();
+		if (this.humanViewports) {
+			for (const [window, record] of this.humanViewports) {
+				try {
+					if (window.isDestroyed()) continue;
+					const current = window.getContentSize();
+					// Preserve a size chosen manually on the host during takeover.
+					if (record.prepared && current[0] === record.prepared[0] && current[1] === record.prepared[1]) window.setContentSize(...record.original);
+					if (record.warm) {
+						const bounds = window.getBounds();
+						const resized = record.prepared
+							? current[0] !== record.prepared[0] || current[1] !== record.prepared[1]
+							: bounds.width !== record.warm.prepared.width || bounds.height !== record.warm.prepared.height;
+						window.hide();
+						window.setBounds(resized ? { ...record.warm.bounds, width: bounds.width, height: bounds.height } : record.warm.bounds);
+						window.setOpacity(record.warm.opacity);
+						window.__ssappInternalCapture = record.warm.internalCapture;
+					}
+				} catch (_) { }
+			}
+			this.humanViewports.clear();
+		}
+	}
+
 	close() {
 		this.restoreMenus();
 		this.contextMenus.clear();
-		for (const res of this.streams) res.destroy();
-		this.streams.clear();
+		this.stopStreams();
 		for (const state of this.states.values()) state.cleanup();
 		this.states.clear();
 		this.screenshots.clear();

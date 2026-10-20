@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>SSApp · Private control</title>
+  <link rel="stylesheet" href="viewer.css">
+  <script src="viewer.js" defer></script>
+</head>
+<body>
+  <header>
+    <div><span class="brand">SOCIAL STREAM NINJA</span><h1>Private control</h1></div>
+    <span id="state" role="status">Connecting…</span>
+  </header>
+  <main>
+    <section id="welcome" class="panel">
+      <h2>Complete a sign-in yourself</h2>
+      <p>View and control the browser running inside SSApp. Taking control pauses its local AI / automation API until you explicitly return control.</p>
+      <p>Your input goes directly to SSApp. Use the address above the picture to check the site before entering private information.</p>
+      <button id="start" disabled>Take private control</button>
+    </section>
+    <section id="viewer" hidden>
+      <div class="toolbar panel">
+        <label>SSApp window <select id="targets" aria-label="SSApp window"></select></label>
+        <button id="refresh">Refresh windows</button>
+        <button id="back">Back</button>
+        <button id="reload">Reload</button>
+        <button id="pause">Disconnect · keep AI paused</button>
+        <button id="finish" class="primary">Done · return control to AI</button>
+      </div>
+      <div class="address"><span>REMOTE SITE</span> <strong id="origin">Choose a window</strong></div>
+      <div id="screen-wrap"><img id="screen" alt="Live view of the selected SSApp window" tabindex="0" draggable="false" hidden><p id="placeholder">Waiting for a picture…</p></div>
+      <div class="panel input-row">
+        <label>Paste or type private text <input id="text" type="password" autocomplete="off" spellcheck="false" placeholder="Sent only to the focused remote field"></label>
+        <button id="send">Send &amp; clear</button>
+        <button id="tab">Tab</button><button id="enter">Enter</button><button id="escape">Escape</button>
+      </div>
+      <p class="hint">Click the picture to use your keyboard. Drag to select; scroll normally. The private text box also works with mobile keyboards. Window changes and popups appear in the window list.</p>
+      <section id="dialogs" class="panel" hidden><h2>Browser prompt</h2><div id="dialog-content"></div></section>
+    </section>
+    <p id="message" role="alert"></p>
+  </main>
+  <footer>Viewing runs only while connected. Closing this page keeps automation paused. No audio is captured by this viewer.</footer>
+</body>
+</html>

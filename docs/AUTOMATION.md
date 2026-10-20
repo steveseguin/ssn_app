@@ -86,7 +86,12 @@ An interrupted HTTP response returns `SSAPP_UNREACHABLE`. Read the app's state b
 
 ### MCP tools
 
-SSApp 0.4.39 includes API 1.5.0 and MCP adapter 1.4.0. The tools below cover source management, browser surfaces, dialogs, diagnostics, and settings exports. Call `ssapp_get_capabilities` to discover which commands the installed app supports.
+SSApp 0.4.40 includes API 1.6.0 and MCP adapter 1.5.0. The tools below cover source management, browser surfaces, dialogs, diagnostics, and settings exports. Call `ssapp_get_capabilities` to discover which commands the installed app supports.
+
+For a private sign-in, use the optional [human-control viewer](HUMAN_CONTROL.md)
+([HTML](HUMAN_CONTROL.html)). It pauses API/MCP observation and input until the
+person explicitly returns control. `ssapp_get_human_control_status` remains
+available while paused. A remote bridge must transport the viewer separately.
 
 ### Browser surfaces, input, and live view
 

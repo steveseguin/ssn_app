@@ -1,0 +1,129 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Private sign-in · Social Stream Ninja</title><style>body{font:16px/1.65 system-ui,sans-serif;margin:0;background:#f4f6fa;color:#1a2537}main{max-width:1000px;margin:35px auto;padding:35px 45px;background:white;border:1px solid #dce2ec;border-radius:14px}h1{line-height:1.2;font-size:32px}h2{margin-top:2em;line-height:1.3}a{color:#2859bf}p,li{max-width:85ch}code{font-size:.9em;background:#eef2f8;border-radius:4px;padding:2px 5px;overflow-wrap:anywhere}pre{padding:18px;background:#eef2f8;overflow:auto}table{border-collapse:collapse;width:100%;font-size:14px}td,th{text-align:left;padding:12px;border:1px solid #dbe1eb;vertical-align:top}th{background:#eef2f8}nav{font-size:14px;margin-bottom:25px}@media(max-width:650px){main{margin:0;padding:22px 16px;border:0;border-radius:0}h1{font-size:27px}table{display:block;overflow:auto}}</style></head><body><main><nav><a href="AUTOMATION.md">Automation guide</a> · <a href="HUMAN_CONTROL.md">Markdown version</a></nav><h1 id="private-sign-in-through-an-ssapp-viewer">Private sign-in through an SSApp viewer</h1>
+<p><a href="HUMAN_CONTROL.html">Read this guide in HTML</a></p>
+<p>Use the private viewer when an agent needs you to complete a sign-in inside SSApp,
+including a browser window running hidden on another computer. The sign-in stays
+in that SSApp browser profile. Signing into an unrelated browser on your own
+computer does not sign the SSApp browser in.</p>
+<h2 id="on-the-ssapp-computer">On the SSApp computer</h2>
+<p>Requires SSApp 0.4.40 with control API 1.6.0 or newer.</p>
+<ol>
+<li>Enable <strong>File &gt; Local AI / Automation &gt; Enable Local Control API</strong> and restart.</li>
+<li>Open <code>http://127.0.0.1:17777/api/v1/human/viewer</code> in a browser on that computer.</li>
+<li>Select <strong>Take private control</strong>, then choose the SSApp window.</li>
+<li>Check the site address above the picture. Click and type in the picture, or
+   use the private text box and <strong>Send &amp; clear</strong>. Use the window list for popups.</li>
+<li>Select <strong>Done · return control to AI</strong> when the private step is finished.</li>
+</ol>
+<p><strong>Disconnect · keep AI paused</strong> stops viewing without returning control. Closing
+the viewer also leaves automation paused. Reopen the viewer and take control to
+continue or finish. An abruptly disconnected session expires after two minutes
+without requests; a new viewer can then take control. Sessions last at most
+30 minutes before reconnection is required.</p>
+<p>The viewer does not show hidden windows on the host's desktop. Very small hidden
+windows temporarily get a usable viewport while privately viewed; their size is
+restored on disconnect unless someone manually resized the window meanwhile. A hidden window
+that has never been shown, as under headless control on Windows, renders no picture and ignores
+clicks. While you view it, SSApp keeps it rendering off-screen and transparent, then hides it
+again when you disconnect or finish. Headless use still
+requires both <code>--ssapp-headless-control</code> and <code>--ssapp-control-api</code>.</p>
+<h2 id="from-another-computer">From another computer</h2>
+<p>The localhost address belongs to the SSApp host. A remote bridge must authenticate
+the person, connect to SSApp locally, and carry the private viewer traffic to that
+person. Do not expose the loopback API directly to the network. Ninja MCP's regular
+screenshot tools are separate from this private viewer connection.</p>
+<p>The bridge must keep human viewing, input, and credentials separate from model
+tool calls, observers, transcripts, recordings, and ordinary logs. It must stop
+its agent activity before takeover and resume only after explicit human handback.
+Only the person or their authorized bridge should create a viewer session.</p>
+<h2 id="what-pauses">What pauses</h2>
+<p>Private takeover pauses the local control API's automation reads and writes across
+SSApp. Existing API frame streams and event streams close. New page observations,
+source/settings queries, dialogs, and input through MCP return
+<code>HUMAN_CONTROL_ACTIVE</code>. Already accepted operations must finish before private
+input is enabled; a waiting takeover returns <code>HUMAN_CONTROL_DRAINING</code> and can be
+retried. The original operation may already have executed; do not replay it.</p>
+<p><code>ssapp_get_human_control_status</code> remains available and reports <code>idle</code>, <code>waiting</code>,
+<code>active</code>, or <code>suspended</code>. It never returns a viewer credential or page content.
+Disconnected or expired viewers leave automation paused until a person explicitly
+returns control. Other local programs, desktop access, existing Social Stream
+chat transports, and the website itself are outside this API pause.</p>
+<p>Ordinary SSApp windows, manual sign-in, chat capture, settings, and defaults keep
+their existing behavior. This viewer adds no model calls or background capture to
+normal use. Capture happens only for requested screenshots or connected streams.</p>
+<h2 id="bridge-api">Bridge API</h2>
+<p>Read <code>GET /api/v1/instance</code> and the <code>humanControl</code> capability returned by
+<code>GET /api/v1/capabilities</code>. Bind every private request to that instance using
+<code>X-SSApp-Instance-Id</code>. A restart rejects the old instance and invalidates all
+viewer credentials. Obtain new user authorization before reconnecting.</p>
+<table>
+<thead>
+<tr>
+<th>Request</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /api/v1/human/viewer</code></td>
+<td>Standalone browser viewer; sibling <code>viewer.js</code> and <code>viewer.css</code> are included.</td>
+</tr>
+<tr>
+<td><code>GET /api/v1/human/status</code></td>
+<td>Non-sensitive state and whether automation is paused.</td>
+</tr>
+<tr>
+<td><code>POST /api/v1/human/start</code> with <code>{"confirm":true}</code></td>
+<td>Pause automation, drain existing operations, and create one viewer session. Returns a private <code>token</code>, <code>expiresAt</code>, and <code>deadline</code>. Never return this result to a model.</td>
+</tr>
+<tr>
+<td><code>POST /api/v1/human/command</code></td>
+<td>Execute an allowlisted command for the person; body is <code>{"action":"…","value":{…}}</code>.</td>
+</tr>
+<tr>
+<td><code>GET /api/v1/human/frames/{targetId}?fps=2&amp;maxWidth=1280</code></td>
+<td>On-demand multipart JPEG frames. Percent-encode the target ID.</td>
+</tr>
+<tr>
+<td><code>POST /api/v1/human/suspend</code> with <code>{"confirm":true}</code></td>
+<td>Revoke the viewer token, close streams, and keep automation paused.</td>
+</tr>
+<tr>
+<td><code>POST /api/v1/human/finish</code> with <code>{"confirm":true}</code></td>
+<td>Revoke the token and explicitly return control after viewer requests finish.</td>
+</tr>
+</tbody>
+</table>
+<p>Except for start, status, and static assets, private requests require the
+<code>X-SSApp-Human-Token</code> header. The existing API remains tokenless on loopback;
+this short-lived capability distinguishes private viewing from ordinary agent
+traffic. It does not replace remote authentication or protect against other
+programs trusted on the same host. A bridge must not expose start to agents or
+unauthorized callers. A second active viewer is rejected.</p>
+<p>Private commands are <code>listBrowserTargets</code>, <code>captureBrowserScreenshot</code>,
+<code>browserInput</code>, <code>navigateBrowserTarget</code>, <code>getPendingAppDialogs</code>, and
+<code>respondToAppDialog</code>. They use the existing schemas and confirmation fields.
+Host-file paths are not accepted through the private dialog endpoint; use the
+separate authorized file workflow for uploads. Responses are not stored in the
+automation operation ledger or published on its event stream.</p>
+<p>The bundled viewer refreshes bounded JPEG screenshots and sends their
+<code>screenshotId</code> with input. Screenshot metadata includes <code>page.redactedUrl</code> and
+<code>page.title</code>; the address excludes credentials, query parameters, and fragments.
+Never combine a picture from one target with coordinates from another. After
+navigation or resize, obtain a fresh screenshot if SSApp returns <code>STALE_SCREENSHOT</code>.</p>
+<p>The stream supports 1–5 fps, at most two connected streams, and no audio. The
+reader must handle multipart boundaries split across transport packets, honor
+backpressure, and close the host stream when permission or the viewer connection
+ends. Streaming alone does not renew the viewer lease: send an authorized private
+command periodically, such as <code>listBrowserTargets</code>. For input coordinates, use a
+fresh screenshot. A remote media adapter may transport these frames through
+VDO.Ninja; media publication and audio capture require their own integration.</p>
+<p>An authorized bridge can give the bundled viewer a grant through
+<code>/api/v1/human/viewer#token=VIEWER_TOKEN&amp;instance=INSTANCE_ID</code> on its authenticated
+viewer origin. The viewer removes the fragment immediately and keeps the token in
+memory only. Never include credentials in query parameters, model messages, or
+logs. Proxy the API paths to the bound host and serve the viewer on the same origin.
+Serve the viewer as a separate page; its default policy disallows embedding.</p>
+<p>On uncertain input delivery, inspect the result before retrying. The host does
+not deduplicate human requests; the remote bridge must preserve its request IDs
+and retry protection. Suspending cancels remaining private input dispatch where
+possible but cannot undo actions already delivered to the browser.</p></main></body></html>
