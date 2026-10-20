@@ -31,7 +31,8 @@ async function run() {
 			await delay(250);
 		}
 		assert.ok(background, 'real Social Stream background loaded');
-		await background.waitForFunction(() => typeof processIncomingMessage === 'function');
+		await background.waitForFunction(() => typeof processIncomingMessage === 'function'
+			&& typeof loadedFirst !== 'undefined' && loadedFirst, null, { timeout: 90000 });
 		await background.evaluate(() => {
 			window.__mirrorCaptures = [];
 			const original = processIncomingMessage;
