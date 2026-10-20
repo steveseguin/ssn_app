@@ -1061,7 +1061,12 @@
                     // Older Social Stream pages still use the existing reload path.
                     if (updated || frame.ssappRelayRequest !== request) return true;
                 }
-                if (frame.src !== url.href) {
+                // URLSearchParams serializes bare flags (localserver) as
+                // localserver=. That spelling change must not reload a busy
+                // background when its relay settings are already correct.
+                const currentUrl = new URL(frame.src);
+                currentUrl.search = currentUrl.searchParams.toString();
+                if (currentUrl.href !== url.href) {
                     if (frame.id === 'frame1') postLanguageToPopupFrameAfterLoad(frame);
                     frame.src = url.href;
                 }

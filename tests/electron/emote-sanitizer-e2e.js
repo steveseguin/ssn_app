@@ -107,6 +107,15 @@ async function run() {
 			sources.push({ platform, page });
 		}
 		await delay(4500); // Allow the real capture scripts to install their observers.
+		// Finish startup relay synchronization before submitting eligible fixture
+		// messages. It can still be updating the background on slower runtimes.
+		const startupReloadOrigin = await main.evaluate(async () => {
+			const frame = document.getElementById('frame2');
+			const previousUrl = frame.src;
+			const previousOrigin = frame.contentWindow.performance.timeOrigin;
+			await updateFrameLocalServerConnection(frame);
+			return frame.src !== previousUrl ? previousOrigin : null;
+		});
 		for (const phase of ['normal', 'blocked-library', 'reload']) {
 			await main.context().unroute('**/thirdparty/xss.min.js*');
 			let blockedRequests = 0;
@@ -117,14 +126,18 @@ async function run() {
 				});
 			}
 			let background = main.frames().find(frame => frame.url().includes('/background.html'));
+			let previousOrigin = phase === 'normal' ? startupReloadOrigin : null;
 			if (phase !== 'normal') {
+				previousOrigin = await background.evaluate(() => performance.timeOrigin);
 				await background.evaluate(() => location.reload());
-				await delay(3500);
 			}
 			background = await until(async () => {
 				const frame = main.frames().find(f => f.url().includes('/background.html'));
-				return frame && await frame.evaluate(() => typeof processIncomingMessage === 'function' && socketserverDock?.readyState === 1) ? frame : null;
-			}, 'background relay');
+				return frame && await frame.evaluate(previous =>
+					(previous === null || performance.timeOrigin !== previous) &&
+					typeof loadedFirst !== 'undefined' && loadedFirst &&
+					typeof processIncomingMessage === 'function' && socketserverDock?.readyState === 1, previousOrigin) ? frame : null;
+			}, 'background relay', 90000);
 			assert.strictEqual(await background.evaluate(() => !!settings.textonlymode), textOnly, 'text-only setting survives background reload');
 			if (phase === 'blocked-library') {
 				// Also cover an older cached loader still requesting the separate asset.
@@ -146,19 +159,26 @@ async function run() {
 					return original.call(this, data, ...args);
 				};
 			});
+			const phaseReport = { phase, blockedRequests, expectedNames: [] };
+			report.phases.push(phaseReport);
 			for (let repeat = 0; repeat < 2; repeat++) {
 				for (const { platform, page } of sources) {
+					const id = Date.now();
+					phaseReport.expectedNames.push(`Emote ${phase} ${platform} ${id}`);
 					await page.evaluate(({ phase, platform, id }) => {
 						window.__hiddenCaptureFixture.appendRows([id]);
 						const row = document.querySelector('.ssn-chat-row:last-child');
 						row.querySelector('#author-name,.chat-author__display-name,.chat-entry-username').textContent = `Emote ${phase} ${platform} ${id}`;
 						row.querySelector('#message,[data-a-target="chat-line-message-body"],.chat-entry-content').innerHTML = `it's 👑 sadNik :) <img src="https://cdn.betterttv.net/emote/64040c27ccf0dd06e1af2c67/2x" alt="sadNik" title="sadNik" class="regular-emote">`;
-					}, { phase, platform, id: Date.now() });
+					}, { phase, platform, id });
 				}
 				await delay(2500);
 			}
 			const captures = await background.evaluate(() => window.__emoteCaptures);
+			assert.ok(Array.isArray(captures), phase + ': background reloaded during fixture delivery');
 			assert.strictEqual(captures.length, 6, phase + ': real source capture');
+			assert.deepStrictEqual(captures.map(capture => capture.chatname).sort(), [...phaseReport.expectedNames].sort(),
+				phase + ': every submitted message captured exactly once');
 			for (const capture of captures) {
 				assert.strictEqual(!!capture.textonly, textOnly, capture.type + ': source received text-only setting');
 				if (textOnly) {
@@ -172,13 +192,16 @@ async function run() {
 					.map(row => ({ text: row.textContent, images: row.querySelectorAll('img.regular-emote').length })), phase);
 				return result.length === 6 ? result : null;
 			}, phase + ' dock messages');
+			for (const name of phaseReport.expectedNames) {
+				assert.strictEqual(rows.filter(row => row.text.includes(name)).length, 1, phase + ': dock delivery for ' + name);
+			}
 			for (const row of rows) {
 				assert.strictEqual(row.images, textOnly ? 0 : 1, phase + ': correct image behavior for selected mode');
 				assert.ok(row.text.includes('sadNik :)'), phase + ': text emotes survive');
 				assert.ok(row.text.includes("it's 👑"), phase + ': apostrophe and Unicode must survive');
 				assert.ok(!row.text.includes('<img') && !row.text.includes('&#039;'), phase + ': markup must not become text');
 			}
-			report.phases.push({ phase, blockedRequests, captures, rows });
+			Object.assign(phaseReport, { captures, rows, delivery: { expected: 6, captured: 6, dock: 6, missing: 0, duplicates: 0, unexpected: 0 } });
 			await dock.screenshot({ path: path.join(profile, phase + '.png') });
 			console.log(`[emote-sanitizer] ${report.version} ${textOnly ? 'text-only' : 'rich'} ${phase}: 6 captured messages rendered correctly`);
 		}
