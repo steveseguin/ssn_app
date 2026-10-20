@@ -3,10 +3,12 @@
 const assert = require('assert/strict');
 const { execFileSync } = require('child_process');
 const fs = require('fs');
+const http = require('http');
 const os = require('os');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const { _electron } = require('playwright-core');
+let fixtureServer;
 
 async function run() {
 	if (process.platform !== 'darwin') {
@@ -24,6 +26,12 @@ async function run() {
 	const base = pathToFileURL(sourceRoot + path.sep).href;
 	const output = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-mac-restore-'));
 	console.log('Evidence: ' + output);
+	fixtureServer = http.createServer((_request, response) => {
+		response.writeHead(200, { 'Content-Type': 'text/html' });
+		response.end('<title>Mac restoration fixture</title><p>Auxiliary window</p>');
+	});
+	await new Promise(resolve => fixtureServer.listen(0, '127.0.0.1', resolve));
+	const fixtureUrl = `http://127.0.0.1:${fixtureServer.address().port}/`;
 	for (const headless of [false, true]) {
 		const launchOptions = { executablePath: executable, cwd: root,
 			args: [...(packaged ? [] : ['.', '--running-from-source', '--filesource=' + base]), '--multiinstance',
@@ -40,9 +48,7 @@ async function run() {
 			await page.waitForFunction(() => window.stateManager?.initialized && configReady, null, { polling: 100 });
 			const main = await app.browserWindow(page);
 			// Use the actual auxiliary-window IPC, then verify activation leaves it alone.
-			const otherVid = await page.evaluate(() => ipcRenderer.sendSync('createWindow', {
-				url: 'data:text/html,<title>Mac restoration fixture</title><p>Auxiliary window</p>', visible: false,
-			}));
+			const otherVid = await page.evaluate(url => ipcRenderer.sendSync('createWindow', { url, visible: false }), fixtureUrl);
 			const windows = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
 				.map(w => ({ id: w.id, visible: w.isVisible() })).sort((a, b) => a.id - b.id));
 			const initial = await windows();
@@ -149,4 +155,4 @@ async function run() {
 	}
 }
 
-run().catch(error => { console.error(error); process.exitCode = 1; });
+run().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => fixtureServer?.close());
