@@ -264,7 +264,7 @@ async function withMutedConsole(fn) {
 	}
 }
 
-async function testAutoFallsBackToLocalSigner() {
+async function testAutoStartsWithLocalSigner() {
 	const { manager, plan } = createHarness({
 		auto: [{ error: createRateLimitError() }],
 		local: [{ ok: true }]
@@ -275,8 +275,8 @@ async function testAutoFallsBackToLocalSigner() {
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
 
 	assert.strictEqual(result, true);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local']);
-	assert.deepStrictEqual(getReconnectingReasons(plan), ['Sign server unavailable. Trying local signer.']);
+	assert.deepStrictEqual(getConnectModes(plan), ['local']);
+	assert.deepStrictEqual(getReconnectingReasons(plan), []);
 	assert.strictEqual(plan.reconnects.length, 0);
 
 	const connected = getLastStatus(plan, 'connected');
@@ -332,7 +332,7 @@ const { manager, plan } = createHarness({
 	manager.sharedEulerApiKeyPool = [{ key: 'other-shared-key', scope: 'signing' }];
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
 	assert.strictEqual(result, false);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local']);
+	assert.deepStrictEqual(getConnectModes(plan), ['local', 'auto']);
 	assert.strictEqual(plan.reconnects.length, 0);
 	assert.strictEqual(countStatuses(plan, entry => entry.sharedKeyRetry === true), 0);
 	const failed = getLastStatus(plan, 'failed');
@@ -349,7 +349,7 @@ const { manager, plan } = createHarness({
 	manager.sharedEulerApiKeyPool = [{ key: 'other-shared-key', scope: 'signing' }];
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
 	assert.strictEqual(result, false);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local']);
+	assert.deepStrictEqual(getConnectModes(plan), ['local', 'auto']);
 	assert.strictEqual(plan.reconnects.length, 0);
 	assert.strictEqual(countStatuses(plan, entry => entry.sharedKeyRetry === true), 0);
 	const failed = getLastStatus(plan, 'failed');
@@ -366,7 +366,7 @@ const { manager, plan } = createHarness({
 	manager.sharedEulerApiKeyPool = [{ key: 'other-shared-key', scope: 'signing' }];
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
 	assert.strictEqual(result, false);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local']);
+	assert.deepStrictEqual(getConnectModes(plan), ['local', 'auto']);
 	assert.strictEqual(plan.reconnects.length, 0);
 	assert.strictEqual(countStatuses(plan, entry => entry.sharedKeyRetry === true), 0);
 	const failed = getLastStatus(plan, 'failed');
@@ -394,7 +394,7 @@ const { manager, plan } = createHarness({
 	manager.sharedEulerApiKeyPool = [{ key: 'other-shared-key', scope: 'signing' }];
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
 	assert.strictEqual(result, false);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local']);
+	assert.deepStrictEqual(getConnectModes(plan), ['local', 'auto']);
 	assert.strictEqual(plan.reconnects.length, 0);
 	assert.strictEqual(countStatuses(plan, entry => entry.sharedKeyRetry === true), 0);
 	const failed = getLastStatus(plan, 'failed');
@@ -411,7 +411,7 @@ const { manager, plan } = createHarness({
 	manager.sharedEulerApiKeyPool = [{ key: 'other-shared-key', scope: 'signing' }];
 	const result = await withPatchedEulerProxy(plan, () => manager.initialize());
 	assert.strictEqual(result, false);
-	assert.deepStrictEqual(getConnectModes(plan), ['auto', 'local']);
+	assert.deepStrictEqual(getConnectModes(plan), ['local', 'auto']);
 	assert.strictEqual(plan.reconnects.length, 0);
 	assert.strictEqual(countStatuses(plan, entry => entry.sharedKeyRetry === true), 0);
 	const failed = getLastStatus(plan, 'failed');
@@ -558,13 +558,14 @@ async function testInvalidBootstrapUrlGetsUsefulMessages() {
 	);
 }
 
-async function testInvalidBootstrapDoesNotRetryThroughPolling() {
+async function testInvalidBootstrapAllowsRendererCompatibilityFallback() {
 const {manager,plan}=createHarness({auto:[{error:createInvalidBootstrapUrlError()}],polling:[{ok:true}]},
 		{allowProxy:false,localSignerEnabled:false});
 	assert.strictEqual(await manager.initialize(),false);
 	assert.deepStrictEqual(getConnectModes(plan),['auto']);
 	assert.strictEqual(getLastStatus(plan,'fallback_polling'),null);
-	assert.strictEqual(getLastStatus(plan,'failed').skipEulerFallback,true);
+	assert.strictEqual(getLastStatus(plan,'failed').skipEulerFallback,false);
+	assert.strictEqual(manager.eulerAllowCompatibility,true);
 }
 
 async function testUserNotFoundStopsWithoutReconnectSpam() {
@@ -960,8 +961,8 @@ async function run() {
 			fn: testInstalledConnectorHasNoRuntimePollingPath
 		},
 		{
-			name: 'auto falls back to local signer',
-			fn: testAutoFallsBackToLocalSigner
+			name: 'auto starts with local signer before Euler',
+			fn: testAutoStartsWithLocalSigner
 		},
 		{
 			name: 'auto stops after local rate limit',
@@ -1016,8 +1017,8 @@ async function run() {
 			fn: testInvalidBootstrapUrlGetsUsefulMessages
 		},
 		{
-			name: 'invalid bootstrap does not retry through polling',
-			fn: testInvalidBootstrapDoesNotRetryThroughPolling
+			name: 'invalid bootstrap allows renderer compatibility fallback without connector polling',
+			fn: testInvalidBootstrapAllowsRendererCompatibilityFallback
 		},
 		{
 			name: 'user not found stops without reconnect spam',
