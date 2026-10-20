@@ -30,8 +30,12 @@ const { _electron } = require('playwright-core');
 		const page = await app.firstWindow();
 		await page.waitForFunction(() => typeof configReady !== 'undefined' && configReady);
 		await page.evaluate(async base => {
-			// Use the real frame and updater; the fixture deliberately sends no ACK.
-			const frame = document.getElementById('frame2');
+			// Keep the fixture separate from the real startup background. Its ID
+			// exercises the ACK path, while normal IPC still finds the first frame2.
+			const frame = document.createElement('iframe');
+			frame.id = 'frame2';
+			document.body.appendChild(frame);
+			window.__relayReloadFixture = frame;
 			localServer = '&localserver';
 			localWebSocketPort = 34567;
 			await new Promise(resolve => {
@@ -40,7 +44,11 @@ const { _electron } = require('playwright-core');
 			});
 		}, `http://127.0.0.1:${server.address().port}`);
 		const before = requests;
-		await page.evaluate(() => updateFrameLocalServerConnection(document.getElementById('frame2')));
+		await page.evaluate(() => {
+			localServer = '&localserver';
+			localWebSocketPort = 34567;
+			return updateFrameLocalServerConnection(window.__relayReloadFixture);
+		});
 		await page.waitForTimeout(2000);
 		assert.strictEqual(requests, before, 'Unchanged relay settings must not reload the background');
 		console.log('PASS unchanged relay settings preserve the running background without an ACK');
@@ -49,7 +57,7 @@ const { _electron } = require('playwright-core');
 			const result = await page.evaluate(async enabled => {
 				localServer = enabled ? '&localserver' : '';
 				localWebSocketPort = 34568;
-				const frame = document.getElementById('frame2');
+				const frame = window.__relayReloadFixture;
 				await updateFrameLocalServerConnection(frame);
 				return frame.src;
 			}, enabled);
