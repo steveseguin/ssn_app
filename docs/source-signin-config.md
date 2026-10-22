@@ -1,5 +1,43 @@
 # Per-source sign-in configuration
 
+## Offer Chrome sign-in
+
+Add `"chrome": true` to a source's existing `signin` block in the relevant Social
+Stream `settings/config*.json` files. SSApp offers **Use Chrome** alongside its usual
+sign-in window in Standard mode, using the existing `signin.url`:
+
+```json
+{
+  "twitch": {
+    "signin": {
+      "url": "https://twitch.tv",
+      "chrome": true
+    }
+  }
+}
+```
+
+Sign in in the temporary Chrome window, leave it open, and click **Import Sign-In**
+in SSApp. The cookies go into the source's selected browser session. Chrome supplies
+its own user agent; no `userAgent` change is needed. Set `chrome` to `false` to hide
+the option. Rumble and TikTok retain their existing option when it is omitted.
+
+By default, SSApp copies all cookies for the `signin.url` hostname and its subdomains,
+removing a leading `www.` from the hostname. Individual cookie names are not required.
+If a site stores its session on another domain or a parent of its login subdomain,
+set `signin.chromeCookieDomains` to the complete list of site domains to copy, such
+as `["example.com", "example.net"]`. This list replaces the default. Use hostnames
+without schemes, paths, leading dots, or wildcards; do not include an identity provider
+such as Google just because it was used to log in.
+
+Rumble, TikTok, and Twitch have automatic sign-in checks. For other sources, click
+**Import Sign-In** only after the site visibly shows you as signed in. Sites requiring
+local storage or device-bound credentials may still need their own sign-in integration;
+use the source's supported authentication method if importing cookies does not work.
+
+The desktop app must include `signin.chrome` support before these settings take effect.
+Once installed, additional sources can opt in through configuration updates.
+
 ## Self-hosted servers and HTTP Basic Authentication
 
 Owncast uses these settings in all three Social Stream `settings/config*.json` files:

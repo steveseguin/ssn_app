@@ -19,12 +19,19 @@ const PROFILE_OWNER_FILENAME = '.ssapp-owner.json';
 const PLATFORM_SPECS = Object.freeze({
 	rumble: Object.freeze({
 		label: 'Rumble',
+		cookieDomains: Object.freeze(['rumble.com']),
 		loginUrl: 'https://rumble.com/login'
 	}),
 	tiktok: Object.freeze({
 		label: 'TikTok',
+		cookieDomains: Object.freeze(['tiktok.com']),
 		loginUrl: 'https://www.tiktok.com/login',
 		authCookieNames: Object.freeze(['sessionid', 'sessionid_ss', 'sid_tt', 'sid_guard'])
+	}),
+	twitch: Object.freeze({
+		label: 'Twitch',
+		cookieDomains: Object.freeze(['twitch.tv']),
+		loginUrl: 'https://www.twitch.tv/login'
 	})
 });
 
@@ -37,12 +44,45 @@ function createSigninError(code, message) {
 }
 
 function getPlatformSpec(platform) {
+	// Internal calls can carry the resolved per-source settings through the import.
+	if (platform && typeof platform === 'object') return platform;
 	const normalizedPlatform = String(platform || '').trim().toLowerCase();
-	const spec = PLATFORM_SPECS[normalizedPlatform];
+	const spec = Object.prototype.hasOwnProperty.call(PLATFORM_SPECS, normalizedPlatform) ? PLATFORM_SPECS[normalizedPlatform] : null;
 	if (!spec) {
 		throw createSigninError('SSAPP_EXTERNAL_SIGNIN_PLATFORM', 'Chrome sign-in is not available for this source.');
 	}
 	return { platform: normalizedPlatform, ...spec };
+}
+
+function resolveSigninSpec(platform, signin = {}) {
+	if (typeof platform !== 'string' || !/^[a-z0-9_-]+$/.test(platform)) {
+		throw createSigninError('SSAPP_EXTERNAL_SIGNIN_PLATFORM', 'Invalid Chrome sign-in source.');
+	}
+	const builtin = Object.prototype.hasOwnProperty.call(PLATFORM_SPECS, platform) ? PLATFORM_SPECS[platform] : null;
+	const enabledByDefault = platform === 'rumble' || platform === 'tiktok';
+	if (signin?.chrome === false || (!enabledByDefault && signin?.chrome !== true)) {
+		throw createSigninError('SSAPP_EXTERNAL_SIGNIN_PLATFORM', 'Chrome sign-in is not enabled for this source.');
+	}
+	// Preserve existing Rumble/TikTok behavior when no new setting is supplied.
+	if (signin?.chrome !== true) return getPlatformSpec(platform);
+	let url;
+	try { url = new URL(signin.url); } catch (_) { }
+	if (!url || !['https:', 'http:'].includes(url.protocol) || url.username || url.password) {
+		throw createSigninError('SSAPP_EXTERNAL_SIGNIN_CONFIG', 'Chrome sign-in needs a valid signin.url without embedded credentials.');
+	}
+	const cookieDomains = signin.chromeCookieDomains === undefined
+		? [url.hostname.replace(/^www\./, '')]
+		: signin.chromeCookieDomains;
+	if (!Array.isArray(cookieDomains) || !cookieDomains.length || cookieDomains.some(domain =>
+		typeof domain !== 'string' || !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(domain))) {
+		throw createSigninError('SSAPP_EXTERNAL_SIGNIN_CONFIG', 'chromeCookieDomains must contain hostnames without URLs or wildcards.');
+	}
+	return {
+		platform,
+		label: builtin?.label || platform,
+		loginUrl: url.href,
+		cookieDomains: cookieDomains.map(domain => domain.toLowerCase())
+	};
 }
 
 function normalizeExternalSessionPartition(platform, customSession) {
@@ -66,10 +106,9 @@ function normalizeRumbleSessionPartition(customSession) {
 }
 
 function isPlatformHostname(platform, hostname) {
-	const { platform: normalizedPlatform } = getPlatformSpec(platform);
+	const spec = getPlatformSpec(platform);
 	const normalized = String(hostname || '').replace(/^\./, '').toLowerCase();
-	const rootDomain = normalizedPlatform === 'tiktok' ? 'tiktok.com' : 'rumble.com';
-	return normalized === rootDomain || normalized.endsWith(`.${rootDomain}`);
+	return spec.cookieDomains.some(domain => normalized === domain || normalized.endsWith(`.${domain}`));
 }
 
 function isRumbleHostname(hostname) {
@@ -377,6 +416,7 @@ function parseHostname(url) {
 }
 
 async function findPlatformPageTarget(client, platform) {
+	const spec = getPlatformSpec(platform);
 	const { targetInfos = [] } = await client.call('Target.getTargets');
 	const platformTargets = targetInfos.filter(target => {
 		if (target.type !== 'page') return false;
@@ -384,8 +424,8 @@ async function findPlatformPageTarget(client, platform) {
 	});
 	return platformTargets.find(target => {
 		const hostname = parseHostname(target.url);
-		const rootDomain = platform === 'tiktok' ? 'tiktok.com' : 'rumble.com';
-		return hostname === rootDomain || hostname === `www.${rootDomain}`;
+		return hostname === parseHostname(spec.loginUrl)
+			|| spec.cookieDomains.some(domain => hostname === domain || hostname === `www.${domain}`);
 	}) || platformTargets[0] || null;
 }
 
@@ -432,13 +472,13 @@ async function verifyRumbleSignin(client) {
 	}
 }
 
-async function verifyTikTokSignin(client) {
-	const target = await findPlatformPageTarget(client, 'tiktok');
+async function verifyTikTokSignin(client, spec = getPlatformSpec('tiktok')) {
+	const target = await findPlatformPageTarget(client, spec);
 	if (!target) {
 		return { signedIn: false, reason: 'TikTok is not open in the Chrome sign-in window.' };
 	}
 
-	const cookies = await readPlatformCookies(client, 'tiktok');
+	const cookies = await readPlatformCookies(client, spec);
 	const authCookieNames = new Set(PLATFORM_SPECS.tiktok.authCookieNames);
 	const authCookie = cookies.find(cookie => authCookieNames.has(String(cookie?.name || '').toLowerCase()) && cookie.value);
 	if (!authCookie) {
@@ -450,11 +490,31 @@ async function verifyTikTokSignin(client) {
 	return { signedIn: true, url: target.url };
 }
 
+async function verifyTwitchSignin(client, spec = getPlatformSpec('twitch')) {
+	const target = await findPlatformPageTarget(client, spec);
+	if (!target) {
+		return { signedIn: false, reason: 'Twitch is not open in the Chrome sign-in window.' };
+	}
+
+	const cookies = await readPlatformCookies(client, spec);
+	const authCookie = cookies.find(cookie => cookie.name === 'auth-token' && cookie.value
+		&& (!Number.isFinite(cookie.expires) || cookie.expires <= 0 || cookie.expires > Date.now() / 1000));
+	if (!authCookie) {
+		return { signedIn: false, reason: 'Twitch has not created a signed-in session cookie yet.' };
+	}
+	return { signedIn: true, url: target.url };
+}
+
 async function verifyPlatformSignin(client, platform) {
-	if (platform === 'rumble') return verifyRumbleSignin(client);
-	if (platform === 'tiktok') return verifyTikTokSignin(client);
-	getPlatformSpec(platform);
-	return { signedIn: false, reason: 'This source cannot be verified.' };
+	const spec = getPlatformSpec(platform);
+	if (spec.platform === 'rumble') return verifyRumbleSignin(client);
+	if (spec.platform === 'tiktok') return verifyTikTokSignin(client, spec);
+	if (spec.platform === 'twitch') return verifyTwitchSignin(client, spec);
+	const target = await findPlatformPageTarget(client, spec);
+	// Import Sign-In is the user's confirmation for sites without a built-in verifier.
+	return target
+		? { signedIn: false, manual: true }
+		: { signedIn: false, reason: `Open ${spec.label} in the Chrome sign-in window before importing.` };
 }
 
 async function readPlatformCookies(client, platform) {
@@ -480,7 +540,7 @@ async function setPlatformCookies(cookieStore, cookies) {
 
 async function importPlatformCookies(destinationSession, platform, chromeCookies) {
 	const spec = getPlatformSpec(platform);
-	const platformCookies = chromeCookies.filter(cookie => isPlatformCookie(spec.platform, cookie));
+	const platformCookies = chromeCookies.filter(cookie => isPlatformCookie(spec, cookie));
 	if (!platformCookies.length) {
 		throw createSigninError(
 			'SSAPP_EXTERNAL_NO_COOKIES',
@@ -488,14 +548,14 @@ async function importPlatformCookies(destinationSession, platform, chromeCookies
 		);
 	}
 
-	const backup = (await destinationSession.cookies.get({})).filter(cookie => isPlatformCookie(spec.platform, cookie));
+	const backup = (await destinationSession.cookies.get({})).filter(cookie => isPlatformCookie(spec, cookie));
 	try {
-		await removePlatformCookies(destinationSession.cookies, spec.platform, backup);
+		await removePlatformCookies(destinationSession.cookies, spec, backup);
 		await setPlatformCookies(destinationSession.cookies, platformCookies);
 		await destinationSession.flushStorageData();
 	} catch (error) {
 		try {
-			await removePlatformCookies(destinationSession.cookies, spec.platform);
+			await removePlatformCookies(destinationSession.cookies, spec);
 			await setPlatformCookies(destinationSession.cookies, backup);
 			await destinationSession.flushStorageData();
 		} catch (restoreError) {
@@ -691,7 +751,7 @@ async function launchIsolatedBrowser(browser, options = {}) {
 }
 
 async function runExternalBrowserSignin(payload = {}, dependencies = {}) {
-	const spec = getPlatformSpec(payload.platform);
+	const spec = resolveSigninSpec(payload.platform, payload.signin);
 	const electron = dependencies.electron || require('electron');
 	const dialog = dependencies.dialog || electron.dialog;
 	const session = dependencies.session || electron.session;
@@ -700,7 +760,7 @@ async function runExternalBrowserSignin(payload = {}, dependencies = {}) {
 		throw createSigninError('SSAPP_EXTERNAL_BROWSER_NOT_FOUND', 'Google Chrome or Microsoft Edge was not found.');
 	}
 
-	const partition = normalizeExternalSessionPartition(spec.platform, payload.customSession || 'AUTO');
+	const partition = normalizeExternalSessionPartition(spec, payload.customSession || 'AUTO');
 	if (activeRunsByPartition.size > 0) {
 		const samePartition = activeRunsByPartition.has(partition);
 		throw createSigninError(
@@ -721,11 +781,11 @@ async function runExternalBrowserSignin(payload = {}, dependencies = {}) {
 			activeRunsByPartition.set(partition, createdRun);
 		};
 		if (dependencies.launchBrowser) {
-			registerRun(await dependencies.launchBrowser(browser, registerRun, { platform: spec.platform }));
+			registerRun(await dependencies.launchBrowser(browser, registerRun, { platform: spec }));
 		} else {
 			run = await launchIsolatedBrowser(browser, {
 				...dependencies,
-				platform: spec.platform,
+				platform: spec,
 				onRunCreated: registerRun
 			});
 			registerRun(run);
@@ -745,8 +805,8 @@ async function runExternalBrowserSignin(payload = {}, dependencies = {}) {
 			return { success: false, cancelled: true, partition, browser: browser.name };
 		}
 
-		let verification = await verifyPlatformSignin(run.client, spec.platform);
-		while (!verification.signedIn) {
+		let verification = await verifyPlatformSignin(run.client, spec);
+		while (!verification.signedIn && !verification.manual) {
 			const retryResult = await dialog.showMessageBox(parentWindow || undefined, {
 				type: 'warning',
 				title: `${spec.label} Sign-In Not Detected`,
@@ -761,11 +821,11 @@ async function runExternalBrowserSignin(payload = {}, dependencies = {}) {
 				return { success: false, cancelled: true, partition, browser: browser.name };
 			}
 			if (retryResult.response === 1) break;
-			verification = await verifyPlatformSignin(run.client, spec.platform);
+			verification = await verifyPlatformSignin(run.client, spec);
 		}
 
-		const chromeCookies = await readPlatformCookies(run.client, spec.platform);
-		const importedCookies = await importPlatformCookies(destinationSession, spec.platform, chromeCookies);
+		const chromeCookies = await readPlatformCookies(run.client, spec);
+		const importedCookies = await importPlatformCookies(destinationSession, spec, chromeCookies);
 		if (typeof dependencies.trackPartition === 'function') dependencies.trackPartition(partition);
 		console.log(`[External Browser Sign-In] Imported ${importedCookies} ${spec.label} cookies into ${partition}`);
 		return {
@@ -841,6 +901,7 @@ module.exports = {
 	mapSameSite,
 	normalizeExternalSessionPartition,
 	normalizeRumbleSessionPartition,
+	resolveSigninSpec,
 	runExternalBrowserSignin,
 	runRumbleChromeSignin,
 	scheduleProfileCleanup,

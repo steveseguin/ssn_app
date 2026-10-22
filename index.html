@@ -1970,11 +1970,21 @@
 
         const externalBrowserSigninLabels = Object.freeze({
             rumble: 'Rumble',
-            tiktok: 'TikTok'
+            tiktok: 'TikTok',
+            twitch: 'Twitch'
         });
 
+        function getExternalBrowserSigninLabel(source) {
+            const target = source?.target;
+            if (!target) return null;
+            const signinConfig = config?.[target]?.signin;
+            if (signinConfig?.chrome === false) return null;
+            if (signinConfig?.chrome !== true && !['rumble', 'tiktok'].includes(target)) return null;
+            return externalBrowserSigninLabels[target] || target;
+        }
+
         function isExternalBrowserSigninEligible(source, effectiveMode = null) {
-            if (!ipcRenderer || !source || !externalBrowserSigninLabels[source.target]) return false;
+            if (!ipcRenderer || !getExternalBrowserSigninLabel(source)) return false;
             const resolvedMode = effectiveMode || getEffectiveConnectionMode(source);
             return resolvedMode !== 'websocket' &&
                 resolvedMode !== 'tiktok-websocket' &&
@@ -1984,7 +1994,7 @@
         function updateExternalBrowserSigninButton(element, source, effectiveMode) {
             const chromeSigninMenuItem = element?.querySelector?.('[data-signin-chrome]');
             if (!chromeSigninMenuItem) return;
-            const platformLabel = externalBrowserSigninLabels[source?.target];
+            const platformLabel = getExternalBrowserSigninLabel(source);
             const shouldShow = isExternalBrowserSigninEligible(source, effectiveMode);
             chromeSigninMenuItem.classList.toggle('hidden', !shouldShow);
             if (platformLabel) {
@@ -11983,7 +11993,7 @@
         }
 
         function showSigninMethodChoice(ele, source, tabid = false) {
-            const platformLabel = externalBrowserSigninLabels[source?.target];
+            const platformLabel = getExternalBrowserSigninLabel(source);
             if (!platformLabel) return false;
 
             const content = `
@@ -11997,7 +12007,7 @@
                             <span class="signin-method-option-icon" aria-hidden="true">🌐</span>
                             <span class="signin-method-option-text">
                                 <strong class="signin-method-option-title">${translate('signin.chrome')}</strong>
-                                <span class="signin-method-option-description">${translate('signin.chromeHelp')}</span>
+                                <span class="signin-method-option-description">${translate(['rumble', 'tiktok'].includes(source.target) ? 'signin.chromeHelp' : 'signin.browserChromeHelp')}</span>
                             </span>
                         </button>
                         <button type="button" class="source-choice signin-method-option" data-signin-choice="ssapp">
@@ -12195,8 +12205,8 @@
             const entry = ele.closest('.entry');
             const sourceId = entry?.dataset?.sourceId;
             const source = sourceId ? stateManager.getSource(sourceId) : null;
-            const platformLabel = externalBrowserSigninLabels[source?.target];
-            if (!source || !platformLabel) {
+            const platformLabel = getExternalBrowserSigninLabel(source);
+            if (!isExternalBrowserSigninEligible(source)) {
                 Toast.error('Chrome Sign-In', 'Chrome sign-in is not available for this source.');
                 return false;
             }
@@ -12211,7 +12221,8 @@
                 const result = await ipcRenderer.invoke('external-browser-signin', {
                     platform: source.target,
                     sourceId: source.id,
-                    customSession: requestedCustomSession
+                    customSession: requestedCustomSession,
+                    signin: config?.[source.target]?.signin
                 });
                 if (result?.cancelled) {
                     Toast.info(`${platformLabel} Sign-In`, 'Chrome sign-in was cancelled. Your SSApp session was not changed.');
@@ -18027,6 +18038,7 @@
                 "signin.choose": "Choose a sign-in method",
                 "signin.chrome": "Use Chrome",
                 "signin.chromeHelp": "Experimental. Try this if Google rejects the SSApp window.",
+                "signin.browserChromeHelp": "Experimental. Try this if the site rejects the SSApp sign-in window.",
                 "signin.ssapp": "Use the SSApp window",
                 "signin.ssappHelp": "The usual sign-in method for this source.",
                 "signin.closeHelp": "After signing in, close the SSApp sign-in window. With Chrome, wait for the import to finish; its temporary window closes automatically.",

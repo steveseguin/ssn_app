@@ -508,8 +508,8 @@ async function run() {
 	assert.match(indexSource, /tiktok: 'TikTok'/);
 	assert.match(indexSource, /Sign into \$\{platformLabel\} via Chrome for \$\{sessionLabel\}/);
 	assert.match(indexSource, /ipcRenderer\.invoke\('external-browser-signin'/);
-	assert.match(indexSource, /After signing in through the SSApp window, close that sign-in window/);
-	assert.match(indexSource, /leave Chrome open until SSApp finishes importing/);
+	assert.match(indexSource, /After signing in, close the SSApp sign-in window/);
+	assert.match(indexSource, /Leave Chrome open until SSApp finishes importing/);
 	assert.match(indexSource, /customSession: requestedCustomSession/);
 	assert.match(mainSource, /setupExternalBrowserSigninHandler\(\{[\s\S]*?getMainWindow: \(\) => mainWindow,[\s\S]*?trackPartition: partition => createdPartitions\.add\(partition\)[\s\S]*?\}\)/);
 	assert.match(handlerSource, /--remote-debugging-address=127\.0\.0\.1/);
