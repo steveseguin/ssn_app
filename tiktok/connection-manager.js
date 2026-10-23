@@ -2124,6 +2124,37 @@ function resolveTikTokMemberLevel(data = {}, badgeSources = null) {
     return null;
 }
 
+function normalizeTikTokTeamLevel(value) {
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!/^\d+$/.test(trimmed)) return null;
+        value = Number(trimmed);
+    }
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/** Read exact Team levels without treating user-grade ranks or badge image tiers as Fan Club levels. */
+function resolveTikTokTeamMemberLevel(data = {}, badgeSources = []) {
+    for (const candidate of [data.teamMemberLevel, data?.user?.teamMemberLevel, data?.author?.teamMemberLevel]) {
+        const level = normalizeTikTokTeamLevel(candidate);
+        if (level !== null) return level;
+    }
+
+    for (const badge of badgeSources) {
+        if (!badge || typeof badge !== 'object') continue;
+        const sceneType = Number(badge.badgeSceneType ?? badge.badgeScene ?? badge.sceneType ?? badge.scene);
+        if (sceneType !== 10) continue;
+        const candidates = [badge.level, badge.badgeLevel, badge.badge_level,
+            badge.fanLevel, badge.fan_level, badge.displayLevel, badge.display_level,
+            badge.privilegeLogExtra?.level, badge.logExtra?.level, badge.log_extra?.level];
+        for (const candidate of candidates) {
+            const level = normalizeTikTokTeamLevel(candidate);
+            if (level !== null) return level;
+        }
+    }
+    return null;
+}
+
 const LIKELY_EMOTE_PLACEHOLDER_HINTS = /\b(?:emoji|emote|sticker|smiley|smile|face|heart|laugh|grin|wink|kiss|sad|cry|angry|fire|rose|love|happy|joy|thumb|clap)\b/i;
 
 function normalizeEmoteLabelForMatching(value) {
@@ -2436,6 +2467,10 @@ function composeTikTokChatMessage(data = {}, options = {}) {
     const memberLevel = resolveTikTokMemberLevel(data, badgeSources);
     if (memberLevel !== null) {
         genericMeta.memberLevel = memberLevel;
+    }
+    const teamMemberLevel = resolveTikTokTeamMemberLevel(data, badgeSources);
+    if (teamMemberLevel !== null) {
+        genericMeta.teamMemberLevel = teamMemberLevel;
     }
     if (Object.keys(genericMeta).length) {
         if (!message.meta || typeof message.meta !== 'object' || Array.isArray(message.meta)) {
