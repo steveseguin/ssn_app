@@ -796,6 +796,30 @@ function mapOwnerBroadcast(item, fallbackStatus, channelTitle) {
     };
 }
 
+async function checkOwnerBroadcastEndTimes(broadcasts, accessToken) {
+    const candidates = broadcasts.filter(stream => stream.status === "live" || stream.status === "upcoming");
+    const byVideoId = new Map(candidates.map(stream => [stream.videoId, stream]));
+    // Verify completion against the video metadata as well as the broadcast listing.
+    // Batch candidates to limit quota use; unscheduled broadcasts remain eligible.
+    for (let offset = 0; offset < candidates.length; offset += 50) {
+        const videoIds = candidates.slice(offset, offset + 50).map(stream => stream.videoId).join(",");
+        const apiUrl = "https://www.googleapis.com/youtube/v3/videos" +
+            "?part=liveStreamingDetails&fields=items(id,liveStreamingDetails(actualEndTime))" +
+            `&id=${encodeURIComponent(videoIds)}`;
+        const data = await fetchYouTubeApiJson(apiUrl, accessToken);
+        for (const item of Array.isArray(data.items) ? data.items : []) {
+            const stream = byVideoId.get(item.id);
+            const actualEndTime = item.liveStreamingDetails?.actualEndTime;
+            if (!stream || !actualEndTime) continue;
+            stream.actualEndTime = actualEndTime;
+            stream.status = "ended";
+            stream.statusDisplay = "ended";
+            stream.youtubeChatStatus = "ended";
+            stream.liveChatId = "";
+        }
+    }
+}
+
 async function fetchYouTubeOwnerBroadcasts(payload = {}) {
     const authRef = String(payload.authRef || "").trim();
     const channelId = String(payload.channelId || "").trim();
@@ -830,6 +854,7 @@ async function fetchYouTubeOwnerBroadcasts(payload = {}) {
             pageToken = typeof data.nextPageToken === "string" ? data.nextPageToken : "";
         } while (pageToken);
     }
+    await checkOwnerBroadcastEndTimes(broadcasts, accessToken);
     return {
         success: true,
         profile: sanitizeOwnerAuthRecord(record),

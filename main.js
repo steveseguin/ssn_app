@@ -4688,6 +4688,7 @@ function normalizeUiLanguagePreference(lang) {
     if (lower.startsWith('es')) return 'es';
     if (lower.startsWith('fr')) return 'fr';
     if (lower.startsWith('de')) return 'de';
+    if (lower === 'et' || lower.startsWith('et-')) return 'et';
     if (lower.startsWith('cs')) return 'cs';
     if (lower.startsWith('th')) return 'th';
     if (lower === 'ko' || lower.startsWith('ko-')) return 'ko';
@@ -11571,6 +11572,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         'de-DE': 'de',
                         'de-AT': 'de',
                         'de-CH': 'de',
+                        'et-EE': 'et',
                         'cs-CZ': 'cs',
                         'th-TH': 'th',
                         'zh-CN': 'zh-CN',

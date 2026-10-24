@@ -1903,6 +1903,11 @@ button.group-control {
   background: rgba(255, 255, 255, 0.2);
 }
 
+.yt-stream-item:not([data-platform]) .yt-stream-type {
+  display: inline-flex;
+  white-space: nowrap;
+}
+
 .yt-stream-meta-badges {
   display: flex;
   flex-wrap: wrap;
