@@ -9,6 +9,9 @@ const REQUEST_TIMEOUT_MS = 60000;
 // Windows.Media.SpeechSynthesis for every chat message adds a noticeable delay.
 const POWERSHELL_WORKER = String.raw`
 $ErrorActionPreference = "Stop"
+# Node sends and receives UTF-8 JSON; do not use the Windows console code page.
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 [void][Windows.Media.SpeechSynthesis.SpeechSynthesizer, Windows.Media.SpeechSynthesis, ContentType = WindowsRuntime]
 [void][Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
