@@ -214,6 +214,8 @@ const { AppDialogService } = require('./resources/app-dialog-service');
 const { buildMcpLaunchConfig } = require('./resources/mcp-launch-config');
 const { KickWsClient } = require('./resources/kick-ws-client');
 const { WindowsSystemTts } = require('./resources/windows-system-tts');
+const { EdgeTts } = require('./resources/edge-tts');
+const edgeTts = new EdgeTts();
 const { ElectronThermalPrinter } = require('./resources/electron-thermal-printer');
 
 const windowsSystemTts = new WindowsSystemTts();
@@ -17134,6 +17136,7 @@ app.on("before-quit", (event) => {
     }
     shutdownTtsWorker();
     windowsSystemTts.stop();
+    edgeTts.stop();
     thermalPrinter.stop();
     shutdownSttWorker();
     if (localMediaService) {
@@ -18689,6 +18692,16 @@ ipcMain.handle('system-tts:synthesize', async (event, data) => {
         throw error;
     }
     return windowsSystemTts.synthesize(data);
+});
+
+ipcMain.handle('edge-tts:voices', async (event, refresh) => {
+    if (!isTrustedSystemTtsSender(event)) throw new Error('Edge Natural is only available to Social Stream pages.');
+    return edgeTts.voices(refresh === true);
+});
+
+ipcMain.handle('edge-tts:synthesize', async (event, data) => {
+    if (!isTrustedSystemTtsSender(event)) throw new Error('Edge Natural is only available to Social Stream pages.');
+    return edgeTts.synthesize(data);
 });
 
 ipcMain.handle('thermal-print', async (event, data = {}) => {

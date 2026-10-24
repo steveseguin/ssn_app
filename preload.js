@@ -935,6 +935,9 @@ function configureContextBridge(){
 				return await ipcRenderer.invoke('tts', {text, settings});
 			  },
 
+			  edgeTtsVoices: async (refresh = false) => ipcRenderer.invoke('edge-tts:voices', refresh),
+			  edgeTts: async (text, settings = {}) => ipcRenderer.invoke('edge-tts:synthesize', { ...settings, text }),
+
 			  systemTts: async (text, settings = {}) => {
 				return await ipcRenderer.invoke('system-tts:synthesize', { text, ...settings });
 			  },
@@ -1291,6 +1294,9 @@ try {
 			tts: async (text, settings) => {
 				return await ipcRenderer.invoke('tts', {text, settings});
 			},
+
+			edgeTtsVoices: async (refresh = false) => ipcRenderer.invoke('edge-tts:voices', refresh),
+			edgeTts: async (text, settings = {}) => ipcRenderer.invoke('edge-tts:synthesize', { ...settings, text }),
 
 			systemTts: async (text, settings = {}) => {
 				return await ipcRenderer.invoke('system-tts:synthesize', { text, ...settings });
