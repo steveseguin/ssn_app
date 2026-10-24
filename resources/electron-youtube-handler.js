@@ -804,14 +804,15 @@ async function checkOwnerBroadcastEndTimes(broadcasts, accessToken) {
     for (let offset = 0; offset < candidates.length; offset += 50) {
         const videoIds = candidates.slice(offset, offset + 50).map(stream => stream.videoId).join(",");
         const apiUrl = "https://www.googleapis.com/youtube/v3/videos" +
-            "?part=liveStreamingDetails&fields=items(id,liveStreamingDetails(actualEndTime))" +
+            "?part=snippet,liveStreamingDetails&fields=items(id,snippet(liveBroadcastContent),liveStreamingDetails(actualEndTime))" +
             `&id=${encodeURIComponent(videoIds)}`;
         const data = await fetchYouTubeApiJson(apiUrl, accessToken);
         for (const item of Array.isArray(data.items) ? data.items : []) {
             const stream = byVideoId.get(item.id);
             const actualEndTime = item.liveStreamingDetails?.actualEndTime;
-            if (!stream || !actualEndTime) continue;
-            stream.actualEndTime = actualEndTime;
+            const videoStatus = String(item.snippet?.liveBroadcastContent || "").toLowerCase();
+            if (!stream || (!actualEndTime && videoStatus !== "none")) continue;
+            if (actualEndTime) stream.actualEndTime = actualEndTime;
             stream.status = "ended";
             stream.statusDisplay = "ended";
             stream.youtubeChatStatus = "ended";
