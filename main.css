@@ -1996,6 +1996,50 @@ button.group-control {
   cursor: not-allowed;
 }
 
+.yt-owner-details {
+  margin-top: 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.yt-copy-details {
+  margin-left: 8px;
+  padding: 4px 8px;
+  border: 1px solid #64748b;
+  border-radius: 4px;
+  background: #334155;
+  color: #f8fafc;
+  font: inherit;
+  cursor: pointer;
+}
+
+.yt-copy-details:hover {
+  background: #475569;
+}
+
+.yt-stream-item.owner-discovered.not-live-stream,
+.yt-stream-item.owner-discovered.already-added {
+  opacity: 1;
+}
+
+#ytActivateButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.yt-stream-item.already-added .yt-copy-details {
+  pointer-events: auto;
+}
+
+#youtubeOwnerSigninModal .modal-footer {
+  flex-wrap: wrap;
+}
+
+#youtubeOwnerSigninModal .modal-footer button {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .yt-stream-item.already-added .yt-stream-controls {
   opacity: 0.5;
 }

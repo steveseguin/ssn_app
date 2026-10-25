@@ -3,7 +3,7 @@
 const crypto = require("crypto");
 const http = require("http");
 const path = require("path");
-const { BrowserWindow, dialog, ipcMain, safeStorage, session, shell } = require("electron");
+const { BrowserWindow, clipboard, dialog, ipcMain, safeStorage, session, shell } = require("electron");
 const Store = require("electron-store");
 
 function escapeHtml(str) {
@@ -25,6 +25,7 @@ const YT_READONLY_SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/youtube.channel-memberships.creator"
 ];
+const YT_WRITE_SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl";
 const OWNER_AUTH_STORE_KEY = "youtubeOwnerAuth";
 const OWNER_BROADCAST_PARTS = "id,snippet,status,contentDetails";
 const OWNER_BROADCAST_STATUSES = ["active", "upcoming"];
@@ -34,6 +35,7 @@ const pendingOwnerAuth = new Map();
 const ownerAuthStore = new Store({ name: "youtube-owner-auth" });
 
 let activeSession = null;
+let ownerAuthInProgress = false;
 
 function getSenderFrameUrl(event) {
     try {
@@ -170,10 +172,13 @@ function runLoopbackOAuthSession(payload = {}, dependencies = {}) {
             reject(error);
         };
 
-        session = { fail };
+        session = { fail, ownerAuth: dependencies.ownerAuth === true, authUrl: "" };
         activeSession = session;
 
         server = http.createServer((req, res) => {
+            // A later sign-in can reuse this port. Do not leave a browser connection
+            // attached to the previous session's state after its response completes.
+            res.setHeader("Connection", "close");
             const parsed = new URL(req.url || "/", `http://${LOOPBACK_HOST}`);
             const query = Object.fromEntries(parsed.searchParams);
 
@@ -237,8 +242,13 @@ function runLoopbackOAuthSession(payload = {}, dependencies = {}) {
         });
 
         (async () => {
+            const listeningServer = server;
             try {
-                const port = await tryStartServer(server);
+                const port = await tryStartServer(listeningServer);
+                if (settled) {
+                    try { listeningServer.close(); } catch (_) { }
+                    return;
+                }
                 const redirectUri = `http://localhost:${port}${CALLBACK_PATH}`;
                 const authUrl = buildAuthUrl({
                     authBase: payload.authBase,
@@ -249,13 +259,15 @@ function runLoopbackOAuthSession(payload = {}, dependencies = {}) {
                 });
 
                 payload.redirectUri = redirectUri;
+                session.authUrl = authUrl;
 
                 try {
                     await openExternal(authUrl, { activate: true });
                     console.log('[YouTube OAuth] Opening auth URL in default browser');
                 } catch (shellError) {
                     console.error('[YouTube OAuth] Failed to launch default browser:', shellError);
-                    fail(shellError);
+                    // Owner sign-in can still finish using the copy-link or retry controls.
+                    if (!session.ownerAuth) fail(shellError);
                 }
             } catch (err) {
                 if (err.code === 'PORTS_UNAVAILABLE') {
@@ -526,6 +538,7 @@ async function seedYouTubeWebSocketTokenStore(options = {}) {
                     localStorage.setItem('youtubeRefreshToken', payload.refreshToken);
                 }
                 localStorage.setItem('youtubeOAuthAccessLevel', payload.accessLevel);
+                localStorage.setItem('youtubeOAuthTokenAccessLevel', payload.accessLevel);
                 localStorage.setItem('youtubeOAuthSource', payload.authSource);
                 return {
                     hasToken: !!localStorage.getItem('youtubeOAuthToken'),
@@ -624,13 +637,16 @@ async function fetchOwnerChannels(accessToken) {
 async function startYouTubeOwnerAuth(payload = {}) {
     prunePendingOwnerAuth();
     ensureOwnerTokenStorageAvailable();
+    const requestedScopes = payload.accessLevel === "admin"
+        ? YT_READONLY_SCOPES.concat(YT_WRITE_SCOPE)
+        : YT_READONLY_SCOPES;
     const state = crypto.randomBytes(16).toString("hex");
     const authResult = await runLoopbackOAuthSession({
         authBase: HOSTED_AUTH_BASE,
         clientId: DEFAULT_YT_CLIENT_ID,
-        scopes: YT_READONLY_SCOPES,
+        scopes: requestedScopes,
         state
-    });
+    }, { ownerAuth: true });
     const tokens = await postHostedYouTubeAuthJson("/token", {
         code: authResult.code,
         redirect_uri: authResult.redirectUri,
@@ -644,10 +660,13 @@ async function startYouTubeOwnerAuth(payload = {}) {
         throw new Error("No YouTube channels were returned for the signed-in account.");
     }
     const pendingAuthId = crypto.randomBytes(16).toString("hex");
+    const grantedScopes = typeof tokens.scope === "string" ? tokens.scope.split(/\s+/).filter(Boolean) : requestedScopes;
     pendingOwnerAuth.set(pendingAuthId, {
         createdAt: Date.now(),
         tokens,
         channels,
+        scopes: grantedScopes,
+        accessLevel: payload.accessLevel === "admin" && grantedScopes.includes(YT_WRITE_SCOPE) ? "admin" : "readonly",
         customSession: String(payload.customSession || "AUTO"),
         tokenStoreUrl: String(payload.tokenStoreUrl || "")
     });
@@ -688,7 +707,7 @@ async function confirmYouTubeOwnerAuth(payload = {}) {
         channelTitle: selectedChannel.channelTitle,
         thumbnails: selectedChannel.thumbnails || null,
         authSource: "hosted",
-        scopes: YT_READONLY_SCOPES,
+        scopes: pending.scopes || YT_READONLY_SCOPES,
         accessToken: protectSecret(tokens.access_token),
         refreshToken,
         expiresAt: Date.now() + (expiresIn * 1000)
@@ -704,7 +723,7 @@ async function confirmYouTubeOwnerAuth(payload = {}) {
             accessToken: tokens.access_token,
             refreshToken: refreshTokenValue,
             expiresIn,
-            accessLevel: "readonly",
+            accessLevel: pending.accessLevel || "readonly",
             authSource: "default_hosted"
         });
     } catch (error) {
@@ -717,6 +736,7 @@ async function confirmYouTubeOwnerAuth(payload = {}) {
     return {
         success: true,
         profile: sanitizeOwnerAuthRecord(authRecord),
+        accessLevel: pending.accessLevel || "readonly",
         websocketTokenStore
     };
 }
@@ -798,25 +818,47 @@ function mapOwnerBroadcast(item, fallbackStatus, channelTitle) {
 
 async function checkOwnerBroadcastEndTimes(broadcasts, accessToken) {
     const candidates = broadcasts.filter(stream => stream.status === "live" || stream.status === "upcoming");
-    const byVideoId = new Map(candidates.map(stream => [stream.videoId, stream]));
     // Verify completion against the video metadata as well as the broadcast listing.
     // Batch candidates to limit quota use; unscheduled broadcasts remain eligible.
     for (let offset = 0; offset < candidates.length; offset += 50) {
-        const videoIds = candidates.slice(offset, offset + 50).map(stream => stream.videoId).join(",");
+        const batch = candidates.slice(offset, offset + 50);
+        const videoIds = batch.map(stream => stream.videoId).join(",");
         const apiUrl = "https://www.googleapis.com/youtube/v3/videos" +
-            "?part=snippet,liveStreamingDetails&fields=items(id,snippet(liveBroadcastContent),liveStreamingDetails(actualEndTime))" +
+            "?part=snippet,status,liveStreamingDetails&fields=items(id,snippet(liveBroadcastContent),status(privacyStatus),liveStreamingDetails(actualStartTime,actualEndTime,scheduledStartTime,activeLiveChatId))" +
             `&id=${encodeURIComponent(videoIds)}`;
         const data = await fetchYouTubeApiJson(apiUrl, accessToken);
-        for (const item of Array.isArray(data.items) ? data.items : []) {
-            const stream = byVideoId.get(item.id);
-            const actualEndTime = item.liveStreamingDetails?.actualEndTime;
-            const videoStatus = String(item.snippet?.liveBroadcastContent || "").toLowerCase();
-            if (!stream || (!actualEndTime && videoStatus !== "none")) continue;
-            if (actualEndTime) stream.actualEndTime = actualEndTime;
-            stream.status = "ended";
-            stream.statusDisplay = "ended";
-            stream.youtubeChatStatus = "ended";
-            stream.liveChatId = "";
+        const byVideoId = new Map((Array.isArray(data.items) ? data.items : []).map(item => [item.id, item]));
+        for (const stream of batch) {
+            const item = byVideoId.get(stream.videoId);
+            const details = item?.liveStreamingDetails || {};
+            const videoStatus = String(item?.snippet?.liveBroadcastContent || "").toLowerCase();
+            stream.youtubeDiscoveryDetails = {
+                broadcastStatus: stream.lifeCycleStatus,
+                broadcastPrivacyStatus: stream.privacyStatus,
+                videoStatus,
+                verification: item ? "missing_status" : "missing_video",
+                checkedAt: new Date().toISOString()
+            };
+            for (const field of ["actualStartTime", "actualEndTime", "scheduledStartTime"]) {
+                if (details[field]) stream[field] = details[field];
+            }
+            if (details.actualEndTime || videoStatus === "none") {
+                stream.status = "ended";
+            } else if (videoStatus === "live" || videoStatus === "upcoming") {
+                stream.status = videoStatus;
+            } else {
+                stream.status = "unverified";
+            }
+            stream.statusDisplay = stream.status;
+            if (stream.status !== "unverified") stream.youtubeDiscoveryDetails.verification = "verified";
+            stream.privacyStatus = item?.status?.privacyStatus || (stream.status === "unverified" ? "" : stream.privacyStatus);
+            if (stream.status === "ended" || stream.status === "unverified") {
+                stream.youtubeChatStatus = stream.status;
+                stream.liveChatId = "";
+            } else if (details.activeLiveChatId) {
+                stream.liveChatId = details.activeLiveChatId;
+                stream.youtubeChatStatus = "ready";
+            }
         }
     }
 }
@@ -966,11 +1008,38 @@ function setupYouTubeOAuthHandler() {
     if (ipcMain.listenerCount("youtube-owner-auth-start") === 0) {
         ipcMain.handle("youtube-owner-auth-start", async (event, payload = {}) => {
             assertMainAppOwnerAuthCaller(event);
+            if (ownerAuthInProgress) throw new Error("YouTube sign-in is already in progress. Complete or cancel it first.");
             if (activeSession && typeof activeSession.fail === "function") {
                 console.warn("[YouTube Owner] Aborting previous pending YouTube OAuth session.");
                 activeSession.fail(new Error("Previous YouTube authentication was interrupted by a new request."));
             }
-            return startYouTubeOwnerAuth(payload);
+            ownerAuthInProgress = true;
+            try {
+                return await startYouTubeOwnerAuth(payload);
+            } finally {
+                ownerAuthInProgress = false;
+            }
+        });
+    }
+    if (ipcMain.listenerCount("youtube-owner-auth-action") === 0) {
+        ipcMain.handle("youtube-owner-auth-action", async (event, action) => {
+            assertMainAppOwnerAuthCaller(event);
+            const current = activeSession;
+            if (!current?.ownerAuth) return { success: false, message: "No browser sign-in is waiting. YouTube may already be finishing sign-in." };
+            if (action === "cancel") {
+                current.fail(new Error("YouTube sign-in cancelled."));
+                return { success: true };
+            }
+            if (!current.authUrl) return { success: false, message: "Preparing the sign-in link. Try again in a moment." };
+            if (action === "copy") {
+                clipboard.writeText(current.authUrl);
+                return { success: true };
+            }
+            if (action === "retry") {
+                await shell.openExternal(current.authUrl, { activate: true });
+                return { success: true };
+            }
+            return { success: false, message: "Unknown sign-in action." };
         });
     }
     if (ipcMain.listenerCount("youtube-owner-auth-confirm") === 0) {

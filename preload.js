@@ -1014,6 +1014,10 @@ function configureContextBridge(){
 				return await ipcRenderer.invoke('youtube-owner-auth-start', payload || {});
 			  },
 
+			  youtubeOwnerAuthAction: async (action) => {
+				return await ipcRenderer.invoke('youtube-owner-auth-action', action);
+			  },
+
 			  confirmYouTubeOwnerAuth: async (payload) => {
 				return await ipcRenderer.invoke('youtube-owner-auth-confirm', payload || {});
 			  },
@@ -1213,6 +1217,10 @@ try {
 
 			startYouTubeOwnerAuth: async (payload) => {
 				return await ipcRenderer.invoke('youtube-owner-auth-start', payload || {});
+			},
+
+			youtubeOwnerAuthAction: async (action) => {
+				return await ipcRenderer.invoke('youtube-owner-auth-action', action);
 			},
 
 			confirmYouTubeOwnerAuth: async (payload) => {

@@ -18,6 +18,7 @@ function escapeYouTubeHtml(value) {
 }
 
 function getResolvedYouTubeVideoStatus(status, viewers) {
+    if (status === 'unverified') return 'unverified';
     if (status === 'live') return 'live';
     if (status === 'upcoming') return 'upcoming';
     if (status === 'ended') return 'ended';
@@ -98,6 +99,9 @@ function getYouTubeOwnerDiscoveryMessage(streams = []) {
     const list = Array.isArray(streams) ? streams : [];
     if (list.some(stream => getResolvedYouTubeVideoStatus(stream.status, stream.viewers) === 'upcoming')) {
         return 'Upcoming broadcasts were found, but YouTube chat is not ready yet. The source will stay waiting until chat becomes available.';
+    }
+    if (list.some(stream => stream.status === 'unverified')) {
+        return 'YouTube did not return enough video details to verify these broadcasts. Check again shortly, or use Copy details in the stream picker when asking for help.';
     }
     return 'No active or upcoming broadcasts were found for the signed-in YouTube channel.';
 }
@@ -387,6 +391,7 @@ class YouTubeStreamSelector {
                 this.streamList.innerHTML = '';
 
                 this.createStreamElements(streams, username).then(() => {
+                    if (streams.some(isOwnerDiscoveredYouTubeStream)) this.activateButton.disabled = this.selectedStreams.size === 0;
                     console.log("Stream elements created, showing modal");
                     if (this.modal) this.modal.style.display = 'block';
                 }).catch(error => {
@@ -456,6 +461,7 @@ class YouTubeStreamSelector {
             }
             const element = document.createElement('div');
             element.className = 'yt-stream-item';
+            if (isOwnerDiscoveredYouTubeStream(stream)) element.classList.add('owner-discovered');
             element.dataset.videoId = stream.videoId;
             if (this.options?.target) element.dataset.platform = this.options.target;
             const initialIsShort = typeof stream.isShort === 'boolean' ? stream.isShort : this.currentIsShortDefault;
@@ -471,6 +477,7 @@ class YouTubeStreamSelector {
             if (status === 'upcoming') statusBadge = `<span class="stream-status-badge upcoming">${translate('streams.upcoming')}</span>`;
             else if (status === 'live') statusBadge = `<span class="stream-status-badge live">${translate('streams.live')}</span>`;
             else if (status === 'ended') statusBadge = `<span class="stream-status-badge ended">${translate('streams.ended')}</span>`;
+            else if (status === 'unverified') statusBadge = '<span class="stream-status-badge video">Not verified</span>';
             else statusBadge = '<span class="stream-status-badge video">Video</span>';
 
             const metaBadges = [];
@@ -479,8 +486,8 @@ class YouTubeStreamSelector {
             }
             if (isOwnerDiscoveredYouTubeStream(stream)) {
                 const chatReady = stream.youtubeChatStatus === 'ready' || !!stream.liveChatId;
-                const chatLabel = translate(chatReady ? 'streams.chatReady' : 'streams.chatWaiting');
-                metaBadges.push(`<span class="yt-stream-meta-badge ${chatReady ? 'chat-ready' : 'chat-waiting'}">${chatLabel}</span>`);
+                const chatLabel = status === 'unverified' ? 'Chat not verified' : (chatReady ? 'Chat not checked' : translate('streams.chatWaiting'));
+                metaBadges.push(`<span class="yt-stream-meta-badge ${chatReady ? 'chat-unchecked' : 'chat-waiting'}">${chatLabel}</span>`);
             }
             const metaBadgeHtml = metaBadges.length ? `<div class="yt-stream-meta-badges">${metaBadges.join('')}</div>` : '';
             const viewerHtml = ("viewers" in stream && typeof stream.viewers === 'number')
@@ -499,6 +506,8 @@ class YouTubeStreamSelector {
                   <div class="yt-stream-channel">${escapeYouTubeHtml(stream.channelTitle || username || stream.channelId || '')}</div>
                   ${viewerHtml}
                   ${metaBadgeHtml}
+                  ${isOwnerDiscoveredYouTubeStream(stream) ? `<div class="yt-owner-details">Video ID: ${escapeYouTubeHtml(stream.videoId)} <button type="button" class="yt-copy-details">Copy details</button></div>` : ''}
+                  ${status === 'unverified' ? '<div class="yt-stream-discovery-message">YouTube did not return enough video details. Check again shortly.</div>' : ''}
                   ${status === 'upcoming' ? '<div class="stream-scheduled-time">' + this.formatScheduledTime(stream.scheduledStartTime) + '</div>' : ''}
                   ${isExisting ? `<span class="stream-status already-added">${translate('streams.added')}</span>` : ''}
                 </div>
@@ -511,7 +520,7 @@ class YouTubeStreamSelector {
 
             if (selectable) {
                 element.addEventListener('click', (e) => {
-                    if (!e.target.closest('.yt-stream-controls')) {
+                    if (!e.target.closest('.yt-stream-controls, .yt-copy-details')) {
                         this.toggleStreamSelection(stream.videoId, element);
                     }
                 });
@@ -531,7 +540,31 @@ class YouTubeStreamSelector {
                 if (isExisting) element.title = "This stream is already in your sources list.";
                 if (status === 'ended') element.title = "This stream has ended and cannot be added.";
                 if (!isExisting && status !== 'ended') element.title = "This video is not currently live or upcoming.";
+                if (status === 'unverified') element.title = "YouTube did not return enough video details to verify this broadcast.";
             }
+
+            const copyDetails = element.querySelector('.yt-copy-details');
+            if (copyDetails) copyDetails.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                const details = {
+                    videoId: stream.videoId,
+                    videoUrl: `https://www.youtube.com/watch?v=${encodeURIComponent(stream.videoId)}`,
+                    title: stream.title,
+                    channelId: stream.channelId,
+                    status: stream.status,
+                    privacyStatus: stream.privacyStatus,
+                    scheduledStartTime: stream.scheduledStartTime,
+                    actualStartTime: stream.actualStartTime,
+                    actualEndTime: stream.actualEndTime,
+                    ...stream.youtubeDiscoveryDetails
+                };
+                try {
+                    await navigator.clipboard.writeText(JSON.stringify(details, null, 2));
+                    copyDetails.textContent = 'Copied';
+                } catch (_) {
+                    Toast.error('YouTube', 'Could not copy stream details. The video ID is shown in the picker.');
+                }
+            });
 
             const checkbox = element.querySelector('.shorts-toggle-checkbox');
             if (checkbox) {
@@ -592,6 +625,7 @@ class YouTubeStreamSelector {
             element.setAttribute('aria-checked', String(this.selectedStreams.has(videoId)));
             this.activateButton.disabled = this.selectedStreams.size === 0;
         }
+        if (this.streams.some(isOwnerDiscoveredYouTubeStream)) this.activateButton.disabled = this.selectedStreams.size === 0;
     }
 
     handleActivation() {
@@ -605,7 +639,7 @@ class YouTubeStreamSelector {
         // Store the promise resolver before hiding
         const resolver = this.resolvePromise;
         if (this.options?.target) this.resolvePromise = null;
-        this.hide();
+        this.hide(false);
         
         // Now resolve the promise with the result
         if (resolver) {
@@ -614,9 +648,9 @@ class YouTubeStreamSelector {
         }
     }
 
-    hide() { 
+    hide(cancelled = true) {
         if (this.modal) this.modal.style.display = 'none';
-        if (this.resolvePromise && (this.options?.target || this.selectedStreams.size === 0)) {
+        if (this.resolvePromise && cancelled) {
             this.resolvePromise({ cancelled: true }); 
         }
         this.resolvePromise = null;

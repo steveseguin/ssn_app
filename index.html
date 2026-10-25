@@ -754,8 +754,34 @@
             <div class="youtube-owner-profile" id="youtubeOwnerManageSummary"></div>
             <div class="modal-footer">
                 <button id="youtubeOwnerManageSelectButton" type="button">Check for live streams now</button>
-                <button id="youtubeOwnerManageSwitchButton" type="button">Switch account / channel</button>
+                <button id="youtubeOwnerManageSwitchButton" type="button">Change account or access</button>
                 <button id="youtubeOwnerManageCloseButton" data-type="cancel" type="button">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal hidden" id="youtubeOwnerAccessModal">
+        <div class="modal-content modal-md youtube-owner-modal" role="dialog" aria-modal="true" aria-labelledby="youtubeOwnerAccessTitle">
+            <h2 id="youtubeOwnerAccessTitle">YouTube access</h2>
+            <p>Read only lets Social Stream find your broadcasts and receive chat. Choose Write if you also want to send chat from WebSocket mode.</p>
+            <p>Write also permits moderation and video edits. Google will ask you to approve these broader YouTube permissions.</p>
+            <div class="modal-footer">
+                <button type="button" data-youtube-access="readonly">Read only</button>
+                <button type="button" data-youtube-access="admin">Write</button>
+                <button type="button" data-youtube-access="cancel" data-type="cancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal hidden" id="youtubeOwnerSigninModal">
+        <div class="modal-content modal-md youtube-owner-modal" role="dialog" aria-modal="true" aria-labelledby="youtubeOwnerSigninTitle">
+            <h2 id="youtubeOwnerSigninTitle">YouTube Sign-In</h2>
+            <p>Complete sign-in in your browser. If the wrong browser opens, copy the sign-in link and paste it into your preferred browser on this computer.</p>
+            <p id="youtubeOwnerSigninStatus" role="status"></p>
+            <div class="modal-footer">
+                <button type="button" onclick="youtubeOwnerSigninAction('copy')">Copy sign-in link</button>
+                <button type="button" onclick="youtubeOwnerSigninAction('retry')">Open browser again</button>
+                <button type="button" data-type="cancel" onclick="youtubeOwnerSigninAction('cancel')">Cancel</button>
             </div>
         </div>
     </div>
@@ -2741,6 +2767,42 @@
         let activeRumbleAddModeCleanup = null;
         let activeYouTubeOwnerConfirmCleanup = null;
         let activeYouTubeOwnerManageCleanup = null;
+        let youtubeOwnerSigninPending = false;
+
+        function chooseYouTubeOwnerAccess() {
+            const modal = document.getElementById('youtubeOwnerAccessModal');
+            return new Promise(resolve => {
+                const buttons = Array.from(modal.querySelectorAll('[data-youtube-access]'));
+                const finish = value => {
+                    buttons.forEach(button => { button.onclick = null; });
+                    modal.classList.add('hidden');
+                    deactivateModal(modal);
+                    resolve(value === 'cancel' ? null : value);
+                };
+                buttons.forEach(button => { button.onclick = () => finish(button.dataset.youtubeAccess); });
+                modal.classList.remove('hidden');
+                activateModal(modal, () => finish('cancel'));
+            });
+        }
+
+        async function youtubeOwnerSigninAction(action) {
+            const status = document.getElementById('youtubeOwnerSigninStatus');
+            try {
+                const result = await getYouTubeOwnerBridge().youtubeOwnerAuthAction(action);
+                status.textContent = result?.success
+                    ? (action === 'copy' ? 'Sign-in link copied. Paste it into your preferred browser on this computer.' : 'Waiting for browser sign-in...')
+                    : (result?.message || 'Unable to perform this action.');
+                if (result?.success && action === 'cancel') {
+                    const modal = document.getElementById('youtubeOwnerSigninModal');
+                    modal.classList.add('hidden');
+                    deactivateModal(modal);
+                }
+            } catch (error) {
+                status.textContent = action === 'retry'
+                    ? 'Could not open the browser. Use Copy sign-in link instead.'
+                    : (error?.message || 'Unable to perform this action.');
+            }
+        }
 
         function showYouTubeAddModeModal() {
             const modal = document.getElementById('youtubeAddModeModal');
@@ -2921,12 +2983,17 @@
         }
 
         async function startYouTubeOwnerGroupFlow(target = 'youtube', existingGroupId = null) {
+            if (youtubeOwnerSigninPending) return null;
             const bridge = getYouTubeOwnerBridge();
             if (!bridge) {
                 Toast.error('YouTube Sign-In', 'This app build does not expose YouTube owner sign-in yet.');
                 return null;
             }
+            youtubeOwnerSigninPending = true;
+            const signinModal = document.getElementById('youtubeOwnerSigninModal');
             try {
+                const accessLevel = await chooseYouTubeOwnerAccess();
+                if (!accessLevel) return null;
                 const existingGroup = existingGroupId ? stateManager.getGroup(existingGroupId) : null;
                 const customSession = existingGroup?.customSession || 'AUTO';
                 let tokenStorePage = await resolveWebSocketHtml('youtube_auth', {
@@ -2945,11 +3012,17 @@
                         return null;
                     });
                 }
-                Toast.info('YouTube Sign-In', 'Opening YouTube sign-in in your browser...');
+                Toast.info('Opening YouTube sign-in in your browser...', 'YouTube Sign-In');
+                document.getElementById('youtubeOwnerSigninStatus').textContent = 'Waiting for browser sign-in...';
+                signinModal.classList.remove('hidden');
+                activateModal(signinModal, () => youtubeOwnerSigninAction('cancel'));
                 const authResult = await bridge.startYouTubeOwnerAuth({
+                    accessLevel,
                     customSession,
                     tokenStoreUrl: tokenStorePage?.url || ''
                 });
+                signinModal.classList.add('hidden');
+                deactivateModal(signinModal);
                 const selectedChannel = await showYouTubeOwnerChannelConfirm(authResult);
                 if (!selectedChannel) return null;
 
@@ -2966,9 +3039,13 @@
                     customSession
                 }, target, existingGroupId);
                 if (confirmed.websocketTokenStore && confirmed.websocketTokenStore.success === false && !confirmed.websocketTokenStore.skipped) {
-                    Toast.warning('YouTube Sign-In', 'Discovery sign-in worked, but the YouTube chat session may still ask you to sign in.');
+                    Toast.warning('Discovery sign-in worked, but the YouTube chat session may still ask you to sign in.', 'YouTube Sign-In');
                 }
-                Toast.success('YouTube Sign-In', `Signed in as ${group.channelTitle || group.username}.`);
+                if (accessLevel === 'admin' && confirmed.accessLevel === 'readonly') {
+                    Toast.warning(`Signed in as ${escapeYouTubeHtml(group.channelTitle || group.username)} with read-only access. Google did not grant write access. To send messages, use Manage Sign-In to choose Write and approve the requested permissions.`, 'YouTube Sign-In');
+                } else {
+                    Toast.success(`Signed in as ${escapeYouTubeHtml(group.channelTitle || group.username)}.`, 'YouTube Sign-In');
+                }
 
                 resetYouTubeGroupApiBootstrap(group.id, 'owner sign-in');
                 const result = await handleYouTubeActivation(
@@ -2985,9 +3062,14 @@
                 }
                 return group;
             } catch (error) {
+                if (String(error?.message || '').includes('YouTube sign-in cancelled.')) return null;
                 console.error('YouTube owner sign-in failed:', error);
-                Toast.error('YouTube Sign-In', error?.message || 'Unable to sign in to YouTube.');
+                Toast.error(escapeYouTubeHtml(error?.message || 'Unable to sign in to YouTube.'), 'YouTube Sign-In');
                 return null;
+            } finally {
+                signinModal.classList.add('hidden');
+                deactivateModal(signinModal);
+                youtubeOwnerSigninPending = false;
             }
         }
 
@@ -3092,7 +3174,7 @@
                 channelId: stream.channelId || group.channelId,
                 channelTitle: stream.channelTitle || group.channelTitle || group.username,
                 username: group.channelTitle || group.username
-            })).filter(stream => isYouTubeOwnerBroadcastSelectable(stream));
+            })).filter(stream => stream.status === 'unverified' || isYouTubeOwnerBroadcastSelectable(stream));
             return typeof sortYouTubeStreams === 'function' ? sortYouTubeStreams(mapped) : mapped;
         }
 
@@ -3129,7 +3211,7 @@
         function shouldActivateYouTubeStreamNow(stream, group = null) {
             if (!stream) return false;
             if (isYouTubeOwnerGroup(group) || isYouTubeOwnerStream(stream)) {
-                if (stream.status === 'ended' || stream.youtubeChatStatus === 'ended') return false;
+                if (stream.status === 'ended' || stream.status === 'unverified' || stream.youtubeChatStatus === 'ended' || stream.youtubeChatStatus === 'unverified') return false;
                 return !!stream.liveChatId || stream.youtubeChatStatus === 'ready';
             }
             return true;
