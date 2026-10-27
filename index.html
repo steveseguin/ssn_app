@@ -356,6 +356,7 @@
                 <div class="settings-menu-item hidden" onclick="chooseEbaySourceStream(this)" data-ebay-choose-stream>
                     Choose another eBay Live stream
                 </div>
+                <div class="settings-menu-item hidden" data-patreon-alerts onclick="openPatreonAlerts(this)">Set up Patreon alerts</div>
                 <div class="settings-menu-item" onclick="clearThis(this)" data-clearcache data-i18n="settings.clear">
                     🧹 Clear cache & storage
                 </div>
@@ -1920,6 +1921,17 @@
             };
         }
 
+        function openPatreonAlerts(button) {
+            const entry = button.closest('.entry');
+            if (!entry || entry.dataset.target !== 'patreon') return;
+            const settingsMenu = button.closest('.settings-menu');
+            if (settingsMenu) setSettingsMenuOpen(settingsMenu._ssappSettingsTrigger, settingsMenu, false);
+            showPage('streams');
+            const popup = document.getElementById('frame1')?.contentWindow;
+            if (typeof popup?.openPatreonAlertSettings === 'function') popup.openPatreonAlertSettings();
+            else Toast.warning('Patreon alerts', 'Wait for Sources and Settings to finish loading, then try again.');
+        }
+
         // Helper: should sign-in be disabled for this source based on config?
         function isSigninDisabledForSource(source) {
             try {
@@ -2155,6 +2167,9 @@
                 }
 
             } catch (_) { }
+
+            const patreonAlerts = element.querySelector('[data-patreon-alerts]');
+            if (patreonAlerts) patreonAlerts.classList.toggle('hidden', source.target !== 'patreon');
 
             // Hide sign-in button when in websocket mode
             const effectiveMode = getEffectiveConnectionMode(source);
