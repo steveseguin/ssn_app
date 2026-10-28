@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const http = require('http');
-const { BrowserWindow, ipcMain, shell } = require('electron');
+const { BrowserWindow, clipboard, dialog, ipcMain, shell } = require('electron');
 
 function escapeHtml(str) {
     if (typeof str !== 'string') return '';
@@ -314,7 +314,16 @@ h1 { color: #eb0400; }</style></head>
                 payload.redirectUri = redirectUri;
 
                 try {
-                    if (payload.purpose === 'bot') {
+                    if (payload.purpose === 'bot' && payload.launchMode === 'copy') {
+                        await clipboard.writeText(authUrl);
+                        dialog.showMessageBox({
+                            type: 'info',
+                            title: BOT_AUTH_WINDOW_TITLE,
+                            message: 'Sign-in link copied',
+                            detail: 'Paste the link into a private browser window or your bot account browser profile. Sign in with the account you want to use for automatic replies, then return to SSApp. The link expires in five minutes.',
+                            buttons: ['OK']
+                        }).catch(() => {});
+                    } else if (payload.purpose === 'bot' && payload.launchMode !== 'external') {
                         const authPartition = `twitch-bot-oauth-${crypto.randomBytes(8).toString('hex')}`;
                         authWindow = new BrowserWindow({
                             title: BOT_AUTH_WINDOW_TITLE,

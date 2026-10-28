@@ -5854,7 +5854,6 @@
             const login = normalizeTwitchBotAccountLogin(source.twitchBotAccountLogin);
             const connected = !!source.twitchBotAccountConnected;
             const currentAccount = connected ? (login ? `@${login}` : 'Bot account') : 'Main account';
-            const actionLabel = connected ? 'Change bot account' : 'Connect bot account';
             const mainAuthorizationWarning = source.twitchMainBotAuthorizationReady === false
                 ? `<div id="twitch-bot-main-permission-warning" style="margin-top: 12px; padding: 10px 12px; border: 1px solid rgba(245, 158, 11, 0.55); border-radius: 6px; background: rgba(245, 158, 11, 0.12); color: #fde68a; line-height: 1.45; font-size: 12px;">
                         <strong>One-time permission may be needed.</strong>
@@ -5870,16 +5869,20 @@
                         Only chatbot and scheduled automatic replies use it; manual sends keep using the main account.
                     </div>
                     <div style="margin-top: 12px; color: #cbd5e1; line-height: 1.55; font-size: 13px;">
-                        SSApp opens a separate Twitch sign-in window, so your browser's main Twitch login is not used.
+                        Choose how to sign in. Use your browser if Twitch blocks the SSApp window.
+                        To use a different account, copy the sign-in link into a private window or another browser profile.
+                        Check the connected @username when you return.
                     </div>
                     <div style="margin-top: 12px; color: #94a3b8; line-height: 1.45; font-size: 12px;">
                         Your existing Bot reply-only and Account role setup remains separate and keeps working.
                         In Twitch Shared Chat, replies from this attached account stay in this channel.
                     </div>
                     ${mainAuthorizationWarning}
-                    <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+                    <div style="display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 20px;">
                         <button id="twitch-bot-account-cancel" class="button" style="background: #374151;">Cancel</button>
-                        <button id="twitch-bot-account-connect" class="button">${actionLabel}</button>
+                        <button id="twitch-bot-account-connect" class="button">Use SSApp window</button>
+                        <button id="twitch-bot-account-copy" class="button">Copy sign-in link</button>
+                        <button id="twitch-bot-account-external" class="button">Open in browser</button>
                     </div>
                 </div>`;
             showModal(content);
@@ -5887,9 +5890,15 @@
             document.getElementById('twitch-bot-account-connect')?.addEventListener('click', function() {
                 connectTwitchBotAccountForSource(sourceId);
             });
+            document.getElementById('twitch-bot-account-copy')?.addEventListener('click', function() {
+                connectTwitchBotAccountForSource(sourceId, 'copy');
+            });
+            document.getElementById('twitch-bot-account-external')?.addEventListener('click', function() {
+                connectTwitchBotAccountForSource(sourceId, 'external');
+            });
         }
 
-        async function connectTwitchBotAccountForSource(sourceId) {
+        async function connectTwitchBotAccountForSource(sourceId, launchMode = 'internal') {
             closeModal();
             try {
                 const tabId = await getTwitchBotAccountCommandTarget(sourceId);
@@ -5912,7 +5921,7 @@
                 }
                 const accepted = ipcRenderer.sendSync('sendToTab', {
                     tab: tabId,
-                    message: { type: 'TWITCH_BOT_ACCOUNT_CONNECT' }
+                    message: { type: 'TWITCH_BOT_ACCOUNT_CONNECT', launchMode }
                 });
                 if (!accepted) {
                     throw new Error('Unable to start Twitch bot sign-in.');
@@ -5925,7 +5934,9 @@
                         'Choose your bot account. If it is not a moderator, reconnect the main Twitch account using the channel owner.'
                     );
                 } else {
-                    Toast.info('Twitch reply account', 'Choose your bot account in the Twitch window that just opened.');
+                    Toast.info('Twitch reply account', launchMode === 'copy'
+                        ? 'Preparing your sign-in link. Paste it into a private window or your bot browser profile when copied.'
+                        : 'Complete Twitch sign-in with the account you want to use for automatic replies.');
                 }
             } catch (error) {
                 Toast.error('Twitch reply account', ssappEscapeHtml(error?.message || 'Unable to connect the bot account.'));

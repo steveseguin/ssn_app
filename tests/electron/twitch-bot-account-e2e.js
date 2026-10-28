@@ -328,7 +328,9 @@ async function createAndCheckSourceUi() {
 	assert.equal(result.accountText, "Automatic reply account: Main account");
 	assert.equal(result.legacyControlsPresent, true, "Existing reply-only/account-role controls were removed.");
 	assert.match(result.modalText, /does not create another source/i);
-	assert.match(result.modalText, /separate Twitch sign-in window/i);
+	assert.match(result.modalText, /Use SSApp window/);
+	assert.match(result.modalText, /Open in browser/);
+	assert.match(result.modalText, /Copy sign-in link/);
 	assert.match(result.modalText, /existing Bot reply-only and Account role setup remains separate/i);
 	assert.match(result.modalText, /one-time permission may be needed/i);
 	assert.equal(result.oldLoginWarningVisible, true, "An older main-account login did not show the targeted warning.");
