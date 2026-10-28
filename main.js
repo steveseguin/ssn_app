@@ -2053,6 +2053,14 @@ let browserViews = {};
 
 const NATIVE_SOURCE_BACKGROUND_RELAY_RETRIES = 3;
 const NATIVE_SOURCE_BACKGROUND_RELAY_RETRY_MS = 250;
+let temporarySourceViewerCountUntil = 0;
+
+ipcMain.on('ssapp:viewer-count-request', (event, until) => {
+    if (!matchesSocialStreamPagePath(event.senderFrame?.url, 'background')) return;
+    temporarySourceViewerCountUntil = Number.isFinite(until)
+        ? Math.min(Math.max(0, until), Date.now() + 2 * 60 * 60 * 1000)
+        : 0;
+});
 
 function relayNativeSourcePayloadToBackground(payload, attempt = 0) {
     const frames = mainWindow && mainWindow.webContents && mainWindow.webContents.mainFrame
@@ -2111,7 +2119,7 @@ const discordIntegration = setupDiscordHandler({
 const shareplayIntegration = setupSharePlayHandler({
     getMainWindow: () => mainWindow,
     getBrowserViews: () => browserViews,
-    getSettings: getCachedSettings,
+    getSettings: getEffectiveSettingsForSources,
     forwardMessage: relayNativeSourcePayloadToBackground,
     recordCapture: (payload, context) => {
         if (sourceObservationService) sourceObservationService.recordCapture(payload, context);
@@ -3298,7 +3306,7 @@ function isCaptureJoinedEventEnabled() {
 
 function isViewerUpdateAllowed() {
     try {
-        const s = (typeof cachedState === 'object' && cachedState) ? cachedState.settings : undefined;
+        const s = getEffectiveSettingsForSources();
         if (!s || typeof s !== 'object') return false;
         // Enabled if any of these keys exist (value ignored)
         return (s.showviewercount !== undefined) || (s.hypemode !== undefined) || (s.hypemeter !== undefined);
@@ -3314,6 +3322,14 @@ function getCachedSettings() {
         }
     } catch (_) { }
     return {};
+}
+
+function getEffectiveSettingsForSources() {
+    const settings = getCachedSettings();
+    if (Date.now() < temporarySourceViewerCountUntil && !settings.showviewercount) {
+        return { ...settings, showviewercount: true };
+    }
+    return settings;
 }
 
 function isTextOnlyModeEnabled() {
@@ -11982,7 +11998,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             // Create settings response matching background.js format
 	            let settingsResponse = {
-	                settings: cachedState.settings || {},
+	                settings: getEffectiveSettingsForSources(),
 	                state: cachedState.state !== undefined ? cachedState.state : true,
 	                streamID: normalizeStreamIdValue(cachedState.streamID),
 	                password: normalizePasswordValue(cachedState.password)
@@ -14912,7 +14928,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 								};
 								// Use closure to hide cached settings
 								(function() {
-									const cachedSettings = ${JSON.stringify(cachedState)};
+									const cachedSettings = ${JSON.stringify({ ...cachedState, settings: getEffectiveSettingsForSources() })};
 									
 								chrome.runtime.sendMessage = function(a=null,b=null,c=null){
 									// Use postMessage to communicate with preload script
@@ -15203,7 +15219,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 										};
                                             // Use closure to hide cached settings
                                             (function() {
-											const cachedSettings = ${JSON.stringify(cachedState)};
+											const cachedSettings = ${JSON.stringify({ ...cachedState, settings: getEffectiveSettingsForSources() })};
 											
 											chrome.runtime.sendMessage = function(a=null,b=null,c=null){
 												// Use postMessage to communicate with preload script

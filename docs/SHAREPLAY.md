@@ -364,8 +364,9 @@ messages through SSApp's existing native-source/background path.
   when that parent was received during this app session (a 200-message cache).
   The documented chat event does not supply avatars or badges.
 - Completed Blitz events become `raid`; initiated Blitz events are ignored.
-- Viewer updates require Show viewer count or hype mode. SharePlay documents
-  these as updates once a minute when the count changes.
+- Viewer-count overlays and docks displaying counts request updates automatically.
+  You can also enable Show viewer count or hype mode. SharePlay documents updates
+  once a minute when the count changes.
 - Without granted `events:read`, capture subscribes only to chat.
 - Reconnect creates fresh subscriptions. SharePlay does not replay missed
   messages. Duplicate delivery IDs are suppressed within a 1,000-event cache.
