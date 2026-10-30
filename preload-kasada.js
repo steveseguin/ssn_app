@@ -105,8 +105,3 @@ console.log('[Iterative] Starting with minimal working base...');
     
     console.log('[Iterative] Minimal base loaded - ready for testing');
 })();
-
-// IPC Bridge
-const { ipcRenderer } = require('electron');
-window.navigateTo = (url) => ipcRenderer.invoke('navigate-to', url);
-window.executeScript = (script) => ipcRenderer.invoke('execute-script', script);
