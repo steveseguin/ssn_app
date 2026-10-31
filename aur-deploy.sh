@@ -54,7 +54,7 @@ cat > ~/.ssh/config << EOF
 Host aur.archlinux.org
     User aur
     IdentityFile ~/.ssh/id_ed25519_aur
-    StrictHostKeyChecking no
+    StrictHostKeyChecking accept-new
 EOF
 
 # Clone or update AUR repo
@@ -81,31 +81,9 @@ cp aur/socialstreamninja.desktop "$AUR_REPO_DIR/"
 echo -e "${YELLOW}Generating .SRCINFO...${NC}"
 cd "$AUR_REPO_DIR"
 makepkg --printsrcinfo > .SRCINFO 2>/dev/null || {
-    echo -e "${YELLOW}Warning: makepkg not available, generating basic .SRCINFO${NC}"
-    cat > .SRCINFO << EOF
-pkgbase = socialstreamninja
-	pkgdesc = Standalone version of Social Stream Ninja - Electron-based application for capturing social media streams
-	pkgver = $VERSION
-	pkgrel = 1
-	url = https://github.com/steveseguin/ssn_app
-	arch = x86_64
-	license = GPL3
-	depends = fuse2
-	depends = gtk3
-	depends = nss
-	depends = libxss
-	depends = libnotify
-	depends = libxtst
-	depends = xdg-utils
-	noextract = socialstreamninja-$VERSION.AppImage
-	options = !strip
-	source = socialstreamninja-$VERSION.AppImage::https://github.com/steveseguin/ssn_app/releases/download/v$VERSION/socialstreamninja_linux_v${VERSION}_x86_64.AppImage
-	source = socialstreamninja.desktop
-	sha256sums = SKIP
-	sha256sums = SKIP
-
-pkgname = socialstreamninja
-EOF
+    echo -e "${RED}Error: makepkg not available; refusing to publish a .SRCINFO without verified sha256sums${NC}"
+    echo "Install makepkg (pacman) and re-run this script."
+    exit 1
 }
 
 # Commit and push
