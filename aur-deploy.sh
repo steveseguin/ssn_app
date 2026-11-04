@@ -26,12 +26,15 @@ done
 
 # Keep the user's SSH configuration and keys untouched. Pin newly seen hosts,
 # and reject a changed host key on later connections.
-printf -v GIT_SSH_COMMAND 'ssh -i %q -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new' "$PWD/$SSH_KEY_PATH"
+TEMP_DIR=$(mktemp -d)
+APPIMAGE="$TEMP_DIR/release.AppImage"
+trap 'rm -f -- "$APPIMAGE" "$TEMP_DIR/aur-key"; rmdir -- "$TEMP_DIR"' EXIT
+cp "$SSH_KEY_PATH" "$TEMP_DIR/aur-key"
+chmod 600 "$TEMP_DIR/aur-key"
+printf -v GIT_SSH_COMMAND 'ssh -i %q -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new' "$TEMP_DIR/aur-key"
 export GIT_SSH_COMMAND
 
 # Hash the actual release and the desktop file before publishing package metadata.
-APPIMAGE=$(mktemp)
-trap 'rm -f -- "$APPIMAGE"' EXIT
 curl --fail --location --proto '=https' --proto-redir '=https' \
     "https://github.com/steveseguin/social_stream/releases/download/v${VERSION}/socialstreamninja_linux_v${VERSION}_x86_64.AppImage" \
     --output "$APPIMAGE"

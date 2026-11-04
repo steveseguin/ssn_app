@@ -5785,8 +5785,7 @@
             } else if (eventName === 'disconnected') {
                 Toast.success('Twitch reply account', 'Automatic replies will use the main account.');
             } else if (eventName === 'error' && status.error) {
-                // OAuth errors are plain text; Toast renders its title and message as HTML.
-                Toast.error('Twitch reply account', ssappEscapeHtml(status.error));
+                Toast.error('Twitch reply account', status.error);
             }
         }
 
@@ -5939,7 +5938,7 @@
                         : 'Complete Twitch sign-in with the account you want to use for automatic replies.');
                 }
             } catch (error) {
-                Toast.error('Twitch reply account', ssappEscapeHtml(error?.message || 'Unable to connect the bot account.'));
+                Toast.error('Twitch reply account', error?.message || 'Unable to connect the bot account.');
             }
         }
 
@@ -5961,7 +5960,7 @@
                 }
                 applyTwitchBotAccountStatus(sourceId, status);
             } catch (error) {
-                Toast.error('Twitch reply account', ssappEscapeHtml(error?.message || 'Unable to disconnect the bot account.'));
+                Toast.error('Twitch reply account', error?.message || 'Unable to disconnect the bot account.');
             }
         }
 
