@@ -1739,14 +1739,17 @@ const Toast = {
 		<i class="las ${iconClass}"></i>
 	  </div>
 	  <div class="toast-content">
-		${settings.title ? `<div class="toast-title">${settings.title}</div>` : ''}
-		<p class="toast-message">${String(settings.message)}</p>
+		${settings.title ? '<div class="toast-title"></div>' : ''}
+		<p class="toast-message"></p>
 	  </div>
 	  <button class="toast-close">
 		<i class="las la-times"></i>
 	  </button>
 	  ${settings.showProgress ? '<div class="toast-progress"><div class="toast-progress-bar"></div></div>' : ''}
 	`;
+		const titleElement = toast.querySelector('.toast-title');
+		if (titleElement) titleElement.textContent = String(settings.title);
+		toast.querySelector('.toast-message').textContent = String(settings.message);
 
 		// Add to container
 		this.container.appendChild(toast);

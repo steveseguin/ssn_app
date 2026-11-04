@@ -1,131 +1,100 @@
 #!/bin/bash
 # AUR Package Deployment Script for Social Stream Ninja
-# This script updates and deploys the AUR package
+set -euo pipefail
 
-set -e  # Exit on error
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# Configuration
 AUR_REPO_DIR="aur-repo"
 SSH_KEY_PATH="certs/id_ed25519_aur"
 PKGBUILD_PATH="aur/PKGBUILD"
 
-echo -e "${GREEN}AUR Package Deployment Script${NC}"
-echo "==============================="
-
-# Check if version is provided
-if [ $# -eq 0 ]; then
-    echo -e "${RED}Error: Please provide version number${NC}"
-    echo "Usage: ./aur-deploy.sh <version>"
-    echo "Example: ./aur-deploy.sh 0.3.44"
+if [ $# -ne 1 ] || [[ ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$ ]]; then
+    echo "Usage: ./aur-deploy.sh <version> (for example, 0.4.48)" >&2
     exit 1
 fi
-
 VERSION=$1
 
-# Verify we're in the right directory
-if [ ! -f "package.json" ]; then
-    echo -e "${RED}Error: Must run from ssapp root directory${NC}"
+if [ ! -f package.json ] || [ ! -f "$PKGBUILD_PATH" ]; then
+    echo "Run this script from the ssapp repository root." >&2
     exit 1
 fi
-
-# Check if SSH key exists
 if [ ! -f "$SSH_KEY_PATH" ]; then
-    echo -e "${RED}Error: SSH key not found at $SSH_KEY_PATH${NC}"
-    echo "Make sure your AUR SSH key is in the certs folder"
+    echo "AUR SSH key not found at $SSH_KEY_PATH" >&2
     exit 1
 fi
+for tool in curl sha256sum git; do
+    command -v "$tool" >/dev/null || { echo "Required command not found: $tool" >&2; exit 1; }
+done
 
-# Set up SSH for this session
-echo -e "${YELLOW}Setting up SSH...${NC}"
-mkdir -p ~/.ssh
-cp "$SSH_KEY_PATH" ~/.ssh/id_ed25519_aur
-cp "${SSH_KEY_PATH}.pub" ~/.ssh/id_ed25519_aur.pub
-chmod 600 ~/.ssh/id_ed25519_aur
-chmod 644 ~/.ssh/id_ed25519_aur.pub
+# Keep the user's SSH configuration and keys untouched. Pin newly seen hosts,
+# and reject a changed host key on later connections.
+printf -v GIT_SSH_COMMAND 'ssh -i %q -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new' "$PWD/$SSH_KEY_PATH"
+export GIT_SSH_COMMAND
 
-# Configure SSH for AUR
-cat > ~/.ssh/config << EOF
-Host aur.archlinux.org
-    User aur
-    IdentityFile ~/.ssh/id_ed25519_aur
-    StrictHostKeyChecking no
-EOF
+# Hash the actual release and the desktop file before publishing package metadata.
+APPIMAGE=$(mktemp)
+trap 'rm -f -- "$APPIMAGE"' EXIT
+curl --fail --location --proto '=https' --proto-redir '=https' \
+    "https://github.com/steveseguin/social_stream/releases/download/v${VERSION}/socialstreamninja_linux_v${VERSION}_x86_64.AppImage" \
+    --output "$APPIMAGE"
+if [ "$(head -c 4 "$APPIMAGE" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
+    echo "The release download is not an ELF AppImage." >&2
+    exit 1
+fi
+CHECKSUM=$(sha256sum "$APPIMAGE" | cut -d ' ' -f 1)
+# Match the line endings installed by makepkg and used by the automated workflow.
+sed -i 's/\r$//' "$PKGBUILD_PATH" aur/socialstreamninja.desktop
+DESKTOP_CHECKSUM=$(sha256sum aur/socialstreamninja.desktop | cut -d ' ' -f 1)
 
-# Clone or update AUR repo
+sed -i "s/^pkgver=.*/pkgver=$VERSION/" "$PKGBUILD_PATH"
+sed -i "s/^_release_tag=.*/_release_tag=v$VERSION/" "$PKGBUILD_PATH"
+sed -i "/^sha256sums=/,+1c\\sha256sums=('$CHECKSUM'\\n            '$DESKTOP_CHECKSUM')" "$PKGBUILD_PATH"
+
 if [ -d "$AUR_REPO_DIR" ]; then
-    echo -e "${YELLOW}Updating existing AUR repository...${NC}"
-    cd "$AUR_REPO_DIR"
-    git pull
-    cd ..
+    git -C "$AUR_REPO_DIR" pull --ff-only
 else
-    echo -e "${YELLOW}Cloning AUR repository...${NC}"
     git clone ssh://aur@aur.archlinux.org/socialstreamninja.git "$AUR_REPO_DIR"
 fi
-
-# Update version in PKGBUILD
-echo -e "${YELLOW}Updating PKGBUILD version to $VERSION...${NC}"
-sed -i "s/pkgver=.*/pkgver=$VERSION/" "$PKGBUILD_PATH"
-
-# Copy updated files
-echo -e "${YELLOW}Copying package files...${NC}"
-cp aur/PKGBUILD "$AUR_REPO_DIR/"
-cp aur/socialstreamninja.desktop "$AUR_REPO_DIR/"
-
-# Generate .SRCINFO
-echo -e "${YELLOW}Generating .SRCINFO...${NC}"
+cp "$PKGBUILD_PATH" aur/socialstreamninja.desktop "$AUR_REPO_DIR/"
+cp "$APPIMAGE" "$AUR_REPO_DIR/socialstreamninja-$VERSION.AppImage"
 cd "$AUR_REPO_DIR"
-makepkg --printsrcinfo > .SRCINFO 2>/dev/null || {
-    echo -e "${YELLOW}Warning: makepkg not available, generating basic .SRCINFO${NC}"
-    cat > .SRCINFO << EOF
-pkgbase = socialstreamninja
-	pkgdesc = Standalone version of Social Stream Ninja - Electron-based application for capturing social media streams
-	pkgver = $VERSION
-	pkgrel = 1
-	url = https://github.com/steveseguin/ssn_app
-	arch = x86_64
-	license = GPL3
-	depends = fuse2
-	depends = gtk3
-	depends = nss
-	depends = libxss
-	depends = libnotify
-	depends = libxtst
-	depends = xdg-utils
-	noextract = socialstreamninja-$VERSION.AppImage
-	options = !strip
-	source = socialstreamninja-$VERSION.AppImage::https://github.com/steveseguin/ssn_app/releases/download/v$VERSION/socialstreamninja_linux_v${VERSION}_x86_64.AppImage
-	source = socialstreamninja.desktop
-	sha256sums = SKIP
-	sha256sums = SKIP
 
-pkgname = socialstreamninja
-EOF
-}
+# Verify both source files, including the makepkg-free path.
+printf '%s  %s\n' "$CHECKSUM" "socialstreamninja-$VERSION.AppImage" \
+    "$DESKTOP_CHECKSUM" socialstreamninja.desktop | sha256sum --check --status
+if command -v makepkg >/dev/null; then
+    makepkg --verifysource --noconfirm
+    makepkg --printsrcinfo > .SRCINFO
+else
+    # Read the checked-in package definition so fallback metadata stays in sync.
+    (
+        source ./PKGBUILD
+        printf 'pkgbase = %s\n' "$pkgname"
+        printf '\tpkgdesc = %s\n\tpkgver = %s\n\tpkgrel = %s\n\turl = %s\n' "$pkgdesc" "$pkgver" "$pkgrel" "$url"
+        printf '\tarch = %s\n' "${arch[@]}"
+        printf '\tlicense = %s\n' "${license[@]}"
+        printf '\tdepends = %s\n' "${depends[@]}"
+        printf '\toptdepends = %s\n' "${optdepends[@]}"
+        printf '\tprovides = %s\n' "${provides[@]}"
+        printf '\tconflicts = %s\n' "${conflicts[@]}"
+        printf '\tnoextract = %s\n' "${noextract[@]}"
+        printf '\toptions = %s\n' "${options[@]}"
+        printf '\tsource = %s\n' "${source[@]}"
+        printf '\tsha256sums = %s\n' "${sha256sums[@]}"
+        printf '\npkgname = %s\n' "$pkgname"
+    ) > .SRCINFO
+fi
+if grep -Eq 'sha256sums[[:space:]]*=[[:space:]]*SKIP' .SRCINFO ||
+    ! grep -Eq "^[[:space:]]+sha256sums = $CHECKSUM$" .SRCINFO ||
+    ! grep -Eq "^[[:space:]]+sha256sums = $DESKTOP_CHECKSUM$" .SRCINFO; then
+    echo "Refusing to publish metadata without matching source checksums." >&2
+    exit 1
+fi
 
-# Commit and push
-echo -e "${YELLOW}Committing changes...${NC}"
-git add .
-git commit -m "Update to version $VERSION" || {
-    echo -e "${YELLOW}No changes to commit${NC}"
+# Stage package metadata only, never the downloaded release or unrelated files.
+git add PKGBUILD .SRCINFO socialstreamninja.desktop
+if git diff --cached --quiet; then
+    echo "AUR package metadata is already up to date."
     exit 0
-}
-
-echo -e "${YELLOW}Pushing to AUR...${NC}"
+fi
+git commit -m "Update to version $VERSION"
 git push origin master
-
-echo -e "${GREEN}✓ Successfully deployed version $VERSION to AUR!${NC}"
-echo -e "${GREEN}Package URL: https://aur.archlinux.org/packages/socialstreamninja${NC}"
-
-# Clean up SSH keys from temp location
-rm -f ~/.ssh/id_ed25519_aur ~/.ssh/id_ed25519_aur.pub
-
-echo -e "${YELLOW}Remember to:${NC}"
-echo "1. Create a GitHub release with tag v$VERSION"
-echo "2. Upload the AppImage to the release"
-echo "3. Update package.json version if not already done"
+echo "Published socialstreamninja $VERSION to AUR."

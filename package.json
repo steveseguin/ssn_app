@@ -137,7 +137,7 @@
     "url": "https://github.com/steveseguin/ssn_app.git"
   },
   "build": {
-    "electronVersion": "44.7.0",
+    "electronVersion": "44.9.1",
     "appId": "socialstream.electron",
     "productName": "socialstream",
     "npmRebuild": false,
@@ -369,7 +369,7 @@
   },
   "devDependencies": {
     "app-builder-lib": "^26.15.7",
-    "electron": "44.7.0",
+    "electron": "44.9.1",
     "electron-builder": "^26.15.7",
     "electron-notarize": "git+https://github.com/electron/notarize.git",
     "fs-extra": "^11.3.4",

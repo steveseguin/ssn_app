@@ -3057,9 +3057,9 @@
                     Toast.warning('Discovery sign-in worked, but the YouTube chat session may still ask you to sign in.', 'YouTube Sign-In');
                 }
                 if (accessLevel === 'admin' && confirmed.accessLevel === 'readonly') {
-                    Toast.warning(`Signed in as ${escapeYouTubeHtml(group.channelTitle || group.username)} with read-only access. Google did not grant write access. To send messages, use Manage Sign-In to choose Write and approve the requested permissions.`, 'YouTube Sign-In');
+                    Toast.warning(`Signed in as ${group.channelTitle || group.username} with read-only access. Google did not grant write access. To send messages, use Manage Sign-In to choose Write and approve the requested permissions.`, 'YouTube Sign-In');
                 } else {
-                    Toast.success(`Signed in as ${escapeYouTubeHtml(group.channelTitle || group.username)}.`, 'YouTube Sign-In');
+                    Toast.success(`Signed in as ${group.channelTitle || group.username}.`, 'YouTube Sign-In');
                 }
 
                 resetYouTubeGroupApiBootstrap(group.id, 'owner sign-in');
@@ -3079,7 +3079,7 @@
             } catch (error) {
                 if (String(error?.message || '').includes('YouTube sign-in cancelled.')) return null;
                 console.error('YouTube owner sign-in failed:', error);
-                Toast.error(escapeYouTubeHtml(error?.message || 'Unable to sign in to YouTube.'), 'YouTube Sign-In');
+                Toast.error(error?.message || 'Unable to sign in to YouTube.', 'YouTube Sign-In');
                 return null;
             } finally {
                 signinModal.classList.add('hidden');

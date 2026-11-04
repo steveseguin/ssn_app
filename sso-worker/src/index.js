@@ -1258,6 +1258,21 @@ function validateReturnTo(value, env, provider = "velora") {
     throw new HttpError(400, "Invalid return_to.");
   }
 
+  // Optional cloud pilot return. Existing provider paths keep their current rules.
+  const cloudReturn = provider === "twitch" && stringValue(env.TWITCH_CLOUD_RETURN_URL);
+  if (cloudReturn) {
+    let allowed;
+    try { allowed = new URL(cloudReturn); } catch (_) { allowed = null; }
+    const attempt = url.searchParams.get("attempt") || "";
+    if (allowed && allowed.protocol === "https:" && !allowed.username && !allowed.password &&
+        !allowed.search && !allowed.hash && allowed.pathname === "/auth/twitch/return" &&
+        url.origin === allowed.origin && url.pathname === allowed.pathname &&
+        !url.username && !url.password && !url.hash &&
+        Array.from(url.searchParams.keys()).length === 1 && /^[A-Za-z0-9_-]{43}$/.test(attempt)) {
+      return url;
+    }
+  }
+
   const allowedOrigins = csv(env.ALLOWED_RETURN_ORIGINS);
   if (!allowedOrigins.includes(url.origin)) {
     throw new HttpError(400, "return_to origin is not allowed.");

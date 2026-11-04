@@ -100,7 +100,7 @@ async function runElectronChecks() {
 		})`);
 		assert.deepStrictEqual(kickState, {
 			hostname: "kick.com",
-			hasKasadaBridge: true,
+			hasKasadaBridge: false,
 			hasGenericIpc: false,
 			hasOAuthBridge: false,
 		});
