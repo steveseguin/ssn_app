@@ -1145,15 +1145,19 @@ async function createFacebookAuthPayload(env, code, redirectUri) {
   pagesUrl.searchParams.set("limit", "200");
   pagesUrl.searchParams.set("access_token", accessToken);
 
-  const results = await Promise.all([
-    fetchFacebookJson(userUrl, "Facebook user lookup failed"),
-    fetchFacebookJson(pagesUrl, "Facebook Page lookup failed"),
-  ]);
-  const user = results[0] || {};
-  const pagesData = results[1] && Array.isArray(results[1].data) ? results[1].data : [];
+  const user = await fetchFacebookJson(userUrl, "Facebook user lookup failed");
+  let pagesData = [];
+  let pagesError = "";
+  try {
+    const result = await fetchFacebookJson(pagesUrl, "Facebook Page lookup failed");
+    pagesData = Array.isArray(result.data) ? result.data : [];
+  } catch (error) {
+    pagesError = error.message || "Facebook Pages are unavailable. Please try again.";
+  }
 
   return {
     type: FACEBOOK_AUTH_MESSAGE_SUCCESS,
+    pagesError,
     user: {
       id: stringValue(user.id),
       name: stringValue(user.name),
