@@ -52,7 +52,13 @@ async function callbackCase(label, parameters, expected, options = {}) {
     const response = await fetch(callback, { headers: { Connection: 'close' } });
     assert.equal(response.status, 200, `${label}: callback HTTP status`);
     const html = await response.text();
-    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+    // Extract the one script from our known callback template, not arbitrary
+    // HTML. These boundaries are fixture assertions, not an HTML sanitizer.
+    const scriptParts = html.split('<script>');
+    assert.equal(scriptParts.length, 2, `${label}: expected one callback script`);
+    const scriptEnd = scriptParts[1].indexOf('</script>');
+    assert(scriptEnd >= 0, `${label}: callback script should have a closing tag`);
+    const script = scriptParts[1].slice(0, scriptEnd);
     const elements = {
         spinner: { style: {} },
         status: { className: '', textContent: '' }
@@ -72,7 +78,7 @@ async function callbackCase(label, parameters, expected, options = {}) {
             return request;
         }
     };
-    for (const [, script] of scripts) vm.runInNewContext(script, page);
+    vm.runInNewContext(script, page);
     await Promise.all(posts);
     const result = await outcome;
     if (expected.error) {
