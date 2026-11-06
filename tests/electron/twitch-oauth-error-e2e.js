@@ -172,6 +172,13 @@ async function run() {
 		await deliverCallback(returnUrl.toString(), denied);
 		await checkError(denied, denial, 'Supported provider-error landing page still reports its error');
 
+		const queryDenied = await startLogin();
+		const queryReturnUrl = new URL(new URL(queryDenied.url()).searchParams.get('return_to'));
+		queryReturnUrl.searchParams.set('error', 'access_denied');
+		queryReturnUrl.searchParams.set('error_description', marker);
+		await deliverCallback(queryReturnUrl.toString(), queryDenied);
+		await checkError(queryDenied, marker, 'Query-string denial on the real callback path finishes login');
+
 		await main.reload();
 		await mainReady();
 		assert(await main.evaluate(id => !!stateManager.getSource(id), sourceId), 'Source must survive reload');

@@ -204,6 +204,7 @@ function runTwitchLoopbackOAuthSession(payload = {}) {
             // Parse the hash fragment
             const hash = window.location.hash.substring(1);
             const params = new URLSearchParams(hash);
+            const queryParams = new URLSearchParams(window.location.search);
             const base64UrlToJson = function(value) {
                 try {
                     const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
@@ -225,12 +226,12 @@ function runTwitchLoopbackOAuthSession(payload = {}) {
                 refresh_token: hostedTokens && hostedTokens.refresh_token,
                 expires_in: hostedTokens && hostedTokens.expires_in,
                 token_type: (hostedTokens && hostedTokens.token_type) || params.get('token_type'),
-                state: params.get('state') || new URLSearchParams(window.location.search).get('state'),
+                state: params.get('state') || queryParams.get('state'),
                 scope: (hostedTokens && hostedTokens.scope) || params.get('scope'),
                 client_id: hostedTokens && hostedTokens.client_id,
                 purpose: (hostedResult && hostedResult.purpose) || params.get('purpose'),
-                error: (hostedError && (hostedError.error || hostedError.message)) || params.get('error'),
-                error_description: (hostedError && hostedError.message) || params.get('error_description')
+                error: (hostedError && (hostedError.error || hostedError.message)) || params.get('error') || queryParams.get('error'),
+                error_description: (hostedError && hostedError.message) || params.get('error_description') || queryParams.get('error_description')
             };
 
             if (data.error) {
