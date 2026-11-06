@@ -15842,12 +15842,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const view = browserViews[key];
             if (!view) return;
             let url = null;
-            if (view.args && view.args.url) {
-                url = view.args.url;
-            } else if (view.webContents && !view.webContents.isDestroyed()) {
+            if (view.isVirtualSource || view.isTikTokVirtual) {
+                // Virtual connections have no navigable page; their configured URL is their identity.
+                url = view.args?.url || view.url;
+            } else {
+                // Match Chrome's tab.url contract. Launch arguments become stale after navigation.
+                if (isBrowserViewDestroyed(view) || !view.webContents || view.webContents.isDestroyed()) return;
                 url = view.webContents.getURL();
-            } else if (view.url) {
-                url = view.url;
             }
             if (url) {
                 const viewArgs = view.args || {};
