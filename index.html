@@ -2169,6 +2169,7 @@
                 sourceUrlInput.value = source.url || "";
                 sourceUrlInput.classList.toggle("hidden", !source.url);
             }
+            updateYouTubePrivacyWarning(element, source);
 
             // Help button is always visible now
             element.querySelector("[data-showtips]")?.classList.remove("hidden");
@@ -3357,7 +3358,51 @@
                 channelTitle: stream.channelTitle || group.channelTitle || group.username,
                 username: group.channelTitle || group.username
             })).filter(stream => stream.status === 'unverified' || isYouTubeOwnerBroadcastSelectable(stream));
+            // Refresh visibility for existing entries too, including streams already open.
+            for (const source of stateManager.getSources({ groupId: group.id })) {
+                if (!isYouTubeTarget(source.target)) continue;
+                const stream = mapped.find(item => item.videoId === source.videoId);
+                if (stream && ['private', 'public', 'unlisted'].includes(stream.privacyStatus)
+                    && stream.privacyStatus !== source.privacyStatus) {
+                    stateManager.updateSource(source.id, { privacyStatus: stream.privacyStatus });
+                }
+            }
             return typeof sortYouTubeStreams === 'function' ? sortYouTubeStreams(mapped) : mapped;
+        }
+
+        const youtubePrivateStreamNotices = new Set();
+
+        function updateYouTubePrivacyWarning(element, source) {
+            let warning = element.querySelector('.youtube-private-warning');
+            if (!isPrivateYouTubeStream(source)) {
+                warning?.remove();
+                return;
+            }
+            if (!warning) {
+                const details = element.querySelector('[data-sourceurl]')?.parentElement;
+                if (!details) return;
+                warning = document.createElement('div');
+                warning.className = 'youtube-private-warning';
+                warning.setAttribute('role', 'note');
+                warning.textContent = 'Private stream: viewers need an invitation to watch. ';
+                const link = document.createElement('a');
+                link.href = 'https://studio.youtube.com/';
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.textContent = 'Open YouTube Studio';
+                link.title = "Change this stream's visibility in YouTube Studio.";
+                warning.appendChild(link);
+                details.appendChild(warning);
+            }
+            if (!source.videoId || (source.status !== 'activating' && source.status !== 'active' && !hasConnectionHandles(source))) return;
+            const noticeKey = `youtubePrivateStream:${source.videoId}`;
+            if (youtubePrivateStreamNotices.has(noticeKey)) return;
+            youtubePrivateStreamNotices.add(noticeKey);
+            try {
+                if (sessionStorage.getItem(noticeKey)) return;
+                sessionStorage.setItem(noticeKey, '1');
+            } catch (_) { }
+            Toast.warning(`${source.title || source.videoId}: viewers need an invitation to watch. Change visibility in YouTube Studio to let your audience join.`, 'Private YouTube stream');
         }
 
         function getYouTubeStreamMetadataUpdates(stream, group = null) {
