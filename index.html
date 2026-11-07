@@ -202,6 +202,8 @@
                             src="https://velora.tv/favicon.ico" class="icon" />Velora</button></span>
                 <span><button onclick="newOtherSourcePrompt('peertube');"><img
                             src="https://cache.socialstream.ninja/sources/images/peertube.png" class="icon" />Peertube</button></span>
+                <span><button onclick="showHoulaSourceSetup();" data-source-type="houla"><img
+                            src="https://cache.socialstream.ninja/sources/images/houla.png" class="icon" />Hou.la</button></span>
                 <span><button onclick="showNamedSourceSetup('vkvideo');" data-source-type="vkvideo"><img
                             src="https://cache.socialstream.ninja/sources/images/vkvideo.png" class="icon" />VK Video Live</button></span>
                 <span class="hidden"><button onclick="newSourcePrompt('pilled');"><img
@@ -4419,7 +4421,7 @@
                 sourceData.username = vpzoneChannel;
                 sourceData.channel = vpzoneChannel;
                 sourceData.streamUsername = vpzoneChannel;
-            } else if (supportsWSS && urlIdentifier) {
+            } else if (supportsWSS && urlIdentifier && !(target === 'houla' && initialState.username)) {
                 sourceData.username = urlIdentifier;
             }
 

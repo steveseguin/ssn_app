@@ -2268,7 +2268,7 @@ const browserControlService = controlApiEnabled ? new BrowserControlService({
         .filter(wc => !wc.isDestroyed() && ['window', 'browserView', 'webview', 'remote'].includes(wc.getType()))
         .map(wc => {
             const window = BrowserWindow.fromWebContents(wc) || null;
-            const source = Object.values(browserViews).find(view => view && view.webContents === wc);
+            const source = Object.values(browserViews).find(view => view && !isBrowserViewDestroyed(view) && view.webContents === wc);
             return {
                 webContents: wc,
                 window,
