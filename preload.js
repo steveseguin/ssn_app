@@ -1034,6 +1034,10 @@ function configureContextBridge(){
 				return await ipcRenderer.invoke('youtube-owner-broadcasts', payload || {});
 			  },
 
+			  prepareYouTubeOwnerChat: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-chat-prepare', payload || {});
+			  },
+
 			  startMediaUpload: async (payload) => {
 				return await ipcRenderer.invoke('media-upload', payload || {});
 			  },
@@ -1237,6 +1241,10 @@ try {
 
 			fetchYouTubeOwnerBroadcasts: async (payload) => {
 				return await ipcRenderer.invoke('youtube-owner-broadcasts', payload || {});
+			},
+
+			prepareYouTubeOwnerChat: async (payload) => {
+				return await ipcRenderer.invoke('youtube-owner-chat-prepare', payload || {});
 			},
 
 			startMediaUpload: async (payload) => {

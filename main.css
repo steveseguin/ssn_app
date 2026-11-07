@@ -2035,6 +2035,47 @@ button.group-control {
   flex-wrap: wrap;
 }
 
+#youtubeOwnerManageModal .modal-footer {
+  flex-wrap: wrap;
+}
+
+#youtubeOwnerManageModal .modal-footer button {
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: normal;
+  flex: 1 1 130px;
+}
+
+#youtubeOwnerManageModal label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+#youtubeOwnerSender {
+  width: 100%;
+}
+
+.youtube-owner-access-options {
+  display: flex;
+  gap: 24px;
+  margin: 16px 0;
+}
+
+.youtube-owner-access-options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#youtubeOwnerSigninOptions {
+  margin-top: 16px;
+}
+
+#youtubeOwnerSigninOptions summary {
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
 #youtubeOwnerSigninModal .modal-footer button {
   white-space: nowrap;
   flex-shrink: 0;

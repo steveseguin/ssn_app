@@ -663,7 +663,7 @@
                             <span class="youtube-source-choice-title" data-i18n="youtube.ownerTitle">Use my YouTube account</span>
                             <span class="youtube-source-choice-badge" data-i18n="youtube.recommended">Recommended</span>
                         </span>
-                        <span class="youtube-source-choice-description" data-i18n="youtube.ownerDescription">Read-only sign-in. Finds your live and scheduled streams, including unlisted videos.</span>
+                        <span class="youtube-source-choice-description" data-i18n="youtube.ownerDescription">Finds your live and scheduled streams, including unlisted videos.</span>
                     </span>
                 </button>
                 <button class="youtube-source-choice" data-youtube-add-mode="video" type="button">
@@ -752,9 +752,14 @@
     </div>
 
     <div class="modal hidden" id="youtubeOwnerManageModal">
-        <div class="modal-content modal-sm youtube-owner-modal">
-            <h2>YouTube Sign-In</h2>
+        <div class="modal-content modal-md youtube-owner-modal" role="dialog" aria-modal="true" aria-labelledby="youtubeOwnerManageTitle">
+            <h2 id="youtubeOwnerManageTitle">YouTube Sign-In</h2>
             <div class="youtube-owner-profile" id="youtubeOwnerManageSummary"></div>
+            <label for="youtubeOwnerSender">Send using</label>
+            <select id="youtubeOwnerSender" title="Signed-in channel uses YouTube API quota. Browser account uses the YouTube website sign-in in Standard mode.">
+                <option value="owner">Signed-in channel</option>
+                <option value="browser">Browser account (Standard)</option>
+            </select>
             <div class="modal-footer">
                 <button id="youtubeOwnerManageSelectButton" type="button">Check for live streams now</button>
                 <button id="youtubeOwnerManageSwitchButton" type="button">Change account or access</button>
@@ -765,12 +770,16 @@
 
     <div class="modal hidden" id="youtubeOwnerAccessModal">
         <div class="modal-content modal-md youtube-owner-modal" role="dialog" aria-modal="true" aria-labelledby="youtubeOwnerAccessTitle">
-            <h2 id="youtubeOwnerAccessTitle">YouTube access</h2>
-            <p>Read only lets Social Stream find your broadcasts and receive chat. Choose Write if you also want to send chat from WebSocket mode.</p>
-            <p>Write also permits moderation and video edits. Google will ask you to approve these broader YouTube permissions.</p>
+            <h2 id="youtubeOwnerAccessTitle">YouTube sign-in</h2>
+            <p>Read only finds your streams and receives chat. Write also enables messages, commands and reminders.</p>
+            <div class="youtube-owner-access-options" role="group" aria-label="YouTube access">
+                <label><input type="radio" name="youtube-owner-access" value="readonly" data-youtube-access="readonly" checked> Read only</label>
+                <label><input type="radio" name="youtube-owner-access" value="admin" data-youtube-access="admin"> Write</label>
+            </div>
+            <p>Google's Write permission also allows moderation and video edits.</p>
             <div class="modal-footer">
-                <button type="button" data-youtube-access="readonly">Read only</button>
-                <button type="button" data-youtube-access="admin">Write</button>
+                <button type="button" data-youtube-auth-method="local" title="Use an app window. If Google rejects it, you can switch to your browser.">Sign in in app</button>
+                <button type="button" data-youtube-auth-method="external" title="Open your default browser to sign in to YouTube.">Open browser</button>
                 <button type="button" data-youtube-access="cancel" data-type="cancel">Cancel</button>
             </div>
         </div>
@@ -778,14 +787,17 @@
 
     <div class="modal hidden" id="youtubeOwnerSigninModal">
         <div class="modal-content modal-md youtube-owner-modal" role="dialog" aria-modal="true" aria-labelledby="youtubeOwnerSigninTitle">
-            <h2 id="youtubeOwnerSigninTitle">YouTube Sign-In</h2>
-            <p>Complete sign-in in your browser. If the wrong browser opens, copy the sign-in link and paste it into your preferred browser on this computer.</p>
+            <h2 id="youtubeOwnerSigninTitle" tabindex="-1">Opening sign-in...</h2>
             <p id="youtubeOwnerSigninStatus" role="status"></p>
             <div class="modal-footer">
-                <button type="button" onclick="youtubeOwnerSigninAction('copy')">Copy sign-in link</button>
-                <button type="button" onclick="youtubeOwnerSigninAction('retry')">Open browser again</button>
+                <button id="youtubeOwnerSigninReopen" type="button" onclick="youtubeOwnerSigninAction('retry')">Show sign-in window</button>
+                <button id="youtubeOwnerSigninBrowser" type="button" onclick="youtubeOwnerSigninAction('external')">Use browser instead</button>
                 <button type="button" data-type="cancel" onclick="youtubeOwnerSigninAction('cancel')">Cancel</button>
             </div>
+            <details id="youtubeOwnerSigninOptions">
+                <summary>Other options</summary>
+                <button type="button" onclick="youtubeOwnerSigninAction('copy')" title="Paste this link into another browser on this computer.">Copy sign-in link</button>
+            </details>
         </div>
     </div>
 
@@ -1985,6 +1997,22 @@
             return effectiveMode === 'websocket';
         }
 
+        function updateYouTubeOwnerSigninButton(button, source) {
+            if (!button || !source || !isYouTubeTarget(source.target) ||
+                !isYouTubeOwnerGroup(stateManager.getGroup(source.groupId))) return false;
+            if (isYouTubeWebSocketSigninContext(source)) {
+                if (!getYouTubeOwnerSenderForSource(source)) return false;
+                button.textContent = 'Manage Sign-In';
+                button.title = 'Use the saved channel sign-in for this API source.';
+                button.onclick = function () { manageYouTubeOwnerSignin(this, source.groupId); };
+            } else {
+                button.textContent = 'Browser sign-in';
+                button.title = 'Optional for restricted chat or Browser account sending. Signed-in channel sending uses Manage Sign-In.';
+                button.onclick = function () { signin(this); };
+            }
+            return true;
+        }
+
         // Apply disabled state and tooltip to a sign-in button
         function applySigninPolicy(signinButton, source) {
             if (!signinButton || !source) return;
@@ -2213,6 +2241,7 @@
                         } else {
                             applySigninPolicy(signinButton, source);
                         }
+                        updateYouTubeOwnerSigninButton(signinButton, source);
                     }
                 }
             }
@@ -2789,16 +2818,42 @@
         function chooseYouTubeOwnerAccess() {
             const modal = document.getElementById('youtubeOwnerAccessModal');
             return new Promise(resolve => {
-                const buttons = Array.from(modal.querySelectorAll('[data-youtube-access]'));
+                const buttons = Array.from(modal.querySelectorAll('[data-youtube-auth-method], [data-youtube-access="cancel"]'));
+                modal.querySelector('[data-youtube-access="readonly"]').checked = true;
                 const finish = value => {
                     buttons.forEach(button => { button.onclick = null; });
                     modal.classList.add('hidden');
                     deactivateModal(modal);
-                    resolve(value === 'cancel' ? null : value);
+                    resolve(value === 'cancel' ? null : {
+                        authMethod: value,
+                        accessLevel: modal.querySelector('input[name="youtube-owner-access"]:checked').value
+                    });
                 };
-                buttons.forEach(button => { button.onclick = () => finish(button.dataset.youtubeAccess); });
+                buttons.forEach(button => { button.onclick = () => finish(button.dataset.youtubeAuthMethod || 'cancel'); });
                 modal.classList.remove('hidden');
                 activateModal(modal, () => finish('cancel'));
+            });
+        }
+
+        function updateYouTubeOwnerSigninStatus({ state, method }) {
+            const modal = document.getElementById('youtubeOwnerSigninModal');
+            if (!youtubeOwnerSigninPending || modal.classList.contains('hidden')) return;
+            const local = method === 'local';
+            document.getElementById('youtubeOwnerSigninTitle').textContent = state === 'opening' ? 'Opening sign-in...'
+                : state === 'finishing' ? 'Finishing sign-in...'
+                : state === 'error' ? 'Could not open sign-in'
+                : local ? 'Continue in the app window' : 'Continue in your browser';
+            document.getElementById('youtubeOwnerSigninStatus').textContent = state === 'opening'
+                ? (local ? 'Opening a YouTube sign-in window in the app.' : 'Opening YouTube in your default browser.')
+                : state === 'finishing' ? 'Checking your YouTube channel...'
+                : state === 'error' ? (local ? 'Try again or use your browser instead.' : 'Try again, or copy the sign-in link under Other options.')
+                : local ? 'Complete sign-in in the separate app window. If Google blocks it, use your browser instead.'
+                : 'Your default browser opened. Complete sign-in there, then return to this app.';
+            const reopen = document.getElementById('youtubeOwnerSigninReopen');
+            reopen.textContent = local ? 'Show sign-in window' : 'Open browser again';
+            document.getElementById('youtubeOwnerSigninBrowser').classList.toggle('hidden', !local);
+            modal.querySelectorAll('button:not([data-type="cancel"])').forEach(button => {
+                button.disabled = state === 'opening' || state === 'finishing';
             });
         }
 
@@ -2806,18 +2861,15 @@
             const status = document.getElementById('youtubeOwnerSigninStatus');
             try {
                 const result = await getYouTubeOwnerBridge().youtubeOwnerAuthAction(action);
-                status.textContent = result?.success
-                    ? (action === 'copy' ? 'Sign-in link copied. Paste it into your preferred browser on this computer.' : 'Waiting for browser sign-in...')
-                    : (result?.message || 'Unable to perform this action.');
+                if (!result?.success) status.textContent = result?.message || 'Unable to perform this action.';
+                else if (action === 'copy') status.textContent = 'Link copied. Paste it into a browser on this computer.';
                 if (result?.success && action === 'cancel') {
                     const modal = document.getElementById('youtubeOwnerSigninModal');
                     modal.classList.add('hidden');
                     deactivateModal(modal);
                 }
             } catch (error) {
-                status.textContent = action === 'retry'
-                    ? 'Could not open the browser. Use Copy sign-in link instead.'
-                    : (error?.message || 'Unable to perform this action.');
+                if (action !== 'retry' && action !== 'external') status.textContent = error?.message || 'Unable to perform this action.';
             }
         }
 
@@ -2985,6 +3037,7 @@
                 groupId = stateManager.addGroup({
                     id: desiredId,
                     ...ownerFields,
+                    youtubeSendMode: 'owner',
                     connectionMode: 'classic',
                     autoActivate: false,
                     groupVisible: true,
@@ -3009,9 +3062,10 @@
             youtubeOwnerSigninPending = true;
             const signinModal = document.getElementById('youtubeOwnerSigninModal');
             try {
-                const accessLevel = await chooseYouTubeOwnerAccess();
-                if (!accessLevel) return null;
-                const existingGroup = existingGroupId ? stateManager.getGroup(existingGroupId) : null;
+                const choice = await chooseYouTubeOwnerAccess();
+                if (!choice) return null;
+                const { accessLevel, authMethod } = choice;
+                const existingGroup = existingGroupId ? { ...stateManager.getGroup(existingGroupId) } : null;
                 const customSession = existingGroup?.customSession || 'AUTO';
                 let tokenStorePage = await resolveWebSocketHtml('youtube_auth', {
                     ssapp: '1',
@@ -3029,13 +3083,19 @@
                         return null;
                     });
                 }
-                Toast.info('Opening YouTube sign-in in your browser...', 'YouTube Sign-In');
-                document.getElementById('youtubeOwnerSigninStatus').textContent = 'Waiting for browser sign-in...';
+                document.getElementById('youtubeOwnerSigninOptions').open = false;
                 signinModal.classList.remove('hidden');
+                updateYouTubeOwnerSigninStatus({ state: 'opening', method: authMethod });
                 activateModal(signinModal, () => youtubeOwnerSigninAction('cancel'));
+                document.getElementById('youtubeOwnerSigninTitle').focus();
+                let windowConfig = { ...config?.global, ...config?.youtube };
+                if (windowConfig.wss) windowConfig = { ...windowConfig, ...windowConfig.wss };
                 const authResult = await bridge.startYouTubeOwnerAuth({
                     accessLevel,
+                    authMethod,
+                    windowConfig,
                     customSession,
+                    seedLegacyChat: !!existingGroup && existingGroup.youtubeSendMode !== 'owner',
                     tokenStoreUrl: tokenStorePage?.url || ''
                 });
                 signinModal.classList.add('hidden');
@@ -3055,6 +3115,7 @@
                     ...confirmed.profile,
                     customSession
                 }, target, existingGroupId);
+                await refreshYouTubeOwnerApiSources(group.id, existingGroup, true);
                 if (confirmed.websocketTokenStore && confirmed.websocketTokenStore.success === false && !confirmed.websocketTokenStore.skipped) {
                     Toast.warning('Discovery sign-in worked, but the YouTube chat session may still ask you to sign in.', 'YouTube Sign-In');
                 }
@@ -3100,15 +3161,25 @@
                 return Promise.resolve('close');
             }
             if (activeYouTubeOwnerManageCleanup) activeYouTubeOwnerManageCleanup('close');
+            const senderSelect = document.getElementById('youtubeOwnerSender');
             return new Promise(resolve => {
-                summary.textContent = `Signed in as: ${group.channelTitle || group.username || 'YouTube'}\nChannel ID: ${group.channelId || 'Unknown'}`;
+                const channelLabel = group.channelTitle || group.username || 'YouTube';
+                summary.textContent = channelLabel;
+                senderSelect.value = group.youtubeSendMode === 'owner' ? 'owner' : 'browser';
+                senderSelect.onchange = async () => {
+                    const previousGroup = { ...stateManager.getGroup(group.id) };
+                    stateManager.updateGroup(group.id, { youtubeSendMode: senderSelect.value });
+                    await refreshYouTubeOwnerApiSources(group.id, previousGroup);
+                };
                 const cleanup = (action) => {
                     if (activeYouTubeOwnerManageCleanup !== cleanup) return;
                     activeYouTubeOwnerManageCleanup = null;
                     selectButton.onclick = null;
                     switchButton.onclick = null;
                     closeButton.onclick = null;
+                    senderSelect.onchange = null;
                     modal.classList.add('hidden');
+                    deactivateModal(modal);
                     resolve(action);
                 };
                 activeYouTubeOwnerManageCleanup = cleanup;
@@ -3116,12 +3187,67 @@
                 switchButton.onclick = () => cleanup('switch');
                 closeButton.onclick = () => cleanup('close');
                 modal.classList.remove('hidden');
+                activateModal(modal, () => cleanup('close'));
+                try {
+                    getYouTubeOwnerBridge().listYouTubeOwnerAuth().then(result => {
+                        if (activeYouTubeOwnerManageCleanup !== cleanup) return;
+                        const profile = result?.profiles?.find(item => item.authRef === group.youtubeAuthRef);
+                        const access = profile ? (profile.accessLevel === 'admin' ? 'Write' : 'Read-only') : 'Reconnect needed';
+                        summary.textContent = `${channelLabel} (${access})`;
+                    }).catch(() => {});
+                } catch (_) { }
             });
         }
 
-        async function manageYouTubeOwnerSignin(buttonElement) {
+        function getYouTubeOwnerSenderForSource(source, group = source && stateManager.getGroup(source.groupId)) {
+            if (!source || !isYouTubeTarget(source.target)) return null;
+            if (!isYouTubeOwnerGroup(group) || group.youtubeSendMode !== 'owner') return null;
+            // A separately configured bot/session retains its browser account.
+            if (normalizeAccountRole(source.accountRole) === 'bot' ||
+                (source.customSession && source.customSession !== 'AUTO' && source.customSession !== group.customSession)) return null;
+            return {
+                authRef: group.youtubeAuthRef,
+                channelId: group.channelId,
+                videoId: source.videoId,
+                liveChatId: source.liveChatId || ''
+            };
+        }
+
+        async function refreshYouTubeOwnerApiSources(groupId, previousGroup, authChanged = false) {
+            const group = stateManager.getGroup(groupId);
+            if (!isYouTubeOwnerGroup(group)) return;
+            const sources = stateManager.getSources().filter(source => {
+                const sourceGroup = stateManager.getGroup(source.groupId);
+                const sameGroup = source.groupId === groupId;
+                if (!sameGroup && !(authChanged && isYouTubeOwnerGroup(sourceGroup) &&
+                    sourceGroup.youtubeAuthRef === group.youtubeAuthRef)) return false;
+                return source.vid && isYouTubeWebSocketSigninContext(source) &&
+                    (getYouTubeOwnerSenderForSource(source, sourceGroup) ||
+                        (sameGroup && getYouTubeOwnerSenderForSource(source, previousGroup)));
+            });
+            for (const source of sources) {
+                const entry = document.querySelector(`[data-source-id="${source.id}"]`);
+                const stopButton = entry?.querySelector('[data-stophtml]');
+                const startButton = entry?.querySelector('[data-activatehtml]');
+                if (!stopButton || !startButton) continue;
+                await stopThis(stopButton);
+                // Old-channel streams stay stopped when the user changes accounts.
+                const sourceGroup = stateManager.getGroup(source.groupId);
+                if (!sourceGroup || (source.channelId && source.channelId !== sourceGroup.channelId)) continue;
+                await activateSource(startButton);
+            }
+        }
+
+        function syncYouTubeOwnerSender(source) {
+            if (!ipcRenderer || !source || !isYouTubeTarget(source.target)) return;
+            ipcRenderer.send('youtube-owner-source-binding', {
+                sourceId: source.id, binding: getYouTubeOwnerSenderForSource(source)
+            });
+        }
+
+        async function manageYouTubeOwnerSignin(buttonElement, ownerGroupId = null) {
             const groupElement = buttonElement.closest('[data-is-group-header="true"]');
-            const groupId = groupElement?.dataset.groupId;
+            const groupId = ownerGroupId || groupElement?.dataset.groupId;
             const group = stateManager.getGroup(groupId);
             if (!isYouTubeOwnerGroup(group)) return;
             const action = await showYouTubeOwnerManageModal(group);
@@ -6155,6 +6281,7 @@
                     signinButton.title = '';
                     // Apply config-based sign-in policy (disable if requested)
                     applySigninPolicy(signinButton, source);
+                    updateYouTubeOwnerSigninButton(signinButton, source);
                 }
             }
             updateExternalBrowserSigninButton(sourceElement, source, signinMode);
@@ -8733,10 +8860,10 @@
             }
 
             async function startSourceInternal(sourceId) {
-                const source = stateManager.getSource(sourceId);
+                let source = stateManager.getSource(sourceId);
                 if (!source) return err('SOURCE_NOT_FOUND', 'Source was not found.');
                 const readinessDeadline = Date.now() + 15000;
-                while (!configReady && Date.now() < readinessDeadline) {
+                while ((!configReady || !entryForSourceId(sourceId)) && Date.now() < readinessDeadline) {
                     await new Promise(resolve => setTimeout(resolve, 50));
                 }
                 if (!configReady) {
@@ -8744,6 +8871,8 @@
                 }
                 const entry = entryForSourceId(sourceId);
                 if (!entry) return err('SOURCE_NOT_FOUND', 'Source UI entry was not found.');
+                source = stateManager.getSource(sourceId);
+                if (!source) return err('SOURCE_NOT_FOUND', 'Source was not found.');
                 if (hasConnectionHandles(source)) {
                     return ok({ source: normalizeSourceForStreamDeck(source) });
                 }
@@ -10466,6 +10595,7 @@
                     tab: tabid,
                     sourceId: source.id,
                     connectionMode: source.connectionMode || 'classic',
+                    youtubeOwnerSender: getYouTubeOwnerSenderForSource(source),
                     activeConnectionMode: source.activeConnectionMode || null,
                     autoActivate: !!source.autoActivate,
                     manualActivation: wasManualActivation(source.id),
@@ -10631,6 +10761,17 @@
                 : 'sources/websocket/youtube.js';
 
             try {
+                const ownerSender = getYouTubeOwnerSenderForSource(source);
+                let chatSession = source.customSession || 'AUTO';
+                if (ownerSender) {
+                    const tokenStoreUrl = new URL(urlWSS);
+                    tokenStoreUrl.pathname = tokenStoreUrl.pathname.replace(/youtube\.html$/, 'youtube_auth.html');
+                    const prepared = await getYouTubeOwnerBridge().prepareYouTubeOwnerChat({
+                        ...ownerSender, customSession: chatSession, tokenStoreUrl: tokenStoreUrl.href
+                    });
+                    if (JSON.stringify(getYouTubeOwnerSenderForSource(stateManager.getSource(source.id))) !== JSON.stringify(ownerSender)) return false;
+                    chatSession = prepared.customSession;
+                }
                 const response = ipcRenderer.sendSync('createWindow', {
                     url: rewriteKickUrl(urlWSS.trim()),
                     platform: source.target,
@@ -10641,7 +10782,8 @@
                     filesource: youtubeSourceBase || undefined,
                     tab: tabid,
                     sourceId: source.id,
-                    customSession: source.customSession || 'AUTO',
+                    youtubeOwnerSender: getYouTubeOwnerSenderForSource(source),
+                    customSession: chatSession,
                     accountRole: normalizeAccountRole(source.accountRole),
                     wss: true,
                     replyOnly: !!source.replyOnly,
@@ -13268,6 +13410,9 @@
             stateManager.on('sourceUpdated', ({ sourceId, updates, oldState }) => {
                 const element = document.querySelector(`[data-source-id="${sourceId}"]`);
                 const source = stateManager.getSource(sourceId);
+                if (['groupId', 'videoId', 'liveChatId', 'channelId', 'youtubeAuthRef', 'customSession', 'accountRole'].some(key => key in updates)) {
+                    syncYouTubeOwnerSender(source);
+                }
                 if (element && source) {
                     updateSourceUI(element, source);
                 }
@@ -13436,6 +13581,14 @@
             stateManager.on('groupUpdated', ({ groupId, updates, oldState }) => {
                 const element = document.querySelector(`[data-group-id="${groupId}"]`);
                 const group = stateManager.getGroup(groupId);
+                if ((isYouTubeOwnerGroup(group) || isYouTubeOwnerGroup(oldState)) &&
+                    ['youtubeSendMode', 'youtubeAuthRef', 'channelId', 'customSession'].some(key => key in updates)) {
+                    stateManager.getSources().filter(source => source.groupId === groupId).forEach(source => {
+                        syncYouTubeOwnerSender(source);
+                        const entry = document.querySelector(`[data-source-id="${source.id}"]`);
+                        if (entry) updateSourceUI(entry, source);
+                    });
+                }
                 if (element && group) {
                     updateGroupUI(element, group);
                     try { reorderGroupDom(groupId); } catch (e) { /* noop */ }
@@ -13630,6 +13783,11 @@
                 const handle = document.getElementById('popup-handle');
                 const frame1 = document.getElementById('frame1');
                 if (!linkOverlay || !handle) return;
+
+                // Linux's hidden-capture workaround removes frame limiting, so keep this idle control static.
+                if (typeof process !== 'undefined' && process.platform === 'linux') {
+                    handle.style.animation = 'none';
+                }
 
                 const compactLayout = window.matchMedia('(max-width: 900px)');
                 let compactExpanded = false;
@@ -14242,6 +14400,34 @@
                     }, 4000);
                     return true;
                 }
+
+                ipcRenderer.on('youtube-owner-auth-status', (event, status) => updateYouTubeOwnerSigninStatus(status));
+                const youtubeSendNotices = new Map();
+                ipcRenderer.on('youtube-owner-send-status', (event, payload) => {
+                    if (!payload?.sourceId) return;
+                    const source = stateManager.getSource(payload.sourceId);
+                    if (!source || !isYouTubeTarget(source.target)) return;
+                    const entry = document.querySelector(`[data-source-id="${source.id}"]`);
+                    if (payload.success) {
+                        if (entry?._youtubeSendError && source.status === 'active' &&
+                            entry.querySelector('.ws-status')?.textContent.includes(entry._youtubeSendError)) {
+                            updateConnectionStatus(entry, 'connected');
+                        }
+                        if (entry) delete entry._youtubeSendError;
+                        return;
+                    }
+                    if (!payload.message) return;
+                    if (entry) {
+                        updateConnectionStatus(entry, 'info', payload.message, { persistent: true });
+                        entry._youtubeSendError = payload.message;
+                    }
+                    const key = source.id + ':' + payload.code;
+                    if (Date.now() - (youtubeSendNotices.get(key) || 0) > 30000) {
+                        if (youtubeSendNotices.size > 100) youtubeSendNotices.clear();
+                        youtubeSendNotices.set(key, Date.now());
+                        Toast.warning(payload.message, 'YouTube message not sent');
+                    }
+                });
 
                 ipcRenderer.on('wssStatus', (event, payload) => {
                     try {
@@ -18343,7 +18529,7 @@
                 "youtube.publicDescription": "Enter an @handle or channel URL. Finds public live and upcoming streams; excludes unlisted videos.",
                 "youtube.ownerTitle": "Use my YouTube account",
                 "youtube.recommended": "Recommended",
-                "youtube.ownerDescription": "Read-only sign-in. Finds your live and scheduled streams, including unlisted videos.",
+                "youtube.ownerDescription": "Finds your live and scheduled streams, including unlisted videos.",
                 "youtube.videoTitle": "Paste a video link or ID",
                 "youtube.direct": "Direct",
                 "youtube.videoDescription": "Public or unlisted. The video must already be live.",
@@ -20260,6 +20446,8 @@
             document.querySelectorAll('[data-signin]').forEach(btn => {
                 const entry = btn.closest('.entry');
                 const sourceId = entry ? entry.dataset.sourceId : null;
+                const ownerSource = sourceId && window.stateManager ? stateManager.getSource(sourceId) : null;
+                if (updateYouTubeOwnerSigninButton(btn, ownerSource)) return;
                 if (entry?.dataset.target === 'tikfinity') {
                     btn.textContent = 'Set OBS Dock URL';
                     return;
