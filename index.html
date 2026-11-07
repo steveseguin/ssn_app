@@ -2814,6 +2814,7 @@
         let activeYouTubeOwnerConfirmCleanup = null;
         let activeYouTubeOwnerManageCleanup = null;
         let youtubeOwnerSigninPending = false;
+        let cancelYouTubeOwnerPreparation = null;
 
         function chooseYouTubeOwnerAccess() {
             const modal = document.getElementById('youtubeOwnerAccessModal');
@@ -2858,6 +2859,10 @@
         }
 
         async function youtubeOwnerSigninAction(action) {
+            if (action === 'cancel' && cancelYouTubeOwnerPreparation) {
+                cancelYouTubeOwnerPreparation();
+                return;
+            }
             const status = document.getElementById('youtubeOwnerSigninStatus');
             try {
                 const result = await getYouTubeOwnerBridge().youtubeOwnerAuthAction(action);
@@ -3069,27 +3074,37 @@
                 const { accessLevel, authMethod } = choice;
                 const existingGroup = existingGroupId ? { ...stateManager.getGroup(existingGroupId) } : null;
                 const customSession = existingGroup?.customSession || 'AUTO';
-                let tokenStorePage = await resolveWebSocketHtml('youtube_auth', {
-                    ssapp: '1',
-                    authonly: '1'
-                }, { branch: isBetaMode ? 'beta' : 'main' }).catch(error => {
-                    console.warn('Unable to resolve YouTube auth token store page:', error);
-                    return null;
-                });
-                if (!tokenStorePage) {
-                    tokenStorePage = await resolveWebSocketHtml('youtube', {
-                        ssapp: '1',
-                        authonly: '1'
-                    }, { branch: isBetaMode ? 'beta' : 'main' }).catch(error => {
-                        console.warn('Unable to resolve YouTube websocket fallback token store page:', error);
-                        return null;
-                    });
-                }
+                const seedLegacyChat = !!existingGroup && existingGroup.youtubeSendMode !== 'owner';
                 document.getElementById('youtubeOwnerSigninOptions').open = false;
                 signinModal.classList.remove('hidden');
                 updateYouTubeOwnerSigninStatus({ state: 'opening', method: authMethod });
                 activateModal(signinModal, () => youtubeOwnerSigninAction('cancel'));
                 document.getElementById('youtubeOwnerSigninTitle').focus();
+                let tokenStorePage = null;
+                if (seedLegacyChat) {
+                    let cancelled = false;
+                    const cancellation = new Promise(resolve => {
+                        cancelYouTubeOwnerPreparation = () => { cancelled = true; resolve(null); };
+                    });
+                    try {
+                        tokenStorePage = await Promise.race([cancellation, (async () => {
+                            for (const target of ['youtube_auth', 'youtube']) {
+                                if (cancelled) return null;
+                                const page = await resolveWebSocketHtml(target, {
+                                    ssapp: '1', authonly: '1'
+                                }, { branch: isBetaMode ? 'beta' : 'main' }).catch(error => {
+                                    console.warn('Unable to resolve YouTube token store page:', error);
+                                    return null;
+                                });
+                                if (page) return page;
+                            }
+                            return null;
+                        })()]);
+                    } finally {
+                        cancelYouTubeOwnerPreparation = null;
+                    }
+                    if (cancelled) return null;
+                }
                 let windowConfig = { ...config?.global, ...config?.youtube };
                 if (windowConfig.wss) windowConfig = { ...windowConfig, ...windowConfig.wss };
                 const authResult = await bridge.startYouTubeOwnerAuth({
@@ -3097,7 +3112,7 @@
                     authMethod,
                     windowConfig,
                     customSession,
-                    seedLegacyChat: !!existingGroup && existingGroup.youtubeSendMode !== 'owner',
+                    seedLegacyChat,
                     tokenStoreUrl: tokenStorePage?.url || ''
                 });
                 signinModal.classList.add('hidden');
@@ -3142,9 +3157,10 @@
                 }
                 return group;
             } catch (error) {
-                if (String(error?.message || '').includes('YouTube sign-in cancelled.')) return null;
+                const message = String(error?.message || '').replace(/^Error invoking remote method 'youtube-owner-auth-(?:start|confirm)': (?:Error: )?/, '');
+                if (message.includes('YouTube sign-in cancelled.')) return null;
                 console.error('YouTube owner sign-in failed:', error);
-                Toast.error(error?.message || 'Unable to sign in to YouTube.', 'YouTube Sign-In');
+                Toast.error(message || 'Unable to sign in to YouTube.', 'YouTube Sign-In');
                 return null;
             } finally {
                 signinModal.classList.add('hidden');

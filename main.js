@@ -4530,11 +4530,35 @@ function backgroundReportContext(dependencies) {
     };
 }
 
-async function getBackgroundReportContext() {
+async function getBackgroundReportContext(timeoutMs = 0) {
+    let timer;
     try {
-        return backgroundReportContext(await getBackgroundDiagnostics());
+        const operation = getBackgroundDiagnostics();
+        const dependencies = timeoutMs ? await Promise.race([
+            operation,
+            new Promise(resolve => { timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs); })
+        ]) : await operation;
+        if (dependencies?.timedOut) return { error: 'Background diagnostics timed out' };
+        return backgroundReportContext(dependencies);
     } catch (error) {
         return { error: 'Background diagnostics unavailable' };
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function getManualConnectionReportContext() {
+    try {
+        const { collectConnectionDiagnostics } = require('./resources/connection-diagnostics');
+        return await collectConnectionDiagnostics({
+            contents: electron.webContents.getAllWebContents(),
+            primaryContents: mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null,
+            savedState: cachedStateReady ? cachedState : null,
+            isSocialStreamUrl: url => isSocialStreamRemoteUrl(url) ||
+                (url.startsWith('file:') && ['background', 'dock', 'featured', 'popup'].some(page => matchesSocialStreamPagePath(url, page)))
+        });
+    } catch (_) {
+        return { status: 'unavailable' };
     }
 }
 
@@ -20136,7 +20160,7 @@ async function promptAndSendManualIssueReport() {
             title: 'Report Issue',
             message: 'Error reporting needs to be enabled to send a diagnostic report.',
             detail:
-                'This sends your app version, a random install ID, your current app settings, the issue description you enter next, and privacy-safe metadata for recent AI requests.\n\n' +
+                'This sends your app version, a random install ID, your current app settings, connection diagnostics, the issue description you enter next, and privacy-safe metadata for recent AI requests.\n\n' +
                 'API keys, prompts, OAuth tokens, session data, and backup credentials are not sent.'
         });
         if (response !== 0) {
@@ -20178,7 +20202,8 @@ async function promptAndSendManualIssueReport() {
                 trigger: 'manual_issue_report',
                 description: cleanedDescription,
                 platform: process.platform,
-                backgroundDiagnostics: await getBackgroundReportContext(),
+                backgroundDiagnostics: await getBackgroundReportContext(2000),
+                connectionDiagnostics: await getManualConnectionReportContext(),
                 tiktokDiagnostics: getTikTokDiagnosticReportContext(),
                 llmDiagnostics: llmRequestDiagnostics.getRecent()
             }
