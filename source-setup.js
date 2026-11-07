@@ -191,6 +191,51 @@ function showTikfinityDockSetup(sourceId = null) {
     }
 }
 
+function showHoulaSourceSetup() {
+    const modal = createSourceSetup('Add Hou.la', '',
+        `<label for="houla-mode">Capture mode</label>
+        <select id="houla-mode">
+            <option value="classic">Standard - chat page</option>
+            <option value="websocket">WebSocket - event key</option>
+        </select>
+        <div id="houla-chat-page">
+            <label for="source-setup-input">Chat page URL</label>
+            <input id="source-setup-input" type="text" required autocomplete="off" spellcheck="false" placeholder="https://hou.la/live/...">
+            <p>Paste a live stream or creator-chat URL. <a href="https://hou.la/a/live" target="_blank" rel="noopener">Find a live stream</a></p>
+        </div>
+        <p id="houla-key-help" hidden>Enter your event key in the source window after activating it.</p>`,
+        async dialog => {
+            const mode = dialog.querySelector('#houla-mode').value;
+            let url = 'https://hou.la/studio/live/comments';
+            if (mode === 'classic') {
+                const value = dialog.querySelector('#source-setup-input').value.trim();
+                let parsed;
+                try { parsed = new URL(/^[a-z][a-z0-9+.-]*:/i.test(value) ? value : 'https://' + value); } catch (_) { }
+                if (!parsed || parsed.protocol !== 'https:' || parsed.hostname !== 'hou.la' || parsed.username || parsed.password || parsed.port ||
+                    !(/^\/a\/live\/?$/.test(parsed.pathname) || /^\/live\/[a-f0-9-]+\/?$/i.test(parsed.pathname) || /^\/studio\/live\/comments\/?$/.test(parsed.pathname))) {
+                    throw new Error('Enter a Hou.la live stream or creator-chat URL.');
+                }
+                url = parsed.href;
+            }
+            closeModal();
+            await newOtherSource('houla', url, false, {
+                username: mode === 'websocket' ? 'Hou.la' : '',
+                connectionMode: mode,
+                sourceFile: 'sources/houla.js',
+                isVisible: true,
+                autoActivate: false
+            });
+        });
+    modal.querySelector('#houla-mode').onchange = event => {
+        const standard = event.target.value === 'classic';
+        modal.querySelector('#houla-chat-page').hidden = !standard;
+        modal.querySelector('#source-setup-input').required = standard;
+        modal.querySelector('#source-setup-input').disabled = !standard;
+        modal.querySelector('#houla-key-help').hidden = standard;
+        modal.querySelector('#source-setup-error').textContent = '';
+    };
+}
+
 function newOtherSourcePrompt(target = '') {
     createSourceSetup('Add other source',
         '<p>Paste the URL of the page showing your chat.</p>',
