@@ -38,6 +38,10 @@ function isOwnerDiscoveredYouTubeStream(stream) {
     return !!(stream && (stream.youtubeDiscoveryMode === 'owner' || stream.ownerDiscovered || stream.youtubeAuthRef));
 }
 
+function isPrivateYouTubeStream(stream, target = stream?.target) {
+    return !!(stream && (target === 'youtube' || target === 'youtubeshorts') && stream.privacyStatus === 'private');
+}
+
 function translateYouTubeMessage(key, fallback, values = {}) {
     let text = fallback || key;
     try {
@@ -480,9 +484,10 @@ class YouTubeStreamSelector {
             else if (status === 'unverified') statusBadge = '<span class="stream-status-badge video">Not verified</span>';
             else statusBadge = '<span class="stream-status-badge video">Video</span>';
 
+            const privateStream = isPrivateYouTubeStream(stream, this.options?.target || stream.target || 'youtube');
             const metaBadges = [];
             if (stream.privacyStatus) {
-                metaBadges.push(`<span class="yt-stream-meta-badge privacy">${escapeYouTubeHtml(stream.privacyStatus)}</span>`);
+                metaBadges.push(`<span class="yt-stream-meta-badge privacy${privateStream ? ' private-stream' : ''}">${escapeYouTubeHtml(stream.privacyStatus)}</span>`);
             }
             if (isOwnerDiscoveredYouTubeStream(stream)) {
                 const chatReady = stream.youtubeChatStatus === 'ready' || !!stream.liveChatId;
@@ -506,6 +511,7 @@ class YouTubeStreamSelector {
                   <div class="yt-stream-channel">${escapeYouTubeHtml(stream.channelTitle || username || stream.channelId || '')}</div>
                   ${viewerHtml}
                   ${metaBadgeHtml}
+                  ${privateStream ? '<div class="youtube-private-warning">Viewers need an invitation to watch.</div>' : ''}
                   ${isOwnerDiscoveredYouTubeStream(stream) ? `<div class="yt-owner-details">Video ID: ${escapeYouTubeHtml(stream.videoId)} <button type="button" class="yt-copy-details">Copy details</button></div>` : ''}
                   ${status === 'unverified' ? '<div class="yt-stream-discovery-message">YouTube did not return enough video details. Check again shortly.</div>' : ''}
                   ${status === 'upcoming' ? '<div class="stream-scheduled-time">' + this.formatScheduledTime(stream.scheduledStartTime) + '</div>' : ''}

@@ -146,6 +146,7 @@ function runLoopbackOAuthSession(payload = {}, dependencies = {}) {
         let session = null;
         let authWindow = null;
         let onAuthWindowClosed = null;
+        const unusedOwnerSockets = new Set();
         const stateParam = payload.state || crypto.randomBytes(16).toString("hex");
         const openExternal = dependencies.openExternal || ((...args) => shell.openExternal(...args));
         const notify = (status) => {
@@ -169,6 +170,10 @@ function runLoopbackOAuthSession(payload = {}, dependencies = {}) {
                 try { server.close(); } catch (_) { }
                 server = null;
             }
+            // Browsers can preconnect without sending a request. Do not let those
+            // connections carry a later sign-in to this abandoned callback server.
+            for (const socket of unusedOwnerSockets) socket.destroy();
+            unusedOwnerSockets.clear();
             if (activeSession === session) {
                 activeSession = null;
             }
@@ -223,6 +228,7 @@ function runLoopbackOAuthSession(payload = {}, dependencies = {}) {
         activeSession = session;
 
         server = http.createServer((req, res) => {
+            unusedOwnerSockets.delete(req.socket);
             // A later sign-in can reuse this port. Do not leave a browser connection
             // attached to the previous session's state after its response completes.
             res.setHeader("Connection", "close");
@@ -291,6 +297,13 @@ function runLoopbackOAuthSession(payload = {}, dependencies = {}) {
             res.writeHead(404, { 'Content-Type': 'text/plain' });
             res.end('Not found');
         });
+        if (session.ownerAuth) {
+            server.on('connection', socket => {
+                if (settled) { socket.destroy(); return; }
+                unusedOwnerSockets.add(socket);
+                socket.once('close', () => unusedOwnerSockets.delete(socket));
+            });
+        }
 
         (async () => {
             const listeningServer = server;

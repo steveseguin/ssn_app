@@ -1934,10 +1934,23 @@ button.group-control {
   border-color: rgba(34, 197, 94, 0.35);
 }
 
-.yt-stream-meta-badge.chat-waiting {
+.yt-stream-meta-badge.chat-waiting,
+.yt-stream-meta-badge.private-stream {
   background: rgba(245, 158, 11, 0.18);
   color: #fde68a;
   border-color: rgba(245, 158, 11, 0.4);
+}
+
+.youtube-private-warning {
+  margin-top: 6px;
+  color: var(--accent-amber);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.youtube-private-warning a {
+  color: inherit;
+  text-decoration: underline;
 }
 
 .stream-status {
