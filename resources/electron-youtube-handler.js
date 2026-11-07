@@ -33,6 +33,7 @@ const YOUTUBE_API_TIMEOUT_MS = 15000;
 const YOUTUBE_WSS_TOKEN_STORE_TIMEOUT_MS = 15000;
 const pendingOwnerAuth = new Map();
 const ownerTokenRefreshes = new Map();
+const ownerChatPreparations = new Map();
 const verifiedOwnerChats = new WeakMap();
 const ownerAuthStore = new Store({ name: "youtube-owner-auth" });
 
@@ -560,6 +561,7 @@ async function seedYouTubeWebSocketTokenStore(options = {}) {
         }
     });
 
+    let tokenStoreTimeout;
     try {
         await waitForWebContentsLoad(tokenWindow.webContents, tokenStoreUrl);
         const script = `
@@ -597,7 +599,14 @@ async function seedYouTubeWebSocketTokenStore(options = {}) {
                 };
             })();
         `;
-        const result = await tokenWindow.webContents.executeJavaScript(script, true);
+        const result = await Promise.race([
+            tokenWindow.webContents.executeJavaScript(script, true),
+            new Promise((_, reject) => {
+                tokenStoreTimeout = setTimeout(() => {
+                    reject(new Error("YouTube chat preparation timed out. Try activating the source again."));
+                }, YOUTUBE_WSS_TOKEN_STORE_TIMEOUT_MS);
+            })
+        ]);
         return {
             success: !!result?.hasToken,
             partition,
@@ -605,6 +614,7 @@ async function seedYouTubeWebSocketTokenStore(options = {}) {
             accessLevel: result?.accessLevel || accessLevel
         };
     } finally {
+        clearTimeout(tokenStoreTimeout);
         try {
             if (!tokenWindow.isDestroyed()) tokenWindow.destroy();
         } catch (_) { }
@@ -618,18 +628,30 @@ async function prepareYouTubeOwnerChat(payload = {}) {
     const customSession = "youtube-owner-api-" + key;
     const tokenStoreUrl = new URL(payload.tokenStoreUrl);
     tokenStoreUrl.searchParams.set("authonly", "1");
-    const result = await seedYouTubeWebSocketTokenStore({
-        tokenStoreUrl: tokenStoreUrl.href,
-        customSession,
-        accessToken,
-        refreshToken: revealSecret(record.refreshToken),
-        expiresIn: Math.max(60, Math.floor((record.expiresAt - Date.now()) / 1000)),
-        accessLevel: hasOwnerWriteAccess(record) ? "admin" : "readonly"
-    });
-    if (!result.success || JSON.stringify(getStoredOwnerAuths()[record.authRef]) !== JSON.stringify(record)) {
-        throw new Error("YouTube account could not be prepared. Reconnect under Manage Sign-In.");
+    const previous = ownerChatPreparations.get(customSession);
+    const currentRecord = () => JSON.stringify(getStoredOwnerAuths()[record.authRef]) === JSON.stringify(record);
+    // An older startup must finish before a newer permission can replace this session's credentials.
+    const preparing = (async () => {
+        if (previous) await previous.catch(() => {});
+        if (!currentRecord()) throw new Error("YouTube account changed. Activate the source again.");
+        const result = await seedYouTubeWebSocketTokenStore({
+            tokenStoreUrl: tokenStoreUrl.href,
+            customSession,
+            accessToken,
+            refreshToken: revealSecret(record.refreshToken),
+            expiresIn: Math.max(60, Math.floor((record.expiresAt - Date.now()) / 1000)),
+            accessLevel: hasOwnerWriteAccess(record) ? "admin" : "readonly"
+        });
+        if (!currentRecord()) throw new Error("YouTube account changed. Activate the source again.");
+        if (!result.success) throw new Error("Could not prepare YouTube chat. Activate the source again.");
+        return { success: true, customSession };
+    })();
+    ownerChatPreparations.set(customSession, preparing);
+    try {
+        return await preparing;
+    } finally {
+        if (ownerChatPreparations.get(customSession) === preparing) ownerChatPreparations.delete(customSession);
     }
-    return { success: true, customSession };
 }
 
 function normalizeYouTubeChannelItem(item) {

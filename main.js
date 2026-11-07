@@ -15786,8 +15786,17 @@ async function createWindow(args, reuse = false, mainApp = false) {
         if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return;
         Object.values(browserViews).forEach(view => {
             if (view?.args?.sourceId !== payload.sourceId || !['youtube', 'youtubeshorts'].includes(view.args.platform)) return;
-            if (JSON.stringify(view.args.youtubeOwnerSender || null) === JSON.stringify(payload.binding || null)) return;
-            view.args.youtubeOwnerSender = payload.binding || null;
+            let binding = payload.binding || null;
+            if (payload.ownerBinding !== undefined) {
+                // Session preferences can change for the next activation. Keep this window's session choice.
+                const sourceSession = view.args.youtubeSourceSession || view.args.customSession || 'AUTO';
+                const groupSession = (view.args.youtubeSourceGroupId === payload.groupId && view.args.youtubeGroupSession) ||
+                    payload.groupSession || 'AUTO';
+                const defaultGroupSession = groupSession === 'AUTO' ? 'default-youtube' : groupSession;
+                binding = sourceSession === 'AUTO' || sourceSession === defaultGroupSession ? payload.ownerBinding : null;
+            }
+            if (JSON.stringify(view.args.youtubeOwnerSender || null) === JSON.stringify(binding || null)) return;
+            view.args.youtubeOwnerSender = binding || null;
             // Invalidate even when a choice changes away from owner and then back.
             view.youtubeOwnerSenderKey = null;
             view.youtubeOwnerSender = null;
@@ -15800,22 +15809,27 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
         const view = getActiveBrowserView(payload.tabId);
         const binding = getYouTubeOwnerSender(view);
-        const isCurrent = async () => {
+        const isBound = () => {
             if (!view || getActiveBrowserView(payload.tabId) !== view || isBrowserViewDestroyed(view) ||
                 getYouTubeOwnerSender(view) !== binding || binding?.revision !== payload.revision) return false;
-            if (payload.videoId !== binding.videoId) return false;
+            return !!binding && payload.videoId === binding.videoId;
+        };
+        const isCurrent = async () => {
+            if (!isBound()) return false;
             try {
                 const url = new URL(view.webContents.getURL());
                 if (view.args.wss) {
                     if (!/\/sources\/websocket\/youtube\.html$/.test(url.pathname)) return false;
-                    return await view.webContents.executeJavaScript("typeof currentStream !== 'undefined' && currentStream ? currentStream.id : null") === binding.videoId;
+                    const videoId = await view.webContents.executeJavaScript("typeof currentStream !== 'undefined' && currentStream ? currentStream.id : null");
+                    // The source can stop, navigate or change sender while its renderer responds.
+                    return isBound() && view.webContents.getURL() === url.href && videoId === binding.videoId;
                 }
                 return ['www.youtube.com', 'youtube.com', 'studio.youtube.com'].includes(url.hostname) &&
                     url.pathname === '/live_chat' && url.searchParams.get('v') === binding.videoId;
             } catch (_) { return false; }
         };
         const result = await sendYouTubeOwnerMessage(binding, payload.message, isCurrent);
-        if (view) {
+        if (isBound()) {
             mainWindow.webContents.send('youtube-owner-send-status', {
                 sourceId: view.args?.sourceId, success: result.success, code: result.code, message: result.message
             });

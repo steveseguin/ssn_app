@@ -2991,6 +2991,7 @@
                     useButton.onclick = null;
                     cancelButton.onclick = null;
                     modal.classList.add('hidden');
+                    deactivateModal(modal);
                     resolve(value);
                 };
 
@@ -2998,6 +2999,7 @@
                 useButton.onclick = () => cleanup(channels.find(channel => channel.channelId === selectedChannelId) || channels[0]);
                 cancelButton.onclick = () => cleanup(null);
                 modal.classList.remove('hidden');
+                activateModal(modal, () => cleanup(null));
             });
         }
 
@@ -3202,14 +3204,24 @@
         function getYouTubeOwnerSenderForSource(source, group = source && stateManager.getGroup(source.groupId)) {
             if (!source || !isYouTubeTarget(source.target)) return null;
             if (!isYouTubeOwnerGroup(group) || group.youtubeSendMode !== 'owner') return null;
+            const groupSession = !group.customSession || group.customSession === 'AUTO' ? 'default-youtube' : group.customSession;
             // A separately configured bot/session retains its browser account.
             if (normalizeAccountRole(source.accountRole) === 'bot' ||
-                (source.customSession && source.customSession !== 'AUTO' && source.customSession !== group.customSession)) return null;
+                (source.customSession && source.customSession !== 'AUTO' && source.customSession !== groupSession)) return null;
             return {
                 authRef: group.youtubeAuthRef,
                 channelId: group.channelId,
                 videoId: source.videoId,
                 liveChatId: source.liveChatId || ''
+            };
+        }
+
+        function getYouTubeSourceSessionContext(source) {
+            if (!source || !isYouTubeTarget(source.target)) return {};
+            return {
+                youtubeSourceSession: source.customSession || 'AUTO',
+                youtubeSourceGroupId: source.groupId || null,
+                youtubeGroupSession: stateManager.getGroup(source.groupId)?.customSession || 'AUTO'
             };
         }
 
@@ -3221,27 +3233,37 @@
                 const sameGroup = source.groupId === groupId;
                 if (!sameGroup && !(authChanged && isYouTubeOwnerGroup(sourceGroup) &&
                     sourceGroup.youtubeAuthRef === group.youtubeAuthRef)) return false;
-                return source.vid && isYouTubeWebSocketSigninContext(source) &&
+                return (source.vid || pendingSourceActivations.has(source.id)) && isYouTubeWebSocketSigninContext(source) &&
                     (getYouTubeOwnerSenderForSource(source, sourceGroup) ||
                         (sameGroup && getYouTubeOwnerSenderForSource(source, previousGroup)));
             });
             for (const source of sources) {
                 const entry = document.querySelector(`[data-source-id="${source.id}"]`);
                 const stopButton = entry?.querySelector('[data-stophtml]');
-                const startButton = entry?.querySelector('[data-activatehtml]');
-                if (!stopButton || !startButton) continue;
-                await stopThis(stopButton);
-                // Old-channel streams stay stopped when the user changes accounts.
-                const sourceGroup = stateManager.getGroup(source.groupId);
-                if (!sourceGroup || (source.channelId && source.channelId !== sourceGroup.channelId)) continue;
-                await activateSource(startButton);
+                if (stopButton) await stopThis(stopButton);
             }
+            // Stop every affected API source before a slow restart can leave another using old access.
+            await Promise.all(sources.map(async source => {
+                const currentSource = stateManager.getSource(source.id);
+                if (!currentSource || currentSource.vid || pendingSourceActivations.has(source.id) ||
+                    !isYouTubeWebSocketSigninContext(currentSource)) return;
+                // Old-channel streams stay stopped when the user changes accounts.
+                const sourceGroup = stateManager.getGroup(currentSource.groupId);
+                if (!sourceGroup || (currentSource.channelId && currentSource.channelId !== sourceGroup.channelId)) return;
+                const startButton = document.querySelector(`[data-source-id="${source.id}"] [data-activatehtml]`);
+                if (startButton) await activateSource(startButton);
+            }));
         }
 
         function syncYouTubeOwnerSender(source) {
             if (!ipcRenderer || !source || !isYouTubeTarget(source.target)) return;
+            const group = stateManager.getGroup(source.groupId);
             ipcRenderer.send('youtube-owner-source-binding', {
-                sourceId: source.id, binding: getYouTubeOwnerSenderForSource(source)
+                sourceId: source.id,
+                binding: getYouTubeOwnerSenderForSource(source, group),
+                ownerBinding: getYouTubeOwnerSenderForSource({ ...source, customSession: 'AUTO' }, group),
+                groupId: source.groupId || null,
+                groupSession: group?.customSession || 'AUTO'
             });
         }
 
@@ -4931,10 +4953,14 @@
             sources.forEach(source => {
                 const isActive = hasConnectionHandles(source);
                 if (isActive) { skipped++; return; }
+                const sourceElement = document.querySelector(`[data-source-id="${source.id}"]`);
+                if (isYouTubeTarget(source.target) && source.connectionMode !== mode && pendingSourceActivations.has(source.id) && sourceElement) {
+                    // Pending connections have no window yet; stopThis cancels them synchronously.
+                    void stopThis(sourceElement.querySelector('[data-activatehtml]'));
+                }
                 stateManager.updateSource(source.id, { connectionMode: mode, activeConnectionMode: null });
 
                 // Update the UI for each source
-                const sourceElement = document.querySelector(`[data-source-id="${source.id}"]`);
                 if (sourceElement) {
                     updateSourceUIAfterModeChange(sourceElement, mode, source.status === 'active');
                 }
@@ -4973,7 +4999,8 @@
             if (!group) return;
             group.streams.forEach(sourceId => {
                 const source = stateManager.getSource(sourceId);
-                if (source && hasConnectionHandles(source)) {
+                if (source && (hasConnectionHandles(source) ||
+                    (isYouTubeTarget(source.target) && pendingSourceActivations.has(sourceId)))) {
                     const sourceElement = document.querySelector(`[data-source-id="${sourceId}"]`);
                     const stopButton = sourceElement?.querySelector('[data-stophtml]');
                     if (stopButton) stopThis(stopButton);
@@ -6383,6 +6410,9 @@
             if (source.target === 'tiktok' && (pendingTikTokActivations.has(sourceId) || sourceElement._tiktokFallback?.pendingAutoRetry)) {
                 await stopThis(sourceElement.querySelector('[data-activatehtml]'));
             }
+            if (isYouTubeTarget(source.target) && source.connectionMode !== mode && pendingSourceActivations.has(sourceId)) {
+                await stopThis(sourceElement.querySelector('[data-activatehtml]'));
+            }
             stateManager.updateSource(sourceId, { connectionMode: mode, activeConnectionMode: null });
 
             if (source.target === 'tiktok') {
@@ -7315,7 +7345,8 @@
             menuItem.classList.toggle('active', nextRole !== 'normal');
             menuItem.textContent = `Account role: ${getAccountRoleLabel(nextRole)}`;
 
-            const wasActive = hasConnectionHandles(source);
+            const wasActive = hasConnectionHandles(source) ||
+                (isYouTubeTarget(source.target) && pendingSourceActivations.has(sourceId));
             if (wasActive) {
                 Toast.info('Restarting', 'Applying account role...');
                 try {
@@ -9937,7 +9968,7 @@
                     windowId = await window.createDiscordNativeSource(source);
                 } else if (normalizedMode === 'websocket') {
                     if (resolvedTarget && resolvedTarget.startsWith('youtube')) {
-                        windowId = await createYoutubeWebSocketWindowFromSource(source, tabid);
+                        windowId = await createYoutubeWebSocketWindowFromSource(source, tabid, activationToken);
                     } else {
                         windowId = await createWindowWSSFromSource(source, tabid);
                     }
@@ -10596,6 +10627,7 @@
                     sourceId: source.id,
                     connectionMode: source.connectionMode || 'classic',
                     youtubeOwnerSender: getYouTubeOwnerSenderForSource(source),
+                    ...getYouTubeSourceSessionContext(source),
                     activeConnectionMode: source.activeConnectionMode || null,
                     autoActivate: !!source.autoActivate,
                     manualActivation: wasManualActivation(source.id),
@@ -10701,7 +10733,7 @@
             }
         }
 
-        async function createYoutubeWebSocketWindowFromSource(source, tabid = false) {
+        async function createYoutubeWebSocketWindowFromSource(source, tabid = false, activationToken = null) {
             if (!ipcRenderer) return false;
             let conf = config.global ? { ...config.global } : {};
             const configTarget = getConfigTarget(source.target);
@@ -10772,6 +10804,7 @@
                     if (JSON.stringify(getYouTubeOwnerSenderForSource(stateManager.getSource(source.id))) !== JSON.stringify(ownerSender)) return false;
                     chatSession = prepared.customSession;
                 }
+                if (activationToken && pendingSourceActivations.get(source.id) !== activationToken) return false;
                 const response = ipcRenderer.sendSync('createWindow', {
                     url: rewriteKickUrl(urlWSS.trim()),
                     platform: source.target,
@@ -10783,6 +10816,7 @@
                     tab: tabid,
                     sourceId: source.id,
                     youtubeOwnerSender: getYouTubeOwnerSenderForSource(source),
+                    ...getYouTubeSourceSessionContext(source),
                     customSession: chatSession,
                     accountRole: normalizeAccountRole(source.accountRole),
                     wss: true,
@@ -10794,6 +10828,7 @@
                 console.log('[CreateYouTubeWSS] Created window/tab ID:', response, 'for', source.username || source.videoId);
                 return response;
             } catch (e) {
+                if (activationToken && pendingSourceActivations.get(source.id) !== activationToken) return false;
                 console.error("Error in createYoutubeWebSocketWindowFromSource IPC call:", e, "URL:", urlWSS, "Script:", scriptPath);
                 Toast.error("YouTube WSS Error", `Failed to create YouTube WebSocket: ${e.message}`);
                 return false;
@@ -21519,7 +21554,7 @@
             Toast.success('Session Removed', `Removed session "${sessionName}"`);
         }
 
-        function saveSessionSelection() {
+        async function saveSessionSelection() {
             if (!currentSessionSourceId) {
                 console.error('No source ID set');
                 return;
@@ -21531,13 +21566,19 @@
                 console.error('Source not found:', currentSessionSourceId);
                 return;
             }
+            const sourceId = source.id;
+            const selectedSession = window.currentSelectedSession;
+            const previousSession = !source.customSession || source.customSession === 'AUTO' ? 'default-youtube' : source.customSession;
+            const nextSession = !selectedSession || selectedSession === 'AUTO' ? 'default-youtube' : selectedSession;
+            const group = stateManager.getGroup(source.groupId);
+            const usesOwnerSending = isYouTubeOwnerGroup(group) && group.youtubeSendMode === 'owner';
 
             // Save the session preference
             console.log(`[SESSION DEBUG] Saving customSession: ${window.currentSelectedSession} for source: ${currentSessionSourceId}`);
-            stateManager.updateSource(currentSessionSourceId, { customSession: window.currentSelectedSession });
+            stateManager.updateSource(sourceId, { customSession: selectedSession });
 
             // Verify it was saved
-            const updatedSource = stateManager.getSource(currentSessionSourceId);
+            const updatedSource = stateManager.getSource(sourceId);
             console.log(`[SESSION DEBUG] Source after update:`, updatedSource.customSession);
 
             // Show success message
@@ -21546,6 +21587,19 @@
 
             // Close modal
             closeSessionModal();
+
+            // Owner sending changes immediately, so its source must use the selected session too.
+            if (previousSession !== nextSession &&
+                usesOwnerSending &&
+                (hasConnectionHandles(updatedSource) || pendingSourceActivations.has(sourceId))) {
+                const button = document.querySelector(`[data-source-id="${sourceId}"] [data-activatehtml]`);
+                if (!button) return;
+                await stopThis(button);
+                const currentSource = stateManager.getSource(sourceId);
+                if (!currentSource || currentSource.customSession !== selectedSession ||
+                    hasConnectionHandles(currentSource) || pendingSourceActivations.has(sourceId)) return;
+                await activateSource(button);
+            }
         }
 
     </script>
