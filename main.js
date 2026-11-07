@@ -194,7 +194,21 @@ const {
     setupSpotifyOAuthWithLocalServer,
     setupSpotifyOAuthWithIntercept
 } = require('./resources/electron-spotify-handler');
-const { setupYouTubeOAuthHandler, clearYouTubeOwnerAuthStore } = require('./resources/electron-youtube-handler');
+const { setupYouTubeOAuthHandler, clearYouTubeOwnerAuthStore, sendYouTubeOwnerMessage } = require('./resources/electron-youtube-handler');
+
+let youtubeOwnerSenderRevision = 0;
+function getYouTubeOwnerSender(view) {
+    const args = view?.args;
+    if (!args || !['youtube', 'youtubeshorts'].includes(args.platform)) return null;
+    const candidate = args.youtubeOwnerSender;
+    if (!candidate || !candidate.authRef || !candidate.channelId || !candidate.videoId) return null;
+    const key = JSON.stringify(candidate);
+    if (view.youtubeOwnerSenderKey !== key) {
+        view.youtubeOwnerSenderKey = key;
+        view.youtubeOwnerSender = { ...candidate, revision: ++youtubeOwnerSenderRevision };
+    }
+    return view.youtubeOwnerSender;
+}
 const { setupTwitchOAuthHandler } = require('./resources/electron-twitch-handler');
 const { setupFacebookOAuthHandler } = require('./resources/electron-facebook-handler');
 const { setupInstagramOAuthHandler } = require('./resources/electron-instagram-handler');
@@ -2033,7 +2047,8 @@ function configureSpotifyOAuthHandlers() {
 }
 
 configureSpotifyOAuthHandlers();
-setupYouTubeOAuthHandler();
+const youtubeOAuthOptions = {};
+setupYouTubeOAuthHandler(youtubeOAuthOptions);
 setupTwitchOAuthHandler();
 setupFacebookOAuthHandler();
 setupInstagramOAuthHandler();
@@ -12836,6 +12851,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
         return await handleSignInRequest(args2);
     });
 
+    youtubeOAuthOptions.openWindow = async (url, payload) => {
+        const tab = await createSignInWindow({
+            url, platform: 'youtube', wss: true, youtubeOwnerAuth: true,
+            userInitiated: true, customSession: payload.customSession || 'AUTO',
+            config: payload.windowConfig || {}
+        });
+        return getActiveBrowserView(tab);
+    };
+
     ipcMain.on("signIn", function (eventRet, args2) {
         eventRet.returnValue = null;
         handleSignInRequest(args2).catch(error => {
@@ -12883,6 +12907,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
             const signInHeaderOverrides = resolveHeaderOverridesFromConfig(args.config, args.url);
             const isLocalSocialStreamSignIn = /^file:/i.test(String(args.url || ""))
                 && /[\\/]sources[\\/]websocket[\\/]/i.test(String(args.url || "").replace(/\//g, path.sep));
+            const isYouTubeOwnerSignIn = platform === 'youtube' && args.youtubeOwnerAuth === true && args.wss === true;
 
             // Always use in-app sign-in (never system browser)
 
@@ -12921,7 +12946,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
             let shouldClearSession = false;
 
-            if (hasExistingSession && !isLocalSocialStreamSignIn) {
+            if (hasExistingSession && !isLocalSocialStreamSignIn && !isYouTubeOwnerSignIn) {
                 // Show confirmation dialog
                 const result = await dialog.showMessageBox(mainWindow, {
                     type: 'question',
@@ -15757,6 +15782,47 @@ async function createWindow(args, reuse = false, mainApp = false) {
         return false;
     });
 
+    ipcMain.on('youtube-owner-source-binding', (event, payload = {}) => {
+        if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return;
+        Object.values(browserViews).forEach(view => {
+            if (view?.args?.sourceId !== payload.sourceId || !['youtube', 'youtubeshorts'].includes(view.args.platform)) return;
+            if (JSON.stringify(view.args.youtubeOwnerSender || null) === JSON.stringify(payload.binding || null)) return;
+            view.args.youtubeOwnerSender = payload.binding || null;
+            // Invalidate even when a choice changes away from owner and then back.
+            view.youtubeOwnerSenderKey = null;
+            view.youtubeOwnerSender = null;
+        });
+    });
+
+    ipcMain.handle('youtube-owner-send', async (event, payload = {}) => {
+        if (!mainWindow || event.sender !== mainWindow.webContents || !trustedVoicePage(event, ['background'], true)) {
+            return { success: false, code: 'youtube_send_forbidden', message: 'YouTube sending is only available to the SSApp chat controller.' };
+        }
+        const view = getActiveBrowserView(payload.tabId);
+        const binding = getYouTubeOwnerSender(view);
+        const isCurrent = async () => {
+            if (!view || getActiveBrowserView(payload.tabId) !== view || isBrowserViewDestroyed(view) ||
+                getYouTubeOwnerSender(view) !== binding || binding?.revision !== payload.revision) return false;
+            if (payload.videoId !== binding.videoId) return false;
+            try {
+                const url = new URL(view.webContents.getURL());
+                if (view.args.wss) {
+                    if (!/\/sources\/websocket\/youtube\.html$/.test(url.pathname)) return false;
+                    return await view.webContents.executeJavaScript("typeof currentStream !== 'undefined' && currentStream ? currentStream.id : null") === binding.videoId;
+                }
+                return ['www.youtube.com', 'youtube.com', 'studio.youtube.com'].includes(url.hostname) &&
+                    url.pathname === '/live_chat' && url.searchParams.get('v') === binding.videoId;
+            } catch (_) { return false; }
+        };
+        const result = await sendYouTubeOwnerMessage(binding, payload.message, isCurrent);
+        if (view) {
+            mainWindow.webContents.send('youtube-owner-send-status', {
+                sourceId: view.args?.sourceId, success: result.success, code: result.code, message: result.message
+            });
+        }
+        return result;
+    });
+
     // Performance monitoring IPC handlers
     ipcMain.handle('getPerformanceMetrics', async () => {
         try {
@@ -15852,13 +15918,15 @@ async function createWindow(args, reuse = false, mainApp = false) {
             }
             if (url) {
                 const viewArgs = view.args || {};
+                const ownerSender = getYouTubeOwnerSender(view);
                 tabs.push({
                     id: parseInt(key),
                     url: url,
                     virtualSourceTarget: view.isVirtualSource ? view.virtualSourceTarget || null : null,
                     accountRole: normalizeSourceAccountRole(viewArgs.accountRole),
                     sourceId: viewArgs.sourceId || view.sourceId || null,
-                    customSession: viewArgs.customSession || null
+                    customSession: viewArgs.customSession || null,
+                    ...(ownerSender ? { youtubeOwnerSender: { revision: ownerSender.revision, videoId: ownerSender.videoId } } : {})
                 });
             }
         });
