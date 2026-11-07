@@ -69,6 +69,8 @@ const BASE_PATTERNS = [
     '/thirdparty/three.global.min.js',
     '/thirdparty/bootstrap.min.css',
     '/thirdparty/bokeh-canvas.js',
+    '/thirdparty/fasttext/**',
+    '/thirdparty/bergamot/**',
     // Keep the lightweight offline voice engine available in ordinary builds.
     // Only the larger neural voice/model bundles require SSN_INCLUDE_TTS.
     '/thirdparty/espeak-ng-real.js',

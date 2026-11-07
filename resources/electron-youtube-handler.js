@@ -237,11 +237,14 @@ function runLoopbackOAuthSession(payload = {}, dependencies = {}) {
 <html><head><title>Authorization Failed</title>
 <style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#0f0f0f;color:#fff}
 .container{text-align:center}h1{color:#ff0000}</style></head>
-<body><div class="container"><h1>State Mismatch</h1><p>Possible CSRF attack detected. Please try again.</p></div>
+<body><div class="container"><h1>${session.ownerAuth ? 'Sign-in link expired' : 'State Mismatch'}</h1><p>${session.ownerAuth ? 'Complete the latest sign-in opened by Social Stream.' : 'Possible CSRF attack detected. Please try again.'}</p></div>
 <script>setTimeout(()=>window.close(),3000);</script></body></html>`);
-                    const stateError = new Error('State mismatch - possible CSRF attack');
-                    stateError.code = 'SSAPP_YOUTUBE_OAUTH_STATE_MISMATCH';
-                    fail(stateError);
+                    // A cancelled browser tab can return after a new owner sign-in reuses this port.
+                    if (!session.ownerAuth) {
+                        const stateError = new Error('State mismatch - possible CSRF attack');
+                        stateError.code = 'SSAPP_YOUTUBE_OAUTH_STATE_MISMATCH';
+                        fail(stateError);
+                    }
                     return;
                 }
                 if (query.code) {
@@ -383,21 +386,35 @@ function shouldFallbackToLegacyYouTubeAuth(error) {
 
 async function postHostedYouTubeAuthJson(path, payload, signal) {
     async function postToBase(baseUrl) {
-        const response = await fetch(baseUrl + path, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-            signal
-        });
-        const data = await readJsonResponse(response);
-        if (!response.ok) {
-            const message = data?.error_description || data?.error || `HTTP error! status: ${response.status}`;
-            const error = new Error(message);
-            error.status = response.status;
-            error.payload = data;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), YOUTUBE_API_TIMEOUT_MS);
+        try {
+            const response = await fetch(baseUrl + path, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+                signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal
+            });
+            const data = await readJsonResponse(response);
+            if (!response.ok) {
+                const message = data?.error_description || data?.error || `HTTP error! status: ${response.status}`;
+                const error = new Error(message);
+                error.status = response.status;
+                error.payload = data;
+                throw error;
+            }
+            return data;
+        } catch (error) {
+            if (signal?.aborted) throw error;
+            if (controller.signal.aborted) {
+                const timeoutError = new Error("YouTube authorization request timed out. Please try again.");
+                timeoutError.code = "SSAPP_YOUTUBE_API_TIMEOUT";
+                throw timeoutError;
+            }
             throw error;
+        } finally {
+            clearTimeout(timeout);
         }
-        return data;
     }
 
     try {
@@ -865,6 +882,7 @@ async function refreshStoredOwnerAuth(record) {
     record.accessToken = protectSecret(tokens.access_token);
     record.refreshToken = protectSecret(tokens.refresh_token || refreshToken);
     record.expiresAt = Date.now() + (expiresIn * 1000);
+    if (typeof tokens.scope === "string") record.scopes = tokens.scope.split(/\s+/).filter(Boolean);
     auths[record.authRef] = record;
     setStoredOwnerAuths(auths);
     return record;
@@ -901,6 +919,7 @@ function hasOwnerWriteAccess(record) {
 async function sendYouTubeOwnerMessage(binding, message, isCurrent) {
     const failure = (code, text) => ({ success: false, code, message: text });
     const changed = () => failure("youtube_send_target_changed", "YouTube account or stream changed. Send again to the current stream.");
+    const readOnly = () => failure("youtube_write_required", "YouTube is Read-only. To send, choose Write under Manage Sign-In. Receiving chat does not require Write.");
     const text = typeof message === "string" ? message : "";
     if (!text.trim() || Array.from(text).length > 200) {
         return failure("youtube_message_invalid", "YouTube messages must contain 1 to 200 characters.");
@@ -909,9 +928,7 @@ async function sendYouTubeOwnerMessage(binding, message, isCurrent) {
     const initial = getStoredOwnerAuths()[binding.authRef];
     if (!initial) return failure("youtube_signin_required", "YouTube sign-in is missing. Use Manage Sign-In to reconnect this channel.");
     if (!binding.channelId || initial.channelId !== binding.channelId) return changed();
-    if (!hasOwnerWriteAccess(initial)) {
-        return failure("youtube_write_required", "YouTube is Read-only. To send, choose Write under Manage Sign-In. Receiving chat does not require Write.");
-    }
+    if (!hasOwnerWriteAccess(initial)) return readOnly();
     if (!binding.videoId || !binding.liveChatId) {
         return failure("youtube_chat_not_ready", "YouTube chat is not ready. Check for live streams again.");
     }
@@ -919,7 +936,8 @@ async function sendYouTubeOwnerMessage(binding, message, isCurrent) {
     try {
         const { accessToken, record } = await getOwnerAccessToken(binding.authRef);
         const currentRecord = () => JSON.stringify(getStoredOwnerAuths()[binding.authRef]) === JSON.stringify(record);
-        if (!(await isCurrent()) || !currentRecord() || !hasOwnerWriteAccess(record)) return changed();
+        if (!(await isCurrent()) || !currentRecord()) return changed();
+        if (!hasOwnerWriteAccess(record)) return readOnly();
         if (!verifiedOwnerChats.has(binding)) {
             const data = await fetchYouTubeApiJson("https://www.googleapis.com/youtube/v3/videos" +
                 "?part=snippet,liveStreamingDetails&fields=items(id,snippet(channelId),liveStreamingDetails(activeLiveChatId,actualEndTime))" +
@@ -1216,9 +1234,19 @@ function setupYouTubeOAuthHandler(options = {}) {
             }
             const controller = new AbortController();
             activeOwnerAuth = controller;
+            const onDestroyed = () => controller.abort();
+            const onNavigation = (details) => {
+                if (details.isMainFrame && !details.isSameDocument) controller.abort();
+            };
+            event.sender.once("destroyed", onDestroyed);
+            event.sender.on("did-start-navigation", onNavigation);
             let onCancel;
             const cancelled = new Promise((resolve, reject) => {
-                onCancel = () => reject(new Error("YouTube sign-in cancelled."));
+                onCancel = () => {
+                    const error = new Error("YouTube sign-in cancelled.");
+                    if (activeOwnerAuth === controller && activeSession?.ownerAuth) activeSession.fail(error);
+                    reject(error);
+                };
                 controller.signal.addEventListener("abort", onCancel, { once: true });
             });
             try {
@@ -1230,6 +1258,8 @@ function setupYouTubeOAuthHandler(options = {}) {
                     }
                 }), cancelled]);
             } finally {
+                event.sender.removeListener("destroyed", onDestroyed);
+                event.sender.removeListener("did-start-navigation", onNavigation);
                 controller.signal.removeEventListener("abort", onCancel);
                 if (activeOwnerAuth === controller) activeOwnerAuth = null;
             }
@@ -1241,7 +1271,6 @@ function setupYouTubeOAuthHandler(options = {}) {
             const current = activeSession;
             if (action === "cancel" && activeOwnerAuth) {
                 activeOwnerAuth.abort();
-                if (current?.ownerAuth) current.fail(new Error("YouTube sign-in cancelled."));
                 return { success: true };
             }
             if (!current?.ownerAuth) return { success: false, message: "No sign-in is waiting. YouTube may already be finishing sign-in." };
