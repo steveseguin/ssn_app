@@ -194,6 +194,8 @@
                             src="https://cache.socialstream.ninja/sources/images/parti.png" class="icon" />Parti</button></span>
                 <span><button onclick="newSourcePrompt('beamstream');"><img
                             src="https://cache.socialstream.ninja/sources/images/beamstream.png" class="icon" />Beamstream</button></span>
+                <span><button onclick="newSourcePrompt('l2games');" data-source-type="l2games"><img
+                            src="https://cache.socialstream.ninja/sources/images/l2games.png" class="icon" />l2.games</button></span>
                 <span><button onclick="newSourcePrompt('arenasocial');"><img
                             src="https://cache.socialstream.ninja/sources/images/arenasocial.png" class="icon" />Arena Social</button></span>
                 <span><button onclick="newSourcePrompt('vpzone');" data-source-type="vpzone"><img
@@ -3662,6 +3664,7 @@
                 twitch: "Twitch username or channel URL",
                 mixcloud: "Mixcloud username",
                 nimo: "Nimo username",
+                l2games: "l2.games username or chat pop-out URL",
                 sooplive: "SOOP broadcaster ID/name",
                 tiktok: "TikTok username or live URL",
                 instagram: "Instagram username or live URL",
@@ -4339,6 +4342,7 @@
                     else if (target === "nimo") sourceUrl = `https://www.nimo.tv/popout/chat/${username}`;
                     else if (target === "sooplive") sourceUrl = `https://play.sooplive.com/${username}/`;
                     else if (target === "beamstream") sourceUrl = `https://beamstream.gg/${username}/chat`;
+                    else if (target === "l2games") sourceUrl = `https://l2.games/popout/chat/${encodeURIComponent(username)}`;
                     else if (target === "vimm") sourceUrl = `https://www.vimm.tv/c/${username}`;
                     else if (target === "bilibilicom" || target === "bilibili") sourceUrl = `https://live.bilibili.com/${username}`;
                     else if (target === "bilibilitv") sourceUrl = `https://www.bilibili.tv/en/live/${username}`;
@@ -4354,6 +4358,7 @@
                     else if (target === "x") sourceFile = "sources/x.js";
                     else if (target === "parti") sourceFile = "sources/parti.js";
                     else if (target === "beamstream") sourceFile = "sources/beamstream.js";
+                    else if (target === "l2games") sourceFile = "sources/l2games.js";
                     else if (target === "bilibilicom") sourceFile = "sources/bilibilicom.js";
                     else if (target === "bilibilitv") sourceFile = "sources/bilibili.js";
                     // Add other platform-specific script files here if necessary
@@ -5689,16 +5694,18 @@
 
                     console.log(`[Auto-add] Creating new YouTube stream. Group visibility: ${group.groupVisible}, Source isVisible: ${newSource.isVisible}`);
                     console.log(`[Auto-add] FULL GROUP STATE:`, JSON.stringify({ groupVisible: group.groupVisible, groupMuted: group.groupMuted, id: group.id }, null, 2));
-                    stateManager.addSource(newSource);
+                    const addedSourceId = stateManager.addSource(newSource);
 
                     // Auto-activate the new source when chat is available. Owner-backed upcoming broadcasts stay as waiting rows.
                     setTimeout(async () => {
                         if (stateManager.getGroup(groupId) !== group
                             || getYouTubeGroupDiscoveryIdentity(group) !== discoveryIdentity) return;
-                        const addedSource = stateManager.getSources().find(s => s.videoId === stream.videoId);
-                        console.log(`[Auto-add TIMEOUT] Looking for source with videoId: ${stream.videoId}`);
+                        // Keep delayed activation tied to the entry added by this discovery.
+                        const addedSource = stateManager.getSource(addedSourceId);
+                        console.log(`[Auto-add TIMEOUT] Looking for source: ${addedSourceId}`);
                         console.log(`[Auto-add TIMEOUT] addedSource:`, addedSource ? JSON.stringify({ id: addedSource.id, isVisible: addedSource.isVisible, isMuted: addedSource.isMuted }) : 'NOT FOUND');
-                        if (addedSource) {
+                        if (addedSource && addedSource.groupId === groupId && addedSource.videoId === stream.videoId
+                            && addedSource.target === newSource.target) {
                             const sourceElement = document.querySelector(`[data-source-id="${addedSource.id}"]`);
                             const activateButton = sourceElement?.querySelector('[data-activatehtml]');
                             console.log(`[Auto-add TIMEOUT] sourceElement found: ${!!sourceElement}, activateButton found: ${!!activateButton}`);
@@ -8629,6 +8636,7 @@
                 rumble: controlPlatform(['url'], ['classic', 'websocket']),
                 parti: controlPlatform(['url']),
                 beamstream: controlPlatform(['url']),
+                l2games: controlPlatform(['username', 'url']),
                 vpzone: controlPlatform(['url'], ['classic', 'websocket'], 'websocket'),
                 velora: controlPlatform(['url'], ['classic', 'websocket'], 'websocket'),
                 whatnot: controlPlatform(['videoId', 'url'], ['classic', 'websocket'], 'websocket', 'sources/whatnot.js'),
