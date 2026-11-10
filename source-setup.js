@@ -14,6 +14,7 @@ function normalizeSimpleSourceInput(target, value) {
         nimo: [/^(?:www\.)?nimo\.tv$/, /^\/(?:popout\/chat\/|live\/)?([^/]+)\/?$/],
         sooplive: [/^play\.sooplive\.com$/, /^\/([^/]+)(?:\/\d+)?\/?$/],
         beamstream: [/^(?:www\.)?beamstream\.gg$/, /^\/([^/]+)(?:\/chat)?\/?$/],
+        l2games: [/^l2\.games$/, /^\/(?:en\/)?popout\/chat\/([^/]+)\/?$/],
         x: [/^(?:www\.)?(?:x\.com|twitter\.com)$/, /^\/([^/]+)(?:\/livechat)?\/?$/],
         arenasocial: [/^(?:www\.)?arena\.social$/, /^\/(?:live\/)?([^/]+)\/?$/]
     };
