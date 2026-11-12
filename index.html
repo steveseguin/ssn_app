@@ -13254,7 +13254,6 @@
 
             // Clean up stale window IDs on startup
             const sources = stateManager.getSources();
-            const runningSourceTabs = ipcRenderer ? ipcRenderer.sendSync('getTabs', {}) : [];
             for (const source of sources) {
                 // Set default connection mode for TikTok sources if not set
                 if (source.target === 'tiktok' && !source.connectionMode) {
@@ -13268,9 +13267,9 @@
                 // Check regular windows
                 let windowExists = false;
                 if (source.vid && ipcRenderer) {
-                    const tab = runningSourceTabs.find(tab => Number(tab.id) === Number(source.vid));
-                    windowExists = !!tab && (!tab.sourceId || tab.sourceId === source.id)
-                        && await ipcRenderer.invoke('checkWindowExists', { vid: source.vid });
+                    // A live source can still have an empty URL while its first
+                    // response is pending. Check the main process's owner record.
+                    windowExists = await ipcRenderer.invoke('checkWindowExists', { vid: source.vid, sourceId: source.id });
                     if (!windowExists) {
                         stateManager.updateSource(source.id, { vid: null, status: 'inactive', activeConnectionMode: null });
                     }

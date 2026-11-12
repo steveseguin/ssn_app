@@ -13,6 +13,8 @@ async function run() {
 	const root = path.resolve(__dirname, '../..');
 	const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-source-cleanup-'));
 	const ticks = new Map();
+	const pendingLoads = new Map();
+	const heldPaths = new Set();
 	const server = http.createServer((request, response) => {
 		const url = new URL(request.url, 'http://localhost');
 		if (url.pathname === '/tick') {
@@ -21,13 +23,17 @@ async function run() {
 			response.writeHead(204).end();
 			return;
 		}
-		response.setHeader('Content-Type', 'text/html');
-		response.end(`<!doctype html><title>Source cleanup fixture</title><p>Running capture fixture</p>
+		const finish = () => {
+			response.setHeader('Content-Type', 'text/html');
+			response.end(`<!doctype html><title>Source cleanup fixture</title><p>Running capture fixture</p>
 			<script>
 			localStorage.setItem('cleanup-session', 'preserved');
 			document.cookie = 'cleanup-session=preserved; path=/';
 			setInterval(() => fetch('/tick?name=' + encodeURIComponent(location.pathname)), 250);
 			</script>`);
+		};
+		if (heldPaths.has(url.pathname)) pendingLoads.set(url.pathname, finish);
+		else finish();
 	});
 	await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 	const fixture = `http://127.0.0.1:${server.address().port}`;
@@ -50,8 +56,10 @@ async function run() {
 	const runningWindows = () => app.evaluate(({ webContents }, fixture) => webContents.getAllWebContents()
 		.filter(contents => contents.getURL().startsWith(fixture + '/'))
 		.map(contents => ({ id: contents.id, url: contents.getURL() })), fixture);
-	async function addSource(name, target, { grouped = false, mode = 'classic' } = {}) {
+	async function addSource(name, target, { grouped = false, mode = 'classic', hold = false } = {}) {
 		const url = `${fixture}/${name}`;
+		const initialTicks = ticks.get('/' + name) || 0;
+		if (hold) heldPaths.add('/' + name);
 		const source = await page.evaluate(async ({ name, target, grouped, mode, url }) => {
 			const groupId = grouped ? stateManager.addGroup({ target, username: name, autoActivate: false }) : null;
 			const id = stateManager.addSource({ target, username: name, url, groupId, connectionMode: mode, isDirectUrl: true,
@@ -74,8 +82,9 @@ async function run() {
 			}
 			return { ...stateManager.getSource(id), fixtureUrl: url, fixtureName: '/' + name };
 		}, { name, target, grouped, mode, url });
-		for (let attempt = 0; attempt < 300 && !ticks.get(source.fixtureName); attempt++) await page.waitForTimeout(100);
-		assert.ok(ticks.get(source.fixtureName), `${name} must run and call the fixture server before testing cleanup: `
+		const hasArrived = () => hold ? pendingLoads.has(source.fixtureName) : ticks.get(source.fixtureName) > initialTicks;
+		for (let attempt = 0; attempt < 300 && !hasArrived(); attempt++) await page.waitForTimeout(100);
+		assert.ok(hasArrived(), `${name} must make a new fixture request before testing cleanup: `
 			+ JSON.stringify({ source, tabs: await destinations(), windows: await runningWindows() }));
 		return source;
 	}
@@ -117,6 +126,33 @@ async function run() {
 		app = await _electron.launch(launchOptions);
 		page = await app.firstWindow();
 		await ready();
+		// Navigation has started, but no response has committed: getURL() is still
+		// empty. Reload must retain live ownership and close grouped YouTube windows.
+		const pendingManual = await addSource('pending-manual', 'custom', { hold: true });
+		const pendingGrouped = await addSource('pending-grouped', 'youtube', { grouped: true, hold: true });
+		const pendingWindow = await app.evaluate(({ BrowserWindow }, sourceId) => {
+			const win = BrowserWindow.getAllWindows().find(win => win.args?.sourceId === sourceId);
+			return { id: win.webContents.id, url: win.webContents.getURL() };
+		}, pendingManual.id);
+		assert.ok(!pendingWindow.url || pendingWindow.url === 'about:blank', 'Fixture must hold the initial navigation');
+		const stalePendingId = await page.evaluate(({ groupId, unrelatedVid }) => stateManager.addSource({
+			target: 'youtube', videoId: 'stale-pending-window-id', groupId, vid: unrelatedVid, autoActivate: false,
+		}), { groupId: pendingGrouped.groupId, unrelatedVid: pendingManual.vid });
+		await reload();
+		assert.equal(await page.evaluate(id => stateManager.getSource(id)?.vid, pendingManual.id), pendingManual.vid,
+			'Reload discarded the handle of a source whose first page is still loading');
+		assert.equal(await page.evaluate(id => !!stateManager.getSource(id), pendingGrouped.id), false);
+		assert.equal(await page.evaluate(id => !!stateManager.getSource(id), stalePendingId), false);
+		assert.equal(await app.evaluate(({ BrowserWindow }, sourceId) => BrowserWindow.getAllWindows()
+			.some(win => win.args?.sourceId === sourceId), pendingGrouped.id), false,
+			'Grouped YouTube cleanup orphaned a still-loading window');
+		pendingLoads.get(pendingManual.fixtureName)();
+		for (let attempt = 0; attempt < 300 && !ticks.get(pendingManual.fixtureName); attempt++) await page.waitForTimeout(100);
+		assert.ok(ticks.get(pendingManual.fixtureName), 'Surviving pending page must finish loading');
+		await assertPreserved([pendingManual], { [pendingManual.id]: pendingWindow.id });
+		await page.evaluate(() => clearAllSources());
+		await assertClosed([pendingManual]);
+		console.log('PASS: reload during initial navigation retains ownership, closes grouped sources, and protects unrelated windows.');
 		const expired = [];
 		for (const target of ['youtube', 'youtubeshorts']) {
 			for (const mode of ['classic', 'websocket']) {
@@ -201,6 +237,7 @@ async function run() {
 		console.log('PASS: full restart clears stale runtime IDs.');
 	} finally {
 		if (app) await app.close();
+		server.closeAllConnections();
 		await new Promise(resolve => server.close(resolve));
 		const resolved = path.resolve(profile);
 		if (path.dirname(resolved) !== path.resolve(os.tmpdir()) || !path.basename(resolved).startsWith('ssapp-source-cleanup-')) {

@@ -3955,7 +3955,7 @@ function getLineNumber() {
 }
 
 function log(msg, a, b) {
-    if (runningFromSource) {
+    if (runningFromSource && isDebugLoggingEnabled) {
         // if not source, hide console
         const lineNumber = getLineNumber();
         console.log(`${lineNumber}: `, msg);
@@ -9416,6 +9416,10 @@ ipcMain.handle('showWindow', (event, args) => {
 ipcMain.handle('checkWindowExists', (event, args) => {
     const view = browserViews[args.vid];
     if (!view) return false;
+    // Ownership is available before the first navigation commits. getTabs() only
+    // lists windows with URLs, so it cannot establish ownership while loading.
+    const ownerId = view.args?.sourceId || view.sourceId;
+    if (args.sourceId && ownerId && ownerId !== args.sourceId) return false;
     try {
         if (isBrowserViewDestroyed(view)) {
             // Clean up stale reference
@@ -13910,15 +13914,17 @@ async function createWindow(args, reuse = false, mainApp = false) {
         // This avoids Electron's en-GB bug for Canadians and should work properly
         log(`[ACTIVATE] Using system locale: ${SYSTEM_LOCALE} (set globally via command line)`)
 
-        // Debug: Check cookies when activate window is created
-        persistentSession.cookies.get({ domain: '.twitch.tv' }).then(cookies => {
-            log(`[ACTIVATE DEBUG] Cookies for .twitch.tv: ${cookies.length} cookies found`);
-            cookies.forEach(cookie => {
-                log(`  - ${cookie.name}: ${cookie.value.substring(0, 10)}... (domain: ${cookie.domain})`);
+        // Avoid a cookie-store query when its diagnostic output is disabled.
+        if (runningFromSource && isDebugLoggingEnabled) {
+            persistentSession.cookies.get({ domain: '.twitch.tv' }).then(cookies => {
+                log(`[ACTIVATE DEBUG] Cookies for .twitch.tv: ${cookies.length} cookies found`);
+                cookies.forEach(cookie => {
+                    log(`  - ${cookie.name}: ${cookie.value.substring(0, 10)}... (domain: ${cookie.domain})`);
+                });
+            }).catch(err => {
+                log(`[ACTIVATE DEBUG] Error getting cookies: ${err}`);
             });
-        }).catch(err => {
-            log(`[ACTIVATE DEBUG] Error getting cookies: ${err}`);
-        });
+        }
 
         try {
             let webSecurity = true;
