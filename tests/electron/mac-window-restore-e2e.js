@@ -10,6 +10,129 @@ const { pathToFileURL } = require('url');
 const { _electron } = require('playwright-core');
 let fixtureServer;
 
+async function runQuitRegressions({ root, executable, packaged, base, bundle, output }) {
+	const reports = [];
+	const failures = [];
+	for (const headless of [false, true]) {
+		for (const scenario of ['normal', 'late-window', 'paused-renderer', 'repeated-quit']) {
+			const label = `${headless ? 'headless' : 'desktop'}-${scenario}`;
+			const profile = path.join(output, label);
+			const lateWindowMarker = path.join(output, `${label}-late-window.json`);
+			const options = {
+				executablePath: executable, cwd: root,
+				args: [...(packaged ? [] : ['.', '--running-from-source', '--filesource=' + base]),
+					'--multiinstance', '--closetotray', ...(headless ? ['--ssapp-headless-control'] : [])],
+				env: { ...process.env, SSAPP_USER_DATA_DIR: profile,
+					...(packaged ? { SSAPP_PREFER_LOCAL_ASSETS: '1' } : {}) }, timeout: 60000,
+			};
+			const report = { label, passed: false };
+			let app;
+			let child;
+			let log;
+			let restarted;
+			let watchdog;
+			try {
+				app = await _electron.launch(options);
+				child = app.process();
+				watchdog = setTimeout(() => child.kill('SIGKILL'), 90000);
+				log = fs.createWriteStream(path.join(output, `${label}.log`));
+				child.stdout.pipe(log);
+				child.stderr.pipe(log);
+				const page = await app.firstWindow();
+				await page.waitForFunction(() => window.stateManager?.initialized && configReady);
+				let background;
+				for (let attempt = 0; attempt < 300; attempt++) {
+					background = page.frames().find(frame => frame.url().includes('/background.html'));
+					if (background) break;
+					await new Promise(resolve => setTimeout(resolve, 100));
+				}
+				assert.ok(background, 'Background must initialize before changing settings');
+				await background.waitForFunction(() => typeof loadedFirst !== 'undefined' && loadedFirst);
+				await app.evaluate(({ app, BrowserWindow }, { scenario, lateWindowMarker }) => {
+					global.__quitRegression = { lateWindowCreated: false, events: [] };
+					for (const event of ['before-quit', 'will-quit', 'window-all-closed']) {
+						app.on(event, e => global.__quitRegression.events.push({
+							event, prevented: e?.defaultPrevented, windows: BrowserWindow.getAllWindows().length,
+						}));
+					}
+					if (scenario === 'late-window') {
+						app.once('window-all-closed', () => {
+							if (!app.isQuitting) return;
+							setTimeout(() => {
+								global.__lateQuitWindow = new BrowserWindow({ show: false });
+								global.__quitRegression.lateWindowCreated = true;
+								process.getBuiltinModule('fs').writeFileSync(lateWindowMarker,
+									JSON.stringify({ created: true, quitting: app.isQuitting }));
+							}, 50);
+						});
+					}
+				}, { scenario, lateWindowMarker });
+				await page.evaluate(label => localStorage.setItem('macQuitRegression', label), label);
+				await background.evaluate(label => new Promise(resolve => {
+					settings.macQuitRegression = { textparam: label };
+					chrome.storage.local.set({ settings }, resolve);
+				}), label);
+				let cdp;
+				if (scenario === 'paused-renderer' || scenario === 'repeated-quit') {
+					cdp = await app.context().newCDPSession(page);
+					await cdp.send('Debugger.enable');
+					await cdp.send('Debugger.pause');
+				}
+				const started = Date.now();
+				const quit = () => execFileSync('osascript', ['-e', `tell application ${JSON.stringify(bundle)} to quit`], { timeout: 15000 });
+				quit();
+				if (scenario === 'repeated-quit') {
+					quit();
+					await new Promise(resolve => setTimeout(resolve, 200));
+					assert.ok(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length > 0),
+						'Second Quit must not destroy the renderer while its backup is pending');
+					await cdp.send('Debugger.resume');
+				}
+				const deadline = started + 8000;
+				while (child.exitCode === null && child.signalCode === null && Date.now() < deadline) {
+					await new Promise(resolve => setTimeout(resolve, 100));
+				}
+				report.quitMs = Date.now() - started;
+				if (child.exitCode === null && child.signalCode === null) {
+					report.state = await app.evaluate(() => global.__quitRegression);
+					throw new Error('Native Quit did not exit within 8 seconds');
+				}
+				assert.equal(child.exitCode, 0, 'Native Quit must exit cleanly');
+				const persisted = JSON.parse(fs.readFileSync(path.join(profile, 'savedSync.json'), 'utf8'));
+				assert.equal(persisted.settings.macQuitRegression.textparam, label, 'Pending settings must reach disk before quitting');
+				if (scenario === 'late-window') {
+					assert.deepEqual(JSON.parse(fs.readFileSync(lateWindowMarker, 'utf8')),
+						{ created: true, quitting: true }, 'Late-window fixture must actually run during shutdown');
+				}
+				restarted = await _electron.launch(options);
+				const restored = await restarted.firstWindow();
+				await restored.waitForFunction(() => window.stateManager?.initialized && configReady);
+				assert.equal(await restored.evaluate(() => localStorage.getItem('macQuitRegression')), label);
+				assert.equal(await restored.evaluate(() => ipcRenderer.sendSync('storageGet', ['settings']).settings.macQuitRegression.textparam), label);
+				report.passed = true;
+				console.log(`PASS ${label}: native Quit in ${report.quitMs}ms; settings survived restart.`);
+			} catch (error) {
+				report.error = error.stack;
+				failures.push(`${label}: ${error.message}`);
+				console.error(`FAIL ${label}: ${error.message}`);
+			} finally {
+				clearTimeout(watchdog);
+				if (restarted) {
+					const timer = setTimeout(() => restarted.process().kill('SIGKILL'), 5000);
+					await restarted.close().catch(() => {});
+					clearTimeout(timer);
+				}
+				if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+				if (app) await app.close().catch(() => {});
+				if (log) log.end();
+				reports.push(report);
+				fs.writeFileSync(path.join(output, 'quit-regressions.json'), JSON.stringify(reports, null, 2));
+			}
+		}
+	}
+	assert.deepEqual(failures, [], 'Mac Quit regressions failed');
+}
+
 async function run() {
 	if (process.platform !== 'darwin') {
 		console.log('SKIP: native Mac window restoration requires macOS.');
@@ -26,6 +149,8 @@ async function run() {
 	const base = pathToFileURL(sourceRoot + path.sep).href;
 	const output = fs.mkdtempSync(path.join(os.tmpdir(), 'ssapp-mac-restore-'));
 	console.log('Evidence: ' + output);
+	await runQuitRegressions({ root, executable, packaged, base, bundle, output });
+	if (process.argv.includes('--quit-regressions-only')) return;
 	fixtureServer = http.createServer((_request, response) => {
 		response.writeHead(200, { 'Content-Type': 'text/html' });
 		response.end('<title>Mac restoration fixture</title><p>Auxiliary window</p>');

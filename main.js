@@ -3913,6 +3913,9 @@ app.on('child-process-gone', (_event, details) => {
     });
 });
 
+const MAC_QUIT_STORAGE_TIMEOUT_MS = 3000;
+let macQuitPromise = null;
+let macQuitReady = false;
 app.isQuitting = false;
 process.on("exit", () => {
     quitApp();
@@ -17236,12 +17239,14 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", (event) => {
     // Native macOS Quit must flush settings and exit, even with Close to Tray.
-    if (isMac && !app.isQuitting) {
+    if (isMac && !macQuitReady) {
         event.preventDefault();
         quitApp();
         return;
     }
-    if (BrowserWindow.getAllWindows().length > 0) {
+    // Once Mac shutdown preparation finishes, let Electron close any late windows
+    // and complete Quit. Canceling here leaves a windowless app alive on macOS.
+    if (!isMac && BrowserWindow.getAllWindows().length > 0) {
         event.preventDefault();
         BrowserWindow.getAllWindows().forEach((window) => {
             if (window && !window.isDestroyed()) {
@@ -19170,7 +19175,14 @@ app.on('browser-window-created', (event, window) => {
 });
 
 
-async function quitApp() {
+function quitApp() {
+    if (!isMac) return prepareAppQuit();
+    // Repeated native Quit requests must wait for the same settings backup.
+    if (!macQuitPromise) macQuitPromise = prepareAppQuit();
+    return macQuitPromise;
+}
+
+async function prepareAppQuit() {
     app.isQuitting = true;
     markStabilitySessionGraceful('quitApp');
     const skipUserSessionPersistence = shouldSuppressCurrentUserSessionPersistence();
@@ -19211,19 +19223,34 @@ async function quitApp() {
 
     // Backup localStorage from main window before destroying (lightweight settings backup)
     if (!skipUserSessionPersistence) {
+        let backupTimeout = null;
         try {
             if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
-                await mirrorCachedStateToLocalStorage(mainWindow);
-                const localStorageData = await mainWindow.webContents.executeJavaScript(`
-                    (function() {
-                        const data = {};
-                        for (let i = 0; i < localStorage.length; i++) {
-                            const key = localStorage.key(i);
-                            data[key] = localStorage.getItem(key);
-                        }
-                        return data;
-                    })();
-                `).catch(() => null);
+                const backupWindow = mainWindow;
+                const backup = (async () => {
+                    await mirrorCachedStateToLocalStorage(backupWindow);
+                    if (backupWindow.isDestroyed()) return null;
+                    return backupWindow.webContents.executeJavaScript(`
+                        (function() {
+                            const data = {};
+                            for (let i = 0; i < localStorage.length; i++) {
+                                const key = localStorage.key(i);
+                                data[key] = localStorage.getItem(key);
+                            }
+                            return data;
+                        })();
+                    `).catch(() => null);
+                })();
+                // The main-process settings save above remains synchronous. Only
+                // the extra renderer backup gets a deadline when quitting on Mac.
+                const localStorageData = isMac ? await Promise.race([
+                    backup,
+                    new Promise((_, reject) => {
+                        backupTimeout = setTimeout(() => {
+                            reject(new Error('Timed out waiting for renderer storage backup'));
+                        }, MAC_QUIT_STORAGE_TIMEOUT_MS);
+                    })
+                ]) : await backup;
 
                 if (localStorageData && Object.keys(localStorageData).length > 0) {
                     setUserSessionStoreValue('localStorageBackup', localStorageData);
@@ -19233,6 +19260,8 @@ async function quitApp() {
             }
         } catch (e) {
             console.error("Failed to backup localStorage on quit:", e);
+        } finally {
+            if (backupTimeout) clearTimeout(backupTimeout);
         }
     }
 
@@ -19312,6 +19341,7 @@ async function quitApp() {
             tray.destroy();
         } catch (e) { }
     }
+    if (isMac) macQuitReady = true;
     app.quit();
 }
 

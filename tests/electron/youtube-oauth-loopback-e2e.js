@@ -100,9 +100,20 @@ if (process.versions.electron) {
 		stdio: 'inherit',
 		windowsHide: true,
 	});
-	const timeout = setTimeout(() => child.kill(), 30000);
-	child.once('exit', code => {
+	let timedOut = false;
+	const timeout = setTimeout(() => {
+		timedOut = true;
+		console.error('YouTube OAuth loopback checks timed out.');
+		child.kill('SIGKILL');
+	}, 30000);
+	child.once('error', error => {
 		clearTimeout(timeout);
-		process.exitCode = code || 0;
+		console.error('Could not start YouTube OAuth loopback checks:', error.message);
+		process.exitCode = 1;
+	});
+	child.once('exit', (code, signal) => {
+		clearTimeout(timeout);
+		if (signal) console.error(`YouTube OAuth loopback checks terminated by ${signal}.`);
+		process.exitCode = timedOut || signal || code === null ? 1 : code;
 	});
 }
