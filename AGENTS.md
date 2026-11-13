@@ -28,6 +28,11 @@ Electron desktop application for aggregating social media live stream chat. Comm
 - Before editing, identify the full behavioral scope. A change in `main.js` is acceptable when narrowly gated; a global behavior change is not authorized by a platform-specific bug report.
 - Before finishing, review the diff and verify that unrelated sources, windows, and requests retain their existing behavior. Passing a source test or general capture test does not establish that other platforms' authentication flows are unaffected.
 
+## Hosted Overlay Reliability
+
+- Remember the overlay reports discussed on November 12, 2026, including a report from two days earlier. One user initially recovered in beta while fetched stable/beta Featured code matched, then reported that both fail with the shown OBS Windows graphics settings (Power Saving, AMD Radeon Graphics); giving SSN the same setting did not help. Steve recalled moving the vdo.socialstream.ninja server from Google to Vultr roughly one or two weeks earlier, but the migration timing and incident cause remain unconfirmed. Treat these clues separately from the other users' unexplained black/white backgrounds. Cache corruption or a GitHub outage was not established.
+- When considering overlay hardening, reuse existing mirror/recovery patterns and keep stable and beta assets separate. SSApp's asset fallback does not automatically protect an OBS Browser Source pointed at the public website.
+
 ## Source Of Truth
 
 - Social Stream source edits must be made in `C:\Users\steve\Code\social_stream`.

@@ -14,6 +14,7 @@ const DEFAULT_PORT = 3001;
 const STORE_KEY = 'localMediaLibrary';
 const TOKEN_BYTES = 32;
 const MAX_RANGE_SIZE = 64 * 1024 * 1024;
+const MAX_AUDIO_TRANSFER_SIZE = 16 * 1024 * 1024;
 
 const MIME_TYPES = {
 	'.aac': 'audio/aac',
@@ -147,6 +148,7 @@ class LocalMediaService {
 		this.runtimeRoot = '';
 		this.runtimeRealRoot = '';
 		this.state = this.loadState();
+		this.audioReads = new Map();
 	}
 
 	loadState() {
@@ -326,7 +328,7 @@ class LocalMediaService {
 			const realPath = await fsp.realpath(asset.approvedPath);
 			const stat = await fsp.stat(realPath);
 			if (!stat.isFile() || realPath !== asset.approvedPath) return publicAsset(asset, 'missing');
-			return publicAsset(asset, 'available');
+			return publicAsset({ ...asset, size: stat.size, modifiedAt: stat.mtimeMs }, 'available');
 		} catch (_) {
 			return publicAsset(asset, 'missing');
 		}
@@ -340,6 +342,51 @@ class LocalMediaService {
 		const asset = this.state.assets[String(assetId || '')];
 		if (!asset) return null;
 		return this.describeAsset(asset);
+	}
+
+	// Only explicitly selected audio assets can be sent to a Flow Actions peer.
+	// Read and hash on demand so even a replacement with the same size/mtime is detected.
+	async readAudio(assetId) {
+		const asset = this.state.assets[String(assetId || '')];
+		if (!asset || asset.mediaType !== 'audio') throw createError('INVALID_AUDIO', 'Select a local audio file first.');
+		if (this.audioReads.has(asset.id)) return this.audioReads.get(asset.id);
+		if (this.audioReads.size >= 4) throw createError('AUDIO_BUSY', 'Local audio is busy. Try again shortly.');
+		const pending = (async () => {
+			let file;
+			try {
+				const realPath = await fsp.realpath(asset.approvedPath);
+				if (realPath !== asset.approvedPath) throw createError('AUDIO_MISSING', 'Relink the local audio file.');
+				file = await fsp.open(realPath, 'r');
+				const before = await file.stat();
+				if (!before.isFile() || !before.size) throw createError('INVALID_AUDIO', 'The local audio file is empty or unavailable.');
+				if (before.size > MAX_AUDIO_TRANSFER_SIZE) {
+					throw createError('AUDIO_TOO_LARGE', 'Sounds over 16 MB need Upload or the Local Flow Actions URL.');
+				}
+				const bytes = Buffer.alloc(before.size);
+				let offset = 0;
+				while (offset < bytes.length) {
+					const result = await file.read(bytes, offset, bytes.length - offset, offset);
+					if (!result.bytesRead) break;
+					offset += result.bytesRead;
+				}
+				const after = await file.stat();
+				if (offset !== bytes.length || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+					throw createError('AUDIO_CHANGED', 'The audio file changed while reading. Trigger it again.');
+				}
+				return { hash: crypto.createHash('sha256').update(bytes).digest('hex'),
+					size: bytes.length, mime: asset.mimeType, base64: bytes.toString('base64') };
+			} catch (error) {
+				if (error && ['ENOENT', 'EACCES', 'EPERM', 'EISDIR'].includes(error.code)) {
+					throw createError('AUDIO_MISSING', 'Local audio is unavailable. Relink the file or use Upload.');
+				}
+				throw error;
+			} finally {
+				if (file) await file.close();
+			}
+		})();
+		this.audioReads.set(asset.id, pending);
+		try { return await pending; }
+		finally { this.audioReads.delete(asset.id); }
 	}
 
 	removeAsset(assetId) {
@@ -557,6 +604,10 @@ function setupElectronLocalMedia(options = {}) {
 	});
 	handle('local-media:list', () => service.listAssets());
 	handle('local-media:get', (payload) => service.getAsset(payload.assetId));
+	handle('local-media:read-audio', async (payload) => {
+		try { return await service.readAudio(payload.assetId); }
+		catch (error) { return { error: error.code || 'AUDIO_UNAVAILABLE' }; }
+	});
 	handle('local-media:remove', (payload) => ({ success: service.removeAsset(payload.assetId) }));
 	handle('local-media:status', () => service.getStatus());
 	handle('local-media:start', () => service.start());

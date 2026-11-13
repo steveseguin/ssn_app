@@ -783,6 +783,7 @@ const localMediaBridge = {
 	select: async (payload = {}) => ipcRenderer.invoke('local-media:select', payload),
 	list: async () => ipcRenderer.invoke('local-media:list'),
 	get: async (assetId) => ipcRenderer.invoke('local-media:get', { assetId }),
+	readAudio: async (assetId) => ipcRenderer.invoke('local-media:read-audio', { assetId }),
 	remove: async (assetId) => ipcRenderer.invoke('local-media:remove', { assetId }),
 	status: async () => ipcRenderer.invoke('local-media:status'),
 	start: async () => ipcRenderer.invoke('local-media:start'),
