@@ -380,6 +380,10 @@
                 <div class="settings-menu-item youtube-type-toggle hidden" onclick="toggleYouTubeType(this)">
                     🔄 Switch to <span class="toggle-type-text">YouTube</span>
                 </div>
+                <div class="settings-menu-item hidden" data-youtube-dark-mode onclick="toggleYouTubeDarkMode(this)"
+                    title="Open standard YouTube chat in dark mode. Applies next time the source starts; off follows YouTube's preference.">
+                    Dark mode: Off
+                </div>
                 <div class="settings-menu-item" onclick="openUserAgentSettings(this)">
                     🌐 <span data-i18n="useragent.title">User Agent Settings</span>
                 </div>
@@ -6219,6 +6223,13 @@
             const wsModePanelButton = controlPanel?.querySelector('.mode-option[data-mode="websocket"]');
 
             const settingsMenu = sourceElement.querySelector('.settings-menu');
+            const darkModeItem = settingsMenu?.querySelector('[data-youtube-dark-mode]');
+            if (darkModeItem) {
+                darkModeItem.classList.toggle('hidden', !isYouTubeTarget(target) || (activeMode && activeMode !== 'classic'));
+                darkModeItem.classList.toggle('active', source?.youtubeDarkMode === true);
+                darkModeItem.textContent = source?.youtubeDarkMode === true ? 'Dark mode: On' : 'Dark mode: Off';
+                darkModeItem.setAttribute('aria-pressed', String(source?.youtubeDarkMode === true));
+            }
             const classicMenuItem = settingsMenu?.querySelector('.settings-menu-item[data-action="classic-mode"]');
             const wssMenuItem = settingsMenu?.querySelector('.settings-menu-item[data-wss="true"]');
             const tiktokWssMenuItem = settingsMenu?.querySelector('.settings-menu-item[data-tiktokwss="true"]');
@@ -7352,6 +7363,13 @@
                 updateSourceUIAfterModeChange(sourceElement, 'classic', false);
             }
             applyTikTokClassicPreferenceToEntry(sourceElement, preferTikTokClassic || cliForcesTikTokClassic);
+        }
+
+        function toggleYouTubeDarkMode(menuItem) {
+            const entry = menuItem.closest('.entry');
+            const source = entry && stateManager.getSource(entry.dataset.sourceId);
+            if (!source || !isYouTubeTarget(source.target)) return;
+            stateManager.updateSource(source.id, { youtubeDarkMode: source.youtubeDarkMode !== true });
         }
 
         // Toggle per-source reply-only mode (do not capture messages)
@@ -10680,6 +10698,15 @@
 
             try {
                 console.log(`[CreateClassicWindow] Creating window for ${source.username || source.videoId}, visible: ${source.isVisible}, muted: ${source.isMuted}`);
+                if (isYouTubeTarget(source.target) && source.youtubeDarkMode === true) {
+                    const chatUrl = new URL(urlToLoad);
+                    if (chatUrl.protocol === 'https:' &&
+                        (chatUrl.hostname === 'www.youtube.com' || chatUrl.hostname === 'youtube.com') &&
+                        chatUrl.pathname === '/live_chat') {
+                        chatUrl.searchParams.set('dark_theme', '1');
+                        urlToLoad = chatUrl.href;
+                    }
+                }
                 console.log(`[CreateClassicWindow] FULL SOURCE STATE:`, JSON.stringify({ id: source.id, isVisible: source.isVisible, isMuted: source.isMuted, groupId: source.groupId }));
                 // For now, fall back to sync while we debug the async issue
                 const response = ipcRenderer.sendSync('createWindow', {
