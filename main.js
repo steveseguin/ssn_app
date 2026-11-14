@@ -220,6 +220,7 @@ const { setupMediaUploadHandler } = require('./resources/electron-media-upload-h
 const { setupDiscordHandler, clearDiscordBotAuthStore } = require('./resources/electron-discord-handler');
 const { setupSharePlayHandler, clearSharePlayAuthStore } = require('./resources/electron-shareplay-handler');
 const { setupElectronLocalMedia } = require('./resources/electron-local-media-server');
+const { setupMusicFile } = require('./resources/electron-music-file');
 const { createControlApiRouter } = require('./resources/electron-control-api');
 const { SourceObservationService } = require('./resources/source-observation-service');
 const { AppWindowControlService } = require('./resources/app-window-control-service');
@@ -1236,6 +1237,9 @@ async function importSettingsBackupWithDialog() {
         const imported = readSettingsBackupFile(filePath);
         const incomingSettingsCount = getSettingsObjectKeyCount(imported.cachedState.settings);
         const incomingLocalStorageCount = Object.keys(imported.localStorage || {}).length;
+        const sessionWarning = normalizeStreamIdValue(imported.cachedState.streamID)
+            ? '\n\nThese settings include a session ID. Stop any other Social Stream extension or app instance using that ID before importing.'
+            : '';
 
         const confirmResult = await dialog.showMessageBox({
             type: 'question',
@@ -1244,7 +1248,7 @@ async function importSettingsBackupWithDialog() {
             cancelId: 1,
             title: 'Import Settings',
             message: `Import settings from:\n${filePath}`,
-            detail: `${incomingSettingsCount} Social Stream setting key${incomingSettingsCount === 1 ? '' : 's'} found.${incomingLocalStorageCount ? `\n${incomingLocalStorageCount} app setting key${incomingLocalStorageCount === 1 ? '' : 's'} found.` : ''}\n\nThe main app window will reload after import.`
+            detail: `${incomingSettingsCount} Social Stream setting key${incomingSettingsCount === 1 ? '' : 's'} found.${incomingLocalStorageCount ? `\n${incomingLocalStorageCount} app setting key${incomingLocalStorageCount === 1 ? '' : 's'} found.` : ''}${sessionWarning}\n\nThe main app window will reload after import.`
         });
         if (confirmResult.response !== 0) return null;
 
@@ -7146,6 +7150,7 @@ const cliCloseToTrayProvided = (
 const cliCloseToTray = cliCloseToTrayProvided || Argv.closetotray === true || Argv.tray === true;
 const storedCloseToTray = storedStartupFlags.closeToTray === true;
 let closeToTrayEnabled = cliCloseToTray || storedCloseToTray;
+let minimizeToTrayEnabled = storedStartupFlags.minimizeToTray === true;
 
 const cliForceTikTokClassicProvided = (
     process.argv.includes('--tiktokclassic') ||
@@ -10910,6 +10915,20 @@ async function createWindow(args, reuse = false, mainApp = false) {
         log("\nfromBackground ??????????????????");
         log("Received settings from background:");
 
+        // Import completion is a one-time notification, not saved settings.
+        if (cachedState?.forPopup?.settingsImported) delete cachedState.forPopup;
+        if (value?.forPopup?.settingsImported) {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.mainFrame.frames.forEach((frame) => {
+                    if (matchesSocialStreamPagePath(frame.url, "popup")) {
+                        frame.postMessage("fromMain", value);
+                    }
+                });
+            }
+            eventRet.returnValue = cachedState;
+            return;
+        }
+
         // Merge instead of replace to avoid losing keys not sent by the renderer.
         // Protect established settings from being overwritten with empty/partial data.
 	        if (value && typeof value === "object") {
@@ -11093,10 +11112,17 @@ async function createWindow(args, reuse = false, mainApp = false) {
 	            delete cachedState.password;
 	        }
 
+        // An explicit replacement must become the recovery baseline before the next read.
+        if (allowEmptySettings) {
+            storageSavePending = true;
+            storageSavePendingAllowSettingsDowngrade = true;
+            flushPendingStorageSave();
+        }
+
         // Return merged state immediately (required for sendSync callers)
         eventRet.returnValue = cachedState;
 
-        if (!didAnyStateFieldChange) return;
+        if (allowEmptySettings || !didAnyStateFieldChange) return;
 
         // Debounce the expensive I/O operations to batch rapid sequential saves
         storageSavePending = true;
@@ -11344,6 +11370,12 @@ async function createWindow(args, reuse = false, mainApp = false) {
     } catch (e) {
         console.error(e);
     }
+
+    mainWindow.on("minimize", function () {
+        if (minimizeToTrayEnabled && !app.isQuitting) {
+            minimizeToTray();
+        }
+    });
 
     mainWindow.on("close", async function (e) {
         log("mainWindow close");
@@ -12176,11 +12208,19 @@ async function createWindow(args, reuse = false, mainApp = false) {
         return { diagnostic, headers };
     }
 
-    function buildNodeFetchResponse(response, data) {
+    function buildNodeFetchResponse(response, data, requestUrl) {
+        const headers = llmRequestDiagnostics.getSafeResponseHeaders(response.headers);
+        if (requestUrl === "https://openrouter.ai/api/v1/chat/completions" &&
+            (response.status === 402 || response.status === 429)) {
+            for (const name of ["retry-after", "x-ratelimit-reset"]) {
+                const value = response.headers.get(name);
+                if (value) headers[name] = value.slice(0, 256);
+            }
+        }
         return {
             status: response.status,
             data,
-            headers: llmRequestDiagnostics.getSafeResponseHeaders(response.headers)
+            headers
         };
     }
 
@@ -12553,7 +12593,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         headers: response.headers,
                         body: text
                     });
-                    return buildNodeFetchResponse(response, text);
+                    return buildNodeFetchResponse(response, text, args.url);
                 });
             })
             .then((result) => {
@@ -12596,7 +12636,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 headers: response.headers,
                 body: text
             });
-            return buildNodeFetchResponse(response, text);
+            return buildNodeFetchResponse(response, text, args.url);
         } catch (error) {
             console.error("Fetch error:", error);
             llmRequestDiagnostics.fail(tracked.diagnostic, error);
@@ -12682,7 +12722,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     status: response.status,
                     code: errorData?.error?.code || errorData?.error?.type || errorData?.code || null,
                     message: errorData?.error?.message || errorData?.message || `HTTP error! status: ${response.status}`,
-                    headers: llmRequestDiagnostics.getSafeResponseHeaders(response.headers)
+                    headers: buildNodeFetchResponse(response, null, args.url).headers
                 });
                 return;
             }
@@ -18359,6 +18399,19 @@ app.whenReady().then(async function () {
         }
     }
 
+    setupMusicFile({
+        ipcMain,
+        dialog,
+        store,
+        // Only the popup and background frames of the main window may choose or read the file.
+        isTrustedSender: (event) => {
+            const frame = event && event.senderFrame;
+            if (!frame || !mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return false;
+            if (!mainWindow.webContents.mainFrame.frames.includes(frame)) return false;
+            return matchesSocialStreamPagePath(frame.url, 'popup') || matchesSocialStreamPagePath(frame.url, 'background');
+        },
+    });
+
     localMediaService = setupElectronLocalMedia({
         ipcMain,
         dialog,
@@ -20719,6 +20772,15 @@ function createMenu() {
             {
                 label: 'Minimize to Tray',
                 click: () => minimizeToTray()
+            },
+            {
+                label: 'Minimize to Tray Automatically',
+                type: 'checkbox',
+                checked: minimizeToTrayEnabled,
+                click: (menuItem) => {
+                    minimizeToTrayEnabled = menuItem.checked;
+                    store.set('startupFlags.minimizeToTray', minimizeToTrayEnabled);
+                }
             },
             {
                 label: 'Close to Tray',

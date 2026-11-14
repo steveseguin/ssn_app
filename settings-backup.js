@@ -63,6 +63,7 @@ function normalizeLocalStoragePayload(value) {
 
 function buildSettingsBackupPayload(cachedState, localStorageData = null) {
 	const payload = copyRecognizedCachedStateFields(cachedState);
+	if (!hasOwn(payload, 'password')) payload.password = '';
 	const localStorage = normalizeLocalStoragePayload(localStorageData);
 
 	payload.ssapp = {

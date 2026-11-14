@@ -795,6 +795,11 @@ const localMediaBridge = {
 	rotateToken: async () => ipcRenderer.invoke('local-media:rotate-token'),
 };
 
+const musicFileBridge = {
+	select: () => ipcRenderer.invoke('ssapp:music-file-select'),
+	read: () => ipcRenderer.invoke('ssapp:music-file-read'),
+};
+
 const shareplayBridge = {
 	accounts: () => ipcRenderer.invoke('shareplay-accounts'),
 	signIn: (payload) => ipcRenderer.invoke('shareplay-signin', payload),
@@ -888,6 +893,7 @@ function configureContextBridge(){
 		  getSourceWindowConfig: getSourceWindowConfig,
 
 		  localMedia: localMediaBridge,
+		  musicFile: musicFileBridge,
 
 		  discord: discordBridge,
 		  shareplay: shareplayBridge,
@@ -1149,6 +1155,7 @@ try {
 			getInjectedScriptFlag: () => INJECTED_SCRIPT_FLAG,
 
 			localMedia: localMediaBridge,
+			musicFile: musicFileBridge,
 
 			discord: discordBridge,
 			shareplay: shareplayBridge,
