@@ -484,8 +484,10 @@ async function testEstablishedEulerTransportErrorRecovery() {
 			if (scenario === 'error-before-close') manager.handleDisconnect({ code: 1006 });
 			await pending;
 			const shouldRecover = scenario === 'stable' || scenario === 'error-before-close';
-			assert.deepStrictEqual(reconnects, shouldRecover ? ['euler_live_confirmed'] : [], `${provider}: ${scenario}`);
+			assert.deepStrictEqual(reconnects, shouldRecover ? ['euler.live_confirmed'] : [], `${provider}: ${scenario}`);
 			assert.strictEqual(liveChecks, 1, 'An error followed by close must share one live check');
+			assert(manager.recentConnectionDiagnostics.some(item => item.stage === 'euler.connection_failed'));
+			assert(manager.recentConnectionDiagnostics.some(item => item.stage === 'euler.live_check'));
 			assert.strictEqual(manager.isStopped, !shouldRecover);
 			await manager.teardownConnection({ silent: true });
 			manager.isStopped = true;

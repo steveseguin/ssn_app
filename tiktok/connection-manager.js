@@ -4826,7 +4826,7 @@ class ConnectionManager {
         if (this.recentConnectionDiagnostics.length > 12) this.recentConnectionDiagnostics.shift();
         this.logDebug('connection.diagnostic', diagnostic);
         emitStatus({ wssID: this.wssID, status: 'connection_diagnostic', diagnostic });
-        if ((error && stage !== 'euler_reconnect') || stage === 'stopped') {
+        if ((error && stage !== 'euler.reconnect') || stage === 'stopped') {
             reporter.report(stage === 'stopped' ? 'tiktok_connection_failed' : 'tiktok_connection_error',
                 diagnostic.error?.message || diagnostic.reason || 'TikTok connection stopped',
                 { recentDiagnostics: this.recentConnectionDiagnostics.slice() });
@@ -9045,7 +9045,7 @@ class ConnectionManager {
 
     async handleEulerConnectionFailure(primaryError, allowLiveReconnect = false, origin = 'connection') {
         if (this.isStopped || this.eulerBackupCheckInProgress) return false;
-        this.recordConnectionDiagnostic(origin === 'reconnect' ? 'euler_reconnect' : 'euler_connection_failed', primaryError,
+        this.recordConnectionDiagnostic(origin === 'reconnect' ? 'euler.reconnect' : 'euler.connection_failed', primaryError,
             { origin, allowLiveReconnect: !!allowLiveReconnect });
         const websocketStatus = Number(this.connection?.ssappWebSocketHttpStatus)
             || (this.signingProvider === EULER_WS_PROVIDER ? Number(primaryError?.status) : 0);
@@ -9082,7 +9082,7 @@ class ConnectionManager {
         }
         if (this.isStopped || !this.isActiveSourceConnection()) return false;
         this.logDebug('lifecycle.euler.backup_check', { live, allowLiveReconnect, reconnectUsed: this.eulerBackupReconnectUsed });
-        this.recordConnectionDiagnostic('euler_live_check', null, {
+        this.recordConnectionDiagnostic('euler.live_check', null, {
             liveStatus: live === true ? 'live' : (live === false ? 'offline' : 'unknown'),
             allowLiveReconnect: !!allowLiveReconnect, reconnectUsed: !!this.eulerBackupReconnectUsed
         });
@@ -9105,7 +9105,7 @@ class ConnectionManager {
                     message: 'Euler Proxy reports this LIVE as offline, but TikTok confirms it is live. Trying Euler Signing once with the same API key.'
                 });
             }
-            return this.restartConnectionAttempt(primaryError, 'euler_live_confirmed');
+            return this.restartConnectionAttempt(primaryError, 'euler.live_confirmed');
         }
         const lookupDetail = live === false ? 'TikTok reports that this stream is offline.'
             : (live === true ? 'TikTok is live, but the Euler connection failed.' : 'The backup TikTok live check failed.');
