@@ -420,6 +420,58 @@ const { manager, plan } = createHarness({
 	assert.strictEqual(manager.isStopped, true);
 }
 
+async function testEulerReconnectUsesFreshBootstrap() {
+	for (const provider of ['custom', 'auto', 'local']) {
+		for (const legacy of [false, true]) {
+			const { manager } = createHarness({}, { signing: { apiKey: 'fixture-key' } });
+			manager.signingProvider = provider;
+			manager.preferredStrategy = legacy ? 'legacy' : 'websocket';
+			manager.previousRoomId = '123';
+			manager.resumeCursorState = { cursor: 'old-cursor', internalExt: 'old-ext', roomId: '123' };
+			manager.initializeConnectionInstance({ forceLegacy: legacy });
+			const params = manager.connection.webClient.clientParams;
+			const shouldResume = legacy || provider === 'local';
+			assert.strictEqual(params.cursor, shouldResume ? 'old-cursor' : undefined, `${provider}: legacy=${legacy}`);
+			assert.strictEqual(params.internal_ext, shouldResume ? 'old-ext' : undefined);
+			await manager.teardownConnection({ silent: true });
+			manager.isStopped = true;
+		}
+	}
+}
+
+async function testEstablishedEulerTransportErrorRecovery() {
+	for (const provider of ['custom', 'euler-ws']) {
+		for (const scenario of ['stable', 'error-before-close', 'rapid', 'quota', 'non-transport']) {
+			if (provider === 'euler-ws' && scenario === 'non-transport') continue;
+			const { manager } = createHarness({}, {
+				allowProxy: false, localSignerEnabled: false, signing: { apiKey: 'fixture-key' }
+			});
+			await manager.initialize();
+			manager.signingProvider = provider;
+			manager.autoMode = false;
+			manager.lastConnectTimestamp = Date.now() - (scenario === 'rapid' ? 1000 : 120000);
+			manager.eulerBackupReconnectUsed = scenario === 'rapid';
+			let liveChecks = 0;
+			manager.localSigner = { checkLiveStatus: async () => { liveChecks++; return true; } };
+			const reconnects = [];
+			manager.restartConnectionAttempt = async (_error, reason) => { reconnects.push(reason); return true; };
+			const error = scenario === 'quota' ? createRateLimitError() : new Error('read ECONNRESET');
+			const pending = manager.handleError(provider === 'euler-ws' ? error : {
+				exception: error,
+				info: scenario === 'non-transport' ? 'Failed to process decoded data' : 'WebSocket Error after connecting'
+			});
+			if (scenario === 'error-before-close') manager.handleDisconnect({ code: 1006 });
+			await pending;
+			const shouldRecover = scenario === 'stable' || scenario === 'error-before-close';
+			assert.deepStrictEqual(reconnects, shouldRecover ? ['euler_live_confirmed'] : [], `${provider}: ${scenario}`);
+			assert.strictEqual(liveChecks, 1, 'An error followed by close must share one live check');
+			assert.strictEqual(manager.isStopped, !shouldRecover);
+			await manager.teardownConnection({ silent: true });
+			manager.isStopped = true;
+		}
+	}
+}
+
 async function testEulerQuotaWithSavedTikTokSession() {
 	const { manager } = createHarness({}, { signing: { apiKey: 'personal-key' } });
 	manager.sessionId = 'saved-tiktok-session';
@@ -1023,6 +1075,14 @@ async function run() {
 		{
 			name: 'user not found stops without reconnect spam',
 			fn: testUserNotFoundStopsWithoutReconnectSpam
+		},
+		{
+			name: 'Euler reconnect uses a fresh bootstrap while local and polling retain cursors',
+			fn: testEulerReconnectUsesFreshBootstrap
+		},
+		{
+			name: 'established Euler transport errors get one bounded recovery',
+			fn: testEstablishedEulerTransportErrorRecovery
 		},
 		{
 			name: 'ui does not auto fallback after fatal user not found',

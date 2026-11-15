@@ -5881,7 +5881,11 @@ class ConnectionManager {
         if (this.usesEulerForConnection(true) && connectionOptions.enableExtendedGiftInfo) {
             this.applyOptionalEulerGiftCatalog(this.connection);
         }
-        this.applyResumeCursorToConnection();
+        // Euler needs a fresh bootstrap to return a WebSocket server address.
+        // An old cursor can produce a continuation response without that address.
+        if (useLegacyConnector || !this.usesEulerForConnection()) {
+            this.applyResumeCursorToConnection();
+        }
         this.applySignRequestTimeout(this.signRequestTimeoutMs);
         if (!useLegacyConnector && this.shouldUseLocalSigner()) {
             this.applyLocalSignerConnectorAdapter(this.connection);
@@ -9584,7 +9588,14 @@ class ConnectionManager {
 
         const combinedMessage = msg || infoText || '';
         if (this.usesEulerForConnection()) {
-            return this.handleEulerConnectionFailure(primaryError, this.isOfflineError(primaryError, combinedMessage));
+            // Transport errors can arrive before "disconnected". Give a healthy
+            // established connection the same single recovery attempt in either order.
+            const transportError = infoText === 'WebSocket Error after connecting'
+                || this.signingProvider === EULER_WS_PROVIDER;
+            const stable = transportError && connectionState?.isConnected && this.lastConnectTimestamp
+                && Date.now() - this.lastConnectTimestamp >= CONFIG.CONNECTION.RAPID_DISCONNECT_THRESHOLD_MS;
+            if (stable) this.eulerBackupReconnectUsed = false;
+            return this.handleEulerConnectionFailure(primaryError, !!stable || this.isOfflineError(primaryError, combinedMessage));
         }
         const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, combinedMessage);
         const eulerLimit = this.getEulerRateLimitInfo(primaryError);
