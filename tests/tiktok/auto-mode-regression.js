@@ -439,6 +439,27 @@ async function testEulerReconnectUsesFreshBootstrap() {
 	}
 }
 
+async function testTikTokFailureDiagnostics() {
+	const { manager, plan } = createHarness({}, { localSignerEnabled: false, signing: { apiKey: 'private-fixture' } });
+	manager.signingProvider = 'custom';
+	manager.recordConnectionDiagnostic('reconnect_requested', null, { reason: 'scheduled_90_minute_refresh' });
+	const error = new SyntaxError('Invalid URL: ?version_code=180800&room_id=123&X-Bogus=bogus-fixture&api_key=private-fixture');
+	error.cause = Object.assign(new Error('cookie=session-fixture'), { status: 503, code: 'UPSTREAM_TEST' });
+	error.errors = [error]; // Bounded even when an error chain is circular.
+	manager.recordConnectionDiagnostic('connect_failed', error);
+	const diagnostic = manager.recentConnectionDiagnostics[1];
+	assert.strictEqual(diagnostic.invalidWebsocketBootstrap, true);
+	assert.strictEqual(diagnostic.error.name, 'SyntaxError');
+	assert.strictEqual(diagnostic.error.causes[0].httpStatus, 503);
+	assert.strictEqual(diagnostic.error.causes[0].code, 'UPSTREAM_TEST');
+	const text = JSON.stringify(diagnostic);
+	for (const secret of ['bogus-fixture', 'private-fixture', 'session-fixture']) assert(!text.includes(secret));
+	assert.deepStrictEqual(plan.statuses.find(status => status.diagnostic?.error?.name === 'SyntaxError').diagnostic, diagnostic);
+	for (let i = 0; i < 20; i++) manager.recordConnectionDiagnostic('reconnect_requested');
+	assert.strictEqual(manager.recentConnectionDiagnostics.length, 12);
+	manager.isStopped = true;
+}
+
 async function testEstablishedEulerTransportErrorRecovery() {
 	for (const provider of ['custom', 'euler-ws']) {
 		for (const scenario of ['stable', 'error-before-close', 'rapid', 'quota', 'non-transport']) {
@@ -1075,6 +1096,10 @@ async function run() {
 		{
 			name: 'user not found stops without reconnect spam',
 			fn: testUserNotFoundStopsWithoutReconnectSpam
+		},
+		{
+			name: 'TikTok failure diagnostics retain causes and redact credentials with bounded history',
+			fn: testTikTokFailureDiagnostics
 		},
 		{
 			name: 'Euler reconnect uses a fresh bootstrap while local and polling retain cursors',

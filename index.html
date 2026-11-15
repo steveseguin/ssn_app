@@ -11565,15 +11565,22 @@
 
         function recordTikTokTroubleshooting(source, data) {
             if (source?.target !== 'tiktok' || !tikTokTroubleshootingTools) return null;
-            const trackedStatuses = ['connecting', 'connected', 'disconnected', 'reconnecting', 'error', 'failed', 'fatal_error', 'euler_rate_limit', 'stopped_by_user'];
+            const trackedStatuses = ['connecting', 'connected', 'disconnected', 'reconnecting', 'error', 'failed', 'fatal_error', 'euler_rate_limit', 'stopped_by_user', 'connection_diagnostic'];
             let record = tikTokTroubleshooting.get(source.id);
             if (!trackedStatuses.includes(data.status)) return record || null;
             if (!record) {
-                record = { lastFailure: '', method: '', hasSession: null, recent: [] };
+                record = { lastFailure: '', method: '', hasSession: null, recent: [], diagnostics: [] };
                 tikTokTroubleshooting.set(source.id, record);
                 if (tikTokTroubleshooting.size > 100) tikTokTroubleshooting.delete(tikTokTroubleshooting.keys().next().value);
             }
             const clean = value => tikTokTroubleshootingTools.sanitizeTikTokDiagnosticText(value, source);
+            if (data.status === 'connection_diagnostic') {
+                if (data.diagnostic) {
+                    record.diagnostics.push(data.diagnostic);
+                    if (record.diagnostics.length > 12) record.diagnostics.shift();
+                }
+                return record;
+            }
             const message = clean(data.error || data.reason || data.disconnectReason || data.message || '');
             const method = clean(data.connectionMethod || data.effectiveMode || '');
             if (method) record.method = method;
@@ -11612,6 +11619,7 @@
                 hasEulerApiKey: !!source.tiktokSigningApiKey,
                 hasCustomSigningUrl: !!source.tiktokSigningServiceUrl,
                 lastError: clean(record?.lastFailure || source.error || ''),
+                connectionDiagnostics: record?.diagnostics || [],
                 recentEvents: (record?.recent || []).map(event => ({ ...event, message: clean(event.message), method: clean(event.method) })),
                 note: 'Recent connection events from this app session. Euler Proxy forwards the saved TikTok session when both session cookies are available. Standard mode uses the capture page login.'
             };
@@ -14724,6 +14732,7 @@
                     }
 
                     const troubleshooting = recordTikTokTroubleshooting(currentState, data);
+                    if (data.status === 'connection_diagnostic') return;
                     // Keep the original payload for offline, fallback and window-lifecycle decisions.
                     const diagnosticText = value => tikTokTroubleshootingTools
                         ? tikTokTroubleshootingTools.sanitizeTikTokDiagnosticText(value, currentState) : value;

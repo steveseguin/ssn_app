@@ -21,13 +21,32 @@ function sanitizeTikTokDiagnosticText(value, source = null) {
     }
     return text
         .replace(/\b(?:https?|wss?):\/\/[^\s<>"']+/gi, '[URL removed]')
+        .replace(/\?[A-Za-z0-9_.%-]+=[^\s<>"']*/g, '[query removed]')
         .replace(/\b(cookie|set-cookie|authorization)\s*[:=][^\r\n]*/gi, '$1=[redacted]')
-        .replace(/(["']?\b(?:api[_-]?key|jwt(?:key)?|session[_-]?id|tt[_-]?target[_-]?idc|msToken|token|password|secret|signature)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi, '$1[redacted]')
+        .replace(/(["']?\b(?:api[_-]?key|jwt(?:key)?|session[_-]?id|tt[_-]?target[_-]?idc|msToken|token|password|secret|_?signature|x-bogus|x-gnarly)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi, '$1[redacted]')
         .replace(/\b(?:Bearer\s+\S+|euler_[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b/gi, '[redacted]')
         .replace(/\b[A-Za-z0-9_-]{40,}\b/g, '[redacted]')
         .replace(/(?:\b[A-Za-z]:[\\/]|\\\\)[^\r\n<>"']+/g, '[path removed]')
         .replace(/[\u0000-\u001f\u007f]+/g, ' ')
         .trim().slice(0, 600);
+}
+
+function summarizeTikTokError(error, credentials = null, depth = 0) {
+    if (!error || depth > 2) return null;
+    const clean = value => sanitizeTikTokDiagnosticText(value, credentials);
+    const primary = error.exception || error;
+    const result = {
+        name: clean(primary.name || 'Error'),
+        message: clean(typeof primary === 'string' ? primary : primary.message || primary.reason || '')
+    };
+    if (error.info) result.info = clean(error.info);
+    if (typeof primary.code === 'string' || typeof primary.code === 'number') result.code = clean(String(primary.code));
+    const status = Number(primary.status || primary.statusCode || primary.response?.status);
+    if (Number.isInteger(status) && status >= 100 && status <= 599) result.httpStatus = status;
+    const causes = [primary.cause, ...(Array.isArray(primary.errors) ? primary.errors.slice(0, 4) : [])]
+        .filter(Boolean).slice(0, 4);
+    if (depth < 2 && causes.length) result.causes = causes.map(cause => summarizeTikTokError(cause, credentials, depth + 1));
+    return result;
 }
 
 function describeTikTokDisconnect(code, reason = '', credentials = null) {
@@ -56,8 +75,8 @@ function isGenericTikTokFailure(value) {
 }
 
 if (typeof module === 'object' && module.exports) {
-    module.exports = { sanitizeTikTokDiagnosticText, describeTikTokDisconnect, isGenericTikTokFailure };
+    module.exports = { sanitizeTikTokDiagnosticText, summarizeTikTokError, describeTikTokDisconnect, isGenericTikTokFailure };
 }
 if (typeof window === 'object') {
-    window.ssappTikTokTroubleshooting = { sanitizeTikTokDiagnosticText, describeTikTokDisconnect, isGenericTikTokFailure };
+    window.ssappTikTokTroubleshooting = { sanitizeTikTokDiagnosticText, summarizeTikTokError, describeTikTokDisconnect, isGenericTikTokFailure };
 }

@@ -3090,7 +3090,7 @@ try {
     installTikTokSignServerFallback(tiktokConnector);
 
 	    const localSignerImplementation = {
-	        checkLiveStatus: async (username, signal) => {
+	        checkLiveStatus: async (username, signal, onDiagnostic = () => {}) => {
                 configureTikTokAuthPartition();
                 const fetchSession = session.fromPartition(TIKTOK_AUTH_PARTITION);
                 const user = encodeURIComponent(username);
@@ -3100,27 +3100,44 @@ try {
                 ];
                 for (const url of urls) {
                     if (signal.aborted) return null;
+                    const endpoint = url.includes('/api-live/') ? 'room_api' : 'live_page';
                     try {
                         const response = await fetchSession.fetch(url, { signal, redirect: 'error' });
-                        if (!response.ok) continue;
+                        if (!response.ok) {
+                            onDiagnostic({ endpoint, outcome: 'http_error', httpStatus: response.status });
+                            continue;
+                        }
                         // Electron session.fetch can leave response.url empty.
                         // Reject redirects in fetch rather than discarding valid responses.
-                        if (response.url && new URL(response.url).pathname !== new URL(url).pathname) continue;
+                        if (response.url && new URL(response.url).pathname !== new URL(url).pathname) {
+                            onDiagnostic({ endpoint, outcome: 'unexpected_redirect' });
+                            continue;
+                        }
                         const body = await response.text();
                         let room;
                         if (url.includes('/api-live/')) {
                             const data = JSON.parse(body);
-                            if (data.statusCode !== 0) continue;
+                            if (data.statusCode !== 0) {
+                                onDiagnostic({ endpoint, outcome: 'api_error', apiCode: Number(data.statusCode) || null });
+                                continue;
+                            }
                             room = data.data?.liveRoom;
                         } else {
                             const match = body.match(/<script\b[^>]*\bid=["']SIGI_STATE["'][^>]*>([\s\S]*?)<\/script>/i);
-                            if (!match) continue;
+                            if (!match) {
+                                onDiagnostic({ endpoint, outcome: 'room_data_missing' });
+                                continue;
+                            }
                             const data = JSON.parse(match[1]);
                             room = (data.LiveRoom || data.liveRoom)?.liveRoomUserInfo?.liveRoom;
                         }
+                        onDiagnostic({ endpoint, outcome: 'room_status', roomStatus: Number(room?.status) || null });
                         if (Number(room?.status) === 2) return true;
                         if (Number(room?.status) === 4) return false;
-                    } catch (_) { /* Try the other direct TikTok lookup. */ }
+                    } catch (error) {
+                        onDiagnostic({ endpoint, outcome: signal.aborted ? 'aborted' : 'request_failed', reason: error?.message || 'Lookup failed' });
+                        // Try the other direct TikTok lookup.
+                    }
                 }
                 return null;
 	        },
@@ -20181,7 +20198,7 @@ function showReporterMessageBox(options) {
     return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
 }
 
-function getTikTokDiagnosticReportContext() {
+async function getTikTokDiagnosticReportContext() {
     const connections = [];
     try {
         for (const [rawWssID, manager] of Object.entries(websocketConnections || {})) {
@@ -20200,9 +20217,21 @@ function getTikTokDiagnosticReportContext() {
             error: error && error.message ? error.message : String(error)
         };
     }
-    return {
-        connections
-    };
+    let recentSources = [];
+    let timer;
+    try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            recentSources = await Promise.race([
+                mainWindow.webContents.executeJavaScript(`typeof tikTokTroubleshooting === 'undefined' ? [] :
+                    Array.from(tikTokTroubleshooting.entries()).slice(-20).map(([sourceId, record]) => ({
+                        sourceId, recentEvents: record.recent, connectionDiagnostics: record.diagnostics || []
+                    }))`),
+                new Promise(resolve => { timer = setTimeout(() => resolve([]), 2000); })
+            ]);
+        }
+    } catch (_) { /* Active connection statistics remain useful if the UI is unavailable. */ }
+    finally { clearTimeout(timer); }
+    return { connections, recentSources };
 }
 
 async function uploadDiagnosticReport(type, message, context = {}) {
@@ -20228,7 +20257,7 @@ async function sendErrorReportingEnabledSnapshot() {
                 trigger: 'enable_error_reporting',
                 platform: process.platform,
                 backgroundDiagnostics: await getBackgroundReportContext(),
-                tiktokDiagnostics: getTikTokDiagnosticReportContext(),
+                tiktokDiagnostics: await getTikTokDiagnosticReportContext(),
                 llmDiagnostics: llmRequestDiagnostics.getRecent()
             }
         );
@@ -20293,7 +20322,7 @@ async function promptAndSendManualIssueReport() {
                 platform: process.platform,
                 backgroundDiagnostics: await getBackgroundReportContext(2000),
                 connectionDiagnostics: await getManualConnectionReportContext(),
-                tiktokDiagnostics: getTikTokDiagnosticReportContext(),
+                tiktokDiagnostics: await getTikTokDiagnosticReportContext(),
                 llmDiagnostics: llmRequestDiagnostics.getRecent()
             }
         );

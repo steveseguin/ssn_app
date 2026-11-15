@@ -34,7 +34,7 @@ const {
 } = require('../tiktok-badges');
 const giftMapping = require('./gift-mapping.json');
 const reporter = require('../error-reporter');
-const { describeTikTokDisconnect } = require('../resources/tiktok-troubleshooting');
+const { describeTikTokDisconnect, sanitizeTikTokDiagnosticText, summarizeTikTokError } = require('../resources/tiktok-troubleshooting');
 
 let connectorDeserializeMessage = publicDeserializeMessage || null;
 let connectorCreateBaseWebcastPushFrame = publicCreateBaseWebcastPushFrame || null;
@@ -4801,6 +4801,38 @@ class ConnectionManager {
         this.tiktokLogWriter.append(entry);
     }
 
+    recordConnectionDiagnostic(stage, error = null, details = {}) {
+        const credentials = {
+            signing: this.signingConfig, sessionId: this.sessionId, ttTargetIdc: this.ttTargetIdc,
+            defaultApiKey: defaultEulerApiKey,
+            sharedSigningApiKey: SHARED_EULER_SIGNING_FALLBACK_KEY,
+            sharedProxyApiKey: SHARED_EULER_PROXY_FALLBACK_KEY
+        };
+        const diagnostic = {
+            at: new Date().toISOString(), stage,
+            provider: this.signingProvider, strategy: this.connectionStrategy,
+            autoMode: !!this.autoMode,
+            connectionAgeMs: this.lastConnectTimestamp ? Math.max(0, Date.now() - this.lastConnectTimestamp) : null,
+            ...details
+        };
+        for (const key of Object.keys(diagnostic)) {
+            if (typeof diagnostic[key] === 'string') diagnostic[key] = sanitizeTikTokDiagnosticText(diagnostic[key], credentials);
+        }
+        if (error) diagnostic.error = summarizeTikTokError(error, credentials);
+        if (this.connection?.ssappWebSocketHttpStatus) diagnostic.websocketHttpStatus = this.connection.ssappWebSocketHttpStatus;
+        if (error && this.isBrokenSignerBootstrapError(error, error.message || '')) diagnostic.invalidWebsocketBootstrap = true;
+        if (!this.recentConnectionDiagnostics) this.recentConnectionDiagnostics = [];
+        this.recentConnectionDiagnostics.push(diagnostic);
+        if (this.recentConnectionDiagnostics.length > 12) this.recentConnectionDiagnostics.shift();
+        this.logDebug('connection.diagnostic', diagnostic);
+        emitStatus({ wssID: this.wssID, status: 'connection_diagnostic', diagnostic });
+        if ((error && stage !== 'euler_reconnect') || stage === 'stopped') {
+            reporter.report(stage === 'stopped' ? 'tiktok_connection_failed' : 'tiktok_connection_error',
+                diagnostic.error?.message || diagnostic.reason || 'TikTok connection stopped',
+                { recentDiagnostics: this.recentConnectionDiagnostics.slice() });
+        }
+    }
+
     closeLogWriter(reason) {
         if (!this.tiktokLogWriter) {
             return;
@@ -6170,6 +6202,7 @@ class ConnectionManager {
     }
 
     restartConnectionAttempt(primaryError = null, context = 'fallback_restart') {
+        this.recordConnectionDiagnostic('reconnect_requested', null, { reason: context });
         const reconnectPromise = (async () => {
             const delayMs = this.getFallbackRestartDelayMs();
             if (delayMs > 0) {
@@ -6403,6 +6436,7 @@ class ConnectionManager {
         if (this.isStopped || !this.autoLocalSignerFallbackActive) {
             return false;
         }
+        this.recordConnectionDiagnostic('local_signer_failed', primaryError, { reason: stage });
         if (this.eulerRetriesStopped) {
             this.finishEulerRetries('The non-Euler connection method also failed.');
             return false;
@@ -7125,6 +7159,7 @@ class ConnectionManager {
     }
 
     handleFatalError(error) {
+        this.recordConnectionDiagnostic('stopped', error);
         this.logDebug('lifecycle.fatalError', error);
         console.error('Fatal connection error:', error);
         this.isStopped = true;
@@ -7945,12 +7980,12 @@ class ConnectionManager {
             if (connectionDuration > 90 * 60 * 1000) { // 90 minutes
                 console.info('Proactively refreshing connection after 90 minutes');
                 this.connectionStartTime = Date.now();
-                this.forceReconnect();
+                this.forceReconnect('scheduled_90_minute_refresh');
             } else if (this.connection && this.connection.isConnected) {
                 const adaptiveTimeout = this.getAdaptiveMessageTimeout();
                 if (timeSinceLastMessage > adaptiveTimeout) {
                     console.info(`Connection appears stale - no messages for ${Math.round(timeSinceLastMessage / 1000)}s (threshold ${Math.round(adaptiveTimeout / 1000)}s), forcing reconnect`);
-                    this.forceReconnect();
+                    this.forceReconnect('stale_connection');
                 }
             }
         }, CONFIG.CONNECTION.HEALTH_CHECK_INTERVAL);
@@ -8278,8 +8313,9 @@ class ConnectionManager {
                     }
                 }
                 if (this.usesEulerForConnection() && errorName !== 'AlreadyConnectingError') {
-                    return this.handleEulerConnectionFailure(primaryError, this.isOfflineError(primaryError, errorMessage));
+                    return this.handleEulerConnectionFailure(primaryError, this.isOfflineError(primaryError, errorMessage), 'connect');
                 }
+                if (errorName !== 'AlreadyConnectingError') this.recordConnectionDiagnostic('connect_failed', err);
                 if (primaryError?.ssappFallback) {
                     const localFallbackHandled = await this.tryFallbackToLocalSigner(primaryError, 'connect_ssapp_local_fallback');
                     if (localFallbackHandled) {
@@ -8985,6 +9021,7 @@ class ConnectionManager {
     }
 
     finishEulerRetries(detail, allowCompatibility = false) {
+        this.recordConnectionDiagnostic('stopped', null, { reason: detail });
         this.isStopped = true;
         this.eulerRetriesStopped = true;
         this.eulerAllowCompatibility = allowCompatibility;
@@ -8999,8 +9036,10 @@ class ConnectionManager {
         return false;
     }
 
-    async handleEulerConnectionFailure(primaryError, allowLiveReconnect = false) {
+    async handleEulerConnectionFailure(primaryError, allowLiveReconnect = false, origin = 'connection') {
         if (this.isStopped || this.eulerBackupCheckInProgress) return false;
+        this.recordConnectionDiagnostic(origin === 'reconnect' ? 'euler_reconnect' : 'euler_connection_failed', primaryError,
+            { origin, allowLiveReconnect: !!allowLiveReconnect });
         const websocketStatus = Number(this.connection?.ssappWebSocketHttpStatus)
             || (this.signingProvider === EULER_WS_PROVIDER ? Number(primaryError?.status) : 0);
         const lookupError = `${primaryError?.message || ''} ${primaryError?.reason || ''} ${this.deriveNestedUserFriendlyErrorMessage(primaryError) || ''}`;
@@ -9022,9 +9061,13 @@ class ConnectionManager {
         try {
             await this.teardownConnection({ silent: true });
             if (!this.isStopped && typeof this.localSigner?.checkLiveStatus === 'function') {
-                live = await this.localSigner.checkLiveStatus(this.username, controller.signal);
+                live = await this.localSigner.checkLiveStatus(this.username, controller.signal,
+                    details => this.recordConnectionDiagnostic('direct_live_lookup', null, details));
             }
-        } catch (_) { /* An unsuccessful check is unknown, never offline. */ }
+        } catch (error) {
+            this.recordConnectionDiagnostic('direct_live_lookup_failed', error);
+            // An unsuccessful check is unknown, never offline.
+        }
         finally {
             clearTimeout(timeout);
             this.eulerLiveCheckAbortController = null;
@@ -9032,6 +9075,10 @@ class ConnectionManager {
         }
         if (this.isStopped || !this.isActiveSourceConnection()) return false;
         this.logDebug('lifecycle.euler.backup_check', { live, allowLiveReconnect, reconnectUsed: this.eulerBackupReconnectUsed });
+        this.recordConnectionDiagnostic('euler_live_check', null, {
+            liveStatus: live === true ? 'live' : (live === false ? 'offline' : 'unknown'),
+            allowLiveReconnect: !!allowLiveReconnect, reconnectUsed: !!this.eulerBackupReconnectUsed
+        });
         // An offline response or a dropped healthy connection gets one chat
         // reconnect only after TikTok independently confirms the stream is live.
         if (live === true && allowLiveReconnect && !limit && !this.eulerBackupReconnectUsed) {
@@ -9282,6 +9329,7 @@ class ConnectionManager {
         this.startViewerUpdateInterval();
         this.reconnectAttempts = 0;
         this.lastConnectTimestamp = connectedAt;
+        if (this.recentConnectionDiagnostics) this.recordConnectionDiagnostic('connected');
         if (this.shouldApplyStartupHistoryChatCutoff()) {
             this.startupChatCutoffMs = connectedAt - STARTUP_HISTORY_CHAT_GRACE_MS;
         } else {
@@ -9342,10 +9390,7 @@ class ConnectionManager {
             const SKIP_CODES = new Set([1000, 4005, 4006, 4404, 4555]);
             if (code && !SKIP_CODES.has(code)) {
                 reporter.report('tiktok_ws_close', `TikTok WebSocket closed: ${code} (${codeLabel})`, {
-                    code,
-                    codeLabel,
-                    reason: disconnectInfo?.reason || '',
-                    signingProvider: this.signingProvider,
+                    code, codeLabel, reason: failureMessage, signingProvider: this.signingProvider
                 });
             }
         }
@@ -9366,7 +9411,7 @@ class ConnectionManager {
                 const stable = this.lastConnectTimestamp && Date.now() - this.lastConnectTimestamp >= CONFIG.CONNECTION.RAPID_DISCONNECT_THRESHOLD_MS;
                 if (stable) this.eulerBackupReconnectUsed = false;
                 const error = Object.assign(new Error(failureMessage), { code }, code === 4429 ? { status: 429, eulerRateLimit: true } : {});
-                this.handleEulerConnectionFailure(error, !!stable || code === 4404 || code === 4005)
+                this.handleEulerConnectionFailure(error, !!stable || code === 4404 || code === 4005, 'disconnected')
                     .catch(error => this.handleFatalError(error));
                 return;
             }
@@ -9595,8 +9640,9 @@ class ConnectionManager {
             const stable = transportError && connectionState?.isConnected && this.lastConnectTimestamp
                 && Date.now() - this.lastConnectTimestamp >= CONFIG.CONNECTION.RAPID_DISCONNECT_THRESHOLD_MS;
             if (stable) this.eulerBackupReconnectUsed = false;
-            return this.handleEulerConnectionFailure(primaryError, !!stable || this.isOfflineError(primaryError, combinedMessage));
+            return this.handleEulerConnectionFailure(primaryError, !!stable || this.isOfflineError(primaryError, combinedMessage), infoText || 'error');
         }
+        this.recordConnectionDiagnostic('connection_error', err);
         const userFacingMessage = this.getUserFriendlyErrorMessage(primaryError, combinedMessage);
         const eulerLimit = this.getEulerRateLimitInfo(primaryError);
         if (eulerLimit && eulerLimit.keySource !== 'anonymous') {
@@ -9827,7 +9873,8 @@ class ConnectionManager {
         this.closeLogWriter('disconnect');
     }
 
-    forceReconnect() {
+    forceReconnect(reason = 'forced_reconnect') {
+        this.recordConnectionDiagnostic('reconnect_requested', null, { reason });
         console.info('Force reconnecting...');
         try {
             this.connection.disconnect();
@@ -10081,7 +10128,7 @@ class ConnectionManager {
         if (this.usesEulerForConnection()) {
             const stable = this.lastConnectTimestamp && Date.now() - this.lastConnectTimestamp >= CONFIG.CONNECTION.RAPID_DISCONNECT_THRESHOLD_MS;
             if (stable) this.eulerBackupReconnectUsed = false;
-            this.handleEulerConnectionFailure(new Error(reason || this.offlineReason || 'Euler connection interrupted.'), isOfflineFlow || !!stable)
+            this.handleEulerConnectionFailure(new Error(reason || this.offlineReason || 'Euler connection interrupted.'), isOfflineFlow || !!stable, 'reconnect')
                 .catch(error => this.handleFatalError(error));
             return;
         }
