@@ -5323,6 +5323,10 @@ class ConnectionManager {
                         });
                         return ensureValidProtoMessageFetchResult(proto, 'connector_deserialize');
                     } catch (decodeError) {
+                        if (decodeError?.code === 'SSAPP_TIKTOK_WSURL_MISSING'
+                            || decodeError?.code === 'SSAPP_TIKTOK_WSURL_INVALID') {
+                            throw decodeError;
+                        }
                         console.warn('[TikTok] Failed to decode fetch result via connector utilities:', decodeError?.message || decodeError);
                     }
                 }
@@ -8868,6 +8872,9 @@ class ConnectionManager {
     }
 
     isSignServerError(primaryError, rawMessage = '') {
+        // Local Signer requests go directly to TikTok. An HTTP rejection here
+        // must not trigger Euler credential recovery or discard the TikTok login.
+        if (this.shouldUseLocalSigner()) return false;
         if (primaryError?.code === 'SSAPP_TIKTOK_EULER_WS_MISSING_KEY') {
             return false;
         }
@@ -9230,6 +9237,7 @@ class ConnectionManager {
 
         const firstLine = message.split(/\r?\n/).find(line => line.trim().length) || message;
         const normalized = firstLine.toLowerCase();
+        if (this.shouldUseLocalSigner()) return firstLine.slice(0, 320);
 
         const isPremiumError = primaryError && primaryError.name === 'PremiumFeatureError';
         const isSignRateLimited = primaryError && primaryError.name === 'SignatureRateLimitError';

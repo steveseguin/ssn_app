@@ -264,6 +264,44 @@ async function run() {
 		assert.strictEqual(manager.pollingFallbackActivated, false);
 		assert.strictEqual(manager.preferredStrategy, 'websocket');
 	});
+
+	await test('local signer HTTP rejection preserves the TikTok session and does not suggest Euler', async () => {
+		const { manager } = createManager({
+			signingProvider: 'local', sessionId: 'fixture-session', ttTargetIdc: 'fixture-idc',
+			localSigner: { async sign() { return {}; } }
+		});
+		const error = Object.assign(new Error('TikTok fetch failed (403)'), {
+			name: 'TikTokFetchError', status: 403, source: 'local_signer_fetch'
+		});
+		manager.initializeConnectionInstance();
+		manager.connection.connect = async () => { throw error; };
+		let retries = 0;
+		manager.attemptReconnect = () => { retries++; };
+		assert.strictEqual(manager.isSignServerError(error), false);
+		assert.strictEqual(manager.getUserFriendlyErrorMessage(error), error.message);
+		await manager.connect();
+		assert.strictEqual(manager.sessionId, 'fixture-session');
+		assert.strictEqual(manager.ttTargetIdc, 'fixture-idc');
+		assert.strictEqual(retries, 1);
+		manager.isStopped = true;
+		await manager.teardownConnection({ silent: true });
+	});
+
+	await test('local signer preserves a missing WebSocket address error after decoding', async () => {
+		const { ProtoMessageFetchResult } = require('tiktok-live-connector');
+		const proto = ProtoMessageFetchResult.decode(Buffer.alloc(0));
+		proto.cursor = 'fixture-cursor';
+		const bodyBase64 = Buffer.from(ProtoMessageFetchResult.encode(proto).finish()).toString('base64');
+		const { manager } = createManager({
+			signingProvider: 'local',
+			localSigner: { async sign() { return { room_id: '123456', fetchResult: { status: 200, bodyBase64 } }; } }
+		});
+		manager.initializeConnectionInstance();
+		await assert.rejects(manager.fetchSignedWebSocketViaLocalSigner(), error =>
+			error.code === 'SSAPP_TIKTOK_WSURL_MISSING' && error.name === 'TikTokWsUrlError');
+		manager.isStopped = true;
+		await manager.teardownConnection({ silent: true });
+	});
 }
 
 run()
