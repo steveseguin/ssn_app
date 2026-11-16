@@ -1114,9 +1114,28 @@ const sourceGuideFallbackPlatformLabels = {
 	"pt-BR": "Esta fonte"
 };
 
-const sourceGuidePlatformLabels = {
+const sourcePlatformLabels = {
+	youtube: "YouTube",
+	tiktok: "TikTok",
+	x: "X.com",
+	instagram: "Instagram",
 	instagramlive: "Instagram Live",
-	youtubeshorts: "YouTube Shorts"
+	youtubeshorts: "YouTube Shorts",
+	chzzk: "CHZZK",
+	sooplive: "SOOP Live",
+	bigo: "BIGO Live",
+	ebay: "eBay Live",
+	twitcasting: "TwitCasting",
+	younow: "YouNow",
+	bilibilicom: "Bilibili.com",
+	bilibilitv: "Bilibili.tv",
+	shareplay: "SharePlay",
+	l2games: "l2.games",
+	arenasocial: "Arena Social",
+	vpzone: "VPZONE",
+	peertube: "PeerTube",
+	houla: "Hou.la",
+	vkvideo: "VK Video Live"
 };
 
 const sourceGuideCompactContent = {
@@ -1622,9 +1641,13 @@ function renderSourceGuideCompactContent(guide) {
   `;
 }
 
+function getSourcePlatformLabel(platform) {
+	if (!platform) return "";
+	return sourcePlatformLabels[platform] || platform.charAt(0).toUpperCase() + platform.slice(1);
+}
+
 function getSourceGuidePlatformLabel(platform, lang = "en") {
-	if (!platform) return sourceGuideFallbackPlatformLabels[lang] || sourceGuideFallbackPlatformLabels.en;
-	return sourceGuidePlatformLabels[platform] || platform.charAt(0).toUpperCase() + platform.slice(1);
+	return getSourcePlatformLabel(platform) || sourceGuideFallbackPlatformLabels[lang] || sourceGuideFallbackPlatformLabels.en;
 }
 
 function getSourceGuideContent(platform, lang) {
@@ -2117,6 +2140,35 @@ async function loadWelcomeFrameContent(frame, url, options = {}) {
 	}
 }
 
+function setupWelcomeFrameSizing(frame) {
+	const panel = frame.parentElement;
+	const resizeObserver = new ResizeObserver(resize);
+	const contentObserver = new MutationObserver(() => {
+		for (const child of panel.children) {
+			if (child !== frame) resizeObserver.observe(child);
+		}
+		resize();
+	});
+	function resize() {
+		if (!frame.isConnected) {
+			resizeObserver.disconnect();
+			contentObserver.disconnect();
+			return;
+		}
+		if (!panel.clientHeight) return;
+		const top = frame.getBoundingClientRect().top - panel.getBoundingClientRect().top + panel.scrollTop;
+		const bottomPadding = parseFloat(getComputedStyle(panel).paddingBottom) || 0;
+		// Leave scrolling inside the welcome page, including cross-origin fallbacks.
+		frame.style.height = `${Math.max(160, Math.floor(panel.clientHeight - top - bottomPadding))}px`;
+	}
+	resizeObserver.observe(panel);
+	for (const child of panel.children) {
+		if (child !== frame) resizeObserver.observe(child);
+	}
+	contentObserver.observe(panel, { childList: true });
+	resize();
+}
+
 function manageWelcomePage() {
   const hasEntries = document.querySelectorAll('#sources .entry:not(#sourceTemplate)').length > 0;
   let welcomeFrame = document.getElementById('welcomeFrame');
@@ -2144,6 +2196,7 @@ function manageWelcomePage() {
 	  } else if (document.getElementById('sources')) { // Ensure #sources exists
 		document.getElementById('sources').appendChild(welcomeFrame);
 	  }
+	  setupWelcomeFrameSizing(welcomeFrame);
 	}
   } else if (welcomeFrame) {
 	welcomeFrame.remove();

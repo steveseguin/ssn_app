@@ -121,21 +121,21 @@
         </ul>
         <div class="language-selector">
             <select id="language-select" aria-label="Language" data-i18n-aria-label="nav.language" onchange="changeLanguage(this.value)">
-                <option value="en-us">🇺🇸 English (US)</option>
-                <option value="en-uk">🇬🇧 English (UK)</option>
-                <option value="pt-br">🇧🇷 Português (Brasil)</option>
+                <option value="en-us">English (US)</option>
+                <option value="en-uk">English (UK)</option>
+                <option value="pt-br">Português (Brasil)</option>
                 <option value="ar" title="Arabic">العربية</option>
-                <option value="es">🇪🇸 Español</option>
-                <option value="fr">🇫🇷 Français</option>
-                <option value="de">🇩🇪 Deutsch</option>
-                <option value="et">🇪🇪 Eesti</option>
-                <option value="cs">🇨🇿 Čeština</option>
-                <option value="th">🇹🇭 ไทย</option>
-                <option value="ko">🇰🇷 한국어</option>
-                <option value="zh-CN">🇨🇳 简体中文</option>
-                <option value="zh-TW">🇹🇼 繁體中文</option>
-                <option value="tr">🇹🇷 Türkçe</option>
-                <option value="uk">🇺🇦 Українська</option>
+                <option value="es">Español</option>
+                <option value="fr">Français</option>
+                <option value="de">Deutsch</option>
+                <option value="et">Eesti</option>
+                <option value="cs">Čeština</option>
+                <option value="th">ไทย</option>
+                <option value="ko">한국어</option>
+                <option value="zh-CN">简体中文</option>
+                <option value="zh-TW">繁體中文</option>
+                <option value="tr">Türkçe</option>
+                <option value="uk">Українська</option>
                 <option value="test">Test Translations</option>
             </select>
         </div>
@@ -2484,14 +2484,15 @@
             setupSellerGroupUI(element, group);
 
             element.querySelector("[data-sourceicon]").src = getSourceIconUrl(group.target);
-            element.querySelector("[data-sourceicon]").title = group.target;
+            const platformLabel = getSourcePlatformLabel(group.target);
+            element.querySelector("[data-sourceicon]").title = platformLabel;
             const isOwnerBackedYouTubeGroup = isYouTubeOwnerGroup(group);
             element.querySelector("[data-channelname]").textContent = isOwnerBackedYouTubeGroup
                 ? (group.channelTitle || group.username || "")
                 : (group.username || "");
             element.querySelector("[data-targetname]").textContent = isOwnerBackedYouTubeGroup
-                ? `${group.target || 'youtube'} - signed in`
-                : (group.target || "");
+                ? `${platformLabel || 'YouTube'} - signed in`
+                : platformLabel;
 
             const autoActivateCheckbox = element.querySelector('.auto-activate-toggle input[data-state-key="autoActivate"]');
             if (autoActivateCheckbox) {
@@ -3681,7 +3682,7 @@
                 facebook: "Facebook username or URL",
                 vpzone: "VPZONE username"
             };
-            const promptTargetLabel = promptTargetLabels[target] || `${target} user name`;
+            const promptTargetLabel = promptTargetLabels[target] || `${getSourcePlatformLabel(target)} user name`;
 
             const spaceErrorMessage = translate('error.username.spaces');
             const emptyErrorMessage = translate('error.username.empty');
@@ -7049,15 +7050,12 @@
                 connectionHeader.textContent = translate('header.connectionmodes');
                 connectionModesSection.appendChild(connectionHeader);
 
-                const createConnectionItem = (icon, label, dataset, handler) => {
+                const createConnectionItem = (label, dataset, handler) => {
                     const item = document.createElement('div');
                     item.className = 'settings-menu-item';
                     Object.entries(dataset || {}).forEach(([key, value]) => {
                         item.dataset[key] = value;
                     });
-                    const iconElement = document.createElement('i');
-                    iconElement.textContent = icon;
-                    item.appendChild(iconElement);
                     const labelSpan = document.createElement('span');
                     labelSpan.textContent = label;
                     item.appendChild(labelSpan);
@@ -7067,10 +7065,10 @@
                     return item;
                 };
 
-                const classicItem = createConnectionItem('📄', translate('source.mode.standard'), { action: 'classic-mode' }, 'setClassicMode(this)');
-                const genericWsItem = createConnectionItem('🌐', translate('source.mode.websocket'), { wss: 'true' }, "setSourceConnectionMode(this.closest('.entry'), 'websocket', this)");
-                const tiktokWsItem = createConnectionItem('🌐', translate('source.mode.websocket'), { tiktokwss: 'true' }, "setSourceConnectionMode(this.closest('.entry'), 'tiktok-websocket', this)");
-                const tiktokLegacyItem = createConnectionItem('🕰️', translate('source.mode.legacy'), { tiktoklegacy: 'true' }, "setSourceConnectionMode(this.closest('.entry'), 'tiktok-legacy', this)");
+                const classicItem = createConnectionItem(translate('source.mode.standard'), { action: 'classic-mode' }, 'setClassicMode(this)');
+                const genericWsItem = createConnectionItem(translate('source.mode.websocket'), { wss: 'true' }, "setSourceConnectionMode(this.closest('.entry'), 'websocket', this)");
+                const tiktokWsItem = createConnectionItem(translate('source.mode.websocket'), { tiktokwss: 'true' }, "setSourceConnectionMode(this.closest('.entry'), 'tiktok-websocket', this)");
+                const tiktokLegacyItem = createConnectionItem(translate('source.mode.legacy'), { tiktoklegacy: 'true' }, "setSourceConnectionMode(this.closest('.entry'), 'tiktok-legacy', this)");
                 tiktokWsItem.classList.add('hidden');
                 tiktokLegacyItem.classList.add('hidden');
 
@@ -20724,8 +20722,89 @@
             }
         });
 
+        function setupSourcesWheelScrolling() {
+            const panel = document.getElementById('sources');
+            const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+            let frame = 0;
+            let destination = 0;
+            let position = 0;
+            let velocity = 0;
+            let lastPosition = 0;
+            let lastTime = null;
+
+            function stop() {
+                cancelAnimationFrame(frame);
+                frame = 0;
+                velocity = 0;
+            }
+
+            function animate(time) {
+                if (reducedMotion.matches || document.hidden || !panel.clientHeight || Math.abs(panel.scrollTop - lastPosition) > 1) {
+                    stop();
+                    return;
+                }
+                // Start the clock on the first frame, not at the wheel event.
+                // A busy renderer must not turn its input delay into a large first step.
+                const dt = lastTime === null ? 0 : Math.max(0, Math.min(16, time - lastTime)) / 1000;
+                lastTime = time;
+                destination = Math.max(0, Math.min(destination, panel.scrollHeight - panel.clientHeight));
+                // Critically damped motion: accelerate from rest, then settle without overshooting.
+                const offset = position - destination;
+                const change = (velocity + 16 * offset) * dt;
+                const decay = Math.exp(-16 * dt);
+                position = destination + (offset + change) * decay;
+                velocity = (velocity - 16 * change) * decay;
+                panel.scrollTop = position;
+                lastPosition = panel.scrollTop;
+                if (Math.abs(destination - position) < 0.5 && Math.abs(velocity) < 5) {
+                    panel.scrollTop = destination;
+                    stop();
+                    return;
+                }
+                frame = requestAnimationFrame(animate);
+            }
+
+            panel.addEventListener('wheel', (event) => {
+                if (reducedMotion.matches || event.defaultPrevented || !event.cancelable || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY) || !event.deltaY) {
+                    stop();
+                    return;
+                }
+                for (let node = event.target; node && node !== panel; node = node.parentElement) {
+                    // Text fields (including disabled source URLs) and toggles scroll the panel.
+                    if (node.matches('select, textarea, input[type="number"], input[type="range"]') || node.isContentEditable ||
+                        (node.scrollHeight > node.clientHeight && /^(auto|scroll)$/.test(getComputedStyle(node).overflowY))) {
+                        stop();
+                        return;
+                    }
+                }
+                const max = panel.scrollHeight - panel.clientHeight;
+                if (max <= 0) return;
+                const lineHeight = parseFloat(getComputedStyle(panel).lineHeight) || 20;
+                const delta = event.deltaY * (event.deltaMode === 1 ? lineHeight : event.deltaMode === 2 ? panel.clientHeight : 1);
+                if (frame && Math.abs(panel.scrollTop - lastPosition) > 1) stop();
+                if (!frame) {
+                    position = panel.scrollTop;
+                    lastPosition = panel.scrollTop;
+                    destination = panel.scrollTop;
+                    lastTime = null;
+                } else if (Math.sign(delta) !== Math.sign(destination - position)) {
+                    destination = position;
+                    velocity = 0;
+                }
+                destination = Math.max(0, Math.min(max, destination + delta));
+                event.preventDefault();
+                if (!frame) frame = requestAnimationFrame(animate);
+            }, { passive: false });
+
+            panel.addEventListener('pointerdown', stop, { passive: true });
+            document.addEventListener('keydown', stop, { passive: true });
+            document.addEventListener('visibilitychange', stop);
+            window.addEventListener('blur', stop);
+        }
+
         // Set up navigation
         document.addEventListener('DOMContentLoaded', () => {
+            setupSourcesWheelScrolling();
             // Initialize language
             const savedLanguage = normalizeLanguage(localStorage.getItem('language') || 'en-us');
             document.getElementById('language-select').value = savedLanguage;

@@ -461,6 +461,7 @@ body {
 }
 
 #welcomeFrame {
+  display: block;
   background: transparent;
   scrollbar-width: thin;
   scrollbar-color: #ffffff40 #00000080;
@@ -561,7 +562,7 @@ body {
   .addnew button {
     font-size: 12px;
     padding: 6px 4px;
-	display: flex;
+	display: block;
   }
   
   .entry {
@@ -873,6 +874,17 @@ button {
   animation: menuAppear 0.2s ease-out;
 }
 
+@keyframes menuAppear {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .settings-menu-section {
   width: 100%;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
@@ -1057,7 +1069,7 @@ button.group-control {
   color: white;
   cursor: pointer;
   transition: all 0.2s ease;
-  font-size: 16px !important;
+  font-size: 13px !important;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3) !important;
   flex-shrink: 0 !important;
   position: relative !important;
@@ -1978,6 +1990,11 @@ button.group-control {
   animation: pulse 1.5s infinite;
 }
 
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.75; }
+}
+
 .shorts-toggle-label {
   display: flex;
   align-items: center;
@@ -2157,11 +2174,6 @@ button.group-control[data-group-visible="false"] {
   display: flex !important;
   opacity: 1;
   visibility: visible;
-}
-
-to {
-  opacity: 1;
-  transform: translateY(0);
 }
 
 .addnew p {
