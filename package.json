@@ -208,6 +208,7 @@
       "!old-certs-backup/**",
       "!dist/**",
       "!cloudflare/**",
+      "!resources/social_stream_fallback/*/cloud{,/**}",
       "!sso-worker/**",
       "!aur/**",
       "!aur-repo/**",

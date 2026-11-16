@@ -56,6 +56,9 @@ prior-submission-*
 webstore/
 monetization-server/
 
+# Separate private repository, kept locally for development reference.
+/cloud/
+
 # Editor swap files
 *.swp
 *.swo

@@ -2,7 +2,7 @@ const fs = require('fs-extra');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { checkFallbackDependencies } = require('./check-fallback-dependencies');
+const { checkFallbackDependencies, isExcludedFallbackPath } = require('./check-fallback-dependencies');
 
 const REPO_URL = process.env.SSN_SOCIALSTREAM_REPO || 'https://github.com/steveseguin/social_stream.git';
 const BRANCH = process.env.SSN_SOCIALSTREAM_BRANCH || 'main';
@@ -143,6 +143,7 @@ function copyLocalFallback(sourceRoot, fallbackRoot, sparsePatterns) {
             if (entry.name === '.git') continue;
             const absolutePath = path.join(directory, entry.name);
             const relativePath = path.relative(sourceRoot, absolutePath).split(path.sep).join('/');
+            if (isExcludedFallbackPath(relativePath)) continue;
             if (entry.isDirectory()) {
                 visit(absolutePath);
                 continue;
@@ -189,7 +190,7 @@ function updateFallback() {
 
             console.log('[fallback] Configuring sparse-checkout allowlist...');
             runGit(['-C', sourceRoot, 'sparse-checkout', 'init', '--no-cone']);
-            runGit(['-C', sourceRoot, 'sparse-checkout', 'set', ...sparsePatterns]);
+            runGit(['-C', sourceRoot, 'sparse-checkout', 'set', ...sparsePatterns, '!/cloud/']);
         }
 
         const dependencyCheck = checkFallbackDependencies(sourceRoot, sparsePatterns, INCLUDE_TTS ? [] : TTS_PATTERNS);
@@ -221,7 +222,7 @@ function updateFallback() {
                 filter: (src) => {
                     const rel = path.relative(sourceRoot, src);
                     if (!rel || rel === '') return true;
-                    return !rel.split(path.sep).includes('.git');
+                    return !rel.split(path.sep).includes('.git') && !isExcludedFallbackPath(rel);
                 }
             });
         }

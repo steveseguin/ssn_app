@@ -3,6 +3,11 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
+function isExcludedFallbackPath(file) {
+    const normalized = file.replace(/\\/g, '/');
+    return normalized === 'cloud' || normalized.startsWith('cloud/');
+}
+
 function matchesPattern(file, pattern) {
     const escaped = pattern.replace(/^\//, '').split('**').map(part => part.split('*')
         .map(piece => piece.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')).join('.*');
@@ -32,7 +37,7 @@ function checkFallbackDependencies(root, patterns, optionalPatterns = []) {
     const files = execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
         { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }).split('\0').filter(Boolean);
     const inventory = new Set(files);
-    const included = file => patterns.some(pattern => matchesPattern(file, pattern));
+    const included = file => !isExcludedFallbackPath(file) && patterns.some(pattern => matchesPattern(file, pattern));
     const optional = file => optionalPatterns.some(pattern => matchesPattern(file, pattern));
     const missing = [];
     for (const file of files) {
@@ -49,4 +54,4 @@ function checkFallbackDependencies(root, patterns, optionalPatterns = []) {
     if (missing.length) throw new Error(`Fallback bundle omits required local assets:\n${missing.join('\n')}\nUpdate the bundle patterns before releasing.`);
     return { checkedFiles: files.filter(included).length };
 }
-module.exports = { checkFallbackDependencies, findReferences, matchesPattern };
+module.exports = { checkFallbackDependencies, findReferences, matchesPattern, isExcludedFallbackPath };
