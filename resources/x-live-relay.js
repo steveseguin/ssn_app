@@ -1,0 +1,360 @@
+'use strict';
+
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const http = require("node:http");
+const { createInterface } = require("node:readline");
+const { Readable } = require("node:stream");
+const { WebSocketServer, WebSocket } = require("ws");
+
+const EVENT_TYPES = ["broadcast.start", "broadcast.end", "broadcast.chat", "broadcast.chat.remove"];
+const LOCAL_ORIGIN = "http://127.0.0.1:38178";
+const API = "https://api.x.com/2";
+const randomKey = () => crypto.randomBytes(32).toString("base64url");
+
+function readXConfig(filename) {
+	let values = {};
+	if (filename && fs.existsSync(filename)) {
+		values = require("node:util").parseEnv(fs.readFileSync(filename, "utf8"));
+	}
+	const get = key => process.env[key] || values[key] || "";
+	return {
+		clientId: get("X_OAUTH_CLIENT_ID"),
+		clientSecret: get("X_OAUTH_CLIENT_SECRET"),
+		appToken: get("X_APP_BEARER_TOKEN"),
+		relayUrl: get("SSAPP_X_RELAY_URL")
+	};
+}
+
+// X delivers all of an app's subscriptions on one HTTP stream. Each WebSocket
+// receives only the events for the user who authorized that connection.
+async function startXRelay(config, options = {}) {
+	if (!config.clientId || !config.appToken) {
+		throw new Error("Set X_OAUTH_CLIENT_ID and X_APP_BEARER_TOKEN in .secret or the environment.");
+	}
+	const origin = options.origin || LOCAL_ORIGIN;
+	const redirect = origin + "/x/callback";
+	const key = crypto.createHmac("sha256", config.appToken).update("ssn-x-session:" + config.clientId).digest();
+	const fetchApi = options.fetch || fetch;
+	const clients = new Set();
+	const logins = new Map();
+	let stream, retry, streamIssue = "", interruptedAt = 0, backoff = 1000;
+
+	// Only the creator's source holds this ticket. It can survive a relay restart.
+	function ticket(tokens, owner) {
+		const iv = crypto.randomBytes(12);
+		const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+		const data = Buffer.concat([cipher.update(JSON.stringify({ tokens, owner })), cipher.final()]);
+		return Buffer.concat([iv, cipher.getAuthTag(), data]).toString("base64url");
+	}
+	function unpack(value) {
+		try {
+			const buf = Buffer.from(value, "base64url");
+			const decipher = crypto.createDecipheriv("aes-256-gcm", key, buf.subarray(0, 12));
+			decipher.setAuthTag(buf.subarray(12, 28));
+			return JSON.parse(Buffer.concat([decipher.update(buf.subarray(28)), decipher.final()]));
+		} catch (_) { throw new Error("Sign in to X again."); }
+	}
+	async function request(path, init) {
+		const res = await fetchApi(API + path, { ...init, redirect: "error", signal: AbortSignal.timeout(15000) });
+		if (!res.ok) {
+			const error = new Error("X rejected " + path.split("?")[0] + " (HTTP " + res.status + ").");
+			error.status = res.status;
+			throw error;
+		}
+		return res.json();
+	}
+	async function exchange(params) {
+		const headers = {};
+		if (config.clientSecret) headers.Authorization = "Basic " + Buffer.from(config.clientId + ":" + config.clientSecret).toString("base64");
+		const tokens = await request("/oauth2/token", { method: "POST", headers,
+			body: new URLSearchParams({ client_id: config.clientId, ...params }) });
+		if (!tokens.access_token) throw new Error("X did not return an access token.");
+		return { access: tokens.access_token, refresh: tokens.refresh_token || params.refresh_token,
+			expires: Date.now() + Number(tokens.expires_in || 7200) * 1000 };
+	}
+	function send(c, message) {
+		if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(message));
+	}
+	async function token(c) {
+		if (c.tokens.expires > Date.now() + 60000) return c.tokens.access;
+		if (!c.tokens.refresh) throw new Error("Sign in to X again.");
+		if (!c.refreshing) c.refreshing = exchange({ grant_type: "refresh_token", refresh_token: c.tokens.refresh })
+			.then(tokens => {
+				c.tokens = tokens;
+				send(c, { ticket: ticket(tokens, c.owner) });
+				return tokens.access;
+			}).finally(() => { c.refreshing = null; });
+		return c.refreshing;
+	}
+	async function userApi(c, path, body) {
+		const headers = { Authorization: "Bearer " + await token(c) };
+		if (!body) return request(path, { headers });
+		headers["Content-Type"] = "application/json";
+		return request(path, { headers, method: "POST", body: JSON.stringify(body) });
+	}
+	async function subscribe(c) {
+		const expires = new Date(Date.now() + 2 * 3600000).toISOString();
+		for (const event_type of EVENT_TYPES) {
+			if (c.ws.readyState !== WebSocket.OPEN) return;
+			await userApi(c, "/activity/subscriptions", { event_type, filter: { user_id: c.owner.id }, expires_at: expires });
+		}
+	}
+	function queueChat(c, message) {
+		if (!c.listening || !c.broadcast || message.broadcast !== c.broadcast) throw new Error("There is no matching live X broadcast.");
+		if (typeof message.text !== "string" || !message.text.trim() || Array.from(message.text).length > 140) throw new Error("X chat accepts 1 to 140 characters.");
+		if (c.pendingWrites >= 16) throw new Error("Too many X messages are waiting to send.");
+		const queuedAt = Date.now();
+		c.pendingWrites++;
+		c.writes = c.writes.then(async () => {
+			if (c.ws.readyState !== WebSocket.OPEN) return;
+			if (message.broadcast !== c.broadcast || !c.listening) throw new Error("The X broadcast has ended.");
+			// Leave time for the 15-second API request before the source's 20-second send timeout.
+			if (Date.now() - queuedAt > 4000) throw new Error("X chat is busy. Your message was not sent.");
+			await userApi(c, "/broadcasts/" + encodeURIComponent(c.broadcast) + "/chat", { text: message.text });
+			send(c, { sent: message.id });
+		}).catch(error => send(c, { warning: error.message, failed: message.id }))
+			.finally(() => { c.pendingWrites--; });
+	}
+	function syncViewerPoll(c) {
+		const broadcast = c.watchViewers && c.listening && c.ws.readyState === WebSocket.OPEN ? c.broadcast : "";
+		if (c.viewerPoll?.broadcast === broadcast) return;
+		clearInterval(c.viewerPoll?.timer);
+		c.viewerPoll = null;
+		if (!broadcast) return;
+		const poll = { broadcast, pending: false };
+		c.viewerPoll = poll;
+		async function readCount() {
+			if (poll.pending) return;
+			poll.pending = true;
+			try {
+				const response = await userApi(c, "/broadcasts/" + encodeURIComponent(broadcast) + "?broadcast.fields=total_watching");
+				const raw = response.data?.total_watching;
+				if (c.viewerPoll !== poll || !/^\d+$/.test(String(raw))) return;
+				const count = Number(raw);
+				if (Number.isSafeInteger(count)) send(c, { viewerCount: count, viewerBroadcast: broadcast });
+			} catch (_) {
+				// The next poll retries without interrupting live chat.
+			} finally { poll.pending = false; }
+		}
+		poll.timer = setInterval(readCount, 30000);
+		readCount();
+	}
+	async function currentBroadcast(c) {
+		const revision = c.revision;
+		let cursor;
+		do {
+			const params = new URLSearchParams({ "broadcast.fields": "id,state", max_results: "100" });
+			if (cursor) params.set("pagination_token", cursor);
+			const page = await userApi(c, "/broadcasts?" + params);
+			if (revision !== c.revision || c.ws.readyState !== WebSocket.OPEN) return;
+			const live = (page.data || []).find(item => String(item.state).toUpperCase() === "RUNNING");
+			if (live) { c.broadcast = live.id || live.broadcast_id; break; }
+			cursor = page.meta?.next_token;
+			if (!cursor) c.broadcast = "";
+		} while (cursor);
+		send(c, { broadcast: c.broadcast });
+		syncViewerPoll(c);
+	}
+	function dispatch(event) {
+		if (!EVENT_TYPES.includes(event?.event_type) || !event.payload?.broadcast_id || !event.filter?.user_id) return;
+		for (const c of clients) {
+			if (!c.owner || c.owner.id !== event.filter.user_id || !c.listening) continue;
+			const created = Date.parse(event.created_at);
+			if (created < c.startedAt) continue;
+			const p = event.payload;
+			if (event.event_type === "broadcast.start" || event.event_type === "broadcast.end") {
+				if (Number.isFinite(created)) {
+					if (created < c.lifecycleAt) continue;
+					c.lifecycleAt = created;
+				}
+				c.revision++;
+				if (event.event_type === "broadcast.start") c.broadcast = p.broadcast_id;
+				else if (c.broadcast === p.broadcast_id) c.broadcast = "";
+				send(c, { broadcast: c.broadcast });
+				syncViewerPoll(c);
+			} else {
+				send(c, { event: event.event_type, payload: p });
+			}
+		}
+	}
+	function hasListeners() { return [...clients].some(c => c.listening); }
+	async function readStream() {
+		if (stream || retry || !hasListeners()) return;
+		const control = new AbortController();
+		stream = control;
+		try {
+			const minutes = Math.min(5, Math.ceil((Date.now() - interruptedAt) / 60000));
+			const path = interruptedAt ? "/activity/stream?backfill_minutes=" + Math.max(1, minutes) : "/activity/stream";
+			const res = await fetchApi(API + path, {
+				headers: { Authorization: "Bearer " + config.appToken }, signal: control.signal, redirect: "error"
+			});
+			if (!res.ok) {
+				await res.body?.cancel();
+				if (interruptedAt && [400, 403].includes(res.status)) interruptedAt = 0;
+				throw new Error("X Activity stream returned HTTP " + res.status + ".");
+			}
+			control.connected = true;
+			streamIssue = "";
+			for (const c of clients) if (c.listening) {
+				send(c, { stream: true });
+				if (interruptedAt) currentBroadcast(c).catch(error => send(c, { warning: error.message }));
+			}
+			interruptedAt = 0;
+			const lines = createInterface({ input: Readable.fromWeb(res.body), crlfDelay: Infinity });
+			for await (const line of lines) {
+				if (!line.trim()) continue;
+				const msg = JSON.parse(line);
+				if (msg.errors?.length && !msg.data) throw new Error("X reported an activity stream error.");
+				backoff = 1000;
+				dispatch(msg.data);
+			}
+		} catch (error) {
+			if (!control.signal.aborted) streamIssue = error.message;
+		} finally {
+			control.abort();
+			stream = null;
+			if (hasListeners()) {
+				if (control.connected && !interruptedAt) interruptedAt = Date.now();
+				for (const c of clients) if (c.listening) send(c, { stream: false, warning: streamIssue });
+				retry = setTimeout(() => { retry = null; readStream(); }, backoff);
+				backoff = Math.min(backoff * 2, 60000);
+			} else { interruptedAt = 0; backoff = 1000; streamIssue = ""; }
+		}
+	}
+	async function attach(c, saved) {
+		if (c.owner) throw new Error("This source is already linked.");
+		c.tokens = saved.tokens;
+		c.owner = saved.owner;
+		try {
+			const me = (await userApi(c, "/users/me")).data;
+			if (!me?.id || !me.username || (saved.owner && saved.owner.id !== me.id) ||
+				(c.channel && c.channel !== me.username.toLowerCase())) throw new Error("Sign in with the X account selected for this source.");
+			c.owner = { id: me.id, username: me.username };
+			send(c, { ticket: ticket(c.tokens, c.owner) });
+			c.startedAt = Date.now();
+			c.listening = true;
+			readStream();
+			await subscribe(c);
+			await currentBroadcast(c);
+			if (!clients.has(c)) return;
+			send(c, { account: me.username, stream: !!stream?.connected, warning: streamIssue });
+			c.renew = setInterval(() => subscribe(c).catch(err => {
+				send(c, { warning: err.message });
+				c.ws.close(1011, "X subscription renewal failed.");
+			}), 3600000);
+		} catch (error) {
+			c.listening = false;
+			syncViewerPoll(c);
+			c.owner = null;
+			c.tokens = null;
+			if (!hasListeners()) stream?.abort();
+			throw error;
+		}
+	}
+	const server = http.createServer(async (req, res) => {
+		let url;
+		try { url = new URL(req.url, LOCAL_ORIGIN); } catch (_) { res.writeHead(400); res.end(); return; }
+		const state = url.searchParams.get("state");
+		const login = logins.get(state);
+		res.setHeader("Cache-Control", "no-store");
+		res.setHeader("Referrer-Policy", "no-referrer");
+		res.setHeader("Content-Type", "text/plain; charset=utf-8");
+		if (req.method !== "GET" || url.pathname !== "/x/callback" || !login) {
+			res.writeHead(404); res.end("No pending X sign-in."); return;
+		}
+		logins.delete(state);
+		try {
+			if (!url.searchParams.get("code")) throw new Error("X sign-in was canceled.");
+			const tokens = await exchange({ grant_type: "authorization_code", code: url.searchParams.get("code"),
+				code_verifier: login.verifier, redirect_uri: redirect });
+			if (!clients.has(login.c)) throw new Error("Reopen the X source and sign in again.");
+			const code = crypto.randomBytes(6).toString("hex");
+			login.c.pairing = { code, tokens, until: Date.now() + 120000 };
+			res.end("Enter this code in your Social Stream Ninja X source: " + code);
+		} catch (error) { res.writeHead(400); res.end(error.message); send(login.c, { warning: error.message }); }
+	});
+	const wss = new WebSocketServer({ server, path: "/x/live", maxPayload: 8192 });
+	wss.on("connection", (ws, req) => {
+		const site = req.headers.origin;
+		if (site && !["null", "file://", "https://socialstream.ninja", "https://beta.socialstream.ninja"].includes(site) &&
+			!/^chrome-extension:\/\/[a-p]{32}$/.test(site)) { ws.close(1008); return; }
+		const c = { ws, channel: "", broadcast: "", revision: 0, lifecycleAt: 0, writes: Promise.resolve(), pendingWrites: 0 };
+		clients.add(c);
+		ws.on("error", () => ws.terminate());
+		ws.on("close", () => {
+			clients.delete(c);
+			clearInterval(c.viewerPoll?.timer);
+			c.viewerPoll = null;
+			clearInterval(c.renew);
+			clearTimeout(c.loginTimer);
+			logins.delete(c.state);
+			if (!hasListeners()) { clearTimeout(retry); retry = null; stream?.abort(); }
+		});
+		ws.on("message", async raw => {
+			let m;
+			try {
+				m = JSON.parse(raw);
+				if (m.op === "watchViewers") {
+					c.watchViewers = m.enabled === true;
+					syncViewerPoll(c);
+					return;
+				}
+				if (m.op === "send") {
+					queueChat(c, m);
+					return;
+				}
+				if (c.busy) throw new Error("Another X request is in progress.");
+				c.busy = true;
+				try {
+					if (m.op === "login" || m.op === "resume") {
+						c.channel = String(m.channel || "").replace(/^@/, "").toLowerCase();
+						if (!/^[a-z0-9_]{1,15}$/.test(c.channel)) throw new Error("Choose an X source by its account handle.");
+					}
+					if (m.op === "login" && !c.owner) {
+						logins.delete(c.state);
+						clearTimeout(c.loginTimer);
+						c.pairing = null;
+						c.state = randomKey();
+						const verifier = randomKey();
+						logins.set(c.state, { c, verifier });
+						c.loginTimer = setTimeout(() => logins.delete(c.state), 300000);
+						const params = new URLSearchParams({ response_type: "code", client_id: config.clientId,
+							redirect_uri: redirect, scope: "users.read tweet.read broadcast.read broadcast.write offline.access",
+							state: c.state, code_challenge_method: "S256",
+							code_challenge: crypto.createHash("sha256").update(verifier).digest("base64url") });
+						send(c, { authorize: "https://x.com/i/oauth2/authorize?" + params });
+					} else if (m.op === "pair") {
+						const pairing = c.pairing;
+						c.pairing = null;
+						if (!pairing || pairing.until < Date.now() || pairing.code !== m.code) throw new Error("Invalid or expired code. Start sign-in again.");
+						await attach(c, { tokens: pairing.tokens, owner: null });
+					} else if (m.op === "resume") {
+						await attach(c, unpack(m.ticket));
+					}
+				} finally { c.busy = false; }
+			} catch (error) { send(c, { warning: error.message, failed: m?.id, signIn: !c.owner }); }
+		});
+	});
+	await new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(options.port ?? 38178, "127.0.0.1", resolve);
+	});
+	return { url: "ws://127.0.0.1:" + server.address().port + "/x/live",
+		close() { for (const c of clients) c.ws.terminate(); wss.close(); server.close(); } };
+}
+
+module.exports = { startXRelay, readXConfig };
+
+// A shared relay runs behind an HTTPS reverse proxy. Desktop installations
+// then need only its public WebSocket URL.
+if (require.main === module) {
+	(async () => {
+		const origin = new URL(process.env.X_RELAY_PUBLIC_ORIGIN || LOCAL_ORIGIN);
+		if (origin.origin !== LOCAL_ORIGIN && origin.protocol !== "https:") throw new Error("Use an HTTPS relay origin.");
+		const relay = await startXRelay(readXConfig(), { origin: origin.origin, port: Number(process.env.X_RELAY_PORT || 38178) });
+		console.log("X Live listening at " + relay.url);
+		process.once("SIGTERM", relay.close);
+		process.once("SIGINT", relay.close);
+	})().catch(error => { console.error(error.message); process.exitCode = 1; });
+}

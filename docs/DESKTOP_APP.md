@@ -52,6 +52,14 @@ The exact choices are platform-specific. For example, TikTok can expose WebSocke
 
 For YouTube sources, stop capture before switching between **YouTube** and **YouTube Shorts** in the source's additional settings. The switch keeps the same video ID and preserves unrelated URL parameters.
 
+#### X Live API
+
+Add **X.com** with the broadcaster's handle. Select **WebSocket**, activate the source, and choose **Link X account**. Sign in as that broadcaster, then enter the code from X's return page in the source window. The source waits for the account to go live and can send replies while the broadcast is live.
+
+For a local connection, register `http://127.0.0.1:38178/x/callback` as the OAuth 2.0 callback for an X app approved for the Livestream and Activity APIs. Set `X_OAUTH_CLIENT_ID` and the app-only `X_APP_BEARER_TOKEN` in the environment before starting SSApp. Confidential OAuth clients also need `X_OAUTH_CLIENT_SECRET`. When running from source, these settings can go in the checkout's gitignored `.secret` file, one `NAME=value` per line. [X Livestream API access](https://docs.x.com/livestream-api/getting-started)
+
+To share one approved app across installations, run `node resources/x-live-relay.js` with those credentials on the relay host. Set `X_RELAY_PUBLIC_ORIGIN` to its public HTTPS origin, register that origin's `/x/callback` with X, and proxy `/x/callback` and the `/x/live` WebSocket to loopback port 38178. On desktops, set `SSAPP_X_RELAY_URL` to the public `wss://` address ending in `/x/live`.
+
 ### Source state
 
 - **Inactive** means the source definition is saved but no capture window or connector is running.

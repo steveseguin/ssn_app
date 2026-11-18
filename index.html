@@ -10765,6 +10765,14 @@
             const launchPlan = buildWebSocketLaunchPlan(source, { devmode });
             const websocketTarget = launchPlan.websocketTarget;
             const queryParams = launchPlan.queryParams;
+            if (websocketTarget === 'x') {
+                try {
+                    queryParams.relay = await ipcRenderer.invoke('x-live-relay-url');
+                } catch (error) {
+                    Toast.error('X Live API', error.message);
+                    throw error;
+                }
+            }
             const resolvedHtml = await resolveWebSocketHtml(websocketTarget, queryParams, { branch: isBetaMode ? 'beta' : 'main' });
             if (!resolvedHtml) {
                 Toast.error("WebSocket Error", "Unable to resolve the WebSocket page. Try again or check your network.");

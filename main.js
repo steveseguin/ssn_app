@@ -2063,6 +2063,22 @@ setupExternalBrowserSigninHandler({
     trackPartition: partition => createdPartitions.add(partition)
 });
 setupVpzoneOAuthHandler();
+let xLiveRelay;
+ipcMain.handle("x-live-relay-url", async event => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) {
+        throw new Error("Open X Live from the SSApp source list.");
+    }
+    const { startXRelay, readXConfig } = require("./resources/x-live-relay");
+    const filename = app.isPackaged ? null : path.join(__dirname, ".secret");
+    const config = readXConfig(filename);
+    if (config.relayUrl) {
+        const url = new URL(config.relayUrl);
+        if (url.protocol !== "wss:" || url.username || url.password || url.search || url.hash) throw new Error("Invalid X relay URL.");
+        return url.href;
+    }
+    if (!xLiveRelay) xLiveRelay = startXRelay(config).catch(error => { xLiveRelay = null; throw error; });
+    return (await xLiveRelay).url;
+});
 setupMediaUploadHandler();
 
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
@@ -14046,6 +14062,14 @@ async function createWindow(args, reuse = false, mainApp = false) {
             //log(args);
             view.args = args;
             view.__ss_visible = !!visibibility;
+            if (args.platform === 'x' && args.wss && args.source === 'sources/websocket/x.js') {
+                view.webContents.setWindowOpenHandler(({ url }) => {
+                    if (url.startsWith('https://x.com/i/oauth2/authorize?') && view.webContents.getURL() === args.url) {
+                        shell.openExternal(url).catch(error => console.warn('[X Live] Could not open X sign-in:', error.message));
+                    }
+                    return { action: 'deny' };
+                });
+            }
             if (process.platform === 'win32' && args.platform === 'twitch' && !args.wss && args.sourceId) {
                 view.webContents.on('did-finish-load', () => updateHiddenTwitchDecorations(view));
                 view.webContents.on('did-navigate-in-page', (event, url, isMainFrame) => {

@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { EventEmitter } = require('events');
+const console = process.versions.electron ? globalThis.console : { ...globalThis.console };
 const WebSocket = require('ws');
 const { TikFinityConnection } = require('./tikfinity-connection');
 const EulerStreamApiClient = require('tiktok-live-api-sdk').default;
@@ -33,7 +34,7 @@ const {
     getBadgeImageUrl
 } = require('../tiktok-badges');
 const giftMapping = require('./gift-mapping.json');
-const reporter = require('../error-reporter');
+const reporter = process.versions.electron ? require('../error-reporter') : { report() {} };
 const { describeTikTokDisconnect, sanitizeTikTokDiagnosticText, summarizeTikTokError } = require('../resources/tiktok-troubleshooting');
 
 let connectorDeserializeMessage = publicDeserializeMessage || null;
@@ -91,6 +92,7 @@ const env = {
     isTextOnlyModeEnabled: () => false,
     getCachedSettings: () => ({}),
     onEvent: () => { },
+    postToBackground: null,
     isDevMode: () => false
 };
 
@@ -1368,6 +1370,7 @@ function installTikTokProtoFetchTap(connector) {
 function createTikTokEnvironment(options = {}) {
     const {
         connector,
+        quiet = false,
         shouldEnableTikTokLogging: shouldEnableLoggingOption = false,
         onStatus: onStatusOverride = () => { },
         getCachedSettings: getCachedSettingsOverride = () => ({}),
@@ -1384,10 +1387,16 @@ function createTikTokEnvironment(options = {}) {
         websocketConnections = null,
         log: logFn = null,
         onEvent: onEventOverride = () => { },
+        postToBackground: postToBackgroundOverride = null,
         signerHelper: signerHelperOverride = null,
         localSigner: localSignerOverride = null
     } = options;
 
+    // Keep provider response bodies out of unattended worker logs. Desktop logs
+    // retain their existing behavior; workers receive structured status updates.
+    if (!process.versions.electron) for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
+        console[level] = quiet ? () => {} : globalThis.console[level];
+    }
     env.localSigner = localSignerOverride;
 
     TikTokPollingFallbackClass = null;
@@ -1448,6 +1457,8 @@ function createTikTokEnvironment(options = {}) {
     env.isTextOnlyModeEnabled = typeof textOnlyModeFn === 'function' ? textOnlyModeFn : () => false;
     env.log = typeof logFn === 'function' ? logFn : env.log;
     env.onEvent = typeof onEventOverride === 'function' ? onEventOverride : () => { };
+    env.postToBackground = typeof postToBackgroundOverride === 'function' ? postToBackgroundOverride : null;
+    env.dedupeLikeMessageIds = options.dedupeLikeMessageIds === true;
     env.isDevMode = typeof isDevModeOverride === 'function' ? isDevModeOverride : () => false;
     env.signerHelper = signerHelperOverride;
 
@@ -1503,6 +1514,14 @@ const TIKTOK_EVENT_DEDUPE_WINDOWS_MS = Object.freeze({
 const TIKTOK_EVENT_DEDUPE_MAX_ENTRIES = 10000;
 const TIKTOK_EVENT_DEDUPE_TRIM_TO = 8000;
 const TIKTOK_USER_SCOPED_EVENT_DEDUPE_TYPES = new Set(['followed', 'shared']);
+
+function getTikTokLikeMessageId(data) {
+    const value = data?.common?.msgId ?? data?.msgId;
+    if (typeof value === 'number' && !Number.isSafeInteger(value)) return null;
+    if (!['string', 'number', 'bigint'].includes(typeof value)) return null;
+    const id = String(value);
+    return /^[1-9][0-9]{0,31}$/.test(id) ? id : null;
+}
 
 function canonicalizeTikTokEventType(eventType) {
     const cleaned = cleanGenericString(eventType);
@@ -2939,6 +2958,7 @@ const connectionCleanupInterval = setInterval(() => {
         }
     }
 }, CONFIG.CONNECTION.CLEANUP_INTERVAL);
+if (!process.versions.electron) connectionCleanupInterval.unref();
 
 // Store for cleanup on app quit
 if (!global.intervals) global.intervals = [];
@@ -9872,6 +9892,7 @@ class ConnectionManager {
         if (this.recentEventDedupes instanceof Map) {
             this.recentEventDedupes.clear();
         }
+        this.recentLikeMessageIds?.clear();
         this.nextEventDedupePruneAt = 0;
         this.offlineRetry = false;
         this.offlineRetryCount = 0;
@@ -10337,6 +10358,19 @@ class ConnectionManager {
     }
 
     shouldSuppressDuplicateEvent(eventType, data = {}, message = null) {
+        // Node capture opts in. Keep like IDs separate so busy like traffic
+        // cannot evict the chat/gift IDs needed for interruption recovery.
+        if (eventType === 'liked' && env.dedupeLikeMessageIds) {
+            const id = getTikTokLikeMessageId(data);
+            if (!id) return false;
+            if (!this.recentLikeMessageIds) this.recentLikeMessageIds = new Set();
+            if (this.recentLikeMessageIds.has(id)) return true;
+            this.recentLikeMessageIds.add(id);
+            if (this.recentLikeMessageIds.size > TIKTOK_EVENT_DEDUPE_MAX_ENTRIES) {
+                this.recentLikeMessageIds.delete(this.recentLikeMessageIds.values().next().value);
+            }
+            return false;
+        }
         const ttlMs = getTikTokEventDedupeWindowMs(eventType);
         if (!ttlMs) {
             return false;
@@ -10404,6 +10438,10 @@ class ConnectionManager {
             event: canonicalEventType,
             tid: this.virtualTabId
         };
+        if (canonicalEventType === 'liked' && env.dedupeLikeMessageIds) {
+            const id = getTikTokLikeMessageId(data);
+            if (id) payload.msgId = id;
+        }
 
         if (includeChatPayload) {
             const identity = extractTikTokIdentity(data);
@@ -11259,6 +11297,10 @@ function retryTikTokBackgroundRelay(payload, attempt) {
 }
 
 function postTikTokPayloadToBackground(payload, attempt = 0) {
+    // Server workers can supply a transport without an Electron background frame.
+    if (env.postToBackground) {
+        return env.postToBackground(payload);
+    }
     const mainWindow = getMainWindow();
     const mainFrame = mainWindow && mainWindow.webContents ? mainWindow.webContents.mainFrame : null;
     const frames = mainFrame ? mainFrame.frames : null;
