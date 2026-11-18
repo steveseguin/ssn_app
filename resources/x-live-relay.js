@@ -58,11 +58,24 @@ async function startXRelay(config, options = {}) {
 	async function request(path, init) {
 		const res = await fetchApi(API + path, { ...init, redirect: "error", signal: AbortSignal.timeout(15000) });
 		if (!res.ok) {
-			const error = new Error("X rejected " + path.split("?")[0] + " (HTTP " + res.status + ").");
-			error.status = res.status;
-			throw error;
+			throw await apiError(res, path.split("?")[0]);
 		}
+		if (res.status === 204) return null;
 		return res.json();
+	}
+	async function apiError(res, path) {
+		const detail = await res.json().catch(() => ({}));
+		let message = "X rejected " + path + " (HTTP " + res.status + ").";
+		if (detail?.reason === "client-not-enrolled") message += " This developer app needs API access from X.";
+		const error = new Error(message);
+		error.status = res.status;
+		error.requiresLogin = res.status === 401 || detail?.error === "invalid_grant";
+		if (res.status === 429) {
+			const reset = Number(res.headers.get("x-rate-limit-reset")) * 1000 - Date.now();
+			const after = Number(res.headers.get("retry-after")) * 1000;
+			error.retryMs = Math.max(after || 0, reset || 0, 1000);
+		}
+		return error;
 	}
 	async function exchange(params) {
 		const headers = {};
@@ -87,9 +100,9 @@ async function startXRelay(config, options = {}) {
 			}).finally(() => { c.refreshing = null; });
 		return c.refreshing;
 	}
-	async function userApi(c, path, body) {
+	async function userApi(c, path, body, method) {
 		const headers = { Authorization: "Bearer " + await token(c) };
-		if (!body) return request(path, { headers });
+		if (!body) return request(path, { method: method || "GET", headers });
 		headers["Content-Type"] = "application/json";
 		return request(path, { headers, method: "POST", body: JSON.stringify(body) });
 	}
@@ -174,7 +187,7 @@ async function startXRelay(config, options = {}) {
 				send(c, { broadcast: c.broadcast });
 				syncViewerPoll(c);
 			} else {
-				send(c, { event: event.event_type, payload: p });
+				send(c, { event: event.event_type, payload: p, createdAt: event.created_at });
 			}
 		}
 	}
@@ -183,6 +196,8 @@ async function startXRelay(config, options = {}) {
 		if (stream || retry || !hasListeners()) return;
 		const control = new AbortController();
 		stream = control;
+		let permanentError = false;
+		let retryMs = 0;
 		try {
 			const minutes = Math.min(5, Math.ceil((Date.now() - interruptedAt) / 60000));
 			const path = interruptedAt ? "/activity/stream?backfill_minutes=" + Math.max(1, minutes) : "/activity/stream";
@@ -190,9 +205,10 @@ async function startXRelay(config, options = {}) {
 				headers: { Authorization: "Bearer " + config.appToken }, signal: control.signal, redirect: "error"
 			});
 			if (!res.ok) {
-				await res.body?.cancel();
-				if (interruptedAt && [400, 403].includes(res.status)) interruptedAt = 0;
-				throw new Error("X Activity stream returned HTTP " + res.status + ".");
+				const retryWithoutBackfill = interruptedAt && [400, 403].includes(res.status);
+				if (retryWithoutBackfill) interruptedAt = 0;
+				permanentError = !retryWithoutBackfill && [400, 401, 403].includes(res.status);
+				throw await apiError(res, "/activity/stream");
 			}
 			control.connected = true;
 			streamIssue = "";
@@ -211,14 +227,17 @@ async function startXRelay(config, options = {}) {
 			}
 		} catch (error) {
 			if (!control.signal.aborted) streamIssue = error.message;
+			retryMs = error.retryMs || 0;
 		} finally {
 			control.abort();
 			stream = null;
 			if (hasListeners()) {
 				if (control.connected && !interruptedAt) interruptedAt = Date.now();
 				for (const c of clients) if (c.listening) send(c, { stream: false, warning: streamIssue });
-				retry = setTimeout(() => { retry = null; readStream(); }, backoff);
-				backoff = Math.min(backoff * 2, 60000);
+				if (!permanentError) {
+					retry = setTimeout(() => { retry = null; readStream(); }, Math.max(retryMs, backoff));
+					backoff = Math.min(backoff * 2, 60000);
+				}
 			} else { interruptedAt = 0; backoff = 1000; streamIssue = ""; }
 		}
 	}
@@ -227,11 +246,11 @@ async function startXRelay(config, options = {}) {
 		c.tokens = saved.tokens;
 		c.owner = saved.owner;
 		try {
-			const me = (await userApi(c, "/users/me")).data;
+			const me = (await userApi(c, "/users/me?user.fields=profile_image_url")).data;
 			if (!me?.id || !me.username || (saved.owner && saved.owner.id !== me.id) ||
 				(c.channel && c.channel !== me.username.toLowerCase())) throw new Error("Sign in with the X account selected for this source.");
 			c.owner = { id: me.id, username: me.username };
-			send(c, { ticket: ticket(c.tokens, c.owner) });
+			send(c, { ticket: ticket(c.tokens, c.owner), sourceName: me.name || me.username, sourceImg: me.profile_image_url || "" });
 			c.startedAt = Date.now();
 			c.listening = true;
 			readStream();
@@ -304,6 +323,14 @@ async function startXRelay(config, options = {}) {
 					queueChat(c, m);
 					return;
 				}
+				if (m.op === "delete") {
+					if (!c.listening || !c.broadcast || c.broadcast !== m.broadcast || typeof m.messageId !== "string" || !/^\d{1,19}$/.test(m.messageId)) {
+						throw new Error("This message does not belong to the active X broadcast.");
+					}
+					await userApi(c, "/broadcasts/" + encodeURIComponent(c.broadcast) + "/chat/" + m.messageId, null, "DELETE");
+					send(c, { sent: m.id });
+					return;
+				}
 				if (c.busy) throw new Error("Another X request is in progress.");
 				c.busy = true;
 				try {
@@ -333,7 +360,13 @@ async function startXRelay(config, options = {}) {
 						await attach(c, unpack(m.ticket));
 					}
 				} finally { c.busy = false; }
-			} catch (error) { send(c, { warning: error.message, failed: m?.id, signIn: !c.owner }); }
+			} catch (error) {
+				const attaching = m?.op === "pair" || m?.op === "resume";
+				const temporary = attaching && (error.retryMs || error.status >= 500 || ["TypeError", "TimeoutError"].includes(error.name));
+				send(c, { warning: error.message, failed: m?.id, retryMs: temporary ? error.retryMs : undefined,
+					signIn: !temporary && !c.owner && (error.requiresLogin || !error.status) });
+				if (temporary) ws.close(1013, "Retry X connection");
+			}
 		});
 	});
 	await new Promise((resolve, reject) => {
