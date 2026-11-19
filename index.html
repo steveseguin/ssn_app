@@ -318,7 +318,7 @@
                     </span>
                 </div>
             </div>
-            <input data-sourceurl disabled class="white hidden" />
+            <input data-sourceurl disabled readonly class="white hidden" />
         </span>
 
         <div class="control-panel">
@@ -381,7 +381,7 @@
                     🔄 Switch to <span class="toggle-type-text">YouTube</span>
                 </div>
                 <div class="settings-menu-item hidden" data-youtube-dark-mode onclick="toggleYouTubeDarkMode(this)"
-                    title="Open standard YouTube chat in dark mode. Applies next time the source starts; off follows YouTube's preference.">
+                    title="Use dark mode in the YouTube chat link and the next time the source opens.">
                     Dark mode: Off
                 </div>
                 <div class="settings-menu-item" onclick="openUserAgentSettings(this)">
@@ -1970,6 +1970,21 @@
             return target === 'youtube' || target === 'youtubeshorts';
         }
 
+        function applyYouTubeChatTheme(source, url) {
+            if (!isYouTubeTarget(source.target) || source.youtubeDarkMode !== true || !url) return url;
+            let chatUrl;
+            try {
+                chatUrl = new URL(url);
+            } catch (_) {
+                return url;
+            }
+            if (chatUrl.protocol !== 'https:' ||
+                (chatUrl.hostname !== 'www.youtube.com' && chatUrl.hostname !== 'youtube.com') ||
+                chatUrl.pathname !== '/live_chat') return url;
+            chatUrl.searchParams.set('dark_theme', '1');
+            return chatUrl.href;
+        }
+
         function getConfigTarget(target) {
             if (target === 'bilibilicom') return 'bilibili';
             return target;
@@ -2172,7 +2187,8 @@
             element.querySelector("[data-sourcename]").textContent = source.videoId || "";
             const sourceUrlInput = element.querySelector("[data-sourceurl]");
             if (sourceUrlInput) {
-                sourceUrlInput.value = source.url || "";
+                sourceUrlInput.value = applyYouTubeChatTheme(source, source.url || "");
+                sourceUrlInput.disabled = !isYouTubeTarget(source.target);
                 sourceUrlInput.classList.toggle("hidden", !source.url);
             }
             updateYouTubePrivacyWarning(element, source);
@@ -10696,15 +10712,7 @@
 
             try {
                 console.log(`[CreateClassicWindow] Creating window for ${source.username || source.videoId}, visible: ${source.isVisible}, muted: ${source.isMuted}`);
-                if (isYouTubeTarget(source.target) && source.youtubeDarkMode === true) {
-                    const chatUrl = new URL(urlToLoad);
-                    if (chatUrl.protocol === 'https:' &&
-                        (chatUrl.hostname === 'www.youtube.com' || chatUrl.hostname === 'youtube.com') &&
-                        chatUrl.pathname === '/live_chat') {
-                        chatUrl.searchParams.set('dark_theme', '1');
-                        urlToLoad = chatUrl.href;
-                    }
-                }
+                urlToLoad = applyYouTubeChatTheme(source, urlToLoad);
                 console.log(`[CreateClassicWindow] FULL SOURCE STATE:`, JSON.stringify({ id: source.id, isVisible: source.isVisible, isMuted: source.isMuted, groupId: source.groupId }));
                 // For now, fall back to sync while we debug the async issue
                 const response = ipcRenderer.sendSync('createWindow', {

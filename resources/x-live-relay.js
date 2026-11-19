@@ -100,8 +100,11 @@ async function startXRelay(config, options = {}) {
 			}).finally(() => { c.refreshing = null; });
 		return c.refreshing;
 	}
-	async function userApi(c, path, body, method) {
+	async function userApi(c, path, body, method, broadcast) {
 		const headers = { Authorization: "Bearer " + await token(c) };
+		if (broadcast && (!c.listening || c.broadcast !== broadcast || c.ws.readyState !== WebSocket.OPEN)) {
+			throw new Error("The X broadcast connection changed.");
+		}
 		if (!body) return request(path, { method: method || "GET", headers });
 		headers["Content-Type"] = "application/json";
 		return request(path, { headers, method: "POST", body: JSON.stringify(body) });
@@ -124,7 +127,7 @@ async function startXRelay(config, options = {}) {
 			if (message.broadcast !== c.broadcast || !c.listening) throw new Error("The X broadcast has ended.");
 			// Leave time for the 15-second API request before the source's 20-second send timeout.
 			if (Date.now() - queuedAt > 4000) throw new Error("X chat is busy. Your message was not sent.");
-			await userApi(c, "/broadcasts/" + encodeURIComponent(c.broadcast) + "/chat", { text: message.text });
+			await userApi(c, "/broadcasts/" + encodeURIComponent(c.broadcast) + "/chat", { text: message.text }, "POST", message.broadcast);
 			send(c, { sent: message.id });
 		}).catch(error => send(c, { warning: error.message, failed: message.id }))
 			.finally(() => { c.pendingWrites--; });
@@ -196,6 +199,10 @@ async function startXRelay(config, options = {}) {
 		if (stream || retry || !hasListeners()) return;
 		const control = new AbortController();
 		stream = control;
+		const connecting = setTimeout(() => {
+			streamIssue = "X did not respond to the activity stream connection.";
+			control.abort();
+		}, 30000);
 		let permanentError = false;
 		let retryMs = 0;
 		try {
@@ -204,6 +211,7 @@ async function startXRelay(config, options = {}) {
 			const res = await fetchApi(API + path, {
 				headers: { Authorization: "Bearer " + config.appToken }, signal: control.signal, redirect: "error"
 			});
+			clearTimeout(connecting);
 			if (!res.ok) {
 				const retryWithoutBackfill = interruptedAt && [400, 403].includes(res.status);
 				if (retryWithoutBackfill) interruptedAt = 0;
@@ -229,6 +237,7 @@ async function startXRelay(config, options = {}) {
 			if (!control.signal.aborted) streamIssue = error.message;
 			retryMs = error.retryMs || 0;
 		} finally {
+			clearTimeout(connecting);
 			control.abort();
 			stream = null;
 			if (hasListeners()) {
@@ -300,9 +309,17 @@ async function startXRelay(config, options = {}) {
 			!/^chrome-extension:\/\/[a-p]{32}$/.test(site)) { ws.close(1008); return; }
 		const c = { ws, channel: "", broadcast: "", revision: 0, lifecycleAt: 0, writes: Promise.resolve(), pendingWrites: 0 };
 		clients.add(c);
+		let awaitingPong = false;
+		ws.on("pong", () => { awaitingPong = false; });
+		const heartbeat = setInterval(() => {
+			if (awaitingPong || ws.readyState !== WebSocket.OPEN) { ws.terminate(); return; }
+			awaitingPong = true;
+			ws.ping();
+		}, 30000);
 		ws.on("error", () => ws.terminate());
 		ws.on("close", () => {
 			clients.delete(c);
+			clearInterval(heartbeat);
 			clearInterval(c.viewerPoll?.timer);
 			c.viewerPoll = null;
 			clearInterval(c.renew);
@@ -327,7 +344,7 @@ async function startXRelay(config, options = {}) {
 					if (!c.listening || !c.broadcast || c.broadcast !== m.broadcast || typeof m.messageId !== "string" || !/^\d{1,19}$/.test(m.messageId)) {
 						throw new Error("This message does not belong to the active X broadcast.");
 					}
-					await userApi(c, "/broadcasts/" + encodeURIComponent(c.broadcast) + "/chat/" + m.messageId, null, "DELETE");
+					await userApi(c, "/broadcasts/" + encodeURIComponent(c.broadcast) + "/chat/" + m.messageId, null, "DELETE", m.broadcast);
 					send(c, { sent: m.id });
 					return;
 				}
