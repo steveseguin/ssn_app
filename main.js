@@ -13896,43 +13896,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     }
 
-    async function installLocoHistoryReader(contents, args) {
-        const relativePath = "sources/inject/loco-history.js";
-        const branch = normalizeSocialStreamBranch(args.assetBranch || (args.isBetaMode ? "beta" : "main"));
-        const localFolder = args.filesource && !/^https?:\/\//i.test(args.filesource);
-        let text;
-        if (localFolder) {
-            try {
-                text = await fsp.readFile(path.join(fsPathFromMaybeFileUrl(args.filesource), relativePath), "utf8");
-            } catch (error) {
-                if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
-                // Use an offline copy first when a local checkout lacks the document-start helper.
-                try { ({ text } = await loadSocialStreamSource(null, { branch, relativePath })); } catch (_) {}
-            }
-        }
-        if (text === undefined) {
-            const root = (!localFolder && args.filesource) || `https://raw.githubusercontent.com/steveseguin/social_stream/${branch}`;
-            ({ text } = await loadSocialStreamSource(root.replace(/\/+$/, "") + "/" + relativePath, { branch, relativePath }));
-        }
-        if (contents.isDestroyed()) return;
-        // Loco reads history in its first page scripts, before the normal DOM capture script runs.
-        // Start the renderer on a blank document so Chromium can confirm the hook before loading Loco.
-        await contents.loadURL("about:blank");
-        contents.once("did-navigate", () => {
-            const history = contents.navigationHistory;
-            if (history.getActiveIndex() > 0 && history.getEntryAtIndex(0)?.url === "about:blank") {
-                history.removeEntryAtIndex(0);
-            }
-        });
-        const debuggerClient = contents.debugger;
-        if (!debuggerClient.isAttached()) debuggerClient.attach("1.3");
-        await debuggerClient.sendCommand("Page.enable");
-        await debuggerClient.sendCommand("Page.addScriptToEvaluateOnNewDocument", {
-            source: `if (window === window.top && location.protocol === "https:" &&
-                /(^|\\.)loco\\.(com|gg)$/.test(location.hostname) && /^\\/(stream|streamers|chat|dashboard)\\//.test(location.pathname)) {\n${text}\n}`
-        });
-    }
-
     // Keep the old sync handler for backward compatibility  
   const originalCreateWindowHandler = function (eventRet, args2) {
         log("IPC CREATE WINDOW");
@@ -13988,8 +13951,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         var loaded = false;
         var timeout = false;
-        let preparingLocoSource = false;
-        let locoHistoryInstalled = false;
 
         let visibibility = !headlessControlEnabled;
         if ("visible" in args && !args.visible) {
@@ -14322,7 +14283,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
 
         // Helper to load the URL after monitor setup (or if it is skipped/failed)
-        const navigate = () => {
+        const loadURL = () => {
           if (view.isDestroyed()) return;
           log(`Loading regular window URL: ${args.url}`);
           log(`User agent config: ${args.config?.userAgent}`);
@@ -14347,31 +14308,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
             return view.webContents.loadURL(args.url);
           }
         };
-
-                let loadURL = navigate;
-                if (!args.wss && (args.platform === "loco" || args.source === "sources/loco.js" || args.sourceFiles?.includes("sources/loco.js")) &&
-                    /^https:\/\/(?:[\w-]+\.)*loco\.(?:com|gg)\/(?:stream|streamers|chat|dashboard)\//i.test(args.url)) {
-                    loadURL = async () => {
-                        preparingLocoSource = true;
-                        try {
-                            await installLocoHistoryReader(view.webContents, args);
-                            locoHistoryInstalled = true;
-                        } catch (error) {
-                            if (view.isDestroyed()) return;
-                            console.warn("[Loco] Unable to load the history reader:", error.message);
-                            queueInjectorToast("warning", "Loco chat", "Chat history could appear as new messages. Reopen the source to retry.", true);
-                        } finally {
-                            preparingLocoSource = false;
-                        }
-                        try {
-                            await navigate();
-                        } catch (error) {
-                            if (!view.isDestroyed() && error.code !== "ERR_ABORTED") {
-                                console.warn("[Loco] Source navigation failed:", error.message);
-                            }
-                        }
-                    };
-                }
 
                 // Set up WebSocket monitoring if configured in args or config
                 // Configuration can be set in config files (e.g., config_0.json) or passed via args
@@ -14553,7 +14489,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 });
 
                 view.webContents.on("did-start-loading", function () {
-                    if (preparingLocoSource) return;
                     //loaded = false;
                     timeout = setTimeout(function () {
                         if (!loaded) {
@@ -14564,7 +14499,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 });
 
                 view.webContents.on("dom-ready", function () {
-                    if (preparingLocoSource) return;
                     if (!loaded) {
                         loaded = true;
                         clearTimeout(timeout);
@@ -14964,9 +14898,6 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     ? args.sourceFiles.map((value) => normalizeSelectedSourcePath(value)).filter(Boolean)
                     : [];
                 explicitSourceFiles = [...new Set(explicitSourceFiles)];
-                if (locoHistoryInstalled && explicitSourceFiles.includes("sources/loco.js")) {
-                    explicitSourceFiles = explicitSourceFiles.filter(file => file !== "sources/inject/loco-history.js");
-                }
                 const selectedSourceFiles = explicitSourceFiles.length
                     ? explicitSourceFiles
                     : (args.source ? [normalizeSelectedSourcePath(args.source)] : []);
