@@ -266,6 +266,7 @@ function runLoopbackOAuthSession(payload = {}, dependencies = {}) {
                         success: true,
                         code: query.code,
                         state: query.state,
+                        ...(typeof query.scope === "string" ? { scope: query.scope } : {}),
                         redirectUri: payload.redirectUri || null
                     });
                     return;
@@ -791,7 +792,8 @@ async function startYouTubeOwnerAuth(payload = {}, dependencies = {}) {
         throw new Error("No YouTube channels were returned for the signed-in account.");
     }
     const pendingAuthId = crypto.randomBytes(16).toString("hex");
-    const grantedScopes = typeof tokens.scope === "string" ? tokens.scope.split(/\s+/).filter(Boolean) : requestedScopes;
+    const scope = tokens.scope ?? authResult.scope;
+    const grantedScopes = typeof scope === "string" ? scope.split(/\s+/).filter(Boolean) : requestedScopes;
     pendingOwnerAuth.set(pendingAuthId, {
         createdAt: Date.now(),
         tokens,
@@ -932,7 +934,7 @@ function hasOwnerWriteAccess(record) {
 async function sendYouTubeOwnerMessage(binding, message, isCurrent) {
     const failure = (code, text) => ({ success: false, code, message: text });
     const changed = () => failure("youtube_send_target_changed", "YouTube account or stream changed. Send again to the current stream.");
-    const readOnly = () => failure("youtube_write_required", "YouTube is Read-only. To send, choose Write under Manage Sign-In. Receiving chat does not require Write.");
+    const readOnly = () => failure("youtube_write_required", 'To send replies, open Manage Sign-In, then "Change account or access". Choose "Read and write" and sign in again.');
     const text = typeof message === "string" ? message : "";
     if (!text.trim() || Array.from(text).length > 200) {
         return failure("youtube_message_invalid", "YouTube messages must contain 1 to 200 characters.");
@@ -987,7 +989,7 @@ async function sendYouTubeOwnerMessage(binding, message, isCurrent) {
                     verifiedOwnerChats.delete(binding);
                     return failure("youtube_chat_not_ready", "YouTube chat is unavailable or ended. Check for live streams again.");
                 }
-                return failure("youtube_send_rejected", "YouTube rejected the message. Check this channel's Write access and chat restrictions.");
+                return failure("youtube_send_rejected", 'YouTube rejected the message. Check the chat restrictions and confirm that Manage Sign-In shows "Read and write" for this channel.');
             }
             if (!data?.id) return failure("youtube_send_uncertain", "YouTube did not confirm the send. Check YouTube chat before retrying.");
             return { success: true, messageId: data.id };

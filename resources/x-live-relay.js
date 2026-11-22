@@ -70,7 +70,13 @@ async function startXRelay(config, options = {}) {
 	async function apiError(res, path) {
 		const detail = await res.json().catch(() => ({}));
 		let message = "X rejected " + path + " (HTTP " + res.status + ").";
-		if (detail?.reason === "client-not-enrolled") message += " Check this app's API access in the X Developer Console (client-not-enrolled).";
+		if (detail?.reason === "client-not-enrolled") {
+			message += " Check this app's API access in the X Developer Console (client-not-enrolled).";
+			if (origin !== LOCAL_ORIGIN) {
+				console.warn("[X Live] " + message);
+				message = "X has not enabled live chat for this relay. Open your broadcast on X to follow chat for now.";
+			}
+		}
 		const error = new Error(message);
 		error.status = res.status;
 		error.requiresLogin = res.status === 401 || detail?.error === "invalid_grant";
@@ -131,9 +137,9 @@ async function startXRelay(config, options = {}) {
 		throw new Error("X could not verify " + url + ".");
 	}
 	function ensureWebhook() {
-		if (!webhookRegistration) webhookRegistration = registerWebhook().catch(error => {
+		// Share an in-flight check. X can replace or disable the hook between renewals.
+		if (!webhookRegistration) webhookRegistration = registerWebhook().finally(() => {
 			webhookRegistration = null;
-			throw error;
 		});
 		return webhookRegistration;
 	}
@@ -379,7 +385,7 @@ async function startXRelay(config, options = {}) {
 	const wss = new WebSocketServer({ server, path: "/x/live", maxPayload: 8192 });
 	wss.on("connection", (ws, req) => {
 		const site = req.headers.origin;
-		if (site && !["null", "file://", "https://socialstream.ninja", "https://beta.socialstream.ninja"].includes(site) &&
+		if (site && !["null", "file://", "https://socialstream.ninja", "https://beta.socialstream.ninja", "https://cache.socialstream.ninja"].includes(site) &&
 			!/^chrome-extension:\/\/[a-p]{32}$/.test(site)) { ws.close(1008); return; }
 		const c = { ws, channel: "", broadcast: "", revision: 0, lifecycleAt: 0, writes: Promise.resolve(), pendingWrites: 0 };
 		clients.add(c);

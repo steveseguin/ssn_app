@@ -4829,12 +4829,14 @@ ipcMain.handle('ssapp:get-source-window-config', async (event) => {
     }
 });
 
-function queueInjectorToast(level, title, message) {
+function queueInjectorToast(level, title, message, repeatable = false) {
     if (!level || !title || !message) return;
-    const key = `${level}|${title}|${message}`;
-    if (seenInjectorToastKeys.has(key)) return;
-    seenInjectorToastKeys.add(key);
-    pendingInjectorToasts.push({ level, title, message });
+    if (!repeatable) {
+        const key = `${level}|${title}|${message}`;
+        if (seenInjectorToastKeys.has(key)) return;
+        seenInjectorToastKeys.add(key);
+    }
+    pendingInjectorToasts.push({ level, title, message, repeatable });
     flushInjectorToastQueue();
 }
 
@@ -13894,6 +13896,29 @@ async function createWindow(args, reuse = false, mainApp = false) {
         }
     }
 
+    async function installLocoHistoryReader(contents, args) {
+        const relativePath = "sources/inject/loco-history.js";
+        let text;
+        if (args.filesource && !/^https?:\/\//i.test(args.filesource)) {
+            text = await fsp.readFile(path.join(fsPathFromMaybeFileUrl(args.filesource), relativePath), "utf8");
+        } else {
+            const branch = normalizeSocialStreamBranch(args.assetBranch || (args.isBetaMode ? "beta" : "main"));
+            const root = args.filesource || `https://raw.githubusercontent.com/steveseguin/social_stream/${branch}`;
+            ({ text } = await loadSocialStreamSource(root.replace(/\/+$/, "") + "/" + relativePath, { branch, relativePath }));
+        }
+        if (contents.isDestroyed()) return;
+        // Loco reads history in its first page scripts, before the normal DOM capture script runs.
+        // Start the renderer on a blank document so Chromium can confirm the hook before loading Loco.
+        await contents.loadURL("about:blank");
+        const debuggerClient = contents.debugger;
+        if (!debuggerClient.isAttached()) debuggerClient.attach("1.3");
+        await debuggerClient.sendCommand("Page.enable");
+        await debuggerClient.sendCommand("Page.addScriptToEvaluateOnNewDocument", {
+            source: `if (window === window.top && location.protocol === "https:" &&
+                /(^|\\.)loco\\.(com|gg)$/.test(location.hostname) && /^\\/(stream|streamers|chat|dashboard)\\//.test(location.pathname)) {\n${text}\n}`
+        });
+    }
+
     // Keep the old sync handler for backward compatibility  
   const originalCreateWindowHandler = function (eventRet, args2) {
         log("IPC CREATE WINDOW");
@@ -13949,6 +13974,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
         var loaded = false;
         var timeout = false;
+        let preparingLocoSource = false;
 
         let visibibility = !headlessControlEnabled;
         if ("visible" in args && !args.visible) {
@@ -14281,7 +14307,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
 
         // Helper to load the URL after monitor setup (or if it is skipped/failed)
-        const loadURL = () => {
+        const navigate = () => {
           if (view.isDestroyed()) return;
           log(`Loading regular window URL: ${args.url}`);
           log(`User agent config: ${args.config?.userAgent}`);
@@ -14306,6 +14332,24 @@ async function createWindow(args, reuse = false, mainApp = false) {
             return view.webContents.loadURL(args.url);
           }
         };
+
+                let loadURL = navigate;
+                if (!args.wss && (args.platform === "loco" || args.source === "sources/loco.js" || args.sourceFiles?.includes("sources/loco.js")) &&
+                    /^https:\/\/(?:[\w-]+\.)*loco\.(?:com|gg)\/(?:stream|streamers|chat|dashboard)\//i.test(args.url)) {
+                    loadURL = async () => {
+                        preparingLocoSource = true;
+                        try {
+                            await installLocoHistoryReader(view.webContents, args);
+                        } catch (error) {
+                            if (view.isDestroyed()) return;
+                            console.warn("[Loco] Unable to load the history reader:", error.message);
+                            queueInjectorToast("warning", "Loco chat", "Chat history could appear as new messages. Reopen the source to retry.", true);
+                        } finally {
+                            preparingLocoSource = false;
+                        }
+                        return navigate();
+                    };
+                }
 
                 // Set up WebSocket monitoring if configured in args or config
                 // Configuration can be set in config files (e.g., config_0.json) or passed via args
@@ -14487,6 +14531,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 });
 
                 view.webContents.on("did-start-loading", function () {
+                    if (preparingLocoSource) return;
                     //loaded = false;
                     timeout = setTimeout(function () {
                         if (!loaded) {
@@ -14497,6 +14542,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 });
 
                 view.webContents.on("dom-ready", function () {
+                    if (preparingLocoSource) return;
                     if (!loaded) {
                         loaded = true;
                         clearTimeout(timeout);
@@ -15947,7 +15993,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         const result = await sendYouTubeOwnerMessage(binding, payload.message, isCurrent);
         if (isBound()) {
             mainWindow.webContents.send('youtube-owner-send-status', {
-                sourceId: view.args?.sourceId, success: result.success, code: result.code, message: result.message
+                sourceId: view.args?.sourceId, authRef: binding.authRef, success: result.success, code: result.code, message: result.message
             });
         }
         return result;

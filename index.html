@@ -777,12 +777,12 @@
     <div class="modal hidden" id="youtubeOwnerAccessModal">
         <div class="modal-content modal-md youtube-owner-modal" role="dialog" aria-modal="true" aria-labelledby="youtubeOwnerAccessTitle">
             <h2 id="youtubeOwnerAccessTitle">YouTube sign-in</h2>
-            <p>Read only finds your streams and receives chat. Write also enables messages, commands and reminders.</p>
+            <p>Both options receive chat. Choose "Read and write" to send messages, commands and reminders.</p>
             <div class="youtube-owner-access-options" role="group" aria-label="YouTube access">
                 <label><input type="radio" name="youtube-owner-access" value="readonly" data-youtube-access="readonly" checked> Read only</label>
-                <label><input type="radio" name="youtube-owner-access" value="admin" data-youtube-access="admin"> Write</label>
+                <label><input type="radio" name="youtube-owner-access" value="admin" data-youtube-access="admin"> Read and write</label>
             </div>
-            <p>Google's Write permission also allows moderation and video edits.</p>
+            <p>"Read and write" also allows moderation and video edits.</p>
             <div class="modal-footer">
                 <button type="button" data-youtube-auth-method="local" title="Use an app window. If Google rejects it, you can switch to your browser.">Sign in in app</button>
                 <button type="button" data-youtube-auth-method="external" title="Open your default browser to sign in to YouTube.">Open browser</button>
@@ -2841,11 +2841,18 @@
         let youtubeOwnerSigninPending = false;
         let cancelYouTubeOwnerPreparation = null;
 
-        function chooseYouTubeOwnerAccess() {
+        const youtubeWriteAccessRequested = new Set();
+
+        async function getYouTubeOwnerProfile(group) {
+            const result = await getYouTubeOwnerBridge().listYouTubeOwnerAuth();
+            return result?.profiles?.find(profile => profile.authRef === group.youtubeAuthRef);
+        }
+
+        function chooseYouTubeOwnerAccess(accessLevel) {
             const modal = document.getElementById('youtubeOwnerAccessModal');
             return new Promise(resolve => {
                 const buttons = Array.from(modal.querySelectorAll('[data-youtube-auth-method], [data-youtube-access="cancel"]'));
-                modal.querySelector('[data-youtube-access="readonly"]').checked = true;
+                modal.querySelector(accessLevel === 'admin' ? '[data-youtube-access="admin"]' : '[data-youtube-access="readonly"]').checked = true;
                 const finish = value => {
                     buttons.forEach(button => { button.onclick = null; });
                     modal.classList.add('hidden');
@@ -3094,10 +3101,11 @@
             youtubeOwnerSigninPending = true;
             const signinModal = document.getElementById('youtubeOwnerSigninModal');
             try {
-                const choice = await chooseYouTubeOwnerAccess();
+                const existingGroup = existingGroupId ? { ...stateManager.getGroup(existingGroupId) } : null;
+                const profile = existingGroup ? await getYouTubeOwnerProfile(existingGroup).catch(() => null) : null;
+                const choice = await chooseYouTubeOwnerAccess(youtubeWriteAccessRequested.has(existingGroup?.youtubeAuthRef) ? 'admin' : profile?.accessLevel);
                 if (!choice) return null;
                 const { accessLevel, authMethod } = choice;
-                const existingGroup = existingGroupId ? { ...stateManager.getGroup(existingGroupId) } : null;
                 const customSession = existingGroup?.customSession || 'AUTO';
                 const seedLegacyChat = !!existingGroup && existingGroup.youtubeSendMode !== 'owner';
                 document.getElementById('youtubeOwnerSigninOptions').open = false;
@@ -3162,8 +3170,10 @@
                     Toast.warning('Discovery sign-in worked, but the YouTube chat session may still ask you to sign in.', 'YouTube Sign-In');
                 }
                 if (accessLevel === 'admin' && confirmed.accessLevel === 'readonly') {
-                    Toast.warning(`Signed in as ${group.channelTitle || group.username} with read-only access. Google did not grant write access. To send messages, use Manage Sign-In to choose Write and approve the requested permissions.`, 'YouTube Sign-In');
+                    youtubeWriteAccessRequested.add(group.youtubeAuthRef);
+                    Toast.warning(`Google granted "Read only" access for ${group.channelTitle || group.username}. To send messages, open Manage Sign-In, then "Change account or access". Choose "Read and write" and approve the permissions in Google.`, 'YouTube Sign-In');
                 } else {
+                    youtubeWriteAccessRequested.delete(group.youtubeAuthRef);
                     Toast.success(`Signed in as ${group.channelTitle || group.username}.`, 'YouTube Sign-In');
                 }
 
@@ -3232,10 +3242,9 @@
                 modal.classList.remove('hidden');
                 activateModal(modal, () => cleanup('close'));
                 try {
-                    getYouTubeOwnerBridge().listYouTubeOwnerAuth().then(result => {
+                    getYouTubeOwnerProfile(group).then(profile => {
                         if (activeYouTubeOwnerManageCleanup !== cleanup) return;
-                        const profile = result?.profiles?.find(item => item.authRef === group.youtubeAuthRef);
-                        const access = profile ? (profile.accessLevel === 'admin' ? 'Write' : 'Read-only') : 'Reconnect needed';
+                        const access = profile ? (profile.accessLevel === 'admin' ? 'Read and write' : 'Read only') : 'Reconnect needed';
                         summary.textContent = `${channelLabel} (${access})`;
                     }).catch(() => {});
                 } catch (_) { }
@@ -13990,6 +13999,10 @@
                         const title = payload.title || 'Classic Mode';
                         const message = payload.message || '';
                         if (!message) return;
+                        if (payload.repeatable) {
+                            Toast.show({ type: level, title, message });
+                            return;
+                        }
                         const key = `${level}|${title}|${message}`;
                         if (handledInjectorStatusKeys.has(key)) return;
                         handledInjectorStatusKeys.add(key);
@@ -14569,6 +14582,9 @@
                         return;
                     }
                     if (!payload.message) return;
+                    if (payload.code === 'youtube_write_required' && payload.authRef) {
+                        youtubeWriteAccessRequested.add(payload.authRef);
+                    }
                     if (entry) {
                         updateConnectionStatus(entry, 'info', payload.message, { persistent: true });
                         entry._youtubeSendError = payload.message;
