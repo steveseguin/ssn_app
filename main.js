@@ -13898,18 +13898,32 @@ async function createWindow(args, reuse = false, mainApp = false) {
 
     async function installLocoHistoryReader(contents, args) {
         const relativePath = "sources/inject/loco-history.js";
+        const branch = normalizeSocialStreamBranch(args.assetBranch || (args.isBetaMode ? "beta" : "main"));
+        const localFolder = args.filesource && !/^https?:\/\//i.test(args.filesource);
         let text;
-        if (args.filesource && !/^https?:\/\//i.test(args.filesource)) {
-            text = await fsp.readFile(path.join(fsPathFromMaybeFileUrl(args.filesource), relativePath), "utf8");
-        } else {
-            const branch = normalizeSocialStreamBranch(args.assetBranch || (args.isBetaMode ? "beta" : "main"));
-            const root = args.filesource || `https://raw.githubusercontent.com/steveseguin/social_stream/${branch}`;
+        if (localFolder) {
+            try {
+                text = await fsp.readFile(path.join(fsPathFromMaybeFileUrl(args.filesource), relativePath), "utf8");
+            } catch (error) {
+                if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+                // Use an offline copy first when a local checkout lacks the document-start helper.
+                try { ({ text } = await loadSocialStreamSource(null, { branch, relativePath })); } catch (_) {}
+            }
+        }
+        if (text === undefined) {
+            const root = (!localFolder && args.filesource) || `https://raw.githubusercontent.com/steveseguin/social_stream/${branch}`;
             ({ text } = await loadSocialStreamSource(root.replace(/\/+$/, "") + "/" + relativePath, { branch, relativePath }));
         }
         if (contents.isDestroyed()) return;
         // Loco reads history in its first page scripts, before the normal DOM capture script runs.
         // Start the renderer on a blank document so Chromium can confirm the hook before loading Loco.
         await contents.loadURL("about:blank");
+        contents.once("did-navigate", () => {
+            const history = contents.navigationHistory;
+            if (history.getActiveIndex() > 0 && history.getEntryAtIndex(0)?.url === "about:blank") {
+                history.removeEntryAtIndex(0);
+            }
+        });
         const debuggerClient = contents.debugger;
         if (!debuggerClient.isAttached()) debuggerClient.attach("1.3");
         await debuggerClient.sendCommand("Page.enable");
@@ -13975,6 +13989,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
         var loaded = false;
         var timeout = false;
         let preparingLocoSource = false;
+        let locoHistoryInstalled = false;
 
         let visibibility = !headlessControlEnabled;
         if ("visible" in args && !args.visible) {
@@ -14340,6 +14355,7 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         preparingLocoSource = true;
                         try {
                             await installLocoHistoryReader(view.webContents, args);
+                            locoHistoryInstalled = true;
                         } catch (error) {
                             if (view.isDestroyed()) return;
                             console.warn("[Loco] Unable to load the history reader:", error.message);
@@ -14347,7 +14363,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
                         } finally {
                             preparingLocoSource = false;
                         }
-                        return navigate();
+                        try {
+                            await navigate();
+                        } catch (error) {
+                            if (!view.isDestroyed() && error.code !== "ERR_ABORTED") {
+                                console.warn("[Loco] Source navigation failed:", error.message);
+                            }
+                        }
                     };
                 }
 
@@ -14942,6 +14964,9 @@ async function createWindow(args, reuse = false, mainApp = false) {
                     ? args.sourceFiles.map((value) => normalizeSelectedSourcePath(value)).filter(Boolean)
                     : [];
                 explicitSourceFiles = [...new Set(explicitSourceFiles)];
+                if (locoHistoryInstalled && explicitSourceFiles.includes("sources/loco.js")) {
+                    explicitSourceFiles = explicitSourceFiles.filter(file => file !== "sources/inject/loco-history.js");
+                }
                 const selectedSourceFiles = explicitSourceFiles.length
                     ? explicitSourceFiles
                     : (args.source ? [normalizeSelectedSourcePath(args.source)] : []);

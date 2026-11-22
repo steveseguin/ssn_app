@@ -42,7 +42,11 @@ async function startXRelay(config, options = {}) {
 	const clients = new Set();
 	const logins = new Map();
 	let stream, retry, streamIssue = "", interruptedAt = 0, backoff = 1000;
-	let webhookRegistration;
+	let webhookRegistration, lastWebhookId, webhookRefreshAt = 0, nextEnrollmentLog = 0;
+
+	function signInError(message) {
+		return Object.assign(new Error(message), { requiresLogin: true });
+	}
 
 	// Only the creator's source holds this ticket. It can survive a relay restart.
 	function ticket(tokens, owner) {
@@ -57,7 +61,7 @@ async function startXRelay(config, options = {}) {
 			const decipher = crypto.createDecipheriv("aes-256-gcm", key, buf.subarray(0, 12));
 			decipher.setAuthTag(buf.subarray(12, 28));
 			return JSON.parse(Buffer.concat([decipher.update(buf.subarray(28)), decipher.final()]));
-		} catch (_) { throw new Error("Sign in to X again."); }
+		} catch (_) { throw signInError("Sign in to X again."); }
 	}
 	async function request(path, init) {
 		const res = await fetchApi(API + path, { ...init, redirect: "error", signal: AbortSignal.timeout(15000) });
@@ -73,13 +77,16 @@ async function startXRelay(config, options = {}) {
 		if (detail?.reason === "client-not-enrolled") {
 			message += " Check this app's API access in the X Developer Console (client-not-enrolled).";
 			if (origin !== LOCAL_ORIGIN) {
-				console.warn("[X Live] " + message);
+				if (Date.now() >= nextEnrollmentLog) {
+					console.warn("[X Live] " + message);
+					nextEnrollmentLog = Date.now() + 3600000;
+				}
 				message = "X has not enabled live chat for this relay. Open your broadcast on X to follow chat for now.";
 			}
 		}
 		const error = new Error(message);
 		error.status = res.status;
-		error.requiresLogin = res.status === 401 || detail?.error === "invalid_grant";
+		error.requiresLogin = detail?.reason !== "client-not-enrolled" && (res.status === 401 || detail?.error === "invalid_grant");
 		if (res.status === 429) {
 			const reset = Number(res.headers.get("x-rate-limit-reset")) * 1000 - Date.now();
 			const after = Number(res.headers.get("retry-after")) * 1000;
@@ -101,7 +108,7 @@ async function startXRelay(config, options = {}) {
 	}
 	async function token(c) {
 		if (c.tokens.expires > Date.now() + 60000) return c.tokens.access;
-		if (!c.tokens.refresh) throw new Error("Sign in to X again.");
+		if (!c.tokens.refresh) throw signInError("Sign in to X again.");
 		if (!c.refreshing) c.refreshing = exchange({ grant_type: "refresh_token", refresh_token: c.tokens.refresh })
 			.then(tokens => {
 				c.tokens = tokens;
@@ -137,14 +144,42 @@ async function startXRelay(config, options = {}) {
 		throw new Error("X could not verify " + url + ".");
 	}
 	function ensureWebhook() {
-		// Share an in-flight check. X can replace or disable the hook between renewals.
-		if (!webhookRegistration) webhookRegistration = registerWebhook().finally(() => {
-			webhookRegistration = null;
-		});
+		// Every account on this relay uses the same webhook. Share both the lookup and its result.
+		if (!webhookRegistration || Date.now() >= webhookRefreshAt) {
+			webhookRefreshAt = Infinity;
+			webhookRegistration = registerWebhook().then(id => {
+				lastWebhookId = id;
+				webhookRefreshAt = Date.now() + 6 * 3600000;
+				return id;
+			}, error => {
+				// This check uses the relay's credentials, not the broadcaster's.
+				error.requiresLogin = false;
+				const retryMs = Math.max(error.retryMs || 0, 60000);
+				webhookRefreshAt = Date.now() + retryMs;
+				if (lastWebhookId && (error.retryMs || error.status >= 500 || ["TypeError", "TimeoutError"].includes(error.name))) return lastWebhookId;
+				lastWebhookId = null;
+				error.retryMs = retryMs;
+				throw error;
+			});
+		}
 		return webhookRegistration;
 	}
 	async function subscribe(c) {
-		const webhookId = useWebhook ? await ensureWebhook() : null;
+		const registration = useWebhook ? ensureWebhook() : null;
+		const webhookId = await registration;
+		try {
+			await subscribeEvents(c, webhookId);
+		} catch (error) {
+			if (!registration || ![400, 404, 410, 422].includes(error.status)) throw error;
+			// X may have disabled or replaced the saved hook. Recheck once across all clients.
+			if (registration === webhookRegistration) {
+				lastWebhookId = null;
+				webhookRefreshAt = 0;
+			}
+			await subscribeEvents(c, await ensureWebhook());
+		}
+	}
+	async function subscribeEvents(c, webhookId) {
 		const expires = new Date(Date.now() + 2 * 3600000).toISOString();
 		for (const event_type of EVENT_TYPES) {
 			if (c.ws.readyState !== WebSocket.OPEN) return;
@@ -153,7 +188,9 @@ async function startXRelay(config, options = {}) {
 			const response = await userApi(c, "/activity/subscriptions", body);
 			if (webhookId) {
 				const sub = response?.data?.subscription || response?.data;
-				if (!sub?.subscription_id) throw new Error("X did not confirm the " + event_type + " subscription.");
+				if (!sub?.subscription_id) {
+					throw Object.assign(new Error("X did not confirm the " + event_type + " subscription."), { retryMs: 60000 });
+				}
 				if (sub.webhook_id !== webhookId) {
 					await userApi(c, "/activity/subscriptions/" + encodeURIComponent(sub.subscription_id), { webhook_id: webhookId }, "PUT");
 				}
@@ -301,7 +338,7 @@ async function startXRelay(config, options = {}) {
 		try {
 			const me = (await userApi(c, "/users/me?user.fields=profile_image_url")).data;
 			if (!me?.id || !me.username || (saved.owner && saved.owner.id !== me.id) ||
-				(c.channel && c.channel !== me.username.toLowerCase())) throw new Error("Sign in with the X account selected for this source.");
+				(c.channel && c.channel !== me.username.toLowerCase())) throw signInError("Sign in with the X account selected for this source.");
 			c.owner = { id: me.id, username: me.username };
 			send(c, { ticket: ticket(c.tokens, c.owner), sourceName: me.name || me.username, sourceImg: me.profile_image_url || "" });
 			c.startedAt = Date.now();
@@ -311,10 +348,27 @@ async function startXRelay(config, options = {}) {
 			await currentBroadcast(c);
 			if (!clients.has(c)) return;
 			send(c, { account: me.username, stream: useWebhook || !!stream?.connected, warning: streamIssue });
-			c.renew = setInterval(() => subscribe(c).catch(err => {
-				send(c, { warning: err.message });
-				c.ws.close(1011, "X subscription renewal failed.");
-			}), 3600000);
+			let retryDelay = 60000;
+			const renew = async () => {
+				let next = 3600000;
+				try {
+					await subscribe(c);
+					if (retryDelay !== 60000) send(c, { stream: useWebhook || !!stream?.connected, warning: streamIssue });
+					retryDelay = 60000;
+				} catch (error) {
+					if (c.ws.readyState !== WebSocket.OPEN) return;
+					send(c, { warning: error.message });
+					if (!useWebhook || error.requiresLogin) {
+						c.ws.close(1011, "X subscription renewal failed.");
+						return;
+					}
+					// Existing subscriptions can still deliver while renewal is unavailable.
+					next = Math.max(error.retryMs || 0, retryDelay);
+					retryDelay = Math.min(retryDelay * 2, 15 * 60000);
+				}
+				if (c.ws.readyState === WebSocket.OPEN) c.renew = setTimeout(renew, next);
+			};
+			c.renew = setTimeout(renew, 3600000);
 		} catch (error) {
 			c.listening = false;
 			syncViewerPoll(c);
@@ -402,7 +456,7 @@ async function startXRelay(config, options = {}) {
 			clearInterval(heartbeat);
 			clearInterval(c.viewerPoll?.timer);
 			c.viewerPoll = null;
-			clearInterval(c.renew);
+			clearTimeout(c.renew);
 			clearTimeout(c.loginTimer);
 			logins.delete(c.state);
 			if (!hasListeners()) { clearTimeout(retry); retry = null; stream?.abort(); }
@@ -451,7 +505,7 @@ async function startXRelay(config, options = {}) {
 					} else if (m.op === "pair") {
 						const pairing = c.pairing;
 						c.pairing = null;
-						if (!pairing || pairing.until < Date.now() || pairing.code !== m.code) throw new Error("Invalid or expired code. Start sign-in again.");
+						if (!pairing || pairing.until < Date.now() || pairing.code !== m.code) throw signInError("Invalid or expired code. Start sign-in again.");
 						await attach(c, { tokens: pairing.tokens, owner: null });
 					} else if (m.op === "resume") {
 						await attach(c, unpack(m.ticket));
@@ -461,7 +515,7 @@ async function startXRelay(config, options = {}) {
 				const attaching = m?.op === "pair" || m?.op === "resume";
 				const temporary = attaching && (error.retryMs || error.status >= 500 || ["TypeError", "TimeoutError"].includes(error.name));
 				send(c, { warning: error.message, failed: m?.id, retryMs: temporary ? error.retryMs : undefined,
-					signIn: !temporary && !c.owner && (error.requiresLogin || !error.status) });
+					signIn: !temporary && !c.owner && error.requiresLogin === true });
 				if (temporary) ws.close(1013, "Retry X connection");
 			}
 		});

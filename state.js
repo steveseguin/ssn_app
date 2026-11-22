@@ -49,9 +49,13 @@ class StateManager {
         return false;
     }
 
-    normalizeBilibiliSource(source) {
+    normalizeSavedSource(source) {
         if (!source || typeof source !== 'object') return source;
         const url = String(source.url || source.URL || '');
+        if (source.target === 'loco-history' && /^https:\/\/(?:[\w-]+\.)*loco\.(?:com|gg)\//i.test(url) &&
+            Array.isArray(source.sourceFiles) && source.sourceFiles.some(file => file === 'sources/loco.js' || file === './sources/loco.js')) {
+            source.target = 'loco';
+        }
         if (source.target === 'bilibili' && /(^https?:\/\/)?([^\/]+\.)?bilibili\.tv\//i.test(url)) {
             source.target = 'bilibilitv';
             if (!source.sourceFile || source.sourceFile === 'sources/bilibilitv.js') {
@@ -90,7 +94,7 @@ class StateManager {
                     this.state.sources = new Map(parsed.sources);
                     // Add supportsWSS to existing sources if missing
                     this.state.sources.forEach((source, id) => {
-                        source = this.normalizeBilibiliSource(source);
+                        source = this.normalizeSavedSource(source);
                         this.state.sources.set(id, source);
                         if (source.supportsWSS === undefined) {
                             source.supportsWSS = this.checkWebSocketSupport(source.target);
@@ -205,7 +209,7 @@ class StateManager {
                     const id = this.generateSourceId(source);
                     // Sources in the old settings format are manually added sources
                     // Auto-discovered sources were never saved to the old format
-                    this.state.sources.set(id, this.normalizeBilibiliSource({
+                    this.state.sources.set(id, this.normalizeSavedSource({
                         id,
                         target: source.target,
                         url: source.URL || '',

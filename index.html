@@ -4100,6 +4100,11 @@
             return url;
         }
 
+        function getMatchedSourceTarget(scripts) {
+            if (scripts[0] === "sources/inject/loco-history.js" && scripts.includes("sources/loco.js")) return "loco";
+            return scripts[0].split(".js")[0].split("/").pop();
+        }
+
         async function addOtherSourceFromUrl(target, URL) {
             if (URL) {
                 URL = URL.trim();
@@ -4118,11 +4123,6 @@
                     if (!value || typeof value !== "string") return "";
                     return value.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
                 };
-                const deriveTargetFromScriptPath = (value) => {
-                    const normalized = normalizeSourceScriptPath(value);
-                    if (!normalized) return "";
-                    return normalized.split(".js")[0].split("/").pop();
-                };
                 const matchedScripts = checkSupported(URL)
                     .map((value) => normalizeSourceScriptPath(value))
                     .filter(Boolean);
@@ -4131,7 +4131,7 @@
                 if (uniqueMatchedScripts.length) {
                     initialState.sourceFiles = uniqueMatchedScripts;
                     if (!typeGuess) {
-                        typeGuess = deriveTargetFromScriptPath(uniqueMatchedScripts[0]);
+                        typeGuess = getMatchedSourceTarget(uniqueMatchedScripts);
                     }
                     if (/live\.bilibili\.com/i.test(URL)) {
                         typeGuess = 'bilibilicom';
@@ -4150,7 +4150,7 @@
                     try {
                         const chosenScript = await customPrompt(allSources);
                         initialState.sourceFile = normalizeSourceScriptPath(chosenScript);
-                        typeGuess = deriveTargetFromScriptPath(chosenScript);
+                        typeGuess = getMatchedSourceTarget([initialState.sourceFile]);
                     } catch (e) {
                         Toast.error("Cancelled adding source.");
                         return;
@@ -8802,7 +8802,7 @@
                     if (!sourceFiles.length) {
                         return err('INVALID_TARGET', 'This URL needs a source script selected in the desktop UI because it could not be detected automatically.');
                     }
-                    target = sourceFiles[0].split('.js')[0].split('/').pop();
+                    target = getMatchedSourceTarget(sourceFiles);
                     if (/live\.bilibili\.com/i.test(url)) target = 'bilibilicom';
                     else if (/bilibili\.tv/i.test(url)) target = 'bilibilitv';
                     if (!username) {
