@@ -2076,6 +2076,7 @@ ipcMain.handle("x-live-relay-url", async event => {
         if (url.protocol !== "wss:" || url.username || url.password || url.search || url.hash) throw new Error("Invalid X relay URL.");
         return url.href;
     }
+    if (!config.clientId && !config.appToken) return "wss://api.socialstream.ninja/x/live";
     if (!xLiveRelay) xLiveRelay = startXRelay(config).catch(error => { xLiveRelay = null; throw error; });
     return (await xLiveRelay).url;
 });
@@ -18625,9 +18626,12 @@ function isTrustedSttSender(event) {
     return senderUrl.startsWith('file://') && matchesSocialStreamPagePath(senderUrl, 'cohost');
 }
 
+// The captions page turns the host's speech into chat messages. This app's windows have no browser
+// speech service, so that page may use the same local Whisper the cohost does. It gets speech
+// recognition only: isTrustedSttSender also gates the cohost's other local services.
 function assertTrustedSttSender(event) {
-    if (!isTrustedSttSender(event)) {
-        throw createSttError('SSAPP_STT_FORBIDDEN', 'Local speech recognition is only available to the main cohost page.');
+    if (!isTrustedSttSender(event) && !trustedVoicePage(event, ['captions'])) {
+        throw createSttError('SSAPP_STT_FORBIDDEN', 'Local speech recognition is only available to the main cohost and captions pages.');
     }
 }
 

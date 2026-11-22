@@ -58,9 +58,11 @@ Add **X.com** with the broadcaster's handle. Select **WebSocket**, activate the 
 
 To remove a live message on X when you delete its dock row, enable **Sync dock deletions to X** in that source window.
 
-For a local connection, register `http://127.0.0.1:38178/x/callback` as the OAuth 2.0 callback for an X app approved for the Livestream and Activity APIs. Set `X_OAUTH_CLIENT_ID` and the app-only `X_APP_BEARER_TOKEN` in the environment before starting SSApp. Confidential OAuth clients also need `X_OAUTH_CLIENT_SECRET`. When running from source, these settings can go in the checkout's gitignored `.secret` file, one `NAME=value` per line. [X Livestream API access](https://docs.x.com/livestream-api/getting-started)
+SSApp uses the Social Stream Ninja relay by default. If you host your own relay, set `SSAPP_X_RELAY_URL` to its public `wss://` address ending in `/x/live` before starting SSApp.
 
-To share one approved app across installations, run `node resources/x-live-relay.js` with those credentials on the relay host. Set `X_RELAY_PUBLIC_ORIGIN` to its public HTTPS origin, register that origin's `/x/callback` with X, and proxy `/x/callback` and the `/x/live` WebSocket to loopback port 38178. On desktops, set `SSAPP_X_RELAY_URL` to the public `wss://` address ending in `/x/live`.
+**Hosting a relay.** In the X Developer Console, connect your app to a project with Livestream and X Activity API access. Enable OAuth 2.0 as a confidential web app and add your public HTTPS origin followed by `/x/callback` to its callback URLs. On the relay host, set `X_RELAY_PUBLIC_ORIGIN`, `X_OAUTH_CLIENT_ID`, `X_OAUTH_CLIENT_SECRET`, and the app-only `X_APP_BEARER_TOKEN`. Proxy `/x/callback` and `/x/webhook` over HTTP and `/x/live` over WebSocket to `127.0.0.1:38178`. Start `node resources/x-live-relay.js --webhook`. The relay registers or reuses its webhook with X and subscribes to each broadcaster's events when they link their account. [X live chat setup](https://docs.x.com/livestream-api/chat/accessing-live-chat)
+
+**Local development.** To use the X Activity HTTP stream, add `http://127.0.0.1:38178/x/callback` to the app's callback URLs. Set the same X credentials on the desktop. When running from source, they can go in the checkout's gitignored `.secret` file. Public OAuth clients can omit `X_OAUTH_CLIENT_SECRET`.
 
 ### Source state
 

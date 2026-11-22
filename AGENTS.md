@@ -36,7 +36,8 @@ Electron desktop application for aggregating social media live stream chat. Comm
 ## Source Of Truth
 
 - Social Stream source edits must be made in `C:\Users\steve\Code\social_stream`.
-- `ssapp` loads Social Stream source files remotely from `C:\Users\steve\Code\social_stream` at app startup; treat that repo as the primary runtime source.
+- SSApp normally loads the manifest and capture scripts from the selected stable or beta channel. A local source override can point it at a checkout.
+- Before giving version advice, trace the behavior to the desktop app, manifest, or capture script and verify which revision the test actually loaded. Recommend a desktop upgrade only when a specific desktop change is needed or a comparison using the same source revision shows that the desktop version makes a difference.
 - Do not treat `C:\Users\steve\Code\ssapp\resources\social_stream_fallback\main` as the source repo; it is a fallback mirror/bundle target.
 - The `resources/social_stream_fallback/main` folder is replaced at build/update time and should be treated only as a backup, not the primary source.
 - **Do not read, browse, edit, or add changes in `resources/social_stream_fallback` during normal app work.**  

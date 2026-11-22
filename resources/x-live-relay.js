@@ -26,19 +26,23 @@ function readXConfig(filename) {
 	};
 }
 
-// X delivers all of an app's subscriptions on one HTTP stream. Each WebSocket
-// receives only the events for the user who authorized that connection.
+// Each desktop receives only events for the broadcaster who linked that source.
 async function startXRelay(config, options = {}) {
 	if (!config.clientId || !config.appToken) {
 		throw new Error("Set X_OAUTH_CLIENT_ID and X_APP_BEARER_TOKEN in .secret or the environment.");
 	}
 	const origin = options.origin || LOCAL_ORIGIN;
+	const useWebhook = options.webhook === true;
+	if (useWebhook && (!config.clientSecret || new URL(origin).protocol !== "https:")) {
+		throw new Error("Webhook delivery needs X_OAUTH_CLIENT_SECRET and an HTTPS X_RELAY_PUBLIC_ORIGIN.");
+	}
 	const redirect = origin + "/x/callback";
 	const key = crypto.createHmac("sha256", config.appToken).update("ssn-x-session:" + config.clientId).digest();
 	const fetchApi = options.fetch || fetch;
 	const clients = new Set();
 	const logins = new Map();
 	let stream, retry, streamIssue = "", interruptedAt = 0, backoff = 1000;
+	let webhookRegistration;
 
 	// Only the creator's source holds this ticket. It can survive a relay restart.
 	function ticket(tokens, owner) {
@@ -66,7 +70,7 @@ async function startXRelay(config, options = {}) {
 	async function apiError(res, path) {
 		const detail = await res.json().catch(() => ({}));
 		let message = "X rejected " + path + " (HTTP " + res.status + ").";
-		if (detail?.reason === "client-not-enrolled") message += " This developer app needs API access from X.";
+		if (detail?.reason === "client-not-enrolled") message += " Check this app's API access in the X Developer Console (client-not-enrolled).";
 		const error = new Error(message);
 		error.status = res.status;
 		error.requiresLogin = res.status === 401 || detail?.error === "invalid_grant";
@@ -107,13 +111,47 @@ async function startXRelay(config, options = {}) {
 		}
 		if (!body) return request(path, { method: method || "GET", headers });
 		headers["Content-Type"] = "application/json";
-		return request(path, { headers, method: "POST", body: JSON.stringify(body) });
+		return request(path, { headers, method: method || "POST", body: JSON.stringify(body) });
+	}
+	async function registerWebhook() {
+		const url = origin + "/x/webhook";
+		const headers = { Authorization: "Bearer " + config.appToken };
+		const hooks = await request("/webhooks", { headers });
+		const existing = (hooks.data || []).find(hook => hook.url === url);
+		if (existing?.valid === true) return existing.id;
+		if (existing) {
+			await request("/webhooks/" + encodeURIComponent(existing.id), { method: "PUT", headers });
+			const checked = await request("/webhooks", { headers });
+			if (checked.data?.some(hook => hook.id === existing.id && hook.valid === true)) return existing.id;
+		} else {
+			const registered = await request("/webhooks", { method: "POST",
+				headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+			if (registered.data?.id && registered.data.valid === true) return registered.data.id;
+		}
+		throw new Error("X could not verify " + url + ".");
+	}
+	function ensureWebhook() {
+		if (!webhookRegistration) webhookRegistration = registerWebhook().catch(error => {
+			webhookRegistration = null;
+			throw error;
+		});
+		return webhookRegistration;
 	}
 	async function subscribe(c) {
+		const webhookId = useWebhook ? await ensureWebhook() : null;
 		const expires = new Date(Date.now() + 2 * 3600000).toISOString();
 		for (const event_type of EVENT_TYPES) {
 			if (c.ws.readyState !== WebSocket.OPEN) return;
-			await userApi(c, "/activity/subscriptions", { event_type, filter: { user_id: c.owner.id }, expires_at: expires });
+			const body = { event_type, filter: { user_id: c.owner.id }, expires_at: expires };
+			if (webhookId) body.webhook_id = webhookId;
+			const response = await userApi(c, "/activity/subscriptions", body);
+			if (webhookId) {
+				const sub = response?.data?.subscription || response?.data;
+				if (!sub?.subscription_id) throw new Error("X did not confirm the " + event_type + " subscription.");
+				if (sub.webhook_id !== webhookId) {
+					await userApi(c, "/activity/subscriptions/" + encodeURIComponent(sub.subscription_id), { webhook_id: webhookId }, "PUT");
+				}
+			}
 		}
 	}
 	function queueChat(c, message) {
@@ -262,11 +300,11 @@ async function startXRelay(config, options = {}) {
 			send(c, { ticket: ticket(c.tokens, c.owner), sourceName: me.name || me.username, sourceImg: me.profile_image_url || "" });
 			c.startedAt = Date.now();
 			c.listening = true;
-			readStream();
+			if (!useWebhook) readStream();
 			await subscribe(c);
 			await currentBroadcast(c);
 			if (!clients.has(c)) return;
-			send(c, { account: me.username, stream: !!stream?.connected, warning: streamIssue });
+			send(c, { account: me.username, stream: useWebhook || !!stream?.connected, warning: streamIssue });
 			c.renew = setInterval(() => subscribe(c).catch(err => {
 				send(c, { warning: err.message });
 				c.ws.close(1011, "X subscription renewal failed.");
@@ -280,6 +318,38 @@ async function startXRelay(config, options = {}) {
 			throw error;
 		}
 	}
+	function signWebhook(input) {
+		return "sha256=" + crypto.createHmac("sha256", config.clientSecret).update(input).digest("base64");
+	}
+	async function receiveWebhook(req, res, url) {
+		if (req.method === "GET") {
+			const challenge = url.searchParams.get("crc_token");
+			// A challenge must never double as a signed JSON event.
+			if (!challenge || challenge.length > 1024 || challenge.trimStart().startsWith("{")) {
+				res.writeHead(400); res.end(); return;
+			}
+			res.setHeader("Content-Type", "application/json");
+			res.end(JSON.stringify({ response_token: signWebhook(challenge) }));
+			return;
+		}
+		if (req.method !== "POST") { res.writeHead(405, { Allow: "GET, POST" }); res.end(); return; }
+		const header = req.headers["x-twitter-webhooks-signature-oauth2"];
+		if (typeof header !== "string" || !/^sha256=[A-Za-z0-9+/]{43}=$/.test(header)) { res.writeHead(401); res.end(); return; }
+		const chunks = [];
+		let size = 0;
+		for await (const chunk of req) {
+			size += chunk.length;
+			if (size > 1024 * 1024) { res.writeHead(413); res.end(); return; }
+			chunks.push(chunk);
+		}
+		const raw = Buffer.concat(chunks, size);
+		if (!crypto.timingSafeEqual(Buffer.from(header), Buffer.from(signWebhook(raw)))) { res.writeHead(401); res.end(); return; }
+		let event;
+		try { event = JSON.parse(raw).data; } catch (_) { res.writeHead(400); res.end(); return; }
+		dispatch(event);
+		res.writeHead(200);
+		res.end();
+	}
 	const server = http.createServer(async (req, res) => {
 		let url;
 		try { url = new URL(req.url, LOCAL_ORIGIN); } catch (_) { res.writeHead(400); res.end(); return; }
@@ -288,6 +358,10 @@ async function startXRelay(config, options = {}) {
 		res.setHeader("Cache-Control", "no-store");
 		res.setHeader("Referrer-Policy", "no-referrer");
 		res.setHeader("Content-Type", "text/plain; charset=utf-8");
+		if (useWebhook && url.pathname === "/x/webhook") {
+			try { await receiveWebhook(req, res, url); } catch (_) { if (!res.headersSent) res.writeHead(500); res.end(); }
+			return;
+		}
 		if (req.method !== "GET" || url.pathname !== "/x/callback" || !login) {
 			res.writeHead(404); res.end("No pending X sign-in."); return;
 		}
@@ -390,6 +464,8 @@ async function startXRelay(config, options = {}) {
 		server.once("error", reject);
 		server.listen(options.port ?? 38178, "127.0.0.1", resolve);
 	});
+	// X immediately calls the public route during registration. Listen first.
+	if (useWebhook) ensureWebhook().catch(error => console.warn("[X Live] " + error.message));
 	return { url: "ws://127.0.0.1:" + server.address().port + "/x/live",
 		close() { for (const c of clients) c.ws.terminate(); wss.close(); server.close(); } };
 }
@@ -402,7 +478,8 @@ if (require.main === module) {
 	(async () => {
 		const origin = new URL(process.env.X_RELAY_PUBLIC_ORIGIN || LOCAL_ORIGIN);
 		if (origin.origin !== LOCAL_ORIGIN && origin.protocol !== "https:") throw new Error("Use an HTTPS relay origin.");
-		const relay = await startXRelay(readXConfig(), { origin: origin.origin, port: Number(process.env.X_RELAY_PORT || 38178) });
+		const relay = await startXRelay(readXConfig(), { origin: origin.origin, port: Number(process.env.X_RELAY_PORT || 38178),
+			webhook: process.argv.includes("--webhook") });
 		console.log("X Live listening at " + relay.url);
 		process.once("SIGTERM", relay.close);
 		process.once("SIGINT", relay.close);

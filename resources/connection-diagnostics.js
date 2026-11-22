@@ -41,7 +41,7 @@ async function readConnectionState(role, probeNetwork) {
         pageAgeMs: Math.round(performance.now()),
         transportFlags: {}, sockets: [], peers: []
     };
-    for (const name of ['server', 'server2', 'server3', 'server2additivedelivery', 'lanonly', 'sdk', 'usesdk', 'disablehost']) {
+    for (const name of ['server', 'server2', 'server3', 'server2additivedelivery', 'lanonly', 'legacyiframe', 'sdk', 'usesdk', 'disablehost']) {
         result.transportFlags[name] = role === 'background' ? flag(settingsValue[name]) : params.has(name);
     }
     result.transportFlags.localserver = params.has('localserver');
@@ -391,7 +391,7 @@ async function collectConnectionDiagnostics({ contents, primaryContents, isSocia
     if (savedState) {
         const flag = value => value && typeof value === 'object' ? flag(value.setting) : value === true || value === 1 || /^(true|1|on|yes)$/i.test(String(value));
         report.saved = { enabled: !!savedState.state, _room: savedState.streamID, _password: savedState.password, transportFlags: {} };
-        for (const key of ['server', 'server2', 'server3', 'server2additivedelivery', 'lanonly', 'sdk', 'usesdk', 'disablehost']) report.saved.transportFlags[key] = flag(savedState.settings?.[key]);
+        for (const key of ['server', 'server2', 'server3', 'server2additivedelivery', 'lanonly', 'legacyiframe', 'sdk', 'usesdk', 'disablehost']) report.saved.transportFlags[key] = flag(savedState.settings?.[key]);
         identify(report.saved);
     }
     // Resolve proxy routes for the standard endpoints. Keep proxy types only:
