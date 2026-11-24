@@ -6,6 +6,8 @@ const youtubeStreamDiscoveryInflight = new Map();
 const MANUAL_YOUTUBE_DISCOVERY_CACHE_TTL_MS = 5000;
 const manualYouTubeDiscoveryCache = new Map();
 const manualYouTubeDiscoveryInflight = new Map();
+const youtubeApiRequests = new Map();
+const YOUTUBE_CHANNEL_LOOKUP_HINT = 'Could not identify a unique YouTube channel. Try its @handle or channel URL.';
 
 function escapeYouTubeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, char => ({
@@ -235,15 +237,23 @@ function mergeYouTubeStreams(primaryStreams = [], fallbackStreams = [], isShortD
 }
 
 async function fetchYouTubeLiveStreamsFromApi(identifier, options = {}) {
-  try {
 	const { isChannelOnly = false, isUsernameOnly = false } = options;
 	let apiUrl = `https://api.socialstream.ninja/youtube/streams?username=${encodeURIComponent(identifier)}`;
-	if (isChannelOnly) {
-	  apiUrl += '&channelsonly';
-	} else if (isUsernameOnly) {
-	  apiUrl += '&usernameonly';
-	}
-	const response = await fetch(apiUrl);
+    if (!/^UC[\w-]{22}$/.test(identifier)) {
+        if (isChannelOnly) apiUrl += '&channelsonly';
+        else if (isUsernameOnly) apiUrl += '&usernameonly';
+    }
+    // The picker, automatic discovery and Shorts can request the same API URL at once.
+    if (!youtubeApiRequests.has(apiUrl)) {
+        const request = requestYouTubeLiveStreams(apiUrl, identifier).finally(() => youtubeApiRequests.delete(apiUrl));
+        youtubeApiRequests.set(apiUrl, request);
+    }
+    return cloneYouTubeStreams(await youtubeApiRequests.get(apiUrl));
+}
+
+async function requestYouTubeLiveStreams(apiUrl, identifier) {
+  try {
+	const response = await fetch(apiUrl, { signal: AbortSignal.timeout(15000) });
     if (!response.ok) {
         console.error(`API Error for ${identifier}: ${response.status} ${response.statusText}`);
         const errorBody = await response.text();
@@ -281,7 +291,7 @@ async function discoverYouTubeStreamsForManualAction(username, isShortDefault = 
     const includePageResults = !!options.includePageResults;
     const cacheKey = getYouTubeStreamDiscoveryCacheKey(username, {
         isChannelOnly: isChannelName,
-        isUsernameOnly: !isChannelName && !username.startsWith("UC"),
+        isUsernameOnly: !isChannelName && !isYouTubeChannelId(username),
         isShortDefault
     });
     const cached = manualYouTubeDiscoveryCache.get(cacheKey);
@@ -299,15 +309,12 @@ async function discoverYouTubeStreamsForManualAction(username, isShortDefault = 
     const request = (async () => {
         const streamsFromApi = cloneYouTubeStreams(options.knownStreams || (cacheIsFresh ? cached.streams : await fetchYouTubeLiveStreamsFromApi(username, {
             isChannelOnly: isChannelName,
-            isUsernameOnly: !isChannelName && !username.startsWith("UC")
+            isUsernameOnly: !isChannelName && !isYouTubeChannelId(username)
         })));
         let streamsFromScrape = [];
 
         if (includePageResults || !streamsFromApi || streamsFromApi.length === 0) {
-            streamsFromScrape = await fetchYoutube(username, false, { forceSearch: isChannelName });
-            if (!Array.isArray(streamsFromScrape) || !streamsFromScrape.length) {
-                streamsFromScrape = await fetchYoutube(username, true, { forceSearch: isChannelName }) || [];
-            }
+            streamsFromScrape = await fetchYouTubeStreamsFromPages(username, { forceSearch: isChannelName });
             pageChecked = true;
         }
 
@@ -679,6 +686,14 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
             && getYouTubeGroupDiscoveryIdentity(requestedGroup) === discoveryIdentity
             && (!options.requireAutoActivate || requestedGroup.autoActivate));
         const ownerDiscoveryGroup = isYouTubeOwnerDiscoveryGroup(requestedGroup) ? requestedGroup : null;
+        const publicState = requestedGroup && !ownerDiscoveryGroup ? getYouTubeGroupDiscoveryState(requestedGroup) : null;
+        let lookup = publicState?.resolvedIdentifier || username;
+        if (!ownerDiscoveryGroup && !publicState?.resolvedIdentifier && needsPublicYouTubeChannelLookup(username, autoActivateAll && isChannelName)) {
+            lookup = await resolvePublicYouTubeIdentifier(username);
+            if (!requestIsCurrent()) return { type: 'cancelled_or_empty' };
+            if (!lookup) return { type: 'no_streams_found', message: YOUTUBE_CHANNEL_LOOKUP_HINT };
+            if (publicState) publicState.resolvedIdentifier = lookup;
+        }
         console.log("handleYouTubeActivation:", {
             username,
             isShortDefault,
@@ -691,10 +706,10 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
         let combinedStreams = ownerDiscoveryGroup
             ? await fetchYouTubeOwnerStreamsForGroup(ownerDiscoveryGroup)
             : (manualTrigger
-                ? await discoverYouTubeStreamsForManualAction(username, isShortDefault, isChannelName)
-                : await fetchYouTubeLiveStreams(username, {
+                ? await discoverYouTubeStreamsForManualAction(lookup, isShortDefault, isChannelName)
+                : await fetchYouTubeLiveStreams(lookup, {
                     isChannelOnly: isChannelName,
-                    isUsernameOnly: !isChannelName && !username.startsWith("UC"),
+                    isUsernameOnly: !isChannelName && !isYouTubeChannelId(lookup),
                     isShortDefault,
                     cacheTtlMs: showPrompts ? 15000 : YOUTUBE_STREAM_DISCOVERY_CACHE_TTL_MS
                 }));
@@ -702,7 +717,7 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
         if (!requestIsCurrent()) return { type: 'cancelled_or_empty' };
         if (manualTrigger && autoActivateAll && !ownerDiscoveryGroup && combinedStreams.length) {
             try {
-                combinedStreams = await discoverYouTubeStreamsForManualAction(username, isShortDefault, isChannelName, {
+                combinedStreams = await discoverYouTubeStreamsForManualAction(lookup, isShortDefault, isChannelName, {
                     includePageResults: true,
                     knownStreams: combinedStreams
                 });
@@ -723,7 +738,7 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
             return { type: 'no_streams_found', message };
         }
         
-        let group = ownerDiscoveryGroup || stateManager.getGroups().find(g => g.username === username && g.target === groupTargetType);
+        let group = requestedGroup || stateManager.getGroups().find(g => g.username === username && g.target === groupTargetType);
         let groupId = group ? group.id : null;
 
         if (!group) {
@@ -773,7 +788,7 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
                 pageStatus.className = 'yt-stream-discovery-message';
                 pageStatus.textContent = 'Checking the channel page for more streams...';
                 selector.streamList.appendChild(pageStatus);
-                discoverYouTubeStreamsForManualAction(username, isShortDefault, isChannelName, {
+                discoverYouTubeStreamsForManualAction(lookup, isShortDefault, isChannelName, {
                     includePageResults: true,
                     knownStreams: combinedStreams
                 }).then(async streams => {
@@ -1037,7 +1052,7 @@ class YouTubeStatusManager {
             if (!username) continue;
 
             try {
-                const liveStreams = await fetchYouTubeLiveStreams(username, { isChannelOnly: isChannel, isUsernameOnly: !isChannel && !username.startsWith("UC") });
+                const liveStreams = await fetchYouTubeLiveStreams(username, { isChannelOnly: isChannel, isUsernameOnly: !isChannel && !isYouTubeChannelId(username) });
 
                 if (this.autoAddEnabled) {
                     for (const stream of liveStreams) {
@@ -1162,9 +1177,9 @@ function decodeUnicodeEscapes(str) {
     });
 }
 
-function extractYouTubeInitialDataFromHtml(htmlData) {
+function extractYouTubeInitialDataFromHtml(htmlData, variable = 'ytInitialData') {
     if (!htmlData || typeof htmlData !== 'string') return null;
-    const markers = ['ytInitialData"] = ', "ytInitialData'] = ", 'var ytInitialData = ', 'ytInitialData = '];
+    const markers = [variable + '"] = ', variable + "'] = ", 'var ' + variable + ' = ', variable + ' = '];
     let jsonStart = -1;
     for (const marker of markers) {
         const markerIndex = htmlData.indexOf(marker);
@@ -1201,7 +1216,7 @@ function extractYouTubeInitialDataFromHtml(htmlData) {
                 try {
                     return JSON.parse(htmlData.slice(jsonStart, index + 1));
                 } catch (e) {
-                    console.error("Error parsing ytInitialData:", e);
+                    console.error("Error parsing " + variable + ":", e);
                     return null;
                 }
             }
@@ -1268,50 +1283,6 @@ function collectYouTubeVideoRenderers(node, videos = []) {
     return videos;
 }
 
-function findFirstYouTubeVideoId(node) {
-    if (!node || typeof node !== 'object') return null;
-    if (typeof node.videoId === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(node.videoId)) {
-        return node.videoId;
-    }
-    for (const key of Object.keys(node)) {
-        const value = node[key];
-        if (value && typeof value === 'object') {
-            if (Array.isArray(value)) {
-                for (const item of value) {
-                    const found = findFirstYouTubeVideoId(item);
-                    if (found) return found;
-                }
-            } else {
-                const found = findFirstYouTubeVideoId(value);
-                if (found) return found;
-            }
-        }
-    }
-    return null;
-}
-
-function collectYouTubeStringValues(node, values = []) {
-    if (!node || typeof node !== 'object') return values;
-    if (typeof node.simpleText === 'string') values.push(node.simpleText);
-    if (typeof node.content === 'string') values.push(node.content);
-    if (Array.isArray(node.runs)) {
-        node.runs.forEach(run => {
-            if (run && typeof run.text === 'string') values.push(run.text);
-        });
-    }
-    Object.keys(node).forEach(key => {
-        const value = node[key];
-        if (value && typeof value === 'object') {
-            if (Array.isArray(value)) {
-                value.forEach(item => collectYouTubeStringValues(item, values));
-            } else {
-                collectYouTubeStringValues(value, values);
-            }
-        }
-    });
-    return values;
-}
-
 function extractLockupThumbnails(lockup) {
     const sources = lockup?.contentImage?.thumbnailViewModel?.image?.sources;
     if (!Array.isArray(sources)) return null;
@@ -1336,12 +1307,16 @@ function getLockupScheduledStartTime(textValues) {
     return Number.isNaN(parsed) ? null : parsed;
 }
 
-function getVideoStatusFromLockup(lockup) {
-    const textValues = collectYouTubeStringValues(lockup);
-    const normalizedText = textValues.join(' ').toLowerCase();
-    const isUpcoming = normalizedText.includes('upcoming') || normalizedText.includes('scheduled for') || normalizedText.includes(' waiting');
-    const isLive = normalizedText.includes(' watching') || normalizedText.includes(' live now') || normalizedText === 'live';
-    const isEnded = normalizedText.includes('streamed') || normalizedText.includes('premiered');
+function getVideoStatusFromLockup(lockup, metadataRows) {
+    const overlays = lockup.contentImage?.thumbnailViewModel?.overlays;
+    const hasLiveBadge = overlays?.some(overlay => overlay?.thumbnailBottomOverlayViewModel?.badges?.some(
+        badge => badge?.thumbnailBadgeViewModel?.badgeStyle === 'THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE'
+    ));
+    // YouTube puts viewer counts and broadcast dates in metadata rows. Titles can contain the same words.
+    const textValues = metadataRows.flatMap(row => (row?.metadataParts || []).map(part => part?.text?.content || ''));
+    const isEnded = textValues.some(text => /^(streamed|premiered)\b/i.test(text));
+    const isUpcoming = textValues.some(text => /^(?:upcoming$|scheduled for\s|[\d.,]+[KMB]?\s+waiting$)/i.test(text));
+    const isLive = hasLiveBadge || textValues.some(text => /^(?:live(?: now)?|[\d.,]+[KMB]?\s+watching(?: now)?)$/i.test(text));
     return {
         status: isLive ? 'live' : isUpcoming ? 'upcoming' : isEnded ? 'ended' : 'video',
         scheduledStartTime: getLockupScheduledStartTime(textValues)
@@ -1354,9 +1329,15 @@ function getVideoStatusFromAnyRenderer(videoEntry, fallbackRendererStatus) {
         return fallbackRendererStatus(videoEntry.renderer);
     }
     const lockup = videoEntry.renderer;
-    const status = getVideoStatusFromLockup(lockup);
-    const videoId = findFirstYouTubeVideoId(lockup);
-    if (!videoId) return null;
+    if (lockup.contentType && lockup.contentType !== 'LOCKUP_CONTENT_TYPE_VIDEO') return null;
+    const metadataRows = lockup.metadata?.lockupMetadataViewModel?.metadata?.contentMetadataViewModel?.metadataRows || [];
+    if (metadataRows.some(row => row?.badges?.some(badge => badge?.badgeViewModel?.badgeStyle === 'BADGE_MEMBERS_ONLY'))) {
+        return null;
+    }
+    const command = lockup.rendererContext?.commandContext?.onTap?.innertubeCommand;
+    const videoId = lockup.contentId || command?.watchEndpoint?.videoId;
+    if (typeof videoId !== 'string' || !/^[\w-]{11}$/.test(videoId)) return null;
+    const status = getVideoStatusFromLockup(lockup, metadataRows);
     return {
         videoId,
         title: lockup?.metadata?.lockupMetadataViewModel?.title?.content || '',
@@ -1366,7 +1347,7 @@ function getVideoStatusFromAnyRenderer(videoEntry, fallbackRendererStatus) {
         categoryId: null,
         defaultLanguage: null,
         defaultAudioLanguage: null,
-        isShort: false,
+        isShort: command?.commandMetadata?.webCommandMetadata?.url?.startsWith('/shorts/') === true,
         viewers: null,
         status: status.status,
         statusDisplay: status.status,
@@ -1406,7 +1387,7 @@ function getYouTubeChannelUrlIdentifier(channelUrl) {
 function matchesYouTubeChannelPage(fetchUrl, channelId, channelUrls) {
     if (!channelId) return false;
     const requested = getYouTubeChannelUrlIdentifier(fetchUrl);
-    if (/^(UC|HC|UU)/.test(requested)) return requested === channelId;
+    if (isYouTubeChannelId(requested)) return requested === channelId;
     return channelUrls.some(url => url && normalizeYouTubeLookupText(getYouTubeChannelUrlIdentifier(url))
         === normalizeYouTubeLookupText(requested));
 }
@@ -1430,13 +1411,15 @@ function normalizeYouTubeChannelIdentifier(identifier) {
     return normalized;
 }
 
+function isYouTubeChannelId(identifier) {
+    return /^(?:UC|HC|UU)[\w-]{22}$/.test(identifier);
+}
+
 function shouldResolveYouTubeChannelBySearch(identifier) {
     const normalized = normalizeYouTubeChannelIdentifier(identifier);
     if (!normalized) return false;
     return !(
-        normalized.startsWith("UC") ||
-        normalized.startsWith("HC") ||
-        normalized.startsWith("UU") ||
+        isYouTubeChannelId(normalized) ||
         normalized.startsWith('@') ||
         normalized.startsWith('channel/') ||
         normalized.startsWith('c/') ||
@@ -1444,11 +1427,16 @@ function shouldResolveYouTubeChannelBySearch(identifier) {
     );
 }
 
+function needsPublicYouTubeChannelLookup(identifier, byName) {
+    return /^(?:c|user)\//.test(normalizeYouTubeChannelIdentifier(identifier))
+        || (byName && shouldResolveYouTubeChannelBySearch(identifier));
+}
+
 function buildYouTubeChannelScrapeUrl(identifier, alt = false) {
     const normalized = normalizeYouTubeChannelIdentifier(identifier);
     if (!normalized) return '';
     const section = alt ? 'live' : 'streams';
-    if (normalized.startsWith("UC") || normalized.startsWith("HC") || normalized.startsWith("UU")) {
+    if (isYouTubeChannelId(normalized)) {
         return `https://www.youtube.com/channel/${encodeURIComponent(normalized)}/${section}`;
     }
     if (normalized.startsWith('channel/')) {
@@ -1488,25 +1476,99 @@ async function fetchYouTubeDiscoveryHtml(fetchUrl) {
     return typeof htmlData === 'string' ? htmlData : '';
 }
 
-async function resolveYouTubeChannelScrapeUrl(identifier, alt = false) {
+async function hasPublicYouTubeBroadcastEnded(videoId) {
+    const html = await fetchYouTubeDiscoveryHtml('https://www.youtube.com/watch?v=' + encodeURIComponent(videoId));
+    const player = extractYouTubeInitialDataFromHtml(html, 'ytInitialPlayerResponse');
+    if (player?.videoDetails?.videoId !== videoId) return false;
+    const broadcast = player.microformat?.playerMicroformatRenderer?.liveBroadcastDetails;
+    if (!broadcast?.endTimestamp || broadcast.isLiveNow || player.videoDetails.isLive || player.videoDetails.isUpcoming) return false;
+    const endedAt = Date.parse(broadcast.endTimestamp);
+    return endedAt <= Date.now() && (!broadcast.startTimestamp || Date.parse(broadcast.startTimestamp) <= endedAt);
+}
+
+async function resolvePublicYouTubeIdentifier(identifier) {
+    const alias = normalizeYouTubeChannelIdentifier(identifier).match(/^(c|user)\/([^/]+)$/);
+    if (alias) {
+        // Legacy aliases need not match today's handle. YouTube supplies the owner on the channel page.
+        const html = await fetchYouTubeDiscoveryHtml(`https://www.youtube.com/${alias[1]}/${encodeURIComponent(alias[2])}`);
+        const id = extractYouTubeInitialDataFromHtml(html)?.metadata?.channelMetadataRenderer?.externalId;
+        return isYouTubeChannelId(id) ? id : '';
+    }
     const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(identifier)}&sp=EgIQAg%253D%253D`;
     console.log("Resolving YouTube channel by search:", searchUrl);
     const searchHtml = await fetchYouTubeDiscoveryHtml(searchUrl);
     const searchData = extractYouTubeInitialDataFromHtml(searchHtml);
     const candidates = collectYouTubeChannelCandidates(searchData);
     const selected = selectYouTubeChannelCandidate(candidates, identifier);
-    if (selected?.channelId) {
-        return buildYouTubeChannelScrapeUrl(selected.channelId, alt);
+    return selected?.channelId || normalizeYouTubeChannelIdentifier(selected?.url);
+}
+
+async function fetchYouTubeStreamsFromPages(identifier, options = {}) {
+    if (needsPublicYouTubeChannelLookup(identifier, options.forceSearch)) {
+        identifier = await resolvePublicYouTubeIdentifier(identifier);
+        if (!identifier) return [];
     }
-    if (selected?.url) {
-        return buildYouTubeChannelScrapeUrl(selected.url, alt);
+    let listed = [], listingError;
+    try {
+        listed = await fetchYoutube(identifier, false) || [];
+    } catch (error) {
+        // Manual discovery reports a timeout immediately so the user can select an existing API result.
+        if (!options.retryListingError) throw error;
+        listingError = error;
     }
-    return '';
+    const eligible = options.eligible || (stream => isSelectableYouTubeStreamStatus(stream.status));
+    const hasEligibleListing = listed.some(eligible);
+    if (hasEligibleListing && (!options.checkForLive || listed.some(stream => stream.status === 'live' && eligible(stream)))) {
+        return listed;
+    }
+
+    // A channel can list its next waiting room while /live is already showing a different broadcast.
+    let fallback;
+    try {
+        fallback = await fetchYoutube(identifier, true) || [];
+    } catch (error) {
+        if (hasEligibleListing) return listed;
+        throw error;
+    }
+    if (hasEligibleListing) {
+        const confirmed = fallback.filter(stream => (stream.status === 'live' && eligible(stream))
+            || (stream.status === 'ended' && listed.some(row => row.videoId === stream.videoId)));
+        const updatedIds = new Set(confirmed.map(stream => stream.videoId));
+        return [...confirmed, ...listed.filter(stream => !updatedIds.has(stream.videoId))];
+    }
+    if (fallback.some(eligible)) return fallback;
+    if (listingError && !fallback.length) throw listingError;
+    if (!listed.length) return fallback;
+    return listed;
+}
+
+function isEligiblePublicYouTubeStream(stream, maxFutureMinutes) {
+    return stream.status === 'live' || (stream.status === 'upcoming' && !!stream.scheduledStartTime
+        && isYouTubeStreamWithinWindow(stream, maxFutureMinutes));
+}
+
+async function fetchPublicYouTubeGroupStreams(identifier, shorts, canUseApi, maxFutureMinutes) {
+    const eligible = stream => (typeof stream.isShort !== 'boolean' || stream.isShort === shorts)
+        && isEligiblePublicYouTubeStream(stream, maxFutureMinutes);
+    let listed = [], pageError;
+    try {
+        listed = mergeYouTubeStreams([], await fetchYouTubeStreamsFromPages(identifier, { eligible, checkForLive: true, retryListingError: true }), shorts);
+    } catch (error) {
+        pageError = error;
+    }
+    if (!listed.some(eligible) && canUseApi()) {
+        const api = await fetchYouTubeLiveStreamsFromApi(identifier, { isUsernameOnly: true });
+        if (api.length) return mergeYouTubeStreams(api, listed, shorts);
+    }
+    if (pageError) throw pageError;
+    return listed;
 }
 
 async function fetchYoutube(username, alt = false, options = {}) {
-    function getVideoStatusFromRenderer(videoRenderer) { 
-			  const data = videoRenderer; 
+    function getVideoStatusFromRenderer(data) {
+        if (data.badges?.some(badge => badge?.metadataBadgeRenderer?.style === 'BADGE_STYLE_TYPE_MEMBERS_ONLY')) {
+            return null;
+        }
 			  const isLiveNow = checkIsLiveNow(data);
 			  const isUpcoming = checkIsUpcoming(data);
 			  const isEnded = checkIsEnded(data);
@@ -1615,7 +1677,8 @@ async function fetchYoutube(username, alt = false, options = {}) {
                 return false;
             }
             if (!fetchUrl) {
-                fetchUrl = await resolveYouTubeChannelScrapeUrl(username, alt);
+                const identifier = await resolvePublicYouTubeIdentifier(username);
+                fetchUrl = buildYouTubeChannelScrapeUrl(identifier, alt);
             }
             if (!fetchUrl) {
                 console.warn("Unable to resolve YouTube channel scrape URL for:", username);
@@ -1677,15 +1740,39 @@ async function fetchYoutube(username, alt = false, options = {}) {
                     const ownerUrls = [ownerEndpoint?.browseEndpoint?.canonicalBaseUrl, ownerEndpoint?.commandMetadata?.webCommandMetadata?.url];
                     const videoId = ytInitialData.currentVideoEndpoint?.watchEndpoint?.videoId;
                     if (primary && videoId && matchesYouTubeChannelPage(fetchUrl, ownerId, ownerUrls)) {
+                        const viewCount = primary.viewCount?.videoViewCountRenderer;
                         const video = getVideoStatusFromRenderer({
                             videoId,
                             title: primary.title,
-                            viewCountText: primary.viewCount?.videoViewCountRenderer?.viewCount,
+                            viewCountText: viewCount?.viewCount,
                             upcomingEventData: primary.upcomingEventData,
                             badges: primary.badges,
                             navigationEndpoint: ytInitialData.currentVideoEndpoint
                         });
-                        if (primary.viewCount?.videoViewCountRenderer?.isLive) video.status = video.statusDisplay = 'live';
+                        if (!video) return [];
+                        // YouTube also marks the waiting-room viewer count as live.
+                        const player = extractYouTubeInitialDataFromHtml(htmlData, 'ytInitialPlayerResponse');
+                        const matchesPlayer = player?.videoDetails?.videoId === videoId && player.videoDetails.channelId === ownerId;
+                        const broadcast = matchesPlayer ? player.microformat?.playerMicroformatRenderer?.liveBroadcastDetails : null;
+                        const playability = matchesPlayer ? player.playabilityStatus : null;
+                        if (playability?.status && !['OK', 'LIVE_STREAM_OFFLINE'].includes(playability.status)) return [];
+                        const slate = playability?.liveStreamability?.liveStreamabilityRenderer?.offlineSlate?.liveStreamOfflineSlateRenderer;
+                        if (broadcast?.endTimestamp) {
+                            video.status = 'ended';
+                        } else if (broadcast?.isLiveNow) {
+                            video.status = 'live';
+                        } else if (slate || (matchesPlayer && player.videoDetails.isUpcoming) || primary.upcomingEventData
+                            || /\bwaiting\b/i.test(getYouTubeFormattedText(viewCount?.viewCount))) {
+                            video.status = 'upcoming';
+                            const startSeconds = Number(slate?.scheduledStartTime);
+                            if (Number.isFinite(startSeconds) && startSeconds > 0) video.scheduledStartTime = startSeconds * 1000;
+                            else if (broadcast?.startTimestamp) video.scheduledStartTime = broadcast.startTimestamp;
+                        } else if (playability?.status === 'LIVE_STREAM_OFFLINE') {
+                            return [];
+                        } else if (viewCount?.isLive) {
+                            video.status = 'live';
+                        }
+                        video.statusDisplay = video.status;
                         video.channelId = ownerId;
                         video.channelTitle = getYouTubeFormattedText(owner.title);
                         videos.push(video);
@@ -2202,27 +2289,24 @@ function extractYoutubeVideoId(url) {
 }
 function parseYoutubeUrl(url) { 
     const urlString = typeof url === 'string' ? url : url.toString();
-	const handleRegex = /(?:youtube\.com\/)(@[^/?#]+)/i;
-	const usernameRegex = /(?:youtube\.com\/(?:user\/|c\/))([^/?#]+)/i;
-    const channelIdRegex = /(?:youtube\.com\/channel\/)(UC[a-zA-Z0-9_-]{22})/i;
-
 	try {
 		const parsedUrl = new URL(urlString); 
         const videoId = extractYoutubeVideoId(urlString); 
         if (videoId) {
             return { isYoutubeUrl: true, type: 'video', id: videoId, isShort: hasYoutubeShortsMarker(urlString) };
         }
-        const handleMatch = urlString.match(handleRegex);
-        if (handleMatch && handleMatch[1]) {
-            return { isYoutubeUrl: true, type: 'channel_username', username: decodeURIComponent(handleMatch[1]) };
-        }
-        const usernameMatch = urlString.match(usernameRegex);
-        if (usernameMatch && usernameMatch[1]) {
-            return { isYoutubeUrl: true, type: 'channel_username', username: decodeURIComponent(usernameMatch[1]) };
-        }
-        const channelIdMatch = urlString.match(channelIdRegex);
-        if (channelIdMatch && channelIdMatch[1]) {
-             return { isYoutubeUrl: true, type: 'channel_id', id: channelIdMatch[1] };
+        if (/(^|\.)youtube\.com$/.test(parsedUrl.hostname)) {
+            const [, first, name] = parsedUrl.pathname.split('/');
+            if (first.startsWith('@') && first.length > 1) {
+                return { isYoutubeUrl: true, type: 'channel_username', username: decodeURIComponent(first) };
+            }
+            const route = first.toLowerCase();
+            if ((route === 'user' || route === 'c') && name) {
+                return { isYoutubeUrl: true, type: 'channel_username', username: route + '/' + decodeURIComponent(name) };
+            }
+            if (route === 'channel' && isYouTubeChannelId(name)) {
+                return { isYoutubeUrl: true, type: 'channel_id', id: name };
+            }
         }
         if (['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'].includes(parsedUrl.hostname)) {
             return { isYoutubeUrl: true, type: 'other_youtube_url' };
@@ -2282,10 +2366,7 @@ async function fetchYouTubeLiveStreams(identifier, options = {}) {
         let streamsFromScrape = [];
 
         if (allowScrapeFallback && (!streamsFromApi || streamsFromApi.length === 0)) {
-            streamsFromScrape = await fetchYoutube(identifier, false, { forceSearch: isChannelOnly });
-            if (!Array.isArray(streamsFromScrape) || !streamsFromScrape.length) {
-                streamsFromScrape = await fetchYoutube(identifier, true, { forceSearch: isChannelOnly }) || [];
-            }
+            streamsFromScrape = await fetchYouTubeStreamsFromPages(identifier, { forceSearch: isChannelOnly });
         }
 
         return mergeYouTubeStreams(streamsFromApi, streamsFromScrape, isShortDefault);
