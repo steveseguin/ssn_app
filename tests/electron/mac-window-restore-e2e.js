@@ -2,6 +2,7 @@
 
 const assert = require('assert/strict');
 const { execFileSync } = require('child_process');
+const { once } = require('events');
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
@@ -76,13 +77,19 @@ async function runQuitRegressions({ root, executable, packaged, base, bundle, ou
 				if (scenario === 'paused-renderer' || scenario === 'repeated-quit') {
 					cdp = await app.context().newCDPSession(page);
 					await cdp.send('Debugger.enable');
-					await cdp.send('Debugger.pause');
+					const paused = once(cdp, 'Debugger.paused', { signal: AbortSignal.timeout(15000) });
+					await Promise.all([paused, cdp.send('Runtime.evaluate', {
+						expression: 'setTimeout(() => { debugger; }, 0); void 0',
+					})]);
 				}
 				const started = Date.now();
-				const quit = () => execFileSync('osascript', ['-e', `tell application ${JSON.stringify(bundle)} to quit`], { timeout: 15000 });
-				quit();
+				const quit = `tell application ${JSON.stringify(bundle)} to quit`;
+				// Dispatch both native requests while the same renderer is paused.
+				// Waiting for the first Apple event reply can consume the backup timeout.
+				const script = scenario === 'repeated-quit' ?
+					`ignoring application responses\n${quit}\n${quit}\nend ignoring` : quit;
+				execFileSync('osascript', ['-e', script], { timeout: 15000 });
 				if (scenario === 'repeated-quit') {
-					quit();
 					await new Promise(resolve => setTimeout(resolve, 200));
 					assert.ok(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length > 0),
 						'Second Quit must not destroy the renderer while its backup is pending');
