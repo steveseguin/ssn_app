@@ -21,6 +21,18 @@
 			var received = 0;
 			var autoTimer = null;
 			window.__fixturePlatform = platform;
+			if (query.get("waitForObserver") === "1") {
+				var captureTarget = { youtube: "#items", twitch: ".chat-room__content", kick: "#chatroom" }[platform];
+				var observe = MutationObserver.prototype.observe;
+				MutationObserver.prototype.observe = function (target, options) {
+					var result = observe.call(this, target, options);
+					if (options.childList && target.matches?.(captureTarget)) {
+						window.__fixtureCaptureObserved = true;
+						MutationObserver.prototype.observe = observe;
+					}
+					return result;
+				};
+			}
 			if (platform === "tiktok" && location.protocol === "file:") {
 				try {
 					history.replaceState(null, "", location.pathname + "/@hidden-capture/live" + location.search);

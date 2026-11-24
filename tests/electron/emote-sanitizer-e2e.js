@@ -100,13 +100,15 @@ async function run() {
 		await until(() => evaluateDock(() => typeof processInput === 'function' && socketserverExtension?.readyState === 1), 'dock relay');
 		const sources = [];
 		for (const platform of ['youtube', 'twitch', 'kick']) {
-			const url = pathToFileURL(path.join(root, 'tests/electron/fixtures/hidden-capture.html')).href + `?platform=${platform}&manual=1`;
+			const url = pathToFileURL(path.join(root, 'tests/electron/fixtures/hidden-capture.html')).href + `?platform=${platform}&manual=1&waitForObserver=1`;
 			await createWindow({ url, visible: true, sourceFiles: [`sources/${platform}.js`], filesource: sourceBase });
 			const page = await until(async () => pages().find(p => p.url().includes(`platform=${platform}`)), platform + ' source');
 			await until(() => page.evaluate(() => !!window.__hiddenCaptureFixture), platform + ' fixture');
 			sources.push({ platform, page });
 		}
-		await delay(4500); // Allow the real capture scripts to install their observers.
+		for (const { platform, page } of sources) {
+			await until(() => page.evaluate(() => window.__fixtureCaptureObserved), platform + ' capture observer', 90000);
+		}
 		// Finish startup relay synchronization before submitting eligible fixture
 		// messages. It can still be updating the background on slower runtimes.
 		const startupReloadOrigin = await main.evaluate(async () => {
@@ -131,34 +133,43 @@ async function run() {
 				previousOrigin = await background.evaluate(() => performance.timeOrigin);
 				await background.evaluate(() => location.reload());
 			}
-			background = await until(async () => {
+			// Navigation can replace a ready frame between two evaluate calls. Retry
+			// only setup, before sending the first eligible message for this phase.
+			const prepared = await until(async () => {
 				const frame = main.frames().find(f => f.url().includes('/background.html'));
-				return frame && await frame.evaluate(previous =>
-					(previous === null || performance.timeOrigin !== previous) &&
-					typeof loadedFirst !== 'undefined' && loadedFirst &&
-					typeof processIncomingMessage === 'function' && socketserverDock?.readyState === 1, previousOrigin) ? frame : null;
+				if (!frame) return null;
+				const state = await frame.evaluate(async ({ previousOrigin, blockLibrary }) => {
+					if (performance.timeOrigin === previousOrigin || document.readyState !== 'complete' ||
+						typeof loadedFirst === 'undefined' || !loadedFirst ||
+						typeof processIncomingMessage !== 'function' || socketserverDock?.readyState !== 1) return null;
+					let libraryLoaded;
+					if (blockLibrary) {
+						// Some bundles initialize the sanitizer first. Exercise a separate request.
+						libraryLoaded = await new Promise(resolve => {
+							const script = document.createElement('script');
+							script.onload = () => resolve(true);
+							script.onerror = () => resolve(false);
+							script.src = './thirdparty/xss.min.js?emote-regression';
+							document.body.appendChild(script);
+						});
+					}
+					window.__emoteCaptures = [];
+					const original = processIncomingMessage;
+					processIncomingMessage = function (data, ...args) {
+						if (data.chatname?.startsWith('Emote ')) window.__emoteCaptures.push(JSON.parse(JSON.stringify(data)));
+						return original.call(this, data, ...args);
+					};
+					return { textOnly: !!settings.textonlymode, libraryLoaded };
+				}, { previousOrigin, blockLibrary: phase === 'blocked-library' });
+				return state && { frame, state };
 			}, 'background relay', 90000);
-			assert.strictEqual(await background.evaluate(() => !!settings.textonlymode), textOnly, 'text-only setting survives background reload');
+			background = prepared.frame;
+			assert.strictEqual(prepared.state.textOnly, textOnly, 'text-only setting survives background reload');
 			if (phase === 'blocked-library') {
 				// Also cover an older cached loader still requesting the separate asset.
-				const loaded = await background.evaluate(() => new Promise(resolve => {
-					const script = document.createElement('script');
-					script.onload = () => resolve(true);
-					script.onerror = () => resolve(false);
-					script.src = './thirdparty/xss.min.js?emote-regression';
-					document.body.appendChild(script);
-				}));
-				assert.strictEqual(loaded, false, 'Separate library request must fail in this phase');
+				assert.strictEqual(prepared.state.libraryLoaded, false, 'Separate library request must fail in this phase');
 				assert.ok(blockedRequests > 0);
 			}
-			await background.evaluate(() => {
-				window.__emoteCaptures = [];
-				const original = processIncomingMessage;
-				processIncomingMessage = function (data, ...args) {
-					if (data.chatname?.startsWith('Emote ')) window.__emoteCaptures.push(JSON.parse(JSON.stringify(data)));
-					return original.call(this, data, ...args);
-				};
-			});
 			const phaseReport = { phase, blockedRequests, expectedNames: [] };
 			report.phases.push(phaseReport);
 			for (let repeat = 0; repeat < 2; repeat++) {
@@ -174,7 +185,16 @@ async function run() {
 				}
 				await delay(2500);
 			}
-			const captures = await background.evaluate(() => window.__emoteCaptures);
+			// Drain queued captures and dock renders before comparing both ledgers.
+			await until(async () => {
+				phaseReport.captures = await background.evaluate(() => window.__emoteCaptures);
+				phaseReport.rows = await evaluateDock(phase => Array.from(document.querySelectorAll('.highlight-chat'))
+					.filter(row => row.textContent.includes('Emote ' + phase))
+					.map(row => ({ text: row.textContent, images: row.querySelectorAll('img.regular-emote').length })), phase);
+				return phaseReport.captures?.length >= phaseReport.expectedNames.length &&
+					phaseReport.rows.length >= phaseReport.expectedNames.length;
+			}, phase + ' source and dock deliveries', 60000);
+			const { captures, rows } = phaseReport;
 			assert.ok(Array.isArray(captures), phase + ': background reloaded during fixture delivery');
 			assert.strictEqual(captures.length, 6, phase + ': real source capture');
 			assert.deepStrictEqual(captures.map(capture => capture.chatname).sort(), [...phaseReport.expectedNames].sort(),
@@ -186,12 +206,7 @@ async function run() {
 					assert.ok(capture.chatmessage.includes("it's 👑 sadNik :)"), capture.type + ': plain emoji and emote names preserved');
 				}
 			}
-			const rows = await until(async () => {
-				const result = await evaluateDock(phase => Array.from(document.querySelectorAll('.highlight-chat'))
-					.filter(row => row.textContent.includes('Emote ' + phase))
-					.map(row => ({ text: row.textContent, images: row.querySelectorAll('img.regular-emote').length })), phase);
-				return result.length === 6 ? result : null;
-			}, phase + ' dock messages');
+			assert.strictEqual(rows.length, phaseReport.expectedNames.length, phase + ': dock row count');
 			for (const name of phaseReport.expectedNames) {
 				assert.strictEqual(rows.filter(row => row.text.includes(name)).length, 1, phase + ': dock delivery for ' + name);
 			}
