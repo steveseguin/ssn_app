@@ -120,7 +120,7 @@ const report = { checks: [], live: [] };
         for (const [target, input, expected, selector] of [
             ['bigo', '1082331356', 'https://www.bigo.tv/1082331356', '.chat__container'],
             ['loco', 'https://loco.com/streamers/archax13', 'https://loco.com/chat/streamers/archax13', '.chat-elements-list'],
-            ['vkvideo', '@highmyside', 'https://live.vkvideo.ru/highmyside/only-chat', '[class^="Chat_root"]']
+            ['vkvideo', 'https://live.vkvideo.ru/highmyside/stream/default/only-chat', 'https://live.vkvideo.ru/highmyside/only-chat', '[data-test-id="chatContainer"]']
         ]) {
             await main.locator('[data-source-type="' + target + '"]').click();
             await main.locator('#source-setup-input').fill(input);

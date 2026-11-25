@@ -3107,7 +3107,7 @@ try {
     installTikTokSignServerFallback(tiktokConnector);
 
 	    const localSignerImplementation = {
-	        checkLiveStatus: async (username, signal, onDiagnostic = () => {}) => {
+	        checkLiveStatus: async (username, signal, onDiagnostic = () => {}, fresh = false) => {
                 configureTikTokAuthPartition();
                 const fetchSession = session.fromPartition(TIKTOK_AUTH_PARTITION);
                 const user = encodeURIComponent(username);
@@ -3119,7 +3119,9 @@ try {
                     if (signal.aborted) return null;
                     const endpoint = url.includes('/api-live/') ? 'room_api' : 'live_page';
                     try {
-                        const response = await fetchSession.fetch(url, { signal, redirect: 'error' });
+                        const options = { signal, redirect: 'error' };
+                        if (fresh) options.cache = 'no-store';
+                        const response = await fetchSession.fetch(url, options);
                         if (!response.ok) {
                             onDiagnostic({ endpoint, outcome: 'http_error', httpStatus: response.status });
                             continue;
@@ -21451,6 +21453,33 @@ function normalizeTikTokConnectionHandle(value) {
     return parsed >= 900001 ? parsed - 900000 : parsed;
 }
 
+const EULER_AUTO_ATTEMPTS_PER_DAY = 12;
+// Count automatic connection attempts conservatively, even if the handshake fails.
+// Keep the rolling window across restarts and across sources using the same credential.
+function updateEulerAutoBudget(apiKey, blockedUntil = 0) {
+    const day = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const id = crypto.createHash('sha256').update(apiKey || 'anonymous').digest('hex');
+    const storageKey = 'tiktokEulerAuto.' + id;
+    const previous = store.get(storageKey, {});
+    const attempts = Array.isArray(previous?.attempts) ? previous.attempts.filter(time => time > now - day) : [];
+    const until = Math.max(previous?.blockedUntil || 0, blockedUntil);
+    if (blockedUntil) {
+        store.set(storageKey, { attempts, blockedUntil: until });
+    } else if (until <= now && attempts.length < EULER_AUTO_ATTEMPTS_PER_DAY) {
+        attempts.push(now);
+        store.set(storageKey, { attempts, blockedUntil: 0 });
+        return 0;
+    }
+    return Math.max(until, attempts.length >= EULER_AUTO_ATTEMPTS_PER_DAY ? attempts[0] + day : 0) - now;
+}
+
+ipcMain.on('setTikTokEulerAutoActivate', (event, sourceId, enabled) => {
+    if (event.sender !== mainWindow?.webContents) return;
+    const manager = websocketConnections[getActiveTikTokWssIdForSource(sourceId)];
+    if (manager?.supportsEulerLiveWatch()) manager.autoActivate = enabled === true;
+});
+
 ipcMain.handle("createTikTokConnection", async function (_event, args) {
     if (runtimeForceTikTokClassic) {
         console.info('[TikTok] Skipping WebSocket connection - classic mode is forced.');
@@ -21526,6 +21555,7 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
         manager.replyOnly = true;
     }
     manager.accountRole = normalizeSourceAccountRole(args?.accountRole);
+    manager.updateEulerAutoBudget = updateEulerAutoBudget;
     manager.customSession = args?.customSession || null;
     manager.sourceId = sourceIdFromRenderer || null;
     if (manager.sourceId) {
@@ -21607,7 +21637,7 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     }
 
     try {
-        await manager.initialize();
+        await manager.initialize({ automatic: args.automatic === true });
     } catch (e) {
         console.error('Error creating TikTok connection:', e);
         try {

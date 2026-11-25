@@ -2346,6 +2346,14 @@
             const autoActivateCheckbox = element.querySelector('.auto-activate-toggle input[data-state-key="autoActivate"]');
             if (autoActivateCheckbox) {
                 autoActivateCheckbox.checked = source.autoActivate || false;
+                if (source.target === 'tiktok') {
+                    const toggle = autoActivateCheckbox.closest('.auto-activate-toggle');
+                    if (usesTikTokEulerAutoWatch(source)) {
+                        toggle.title = 'Checks TikTok directly and connects when live. Sources sharing an Euler key share a limit of 12 automatic connection attempts per 24 hours.';
+                    } else {
+                        toggle.removeAttribute('title');
+                    }
+                }
 
                 // Set up the change handler if not already set
                 if (!autoActivateCheckbox.hasAttribute('data-handler-set')) {
@@ -2370,7 +2378,7 @@
                             const latest = stateManager.getSource(source.id);
                             const isTikTokWss = latest && latest.target === 'tiktok' && (latest.connectionMode === 'tiktok-websocket' || latest.connectionMode === 'tiktok-legacy');
                             const isConnecting = latest && (latest.status === 'activating' || !!(element && element._tiktokRetryTimer));
-                            if (isTikTokWss && isConnecting) {
+                            if (isTikTokWss && isConnecting && !usesTikTokEulerAutoWatch(latest)) {
                                 const stopBtn = element.querySelector('[data-activatehtml]');
                                 if (stopBtn) {
                                     stopThis(stopBtn);
@@ -3176,7 +3184,7 @@
                     Toast.success(`Signed in as ${group.channelTitle || group.username}.`, 'YouTube Sign-In');
                 }
 
-                resetYouTubeGroupApiBootstrap(group.id, 'owner sign-in');
+                youtubeGroupDiscoveryState.delete(group.id);
                 const result = await handleYouTubeActivation(
                     group.username,
                     group.target === 'youtubeshorts',
@@ -3325,7 +3333,7 @@
             if (action === 'switch') {
                 await startYouTubeOwnerGroupFlow(group.target, group.id);
             } else if (action === 'select') {
-                resetYouTubeGroupApiBootstrap(group.id, 'owner manage select');
+                youtubeGroupDiscoveryState.delete(group.id);
                 const result = await handleYouTubeActivation(
                     group.username,
                     group.target === 'youtubeshorts',
@@ -4492,7 +4500,7 @@
                             if (!latest || !latest.autoActivate) return;
                             const activateButton = elementToReturn.querySelector('[data-activatehtml]');
                             if (activateButton && !latest.vid && !latest.wssId && !latest.tiktokWssId) {
-                                await createWindow(activateButton);
+                                await createWindow(activateButton, false, true);
                             }
                         }, 2000 + Math.random() * 1000);
                     }
@@ -4566,7 +4574,7 @@
                         if (!latest || !latest.autoActivate) return;
                         const activateButton = sourceElement.querySelector('[data-activatehtml]');
                         if (activateButton && !latest.vid && !latest.wssId && !latest.tiktokWssId) {
-                            await createWindow(activateButton);
+                            await createWindow(activateButton, false, true);
                         }
                     }, 2000 + Math.random() * 1000);
                 }
@@ -4709,7 +4717,7 @@
                         if (!latest || !latest.autoActivate) return;
                         const activateButton = sourceElement.querySelector('[data-activatehtml]');
                         if (activateButton && !latest.vid && !latest.wssId && !latest.tiktokWssId) {
-                            await createWindow(activateButton);
+                            await createWindow(activateButton, false, true);
                         }
                     }, 2000 + Math.random() * 1000);
                 }
@@ -5129,7 +5137,6 @@
             const group = stateManager.getGroup(groupId);
             if (!group || (group.target !== "youtube" && group.target !== "youtubeshorts")) return;
 
-            preferYouTubeGroupScrapeOnly(groupId, 'manual discovery');
             const result = await handleYouTubeActivation(group.username, group.target === "youtubeshorts", true, false, group.isChannel, { manualTrigger: true, groupId });
             showYouTubeManualDiscoveryStatus(groupId, result);
         }
@@ -5141,7 +5148,6 @@
             const group = stateManager.getGroup(groupId);
             if (!group || (group.target !== "youtube" && group.target !== "youtubeshorts")) return;
 
-            preferYouTubeGroupScrapeOnly(groupId, 'manual auto-activate');
             const result = await handleYouTubeActivation(group.username, group.target === "youtubeshorts", false, true, group.isChannel, { manualTrigger: true, groupId });
             showYouTubeManualDiscoveryStatus(groupId, result);
         }
@@ -5211,36 +5217,10 @@
             const identity = getYouTubeGroupDiscoveryIdentity(group);
             let state = youtubeGroupDiscoveryState.get(group.id);
             if (!state || state.identity !== identity) {
-                state = {
-                    identity,
-                    apiBootstrapPending: true
-                };
+                state = { identity };
                 youtubeGroupDiscoveryState.set(group.id, state);
             }
             return state;
-        }
-
-        function resetYouTubeGroupApiBootstrap(groupId, reason = '') {
-            const group = stateManager.getGroup(groupId);
-            if (!group || !isYouTubeTarget(group.target)) return;
-            youtubeGroupDiscoveryState.set(groupId, {
-                identity: getYouTubeGroupDiscoveryIdentity(group),
-                apiBootstrapPending: true
-            });
-            if (reason) {
-                console.log(`Resetting YouTube auto-check bootstrap for ${group.username} (${reason})`);
-            }
-        }
-
-        function preferYouTubeGroupScrapeOnly(groupId, reason = '') {
-            const group = stateManager.getGroup(groupId);
-            if (!group || !isYouTubeTarget(group.target)) return;
-            const state = getYouTubeGroupDiscoveryState(group);
-            if (!state.apiBootstrapPending) return;
-            state.apiBootstrapPending = false;
-            if (reason) {
-                console.log(`Using scrape-only YouTube auto-checks for ${group.username} (${reason})`);
-            }
         }
 
         function shouldPollYouTubeGroup(group) {
@@ -5327,7 +5307,6 @@
             if (!shouldPollYouTubeGroup(group)) return;
             if (groupHasActiveConnection(group) && !groupNeedsYouTubeOwnerChatPolling(group)) return;
             if (youtubeGroupIntervals.has(groupId)) return;
-            preferYouTubeGroupScrapeOnly(groupId, reason || 'restart');
             const reasonSuffix = reason ? ` (${reason})` : '';
             console.log(`Restarting auto-check for YouTube group ${group.username}${reasonSuffix}`);
             startYouTubeGroupAutoCheck(groupId);
@@ -5668,10 +5647,7 @@
                     if (!identifier) return { type: 'no_eligible_streams', message: YOUTUBE_CHANNEL_LOOKUP_HINT };
                     if (!stillCurrent()) return false;
                     state.resolvedIdentifier = identifier;
-                    const firstCheck = runId && state.apiBootstrapPending;
-                    if (firstCheck) preferYouTubeGroupScrapeOnly(groupId, 'first automatic check');
-                    const canUseApi = () => firstCheck && group.autoActivate && stillCurrent();
-                    streams = await fetchPublicYouTubeGroupStreams(identifier, group.target === 'youtubeshorts', canUseApi, publicWindowMinutes);
+                    streams = await fetchPublicYouTubeGroupStreams(identifier, group.target === 'youtubeshorts', publicWindowMinutes);
                 }
             } catch (error) {
                 if (!stillCurrent()) return false;
@@ -9318,7 +9294,7 @@
             };
         })();
 
-        async function createWindow(ele, tabid = false) {
+        async function createWindow(ele, tabid = false, automatic = false) {
             if (!ele) { console.error('No element provided to createWindow'); return false; }
             if (!configReady) {
                 Toast.error("Config Error", "Configuration not ready. Please wait or check console.");
@@ -9335,6 +9311,7 @@
             console.log(`[CREATEWINDOW DEBUG] Source ID: ${sourceId}, Source:`, source);
             if (!source) { console.error("Source not found in stateManager:", sourceId); return false; }
 
+            if (automatic && usesTikTokEulerAutoWatch(source) && pendingTikTokActivations.has(sourceId)) return false;
             const target = source.target; // Move this declaration up before it's used
             const currentTikTokWssId = getTikTokWssId(source);
 
@@ -9449,12 +9426,13 @@
                 sourceId,
                 entry,
                 initialMode: mode,
-                tabid
+                tabid,
+                automatic
             });
             return windowId;
         }
 
-        async function attemptActivationModes({ sourceId, entry, initialMode, tabid, reuseFallbackState = false }) {
+        async function attemptActivationModes({ sourceId, entry, initialMode, tabid, reuseFallbackState = false, automatic = false }) {
             const source = stateManager.getSource(sourceId);
             if (!source) {
                 console.warn('attemptActivationModes: source missing', sourceId);
@@ -9560,6 +9538,7 @@
                     entry: resolvedEntry,
                     tabid,
                     mode: normalizedCandidate,
+                    automatic,
                     target
                 });
 
@@ -10078,7 +10057,7 @@
             }
         }
 
-        async function performActivationAttempt({ sourceId, entry, tabid, mode, target }) {
+        async function performActivationAttempt({ sourceId, entry, tabid, mode, target, automatic = false }) {
             let source = stateManager.getSource(sourceId);
             if (!source) {
                 return { success: false, error: new Error('Source not available') };
@@ -10116,7 +10095,7 @@
 
                 let windowId;
                 if (resolvedTarget === 'tiktok' && (normalizedMode === 'tiktok-websocket' || normalizedMode === 'tiktok-legacy')) {
-                    windowId = await createTikTokWSSFromSource(source, normalizedMode === 'tiktok-legacy' ? 'legacy' : 'websocket', sharedFallback);
+                    windowId = await createTikTokWSSFromSource(source, normalizedMode === 'tiktok-legacy' ? 'legacy' : 'websocket', sharedFallback, automatic);
                 } else if (resolvedTarget === 'shareplay' && source.shareplayNative) {
                     windowId = await window.createSharePlaySource(source);
                 } else if (resolvedTarget === 'discord' && source.discordNative) {
@@ -11002,7 +10981,7 @@
             }
         }
 
-        async function createTikTokWSSFromSource(source, strategy = 'legacy', sharedFallback = false) {
+        async function createTikTokWSSFromSource(source, strategy = 'legacy', sharedFallback = false, automatic = false) {
             if (!ipcRenderer) return false;
             const cleanUsername = source.username?.replace('@', '').trim();
             if (!cleanUsername) {
@@ -11057,6 +11036,7 @@
                     signingProvider, // Pass the provider preference to the backend
                     autoMode: resolveTikTokConnectionPreset(source) === 'auto' && !source.disableTikTokAutoFallback,
                     sharedFallback,
+                    automatic,
                     autoActivate: !!source.autoActivate
                 });
 
@@ -12160,6 +12140,17 @@
             }
         }
 
+        function usesTikTokEulerAutoWatch(source) {
+            if (source?.target !== 'tiktok' || resolveTikTokConnectionPreset(source) !== 'custom'
+                || source.replyOnly || preferTikTokClassic || cliForcesTikTokClassic) return false;
+            const url = resolveTikTokSigningConfigForIPC(source)?.serviceUrl;
+            if (!url) return true;
+            try {
+                const host = new URL(url).hostname;
+                return host === 'eulerstream.com' || host.endsWith('.eulerstream.com');
+            } catch (_) { return false; }
+        }
+
         function resolveTikTokSigningConfigForIPC(source) {
             if (!source || source.target !== 'tiktok') {
                 return null;
@@ -12822,7 +12813,7 @@
                                 const activateButton = sourceElement.querySelector('[data-activatehtml]');
                                 const currentSrcState = stateManager.getSource(source.id);
                                 if (activateButton && currentSrcState?.autoActivate && !currentSrcState.vid && !currentSrcState.wssId && !currentSrcState.tiktokWssId) {
-                                    await createWindow(activateButton);
+                                    await createWindow(activateButton, false, true);
                                 }
                             }, 2000 + Math.random() * 1000);
                         }
@@ -13582,6 +13573,15 @@
             stateManager.on('sourceUpdated', ({ sourceId, updates, oldState }) => {
                 const element = document.querySelector(`[data-source-id="${sourceId}"]`);
                 const source = stateManager.getSource(sourceId);
+                if ('autoActivate' in updates && oldState.autoActivate !== source?.autoActivate && usesTikTokEulerAutoWatch(source)) {
+                    ipcRenderer.send('setTikTokEulerAutoActivate', sourceId, source.autoActivate);
+                    const button = element?.querySelector('[data-activatehtml]');
+                    if (button && source.autoActivate && !hasConnectionHandles(source) && source.status !== 'activating') {
+                        createWindow(button, false, true);
+                    } else if (button && !source.autoActivate && (source.status === 'activating' || element._tiktokRetryTimer)) {
+                        stopThis(button);
+                    }
+                }
                 if (['groupId', 'videoId', 'liveChatId', 'channelId', 'youtubeAuthRef', 'customSession', 'accountRole'].some(key => key in updates)) {
                     syncYouTubeOwnerSender(source);
                 }
@@ -13779,7 +13779,7 @@
                         if (!group?.autoActivate || oldIdentity !== newIdentity) cancelPublicYouTubeEndCheck(groupId);
 
                         if (newIdentity && oldIdentity !== newIdentity) {
-                            resetYouTubeGroupApiBootstrap(groupId, 'group updated');
+                            youtubeGroupDiscoveryState.delete(groupId);
                             if (group?.autoActivate) {
                                 startYouTubeGroupAutoCheck(groupId);
                             }

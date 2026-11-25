@@ -1547,21 +1547,11 @@ function isEligiblePublicYouTubeStream(stream, maxFutureMinutes) {
         && isYouTubeStreamWithinWindow(stream, maxFutureMinutes));
 }
 
-async function fetchPublicYouTubeGroupStreams(identifier, shorts, canUseApi, maxFutureMinutes) {
+async function fetchPublicYouTubeGroupStreams(identifier, shorts, maxFutureMinutes) {
     const eligible = stream => (typeof stream.isShort !== 'boolean' || stream.isShort === shorts)
         && isEligiblePublicYouTubeStream(stream, maxFutureMinutes);
-    let listed = [], pageError;
-    try {
-        listed = mergeYouTubeStreams([], await fetchYouTubeStreamsFromPages(identifier, { eligible, checkForLive: true, retryListingError: true }), shorts);
-    } catch (error) {
-        pageError = error;
-    }
-    if (!listed.some(eligible) && canUseApi()) {
-        const api = await fetchYouTubeLiveStreamsFromApi(identifier, { isUsernameOnly: true });
-        if (api.length) return mergeYouTubeStreams(api, listed, shorts);
-    }
-    if (pageError) throw pageError;
-    return listed;
+    const listed = await fetchYouTubeStreamsFromPages(identifier, { eligible, checkForLive: true, retryListingError: true });
+    return mergeYouTubeStreams([], listed, shorts);
 }
 
 async function fetchYoutube(username, alt = false, options = {}) {

@@ -42,7 +42,7 @@ function parseNamedSourceInput(target, value) {
     const definitions = {
         bigo: { hosts: ['www.bigo.tv', 'bigo.tv'], path: /^\/(?:user\/|[a-z]{2}\/)?([^/]+)\/?$/, base: 'https://www.bigo.tv/', suffix: '' },
         loco: { hosts: ['loco.com', 'www.loco.com', 'loco.gg', 'www.loco.gg'], path: /^\/(?:chat\/)?streamers\/([^/]+)\/?$/, base: 'https://loco.com/chat/streamers/', suffix: '' },
-        vkvideo: { hosts: ['live.vkvideo.ru', 'live.vkplay.ru', 'vkplay.live'], path: /^\/([^/]+)(?:\/only-chat|\/stream\/sl_\d+)?\/?$/, base: 'https://live.vkvideo.ru/', suffix: '/only-chat' }
+        vkvideo: { hosts: ['live.vkvideo.ru', 'live.vkplay.ru', 'vkplay.live'], path: /^\/([^/]+)(?:(?:\/stream\/default)?\/only-chat|\/stream\/sl_\d+)?\/?$/, base: 'https://live.vkvideo.ru/', suffix: '/only-chat' }
     };
     const definition = definitions[target];
     if (!definition) throw new Error('Choose a supported platform.');
