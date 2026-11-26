@@ -889,7 +889,7 @@ async function handleYouTubeActivation(username, isShortDefault = false, showPro
 
                 if (!stateManager.isVideoIdAdded(stream.videoId)) {
                     // Create the source and activate it
-                    const sourceElement = await createYouTubeEntry(stream, username, stream.isShort);
+                    const sourceElement = await createYouTubeEntry(stream, username, stream.isShort, autoActivateAll);
                     if (sourceElement) {
                         const activateButton = sourceElement.querySelector('[data-activatehtml]');
                         if (activateButton && parentGroupData) {
@@ -1460,12 +1460,44 @@ function getYouTubeDiscoveryFetchHeaders() {
     };
 }
 
+const youtubePageRetryTimes = new Map();
+const YOUTUBE_PAGE_RETRY_STORAGE = 'youtubePageRetryTimes';
+try {
+    for (const [url, until] of JSON.parse(localStorage.getItem(YOUTUBE_PAGE_RETRY_STORAGE) || '[]')) {
+        if (Number.isSafeInteger(until) && until > Date.now()) youtubePageRetryTimes.set(url, until);
+    }
+} catch (_) { /* Storage may be unavailable. */ }
+
 async function fetchYouTubeDiscoveryHtml(fetchUrl) {
+    const retryAt = youtubePageRetryTimes.get(fetchUrl);
+    if (retryAt > Date.now()) {
+        throw Object.assign(new Error('YouTube asked SSApp to retry this page later.'), {
+            code: 'SSAPP_YOUTUBE_DISCOVERY_NETWORK', temporaryHttpError: true, retryAt
+        });
+    }
+    if (retryAt) youtubePageRetryTimes.delete(fetchUrl);
     const response = await ipcRenderer.invoke('nodefetch', {
         url: fetchUrl,
+        youtubeDiscovery: true,
         headers: getYouTubeDiscoveryFetchHeaders(),
         timeout: 15000
     });
+    if ([429, 500, 502, 503, 504].includes(response?.status)) {
+        const raw = String(response.headers?.['retry-after'] || '').trim();
+        const now = Date.now();
+        const until = /^\d+$/.test(raw) ? now + Number(raw) * 1000 : (/[a-z]/i.test(raw) ? Date.parse(raw) : NaN);
+        const retryAt = Number.isSafeInteger(until) && until > now ? until : 0;
+        if (retryAt) {
+            for (const [url, expires] of youtubePageRetryTimes) {
+                if (expires <= now) youtubePageRetryTimes.delete(url);
+            }
+            youtubePageRetryTimes.set(fetchUrl, retryAt);
+            try { localStorage.setItem(YOUTUBE_PAGE_RETRY_STORAGE, JSON.stringify([...youtubePageRetryTimes])); } catch (_) { }
+        }
+        throw Object.assign(new Error(`YouTube temporarily refused the page request (HTTP ${response.status}).`), {
+            code: 'SSAPP_YOUTUBE_DISCOVERY_NETWORK', temporaryHttpError: true, retryAt
+        });
+    }
     if (isYouTubeTransientNetworkError(response)) {
         throw createYouTubeDiscoveryNetworkError(fetchUrl, response);
     }
@@ -1513,7 +1545,7 @@ async function fetchYouTubeStreamsFromPages(identifier, options = {}) {
         listed = await fetchYoutube(identifier, false) || [];
     } catch (error) {
         // Manual discovery reports a timeout immediately so the user can select an existing API result.
-        if (!options.retryListingError) throw error;
+        if (!options.retryListingError || error.temporaryHttpError) throw error;
         listingError = error;
     }
     const eligible = options.eligible || (stream => isSelectableYouTubeStreamStatus(stream.status));

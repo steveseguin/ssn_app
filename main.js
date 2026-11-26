@@ -3133,14 +3133,14 @@ try {
                             continue;
                         }
                         const body = await response.text();
-                        let room;
+                        let roomInfo;
                         if (url.includes('/api-live/')) {
                             const data = JSON.parse(body);
                             if (data.statusCode !== 0) {
                                 onDiagnostic({ endpoint, outcome: 'api_error', apiCode: Number(data.statusCode) || null });
                                 continue;
                             }
-                            room = data.data?.liveRoom;
+                            roomInfo = data.data;
                         } else {
                             const match = body.match(/<script\b[^>]*\bid=["']SIGI_STATE["'][^>]*>([\s\S]*?)<\/script>/i);
                             if (!match) {
@@ -3148,11 +3148,13 @@ try {
                                 continue;
                             }
                             const data = JSON.parse(match[1]);
-                            room = (data.LiveRoom || data.liveRoom)?.liveRoomUserInfo?.liveRoom;
+                            roomInfo = (data.LiveRoom || data.liveRoom)?.liveRoomUserInfo;
                         }
-                        onDiagnostic({ endpoint, outcome: 'room_status', roomStatus: Number(room?.status) || null });
-                        if (Number(room?.status) === 2) return true;
-                        if (Number(room?.status) === 4) return false;
+                        const status = Number(roomInfo?.liveRoom?.status);
+                        onDiagnostic({ endpoint, outcome: 'room_status', roomStatus: status || null });
+                        if (status === 2 || status === 4) {
+                            return { live: status === 2, roomId: roomInfo.user?.roomId };
+                        }
                     } catch (error) {
                         onDiagnostic({ endpoint, outcome: signal.aborted ? 'aborted' : 'request_failed', reason: error?.message || 'Lookup failed' });
                         // Try the other direct TikTok lookup.
@@ -12675,7 +12677,13 @@ async function createWindow(args, reuse = false, mainApp = false) {
                 headers: response.headers,
                 body: text
             });
-            return buildNodeFetchResponse(response, text, args.url);
+            const result = buildNodeFetchResponse(response, text, args.url);
+            if (args.youtubeDiscovery && [429, 500, 502, 503, 504].includes(response.status) &&
+                /^https:\/\/www\.youtube\.com\//i.test(args.url)) {
+                const retryAfter = response.headers.get("retry-after");
+                if (retryAfter) result.headers["retry-after"] = retryAfter.slice(0, 128);
+            }
+            return result;
         } catch (error) {
             console.error("Fetch error:", error);
             llmRequestDiagnostics.fail(tracked.diagnostic, error);
@@ -21456,19 +21464,24 @@ function normalizeTikTokConnectionHandle(value) {
 const EULER_AUTO_ATTEMPTS_PER_DAY = 12;
 // Count automatic connection attempts conservatively, even if the handshake fails.
 // Keep the rolling window across restarts and across sources using the same credential.
+function eulerAutoBudgetKey(apiKey) {
+    return 'tiktokEulerAuto.' + crypto.createHash('sha256').update(apiKey || 'anonymous').digest('hex');
+}
+
 function updateEulerAutoBudget(apiKey, blockedUntil = 0) {
     const day = 24 * 60 * 60 * 1000;
     const now = Date.now();
-    const id = crypto.createHash('sha256').update(apiKey || 'anonymous').digest('hex');
-    const storageKey = 'tiktokEulerAuto.' + id;
+    const storageKey = eulerAutoBudgetKey(apiKey);
     const previous = store.get(storageKey, {});
     const attempts = Array.isArray(previous?.attempts) ? previous.attempts.filter(time => time > now - day) : [];
     const until = Math.max(previous?.blockedUntil || 0, blockedUntil);
     if (blockedUntil) {
-        store.set(storageKey, { attempts, blockedUntil: until });
+        const cooldownStartedAt = previous?.blockedUntil > now ? previous.cooldownStartedAt || now : now;
+        store.set(storageKey, { attempts, blockedUntil: until, cooldownStartedAt });
     } else if (until <= now && attempts.length < EULER_AUTO_ATTEMPTS_PER_DAY) {
         attempts.push(now);
-        store.set(storageKey, { attempts, blockedUntil: 0 });
+        // Other rooms may next check after the cooldown has already ended.
+        store.set(storageKey, { ...previous, attempts });
         return 0;
     }
     return Math.max(until, attempts.length >= EULER_AUTO_ATTEMPTS_PER_DAY ? attempts[0] + day : 0) - now;
@@ -21556,6 +21569,39 @@ ipcMain.handle("createTikTokConnection", async function (_event, args) {
     }
     manager.accountRole = normalizeSourceAccountRole(args?.accountRole);
     manager.updateEulerAutoBudget = updateEulerAutoBudget;
+    manager.eulerAutoBudgetKey = eulerAutoBudgetKey;
+    manager.getEulerAutoCooldown = apiKey => store.get(eulerAutoBudgetKey(apiKey));
+    const roomWatchKey = 'tiktokEulerDeviceBlocks.' + Buffer.from(username).toString('hex');
+    function roomWatches() {
+        const saved = store.get(roomWatchKey);
+        // Earlier profiles store just the current broadcast.
+        const current = saved?.history ? saved.current : saved;
+        return {
+            current: current && (current.attempts || !current.expiresAt || current.expiresAt > Date.now()) ? current : null,
+            history: (saved?.history || []).filter(record => record.expiresAt > Date.now())
+        };
+    }
+    function matchesRoom(record, id) {
+        return record && id && (record.roomId === id || record.requestedRoomId === id);
+    }
+    manager.getEulerRoomWatch = roomId => {
+        const { current, history } = roomWatches();
+        if (!roomId || matchesRoom(current, roomId)) return current;
+        return history.find(record => matchesRoom(record, roomId)) || current;
+    };
+    manager.setEulerRoomWatch = (state, roomId = state?.roomId) => {
+        let { current, history } = roomWatches();
+        const replaced = record => matchesRoom(record, roomId) || matchesRoom(record, state?.requestedRoomId);
+        history = history.filter(record => !replaced(record));
+        if ((!state && !roomId) || replaced(current)) current = null;
+        if (state) {
+            const expiresAt = Date.now() + 86400000;
+            if (current?.roomId) history.push({ ...current, expiresAt: current.expiresAt || expiresAt });
+            current = { ...state, expiresAt: state.expiresAt || expiresAt };
+        }
+        if (current || history.length) store.set(roomWatchKey, { current, history });
+        else store.delete(roomWatchKey);
+    };
     manager.customSession = args?.customSession || null;
     manager.sourceId = sourceIdFromRenderer || null;
     if (manager.sourceId) {

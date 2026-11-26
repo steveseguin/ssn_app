@@ -513,6 +513,16 @@ const tiktokConnectAttemptGate = {
     cooldowns: new Map()
 };
 
+// TikTok room IDs can exceed the precision of a JavaScript number.
+function normalizeTikTokRoomId(value) {
+    if (typeof value !== 'string' && !Number.isSafeInteger(value)) return null;
+    return /^[1-9]\d*$/.test(value) ? String(value) : null;
+}
+
+const EULER_DEVICE_BLOCK_MESSAGE = 'TikTok blocked this device for this LIVE.';
+const EULER_ROOM_MAX_ATTEMPTS = 3;
+const EULER_ROOM_RETRY_WINDOW_MS = 10 * 60000;
+
 function getLocalSignerMinAttemptIntervalMs() {
     const raw = Number(CONFIG?.CONNECTION?.LOCAL_SIGNER_MIN_ATTEMPT_INTERVAL_MS);
     return Number.isFinite(raw) && raw > 0 ? raw : 10000;
@@ -4523,8 +4533,8 @@ class ConnectionManager {
         this.eulerBackupCheckInProgress = false;
         this.eulerBackupReconnectUsed = false;
         this.eulerLiveCheckAbortController = null;
-        this.eulerAutoFailures = 0;
-        this.eulerAutoRetryAt = 0;
+        this.eulerReservedAt = 0;
+        this.eulerAttemptRoomId = null;
         this.userProvidedSigningApiKey = this.signingConfig?.apiKey || null;
         this.sharedEulerApiKeyPool = this.buildSharedEulerApiKeyPool();
         this.sharedEulerApiKeyAttempts = new Set();
@@ -5926,12 +5936,17 @@ class ConnectionManager {
         if (!useLegacyConnector && typeof this.connection._wsClientProvider === 'function') {
             const connection = this.connection;
             const createWebSocket = connection._wsClientProvider;
+            const watchDeviceBlocks = this.supportsEulerLiveWatch();
             connection._wsClientProvider = function (...args) {
                 connection.ssappWebSocketHttpStatus = null;
                 const socket = createWebSocket.apply(this, args);
                 // The connector's handshake error omits the HTTP status.
                 socket.prependListener('unexpected-response', (_request, response) => {
                     connection.ssappWebSocketHttpStatus = response?.statusCode || null;
+                    if (watchDeviceBlocks && response?.headers?.['handshake-msg'] === 'DEVICE_BLOCKED') {
+                        // The connector clears its room ID before it emits the connection error.
+                        connection.ssappBlockedRoomId = normalizeTikTokRoomId(args[0]?.roomId);
+                    }
                 });
                 return socket;
             };
@@ -7986,6 +8001,12 @@ class ConnectionManager {
             const connectionDuration = now - this.connectionStartTime;
 
             if (this.connection?.isConnected) {
+                // A connection that stays up earns a fresh recovery window if it later drops.
+                if (this.eulerReservedAt && now - this.lastConnectTimestamp >= 60000) {
+                    const state = this.getEulerRoomWatch(this.eulerAttemptRoomId);
+                    if (state?.lastAttemptAt === this.eulerReservedAt) this.setEulerRoomWatch(null, state.roomId);
+                    this.eulerReservedAt = 0;
+                }
                 if (this.signingProvider === 'tikfinity') this.connection.updateCaptureStatus(now);
                 emitStatus({
                     wssID: this.wssID,
@@ -8222,6 +8243,8 @@ class ConnectionManager {
                 });
 
                 const watch = !options.manual && this.autoActivate && this.supportsEulerLiveWatch();
+                this.eulerAttemptRoomId = null;
+                this.eulerReservedAt = 0;
                 if (watch && !await this.checkEulerBeforeAutoConnect()) return false;
                 const checkedAt = Date.now();
                 try {
@@ -8263,13 +8286,14 @@ class ConnectionManager {
                     await waitForTikTokConnectAttemptSlot(this, usingLocalSigner ? 'local_signer_connect' : 'connect');
                     this.assertConnectionCanContinue('before_connector_connect');
                     if (watch) {
-                        // Another request may have held the slot while this stream ended.
+                        // The stream may end, or another source may receive a refusal, while waiting.
                         if (Date.now() - checkedAt > 5000 && !await this.checkEulerBeforeAutoConnect()) return false;
                         if (this.isStopped || !this.autoActivate || !this.isActiveSourceConnection()) return false;
-                        const delay = this.updateEulerAutoBudget(this.signingConfig?.apiKey || defaultEulerApiKey);
-                        if (delay > 0) return this.scheduleEulerLiveCheck(delay, 'Waiting for the Euler automatic connection allowance.');
+                        if (!this.checkEulerRoomAllowance(this.eulerAttemptRoomId, true)) return false;
                     }
-                    await activeConnection.connect();
+                    // Reuse the room confirmed by TikTok instead of asking the connector to find it again.
+                    if (watch && this.eulerAttemptRoomId) await activeConnection.connect(this.eulerAttemptRoomId);
+                    else await activeConnection.connect();
                 } finally {
                     if (restoreBootstrap) restoreBootstrap();
                 }
@@ -9063,9 +9087,13 @@ class ConnectionManager {
         const timeout = setTimeout(() => controller.abort(), 20000);
         try {
             if (!this.isStopped && this.localSigner?.checkLiveStatus) {
-                return await this.localSigner.checkLiveStatus(this.username, controller.signal,
+                const result = await this.localSigner.checkLiveStatus(this.username, controller.signal,
                     details => this.recordConnectionDiagnostic('direct_live_lookup', null, details),
                     this.autoActivate && this.supportsEulerLiveWatch());
+                if (result && typeof result === 'object') {
+                    return { live: result.live, roomId: normalizeTikTokRoomId(result.roomId) };
+                }
+                return { live: result, roomId: null };
             }
         } catch (error) {
             this.recordConnectionDiagnostic('direct_live_lookup_failed', error);
@@ -9073,7 +9101,7 @@ class ConnectionManager {
             clearTimeout(timeout);
             this.eulerLiveCheckAbortController = null;
         }
-        return null;
+        return { live: null, roomId: null };
     }
 
     scheduleEulerLiveCheck(delay, reason, offline = false) {
@@ -9090,16 +9118,77 @@ class ConnectionManager {
     }
 
     async checkEulerBeforeAutoConnect() {
-        const live = await this.readDirectTikTokLiveStatus();
+        const { live, roomId } = await this.readDirectTikTokLiveStatus();
         if (this.isStopped || !this.autoActivate || !this.isActiveSourceConnection()) return false;
         if (live === false) {
-            this.eulerAutoFailures = 0;
-            this.eulerAutoRetryAt = 0;
+            this.noteEulerRoomOffline();
             return this.scheduleEulerLiveCheck(60000, 'TikTok reports the stream is offline.', true);
         }
         if (live !== true) return this.scheduleEulerLiveCheck(120000, 'Could not confirm whether TikTok is live.');
-        const delay = this.eulerAutoRetryAt - Date.now();
-        if (delay > 0) return this.scheduleEulerLiveCheck(Math.min(delay, 60000), 'TikTok is live. Waiting to retry Euler Signing.');
+        this.eulerAttemptRoomId = roomId;
+        return this.checkEulerRoomAllowance(roomId, false);
+    }
+
+    noteEulerRoomOffline() {
+        const state = this.getEulerRoomWatch();
+        if (state && !state.sawOffline) this.setEulerRoomWatch({ ...state, sawOffline: true });
+    }
+
+    checkEulerRoomAllowance(roomId, reserve) {
+        const now = Date.now();
+        const apiKey = this.signingConfig?.apiKey || defaultEulerApiKey;
+        const budgetKey = this.eulerAutoBudgetKey(apiKey);
+        let state = this.getEulerRoomWatch(roomId);
+        if (state) {
+            const newBroadcast = roomId && state.roomId
+                ? roomId !== state.roomId && roomId !== state.requestedRoomId
+                : state.sawOffline;
+            if (newBroadcast) {
+                state = null;
+            } else {
+                if (roomId && (!state.roomId || state.sawOffline)) {
+                    state = { ...state, roomId: state.roomId || roomId, sawOffline: false };
+                    this.setEulerRoomWatch(state);
+                }
+                // A device refusal is terminal for this broadcast, including records saved by earlier builds.
+                if (!state.attempts) return this.scheduleEulerLiveCheck(60000, EULER_DEVICE_BLOCK_MESSAGE + ' Waiting for the next LIVE.');
+                if (roomId && roomId === state.roomId && state.budgetKey === budgetKey &&
+                    state.attempts < EULER_ROOM_MAX_ATTEMPTS && !state.cooldownRetryUsed && !state.cooldownRetryPending) {
+                    // Another source on this key can put an already-pending retry on hold.
+                    const shared = this.getEulerAutoCooldown(apiKey);
+                    if (shared?.cooldownStartedAt >= state.lastAttemptAt && shared.blockedUntil > state.lastAttemptAt &&
+                        shared.cooldownStartedAt < state.startedAt + EULER_ROOM_RETRY_WINDOW_MS) {
+                        state = { ...state, cooldownRetryPending: true, retryAt: Math.max(state.retryAt, shared.blockedUntil),
+                            expiresAt: shared.blockedUntil + 86400000 };
+                        this.setEulerRoomWatch(state);
+                    }
+                }
+                const cooldownRetry = state.cooldownRetryPending && roomId && roomId === state.roomId;
+                if (state.attempts >= EULER_ROOM_MAX_ATTEMPTS || state.cooldownRetryUsed ||
+                    (!cooldownRetry && now - state.startedAt >= EULER_ROOM_RETRY_WINDOW_MS)) {
+                    return this.scheduleEulerLiveCheck(60000, 'Euler Signing attempts paused for this LIVE. Watching for the next LIVE.');
+                }
+                if (state.cooldownRetryPending && !cooldownRetry) return this.scheduleEulerLiveCheck(60000, 'Waiting for TikTok to confirm the broadcast.');
+                if (now < state.retryAt) return this.scheduleEulerLiveCheck(Math.min(60000, state.retryAt - now), 'TikTok is live. Waiting to retry Euler Signing.');
+            }
+        }
+        if (reserve) {
+            // Re-read both allowances at the signing slot so concurrent sources share them.
+            const delay = this.updateEulerAutoBudget(apiKey);
+            if (delay > 0) return this.scheduleEulerLiveCheck(Math.min(delay, 60000), 'Waiting for the Euler automatic connection allowance.');
+            const attempts = (state?.attempts || 0) + 1;
+            this.eulerReservedAt = now;
+            this.setEulerRoomWatch({
+                roomId: roomId || state?.roomId || null,
+                sawOffline: false,
+                attempts,
+                budgetKey,
+                cooldownRetryUsed: !!state?.cooldownRetryPending,
+                startedAt: state?.startedAt || now,
+                lastAttemptAt: now,
+                retryAt: now + (attempts === 1 ? 60000 : 300000)
+            });
+        }
         return true;
     }
 
@@ -9130,23 +9219,52 @@ class ConnectionManager {
             this.handleFatalError(primaryError);
             return false;
         }
+        const deviceBlocked = this.supportsEulerLiveWatch() && [
+            primaryError?.code, primaryError?.cause?.message, ...this.collectNestedErrorMessages(primaryError)
+        ].some(message => /\bDEVICE_BLOCKED\b/i.test(message));
+        if (deviceBlocked) {
+            if (!this.isActiveSourceConnection()) return false;
+            const roomId = this.connection?.ssappBlockedRoomId || normalizeTikTokRoomId(this.connection?.roomId) || this.eulerAttemptRoomId;
+            // The signer can return a different room if the creator restarts during the handshake.
+            this.setEulerRoomWatch({ roomId, requestedRoomId: this.eulerAttemptRoomId, sawOffline: false });
+        }
         this.eulerBackupCheckInProgress = true;
         if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
         const limit = this.getEulerRateLimitInfo(primaryError);
+        const signStatus = /unexpected sign server status\s+(\d{3})\b/i.exec(primaryError?.message || '');
+        const status = Number(primaryError?.status || primaryError?.response?.status || websocketStatus || signStatus?.[1]);
+        let rateDelay = 0;
+        if (!deviceBlocked && this.supportsEulerLiveWatch() && (limit || (!websocketStatus && status === 429))) {
+            const seconds = this.getRetryAfterSeconds(primaryError);
+            rateDelay = seconds > 0 ? (seconds + 2) * 1000
+                : (limit?.period === 'daily' ? 86400000 : (limit?.period === 'per-minute' ? 60000 : 3600000));
+            const retryAt = Date.now() + rateDelay;
+            this.updateEulerAutoBudget(this.signingConfig?.apiKey || defaultEulerApiKey, retryAt);
+            const state = this.getEulerRoomWatch(this.eulerAttemptRoomId);
+            if (state?.roomId && state.lastAttemptAt === this.eulerReservedAt &&
+                state.attempts < EULER_ROOM_MAX_ATTEMPTS && !state.cooldownRetryUsed) {
+                this.setEulerRoomWatch({ ...state, cooldownRetryPending: true, retryAt: Math.max(retryAt, state.retryAt),
+                    expiresAt: retryAt + 86400000 });
+            }
+        }
         if (limit) emitStatus({ wssID: this.wssID, status: 'euler_rate_limit', error: this.getEulerRateLimitMessage(limit), eulerLimit: limit });
-        emitStatus({ wssID: this.wssID, status: 'connecting', message: 'Checking TikTok directly without using Euler quota.' });
+        if (!deviceBlocked) emitStatus({ wssID: this.wssID, status: 'connecting', message: 'Checking TikTok directly without using Euler quota.' });
         connectionStates.set(this.wssID, { isConnected: false, lastAttempt: Date.now(), isReconnecting: false, attemptInProgress: true });
         let live = null;
         try {
             await this.teardownConnection({ silent: true });
-            live = await this.readDirectTikTokLiveStatus();
+            if (!deviceBlocked) live = (await this.readDirectTikTokLiveStatus()).live;
         } catch (error) {
             this.recordConnectionDiagnostic('direct_live_lookup_failed', error);
         } finally {
             this.eulerBackupCheckInProgress = false;
         }
         if (this.isStopped || !this.isActiveSourceConnection()) return false;
+        if (deviceBlocked) {
+            if (this.autoActivate) return this.scheduleEulerLiveCheck(60000, EULER_DEVICE_BLOCK_MESSAGE + ' Waiting for the next LIVE.');
+            return this.finishEulerRetries(EULER_DEVICE_BLOCK_MESSAGE);
+        }
         this.logDebug('lifecycle.euler.backup_check', { live, allowLiveReconnect, reconnectUsed: this.eulerBackupReconnectUsed });
         this.recordConnectionDiagnostic('euler.live_check', null, {
             liveStatus: live === true ? 'live' : (live === false ? 'offline' : 'unknown'),
@@ -9155,7 +9273,8 @@ class ConnectionManager {
         // An offline response or a dropped healthy connection gets one chat
         // reconnect only after TikTok independently confirms the stream is live.
         const watch = this.autoActivate && this.supportsEulerLiveWatch();
-        if (!watch && live === true && allowLiveReconnect && !limit && !this.eulerBackupReconnectUsed) {
+        if (!watch && live === true && allowLiveReconnect && !limit && !this.eulerBackupReconnectUsed
+            && !(this.supportsEulerLiveWatch() && this.getEulerRoomWatch())) {
             this.eulerBackupReconnectUsed = true;
             const apiKey = this.signingConfig?.apiKey;
             if (primaryError?.code === 4404 && this.signingProvider === EULER_WS_PROVIDER
@@ -9176,8 +9295,6 @@ class ConnectionManager {
         }
         const lookupDetail = live === false ? 'TikTok reports that this stream is offline.'
             : (live === true ? 'TikTok is live, but the Euler connection failed.' : 'The backup TikTok live check failed.');
-        const signStatus = /unexpected sign server status\s+(\d{3})\b/i.exec(primaryError?.message || '');
-        const status = Number(primaryError?.status || primaryError?.response?.status || websocketStatus || signStatus?.[1]);
         const rejectedKey = ((!websocketStatus || this.signingProvider === EULER_WS_PROVIDER) && (status === 401 || status === 403))
             || primaryError?.code === 4401 || primaryError?.code === 4403
             || /invalid.*(?:api key|jwt)|unauthorized/i.test(primaryError?.message || '');
@@ -9207,22 +9324,9 @@ class ConnectionManager {
             }
         }
         if (watch && !rejectedKey && !planRestricted) {
-            if (limit || (!websocketStatus && status === 429)) {
-                const seconds = this.getRetryAfterSeconds(primaryError);
-                const delay = seconds > 0 ? (seconds + 2) * 1000
-                    : (limit?.period === 'daily' ? 86400000 : (limit?.period === 'per-minute' ? 60000 : 3600000));
-                this.updateEulerAutoBudget(this.signingConfig?.apiKey || defaultEulerApiKey, Date.now() + delay);
-                return this.scheduleEulerLiveCheck(delay, limit ? this.getEulerRateLimitMessage(limit) : 'Euler is rate limited.');
-            }
-            if (live === false || (this.lastConnectTimestamp && Date.now() - this.lastConnectTimestamp >= CONFIG.CONNECTION.RAPID_DISCONNECT_THRESHOLD_MS)) {
-                this.eulerAutoFailures = 0;
-                this.eulerAutoRetryAt = 0;
-            }
+            if (live === false) this.noteEulerRoomOffline();
+            if (rateDelay) return this.scheduleEulerLiveCheck(Math.min(rateDelay, 60000), limit ? this.getEulerRateLimitMessage(limit) : 'Euler is rate limited.');
             this.lastConnectTimestamp = 0;
-            if (live !== false) {
-                const delays = [60000, 300000, 1800000];
-                this.eulerAutoRetryAt = Date.now() + delays[Math.min(this.eulerAutoFailures++, delays.length - 1)];
-            }
             return this.scheduleEulerLiveCheck(60000, detail, live === false);
         }
         if (this.autoSharedFallback && !this.autoEulerProxyFallbackAttempted && !limit && live !== false
@@ -9409,6 +9513,13 @@ class ConnectionManager {
         }
         const modeDetails = this.getConnectionModeDetails();
         const connectionLabel = modeDetails.label || 'Websocket connected';
+        if (!this.eulerReservedAt && this.supportsEulerLiveWatch()) {
+            const roomId = normalizeTikTokRoomId(this.connection?.roomId);
+            const block = this.getEulerRoomWatch(roomId);
+            if (block && (!roomId || !block.roomId || block.roomId === roomId || block.requestedRoomId === roomId)) {
+                this.setEulerRoomWatch(null, block.roomId);
+            }
+        }
         const connectedAt = Date.now();
         console.info(`${connectionLabel}, starting health check`);
         connectionStates.set(this.wssID, {

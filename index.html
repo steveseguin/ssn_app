@@ -2349,7 +2349,7 @@
                 if (source.target === 'tiktok') {
                     const toggle = autoActivateCheckbox.closest('.auto-activate-toggle');
                     if (usesTikTokEulerAutoWatch(source)) {
-                        toggle.title = 'Checks TikTok directly and connects when live. Sources sharing an Euler key share a limit of 12 automatic connection attempts per 24 hours.';
+                        toggle.title = 'Checks TikTok directly. After three failed signing attempts, waits for the next LIVE. Each Euler key allows up to 12 automatic connection attempts per 24 hours in SSApp.';
                     } else {
                         toggle.removeAttribute('title');
                     }
@@ -2666,7 +2666,7 @@
         }
 
         /* Modified createYouTubeEntry */
-        async function createYouTubeEntry(streamData, usernameForGroup, isShortSelected) {
+        async function createYouTubeEntry(streamData, usernameForGroup, isShortSelected, youtubeAutoAdded = false) {
             const target = isShortSelected ? 'youtubeshorts' : 'youtube';
 
             let group = streamData.groupId ? stateManager.getGroup(streamData.groupId) : null;
@@ -2727,6 +2727,7 @@
                 username: streamData.channelTitle || parentGroup?.channelTitle || usernameForGroup,
                 url: `https://www.youtube.com/live_chat?is_popout=1&v=${streamData.videoId}${isShortSelected ? '&shorts' : ''}`,
                 isAutoDiscovered: true,
+                youtubeAutoAdded,
                 groupId: groupId,
                 title: streamData.title,
                 connectionMode: parentGroup?.connectionMode || 'classic',
@@ -3502,6 +3503,7 @@
                 videoId: stream.videoId,
                 title: stream.title,
                 isAutoDiscovered: true,
+                youtubeAutoAdded: true,
                 autoActivate,
                 connectionMode: group.connectionMode || 'classic',
                 customSession: stream.customSession !== undefined ? stream.customSession : (group.customSession || 'AUTO'),
@@ -4895,6 +4897,19 @@
             const settingsBtn = groupHeaderElement.querySelector('.settings-btn');
             const settingsMenu = groupHeaderElement.querySelector('.settings-menu');
             if (settingsBtn && settingsMenu) {
+                if (isYouTubeTarget(target)) {
+                    let checkbox = settingsMenu.querySelector('[data-cleanup-ended]');
+                    if (!checkbox) {
+                        const label = document.createElement('label');
+                        label.className = 'auto-activate-toggle';
+                        label.title = 'Remove automatically added rows after YouTube confirms the broadcast has ended.';
+                        label.innerHTML = '<input type="checkbox" data-cleanup-ended> Remove ended streams';
+                        settingsMenu.querySelector('.settings-menu-section').appendChild(label);
+                        checkbox = label.querySelector('input');
+                    }
+                    checkbox.checked = group.removeEndedStreams === true;
+                    checkbox.onchange = () => stateManager.updateGroup(groupId, { removeEndedStreams: checkbox.checked });
+                }
                 enhanceSettingsMenu(settingsBtn, settingsMenu, `Additional settings for ${target || 'source'} group`);
                 settingsBtn.onclick = (e) => {
                     e.stopPropagation();
@@ -5247,18 +5262,22 @@
         }
 
         function schedulePublicYouTubeEndCheck(group, suspect = null) {
-            if (!shouldPollYouTubeGroup(group) || isYouTubeOwnerGroup(group)) return;
+            if (!group || !isYouTubeTarget(group.target)) return;
+            const monitorActive = () => shouldPollYouTubeGroup(group) && !isYouTubeOwnerGroup(group);
+            const cleanup = source => group.removeEndedStreams === true && source.youtubeAutoAdded === true;
+            if (!monitorActive() && !group.removeEndedStreams) return;
             const state = getYouTubeGroupDiscoveryState(group);
             if (state.endCheck && (!suspect || state.endCheck.running)) return;
             const candidates = (group.streams || []).map(id => stateManager.getSource(id)).filter(source =>
-                source && isYouTubeTarget(source.target) && (source.vid || source.wssId)
-                && /^[\w-]{11}$/.test(source.videoId) && !state.endedVideos?.has(source.videoId));
+                source && source.groupId === group.id && isYouTubeTarget(source.target) && /^[\w-]{11}$/.test(source.videoId) &&
+                (cleanup(source) || (monitorActive() && (source.vid || source.wssId) && !state.endedVideos?.has(source.videoId))));
             if (!candidates.length) return;
             // A connection error warrants an early look. Healthy windows share one slow check per channel.
             if (!suspect && !state.lastEndCheckAt) suspect = candidates.find(source => source.status === 'error');
             const early = candidates.includes(suspect);
             const now = Date.now();
-            const due = early ? Math.max(now, (state.lastEndCheckAt || 0) + 60000) : now + 16 * 60000;
+            const interval = group.removeEndedStreams ? (state.lastEndCheckAt ? 180000 : 60000) : 16 * 60000;
+            const due = early ? Math.max(now, (state.lastEndCheckAt || 0) + 60000) : now + interval;
             if (state.endCheck && state.endCheck.due <= due) return;
             cancelPublicYouTubeEndCheck(group.id);
             const lastIndex = candidates.findIndex(source => source.id === state.lastEndCheckSource);
@@ -5268,19 +5287,28 @@
             const check = { due };
             state.endCheck = check;
             const current = () => state.endCheck === check && stateManager.getGroup(group.id) === group
-                && shouldPollYouTubeGroup(group) && youtubeGroupDiscoveryState.get(group.id) === state;
+                && youtubeGroupDiscoveryState.get(group.id) === state;
             const sameWindow = () => stateManager.getSource(source.id) === source && source.groupId === group.id
                 && isYouTubeTarget(source.target) && source.videoId === videoId && (source.vid || source.wssId) === windowId;
             check.timer = setTimeout(async () => {
                 if (!current()) return;
                 try {
-                    if (!sameWindow()) return;
+                    if (!sameWindow() || (!monitorActive() && !cleanup(source))) return;
                     check.running = true;
                     state.lastEndCheckSource = source.id;
                     state.lastEndCheckAt = Date.now();
-                    if (await hasPublicYouTubeBroadcastEnded(videoId) && current() && sameWindow()) {
+                    const ownerEnd = isYouTubeOwnerGroup(group) && Date.parse(source.actualEndTime);
+                    const ended = state.endedVideos?.has(videoId) || (ownerEnd > 0 && ownerEnd <= Date.now()) ||
+                        await hasPublicYouTubeBroadcastEnded(videoId);
+                    if (ended && current() && sameWindow() && (monitorActive() || cleanup(source))) {
                         if (!state.endedVideos) state.endedVideos = new Set();
                         state.endedVideos.add(videoId);
+                        if (cleanup(source) && !pendingSourceActivations.has(source.id)) {
+                            // Keep the row if its capture could not be closed.
+                            if (source.vid ? ipcRenderer.sendSync('closeWindow', { vid: source.vid }) : !source.wssId) {
+                                stateManager.removeSource(source.id);
+                            }
+                        }
                         maybeRestartYouTubeGroupAutoCheck(group.id, 'broadcast ended');
                     }
                 } catch (error) {
@@ -5396,7 +5424,9 @@
                 const isLiveBroadcast = lifeCycleStatus === 'live'
                     || (!!stream.actualStartTime && !stream.actualEndTime);
                 if (isLiveBroadcast) {
-                    if (!hasChat) {
+                    // Chat can stay disabled for the whole broadcast. Only poll rapidly near its start.
+                    const startedAt = Date.parse(stream.actualStartTime) || getYouTubeScheduledStartMs(stream);
+                    if (!hasChat && Number.isFinite(startedAt) && Math.abs(Date.now() - startedAt) <= YOUTUBE_OWNER_POLL_FAST_WINDOW_MS) {
                         hasLiveWaitingForChat = true;
                     }
                     return;
@@ -5516,7 +5546,8 @@
             youtubeGroupBackoffState.set(groupId, {
                 runId,
                 checkCount: 0,
-                intervals: [60000, 360000, 960000] // 1 min, 6 min, 16 min
+                failures: 0,
+                intervals: [60000, 360000, 960000] // Back off when discovery requests fail.
             });
 
             // Check immediately
@@ -5592,19 +5623,16 @@
 
             // Determine next check interval
             let nextInterval;
-            if (hadTransientNetworkError) {
-                const retryIndex = Math.min(backoffState.checkCount, backoffState.intervals.length - 1);
-                nextInterval = backoffState.intervals[retryIndex];
+            if (hadTransientNetworkError || discoveryResult?.type === 'discovery_error') {
+                const retryIndex = Math.min(backoffState.failures, backoffState.intervals.length - 1);
+                backoffState.failures++;
+                nextInterval = Math.max(backoffState.intervals[retryIndex], computeNextYouTubeOwnerPollInterval(group) || 0);
+                if (discoveryResult.retryAt) nextInterval = Math.max(nextInterval, discoveryResult.retryAt - Date.now());
             } else {
-                let fallbackInterval;
-                if (backoffState.checkCount < backoffState.intervals.length) {
-                    fallbackInterval = backoffState.intervals[backoffState.checkCount];
-                    backoffState.checkCount++;
-                } else {
-                    // Use the last interval (16 minutes) for all subsequent public checks
-                    fallbackInterval = backoffState.intervals[backoffState.intervals.length - 1];
-                }
-                nextInterval = computeNextYouTubeOwnerPollInterval(group) || fallbackInterval;
+                backoffState.failures = 0;
+                const publicInterval = backoffState.checkCount === 0 ? 60000 : 180000;
+                backoffState.checkCount++;
+                nextInterval = computeNextYouTubeOwnerPollInterval(group) || publicInterval;
             }
 
             if (group) {
@@ -5619,7 +5647,7 @@
             // Schedule next check
             const timeoutId = setTimeout(() => {
                 checkYouTubeGroupForNewStreamsWithBackoff(groupId, runId);
-            }, nextInterval);
+            }, Math.min(nextInterval, 2147483647));
 
             youtubeGroupIntervals.set(groupId, timeoutId);
             startYouTubeGroupCountdown(groupId, nextInterval, discoveryResult);
@@ -5659,7 +5687,7 @@
                     };
                 }
                 if (typeof isYouTubeDiscoveryNetworkError === 'function' && isYouTubeDiscoveryNetworkError(error)) {
-                    return { type: 'network_error', message: error.message };
+                    return { type: 'network_error', message: error.message, retryAt: error.retryAt };
                 }
                 if (ownerBackedGroup) {
                     return { type: 'discovery_error', message: error.message || 'YouTube could not check this channel. Try again later.' };
@@ -5681,10 +5709,10 @@
             const now = new Date();
             const endedVideos = youtubeGroupDiscoveryState.get(groupId)?.endedVideos;
             const eligibleStreams = filteredStreams.filter(stream => {
-                if (!stream || !stream.status) return false;
+                if (!stream || !stream.status || endedVideos?.has(stream.videoId)) return false;
                 if (!ownerBackedGroup) {
                     // The channel's live badge can outlast the end timestamp on the video's own page.
-                    return !endedVideos?.has(stream.videoId) && isEligiblePublicYouTubeStream(stream, publicWindowMinutes);
+                    return isEligiblePublicYouTubeStream(stream, publicWindowMinutes);
                 }
                 if (stream.status === 'live') return true;
                 if (stream.status === 'upcoming' && stream.scheduledStartTime) {
@@ -13503,6 +13531,10 @@
 
             /* Modified sourceAdded listener */
             stateManager.on('sourceAdded', ({ source }) => {
+                if (source.youtubeAutoAdded && source.groupId) {
+                    const group = stateManager.getGroup(source.groupId);
+                    if (group?.removeEndedStreams) schedulePublicYouTubeEndCheck(group);
+                }
                 console.log("sourceAdded event:", source.id, "videoId:", source.videoId, "groupId:", source.groupId);
                 let element = document.querySelector(`[data-source-id="${source.id}"]`);
                 if (element) {
@@ -13776,7 +13808,8 @@
                     if (touchesYouTubeDiscovery) {
                         const oldIdentity = isYouTubeTarget(oldState?.target) ? getYouTubeGroupDiscoveryIdentity(oldState) : '';
                         const newIdentity = isYouTubeTarget(group?.target) ? getYouTubeGroupDiscoveryIdentity(group) : '';
-                        if (!group?.autoActivate || oldIdentity !== newIdentity) cancelPublicYouTubeEndCheck(groupId);
+                        if ((!group?.autoActivate && !group?.removeEndedStreams) || oldIdentity !== newIdentity ||
+                            'removeEndedStreams' in updates) cancelPublicYouTubeEndCheck(groupId);
 
                         if (newIdentity && oldIdentity !== newIdentity) {
                             youtubeGroupDiscoveryState.delete(groupId);
@@ -13786,6 +13819,11 @@
                         } else if (!newIdentity) {
                             stopYouTubeGroupAutoCheck(groupId);
                             youtubeGroupDiscoveryState.delete(groupId);
+                        }
+                        if ('removeEndedStreams' in updates || (group?.removeEndedStreams && oldIdentity !== newIdentity)) {
+                            const checkbox = getYouTubeGroupElement(groupId)?.querySelector('[data-cleanup-ended]');
+                            if (checkbox) checkbox.checked = group.removeEndedStreams === true;
+                            schedulePublicYouTubeEndCheck(group);
                         }
                     }
                 } catch (e) {
